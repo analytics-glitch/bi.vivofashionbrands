@@ -2,32 +2,67 @@ import axios from "axios";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
+export const api = axios.create({ baseURL: API, timeout: 60000 });
 
-export const api = axios.create({ baseURL: API, timeout: 45000 });
+// Full numbers with commas, no K/M abbreviations
+export const fmtKES = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
+  return "KES " + Math.round(Number(n)).toLocaleString("en-US");
+};
 
-export const fmtMoney = (n, currency = "USD") => {
-  if (n === null || n === undefined || isNaN(n)) return "—";
-  const abs = Math.abs(n);
-  const suffix = abs >= 1_000_000 ? "M" : abs >= 1_000 ? "K" : "";
-  const value = abs >= 1_000_000 ? n / 1_000_000 : abs >= 1_000 ? n / 1_000 : n;
+export const fmtKESDec = (n, decimals = 0) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
   return (
-    (currency === "USD" ? "$" : "") +
-    value.toLocaleString(undefined, {
-      minimumFractionDigits: suffix ? 1 : 0,
-      maximumFractionDigits: suffix ? 2 : 0,
-    }) +
-    suffix
+    "KES " +
+    Number(n).toLocaleString("en-US", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })
   );
 };
 
-export const fmtNumber = (n) => {
-  if (n === null || n === undefined || isNaN(n)) return "—";
-  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+export const fmtNum = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "0";
+  return Math.round(Number(n)).toLocaleString("en-US");
 };
 
-export const fmtPct = (n) => {
-  if (n === null || n === undefined || isNaN(n)) return "—";
-  return `${Number(n).toFixed(1)}%`;
+export const fmtDec = (n, d = 2) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "0";
+  return Number(n).toLocaleString("en-US", {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d,
+  });
+};
+
+export const fmtPct = (n, d = 1) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "0%";
+  return `${Number(n).toFixed(d)}%`;
+};
+
+export const fmtDate = (d) => {
+  if (!d) return "";
+  return new Date(d).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+export const todayISO = () => new Date().toISOString().slice(0, 10);
+export const firstOfMonthISO = () => {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+};
+
+// Compact formatter — ONLY for chart axis labels where full numbers are too wide.
+// NOT used for KPI values, highlight cards, or tables (those always use fmtKES).
+export const fmtAxisKES = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "0";
+  const v = Number(n);
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (abs >= 1_000) return (v / 1_000).toFixed(0) + "K";
+  return String(Math.round(v));
 };
 
 export const COUNTRY_FLAGS = {
@@ -35,4 +70,13 @@ export const COUNTRY_FLAGS = {
   Uganda: "🇺🇬",
   Rwanda: "🇷🇼",
   Other: "🌍",
+};
+
+export const storeToCountry = (sid) => {
+  if (!sid) return "Other";
+  const s = String(sid).toLowerCase();
+  if (s.includes("uganda")) return "Uganda";
+  if (s.includes("rwanda")) return "Rwanda";
+  if (s.includes("vivofashiongroup") || s.includes("kenya")) return "Kenya";
+  return "Other";
 };

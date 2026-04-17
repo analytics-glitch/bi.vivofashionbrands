@@ -2,35 +2,36 @@ import React from "react";
 import { NavLink } from "react-router-dom";
 import {
   ChartPieSlice,
-  Storefront,
-  Package,
   MapPin,
-  TrendUp,
+  Package,
+  Gauge,
+  FileText,
 } from "@phosphor-icons/react";
 
 const nav = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
-  { to: "/sales", label: "Sales", icon: TrendUp, id: "sales" },
-  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
+  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
+  { to: "/sor", label: "Sell-Out Rate", icon: Gauge, id: "sor" },
+  { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
 ];
 
 const Sidebar = () => {
   return (
     <aside
-      className="hidden lg:flex flex-col w-[240px] shrink-0 border-r border-border bg-[hsl(var(--sidebar-bg))] sticky top-0 h-screen"
+      className="hidden lg:flex flex-col w-[248px] shrink-0 border-r border-border bg-[#0a0a0a] sticky top-0 h-screen no-print"
       data-testid="app-sidebar"
     >
       <div className="px-6 pt-8 pb-10">
-        <div className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-lg bg-primary text-white grid place-items-center font-display font-black text-lg">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-brand text-black grid place-items-center font-extrabold text-lg shadow-[0_6px_20px_rgba(0,200,83,0.35)]">
             V
           </div>
-          <div>
-            <div className="font-display text-[15px] font-bold tracking-tight leading-none">
+          <div className="leading-tight">
+            <div className="text-[14.5px] font-bold tracking-tight text-white">
               Vivo Fashion Group
             </div>
-            <div className="eyebrow mt-1" style={{ fontSize: "0.6rem" }}>
+            <div className="eyebrow mt-1" style={{ fontSize: "0.58rem" }}>
               BI · East Africa
             </div>
           </div>
@@ -45,16 +46,16 @@ const Sidebar = () => {
             end={n.to === "/"}
             data-testid={`sidebar-nav-${n.id}`}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[14px] font-medium transition-colors ${
+              `flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13.5px] font-medium transition-colors ${
                 isActive
-                  ? "bg-primary/10 text-primary"
-                  : "text-foreground/70 hover:bg-muted hover:text-foreground"
+                  ? "bg-brand/10 text-brand-strong border border-brand/25"
+                  : "text-white/70 hover:bg-white/5 hover:text-white border border-transparent"
               }`
             }
           >
             {({ isActive }) => (
               <>
-                <n.icon size={20} weight={isActive ? "fill" : "duotone"} />
+                <n.icon size={19} weight={isActive ? "fill" : "duotone"} />
                 <span>{n.label}</span>
               </>
             )}
@@ -63,16 +64,8 @@ const Sidebar = () => {
       </nav>
 
       <div className="px-5 py-5 border-t border-border">
-        <div className="flex items-center gap-3">
-          <img
-            src="https://images.unsplash.com/photo-1687137113677-f2a9a6c79fab?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHw0fHxhZnJpY2FuJTIwZmFzaGlvbiUyMG1vZGVsfGVufDB8fHx8MTc3NjQyMzU2MXww&ixlib=rb-4.1.0&q=85"
-            alt="avatar"
-            className="w-9 h-9 rounded-full object-cover"
-          />
-          <div className="text-[12px] leading-tight">
-            <div className="font-semibold">Amara K.</div>
-            <div className="text-muted-foreground">Regional Director</div>
-          </div>
+        <div className="text-[11px] text-muted">
+          © 2026 Vivo Fashion Group
         </div>
       </div>
     </aside>

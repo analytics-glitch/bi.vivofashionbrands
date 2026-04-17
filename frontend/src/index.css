@@ -1,4 +1,4 @@
-@import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,900&f[]=satoshi@400,500,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -7,105 +7,178 @@
 html,
 body {
     margin: 0;
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-family: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI",
-        "Helvetica Neue", sans-serif;
+    background: #0d0d0d;
+    color: #ffffff;
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "ss01", "ss02";
-}
-
-.font-display {
-    font-family: "Cabinet Grotesk", "Satoshi", sans-serif;
-    letter-spacing: -0.02em;
+    font-feature-settings: "ss01";
 }
 
 @layer base {
     :root {
-        --background: 40 14% 97%;
-        --foreground: 20 5% 16%;
-        --card: 0 0% 100%;
-        --card-foreground: 20 5% 16%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 20 5% 16%;
-        --primary: 10 61% 49%;
-        --primary-foreground: 0 0% 100%;
-        --secondary: 88 13% 29%;
-        --secondary-foreground: 0 0% 100%;
-        --muted: 35 18% 94%;
-        --muted-foreground: 24 6% 46%;
-        --accent: 25 40% 67%;
-        --accent-foreground: 20 5% 16%;
-        --destructive: 0 70% 50%;
-        --destructive-foreground: 0 0% 100%;
-        --border: 33 18% 88%;
-        --input: 33 18% 88%;
-        --ring: 10 61% 49%;
-        --chart-1: 10 61% 49%;
-        --chart-2: 25 54% 67%;
-        --chart-3: 88 13% 29%;
-        --chart-4: 25 16% 48%;
-        --chart-5: 33 18% 78%;
-        --radius: 0.75rem;
+        --bg: #0d0d0d;
+        --panel: #121212;
+        --card: #161e1a;
+        --card-2: #1a3a2a;
+        --border: #1f2b25;
+        --text: #ffffff;
+        --muted: #8a9a91;
+        --accent: #00c853;
+        --accent-strong: #00e676;
+        --danger: #ff5252;
+        --amber: #ffb300;
 
-        --sidebar-bg: 40 16% 95%;
+        --background: 0 0% 5%;
+        --foreground: 0 0% 100%;
+        --card-hsl: 150 14% 10%;
+        --card-foreground: 0 0% 100%;
+        --popover: 0 0% 7%;
+        --popover-foreground: 0 0% 100%;
+        --primary: 141 100% 39%;
+        --primary-foreground: 0 0% 0%;
+        --secondary: 142 40% 17%;
+        --secondary-foreground: 0 0% 100%;
+        --muted-col: 150 8% 57%;
+        --border-hsl: 150 16% 14%;
+        --radius: 1rem;
     }
 }
 
 @layer base {
-    * {
-        @apply border-border;
-    }
     body {
-        @apply bg-background text-foreground;
+        background: var(--bg);
+        color: var(--text);
     }
     ::selection {
-        background: hsl(var(--primary));
-        color: white;
+        background: var(--accent);
+        color: #000;
+    }
+    input[type="date"],
+    input[type="text"],
+    input,
+    select {
+        color-scheme: dark;
     }
 }
 
 @layer components {
-    .kpi-number {
-        font-family: "Cabinet Grotesk", sans-serif;
-        font-weight: 900;
-        letter-spacing: -0.035em;
-        line-height: 1;
+    .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.02) inset,
+            0 12px 32px rgba(0, 0, 0, 0.45);
+    }
+    .card-dark {
+        background: #0f0f0f;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+    }
+    .card-accent {
+        background: linear-gradient(
+            135deg,
+            rgba(0, 200, 83, 0.18) 0%,
+            rgba(26, 58, 42, 0.75) 100%
+        );
+        border: 1px solid rgba(0, 200, 83, 0.35);
+        border-radius: 16px;
+        box-shadow: 0 12px 40px rgba(0, 200, 83, 0.08);
+    }
+    .kpi-value {
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1.05;
+        color: #ffffff;
     }
     .eyebrow {
-        font-family: "Satoshi", sans-serif;
         text-transform: uppercase;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.11em;
         font-size: 0.68rem;
-        font-weight: 500;
-        color: hsl(var(--muted-foreground));
-    }
-    .card-surface {
-        background: hsl(var(--card));
-        border: 1px solid hsl(var(--border));
-        border-radius: 0.85rem;
+        font-weight: 600;
+        color: var(--muted);
     }
     .hover-lift {
-        transition:
-            transform 0.2s ease,
-            box-shadow 0.2s ease,
-            border-color 0.2s ease;
+        transition: transform 0.2s ease, box-shadow 0.2s ease,
+            border-color 0.2s ease, background 0.25s ease;
     }
     .hover-lift:hover {
         transform: translateY(-2px);
-        box-shadow:
-            0 1px 2px rgba(0, 0, 0, 0.04),
-            0 8px 24px rgba(44, 42, 41, 0.06);
-        border-color: hsl(var(--primary) / 0.3);
+        border-color: rgba(0, 200, 83, 0.55);
+        box-shadow: 0 16px 32px rgba(0, 0, 0, 0.55);
     }
     .fade-in {
         animation: fadeIn 0.45s ease both;
     }
-    .kitenge-bg {
-        background-image: url("https://images.unsplash.com/photo-1757140448241-ba7511316754?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHwzfHxjb2xvcmZ1bCUyMGtpdGVuZ2UlMjBmYWJyaWN8ZW58MHx8fHwxNzc2NDIzNTYxfDA&ixlib=rb-4.1.0&q=85");
-        background-size: cover;
-        background-position: center;
+    .pill-green {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.15rem 0.55rem;
+        background: rgba(0, 200, 83, 0.14);
+        color: var(--accent-strong);
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .pill-red {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.15rem 0.55rem;
+        background: rgba(255, 82, 82, 0.14);
+        color: #ff8787;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .pill-amber {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.15rem 0.55rem;
+        background: rgba(255, 179, 0, 0.14);
+        color: #ffc947;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .input-pill {
+        background: #0a0a0a;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.55rem 0.8rem;
+        color: #fff;
+        font-size: 0.85rem;
+        outline: none;
+        min-width: 0;
+    }
+    .input-pill:focus {
+        border-color: var(--accent);
+    }
+    table.data th {
+        font-weight: 600;
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        padding: 0.9rem 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+    }
+    table.data td {
+        padding: 0.85rem 0.75rem;
+        border-bottom: 1px solid rgba(31, 43, 37, 0.6);
+        font-size: 0.88rem;
+        color: #f4f4f4;
+    }
+    table.data tr:last-child td {
+        border-bottom: none;
+    }
+    table.data tr:hover td {
+        background: rgba(0, 200, 83, 0.04);
     }
 }
 
@@ -120,21 +193,25 @@ body {
     }
 }
 
-/* Recharts polish */
+/* Recharts polish (dark theme) */
 .recharts-cartesian-axis-tick text {
-    fill: hsl(var(--muted-foreground));
+    fill: #8a9a91;
     font-size: 11px;
-    font-family: "Satoshi", sans-serif;
 }
 .recharts-tooltip-wrapper {
     outline: none !important;
 }
 .recharts-default-tooltip {
-    background: hsl(var(--card)) !important;
-    border: 1px solid hsl(var(--border)) !important;
+    background: #0f1a14 !important;
+    border: 1px solid #1f2b25 !important;
     border-radius: 10px !important;
     padding: 10px 12px !important;
-    box-shadow: 0 8px 24px rgba(44, 42, 41, 0.08) !important;
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.6) !important;
+    color: #fff !important;
+}
+.recharts-default-tooltip .recharts-tooltip-label,
+.recharts-default-tooltip .recharts-tooltip-item {
+    color: #fff !important;
 }
 
 /* Custom scrollbar */
@@ -142,10 +219,52 @@ body {
     width: 10px;
     height: 10px;
 }
+::-webkit-scrollbar-track {
+    background: #0d0d0d;
+}
 ::-webkit-scrollbar-thumb {
-    background: hsl(var(--border));
+    background: #1f2b25;
     border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--accent));
+    background: #00c853;
+}
+
+/* Print styles for CEO report */
+@media print {
+    body {
+        background: #ffffff !important;
+        color: #000000 !important;
+    }
+    .no-print {
+        display: none !important;
+    }
+    .print-page {
+        background: #ffffff !important;
+        color: #000000 !important;
+        padding: 0 !important;
+    }
+    .print-page * {
+        color: #000000 !important;
+        background: transparent !important;
+        border-color: #cccccc !important;
+        box-shadow: none !important;
+    }
+    .print-page .accent-heading {
+        color: #00803a !important;
+        border-bottom: 2px solid #00803a !important;
+    }
+    .print-page .kpi-value {
+        color: #000000 !important;
+    }
+    .print-page table.data th {
+        color: #333 !important;
+        border-bottom: 1px solid #999 !important;
+    }
+    .print-page table.data td {
+        border-bottom: 1px solid #e5e5e5 !important;
+    }
+    @page {
+        margin: 14mm;
+    }
 }

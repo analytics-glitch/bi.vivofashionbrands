@@ -5,64 +5,50 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        display: ['"Cabinet Grotesk"', "Satoshi", "sans-serif"],
-        sans: ['"Satoshi"', "system-ui", "sans-serif"],
+        sans: ['"Plus Jakarta Sans"', "system-ui", "sans-serif"],
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        "2xl": "1rem",
+        xl: "0.85rem",
       },
       colors: {
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
+        bg: "#0d0d0d",
+        panel: "#121212",
+        surface: "#161e1a",
+        "surface-2": "#1a3a2a",
+        border: "#1f2b25",
+        muted: {
+          DEFAULT: "#8a9a91",
+          foreground: "#8a9a91",
         },
-        popover: {
-          DEFAULT: "hsl(var(--popover))",
-          foreground: "hsl(var(--popover-foreground))",
+        brand: {
+          DEFAULT: "#00c853",
+          strong: "#00e676",
+          soft: "rgba(0, 200, 83, 0.14)",
+        },
+        danger: "#ff5252",
+        amber: "#ffb300",
+
+        background: "#0d0d0d",
+        foreground: "#ffffff",
+        card: {
+          DEFAULT: "#161e1a",
+          foreground: "#ffffff",
         },
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "#00c853",
+          foreground: "#000000",
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
-        },
-        muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: "#1a3a2a",
+          foreground: "#ffffff",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: "#00c853",
+          foreground: "#000000",
         },
-        destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
-        },
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        sidebar: "hsl(var(--sidebar-bg))",
-        chart: {
-          1: "hsl(var(--chart-1))",
-          2: "hsl(var(--chart-2))",
-          3: "hsl(var(--chart-3))",
-          4: "hsl(var(--chart-4))",
-          5: "hsl(var(--chart-5))",
-        },
-      },
-      keyframes: {
-        "accordion-down": { from: { height: "0" }, to: { height: "var(--radix-accordion-content-height)" } },
-        "accordion-up": { from: { height: "var(--radix-accordion-content-height)" }, to: { height: "0" } },
-      },
-      animation: {
-        "accordion-down": "accordion-down 0.2s ease-out",
-        "accordion-up": "accordion-up 0.2s ease-out",
+        input: "#1f2b25",
+        ring: "#00c853",
       },
     },
   },

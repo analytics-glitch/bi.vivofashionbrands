@@ -1,68 +1,54 @@
 import React from "react";
 
-export const KPICard = ({
-  label,
-  value,
-  delta,
-  sub,
-  icon: Icon,
-  tone = "default",
-  testId,
-}) => {
-  const toneClasses =
-    tone === "primary"
-      ? "bg-primary text-primary-foreground border-primary/20"
-      : tone === "dark"
-      ? "bg-secondary text-secondary-foreground border-secondary/20"
-      : "card-surface";
-  const labelColor =
-    tone === "primary" || tone === "dark"
-      ? "text-white/70"
-      : "text-muted-foreground";
-
+export const KPICard = ({ label, value, sub, icon: Icon, testId, accent = false }) => {
   return (
     <div
-      className={`${toneClasses} p-5 hover-lift fade-in`}
+      className={`${accent ? "card-accent" : "card"} p-5 hover-lift fade-in`}
       data-testid={testId}
     >
       <div className="flex items-start justify-between gap-4">
-        <div className={`eyebrow ${labelColor}`}>{label}</div>
+        <div className="eyebrow">{label}</div>
         {Icon && (
           <Icon
-            size={20}
+            size={18}
             weight="duotone"
-            className={
-              tone === "primary" || tone === "dark"
-                ? "text-white/80"
-                : "text-primary"
-            }
+            className={accent ? "text-brand-strong" : "text-muted"}
           />
         )}
       </div>
-      <div className="mt-5 kpi-number text-[34px] md:text-[40px]" data-testid={`${testId}-value`}>
+      <div
+        className="mt-4 kpi-value text-[26px] md:text-[30px] truncate"
+        title={typeof value === "string" ? value : undefined}
+        data-testid={`${testId}-value`}
+      >
         {value}
       </div>
-      {(delta || sub) && (
-        <div
-          className={`mt-2 text-[12px] font-medium ${labelColor}`}
-          data-testid={`${testId}-sub`}
-        >
-          {delta && (
-            <span
-              className={
-                (tone === "primary" || tone === "dark"
-                  ? "text-white "
-                  : "text-secondary ") + " mr-2"
-              }
-            >
-              {delta}
-            </span>
-          )}
+      {sub && (
+        <div className="mt-1.5 text-[12px] text-muted" data-testid={`${testId}-sub`}>
           {sub}
         </div>
       )}
     </div>
   );
 };
+
+export const HighlightCard = ({ label, name, amount, icon: Icon, testId }) => (
+  <div className="card-accent p-5 hover-lift fade-in" data-testid={testId}>
+    <div className="flex items-start justify-between gap-4">
+      <div className="eyebrow text-brand-strong/90">{label}</div>
+      {Icon && <Icon size={18} weight="duotone" className="text-brand-strong" />}
+    </div>
+    <div
+      className="mt-3 kpi-value text-[20px] md:text-[22px] truncate"
+      title={name}
+      data-testid={`${testId}-name`}
+    >
+      {name || "—"}
+    </div>
+    <div className="mt-1.5 text-[13px] font-semibold text-brand-strong" data-testid={`${testId}-amount`}>
+      {amount}
+    </div>
+  </div>
+);
 
 export default KPICard;

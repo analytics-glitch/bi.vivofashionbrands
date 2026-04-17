@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Topbar from "@/components/Topbar";
-import KPICard from "@/components/KPICard";
+import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { api, fmtNumber, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtNum, COUNTRY_FLAGS } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import { Package, Warning, Storefront, MagnifyingGlass } from "@phosphor-icons/react";
 import {
@@ -16,7 +16,7 @@ import {
 } from "recharts";
 
 const Inventory = () => {
-  const { country } = useFilters();
+  const { country, location } = useFilters();
   const [summary, setSummary] = useState(null);
   const [lowStock, setLowStock] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -27,10 +27,14 @@ const Inventory = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = country !== "all" ? { country: country.toLowerCase() } : {};
+    const params = {
+      country: country !== "all" ? country.toLowerCase() : undefined,
+      location: location !== "all" ? location : undefined,
+      product: search.trim() || undefined,
+    };
     Promise.all([
       api.get("/analytics/inventory-summary", { params }),
-      api.get("/analytics/low-stock", { params: { ...params, threshold: 2, limit: 100 } }),
+      api.get("/analytics/low-stock", { params: { ...params, threshold: 2, limit: 300 } }),
     ])
       .then(([a, b]) => {
         if (cancelled) return;
@@ -42,28 +46,19 @@ const Inventory = () => {
     return () => {
       cancelled = true;
     };
-  }, [country]);
+  }, [country, location, search]);
 
-  const filteredLow = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return lowStock;
-    return lowStock.filter(
-      (r) =>
-        (r.product_name || "").toLowerCase().includes(q) ||
-        (r.sku || "").toLowerCase().includes(q) ||
-        (r.location_name || "").toLowerCase().includes(q)
-    );
-  }, [lowStock, search]);
+  const filteredLow = useMemo(() => lowStock, [lowStock]);
 
   return (
     <div className="space-y-8" data-testid="inventory-page">
       <Topbar
         title="Inventory"
-        subtitle="Stock levels, low-stock alerts, and distribution across stores."
-        showCountry
+        subtitle="Live stock levels, low-stock alerts, and distribution."
+        showDates={false}
       />
 
-      {loading && <Loading label="Loading inventory…" />}
+      {loading && <Loading />}
       {error && <ErrorBox message={error} />}
 
       {!loading && !error && summary && (
@@ -71,73 +66,95 @@ const Inventory = () => {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <KPICard
               testId="inv-kpi-units"
-              tone="dark"
-              label="Total available units"
-              value={fmtNumber(summary.total_units)}
+              accent
+              label="Total Available Units"
+              value={fmtNum(summary.total_units)}
               icon={Package}
             />
             <KPICard
               testId="inv-kpi-skus"
               label="Active SKUs"
-              value={fmtNumber(summary.total_skus)}
+              value={fmtNum(summary.total_skus)}
               icon={Storefront}
             />
             <KPICard
               testId="inv-kpi-lowstock"
-              label="Low-stock SKUs (≤1)"
-              value={fmtNumber(summary.low_stock_skus)}
+              label="Low-Stock SKUs (≤2)"
+              value={fmtNum(summary.low_stock_skus)}
               sub="Re-order threshold"
               icon={Warning}
             />
             <KPICard
-              testId="inv-kpi-countries"
+              testId="inv-kpi-markets"
               label="Markets"
-              value={fmtNumber(summary.by_country.length)}
+              value={fmtNum(summary.markets)}
               sub={`${summary.by_country.reduce((s, c) => s + c.locations, 0)} stores`}
               icon={Storefront}
             />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="card-surface p-6" data-testid="chart-inv-by-location">
-              <SectionTitle title="Stock by location" subtitle="Top 10 stores by available units" />
+          <div className="card p-4 flex flex-wrap items-center gap-3" data-testid="inv-filters">
+            <div className="flex items-center gap-2 input-pill flex-1 min-w-[220px]">
+              <MagnifyingGlass size={14} className="text-muted" />
+              <input
+                placeholder="Search product name…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                data-testid="inv-search"
+                className="bg-transparent outline-none text-sm w-full"
+              />
+            </div>
+            <div className="text-xs text-muted">
+              Tip: use country & location filters in the header to narrow results.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div className="card p-6" data-testid="chart-inv-by-location">
+              <SectionTitle
+                title="Stock by location"
+                subtitle="Top 10 stores by available units"
+              />
               {summary.by_location.length === 0 ? (
                 <Empty />
               ) : (
-                <div style={{ width: "100%", height: 320 }}>
+                <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
-                    <BarChart data={summary.by_location.slice(0, 10)} layout="vertical">
-                      <CartesianGrid horizontal={false} stroke="#E5E0D8" />
-                      <XAxis type="number" tickFormatter={(v) => fmtNumber(v)} />
-                      <YAxis type="category" dataKey="location" width={130} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => fmtNumber(v)} />
-                      <Bar dataKey="units" fill="#C84B31" radius={[0, 6, 6, 0]} />
+                    <BarChart data={summary.by_location.slice(0, 10)} layout="vertical" margin={{ left: 10 }}>
+                      <CartesianGrid horizontal={false} stroke="#1f2b25" />
+                      <XAxis type="number" tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="location" width={140} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => fmtNum(v)} />
+                      <Bar dataKey="units" fill="#00c853" radius={[0, 6, 6, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}
             </div>
 
-            <div className="card-surface p-6" data-testid="chart-inv-by-type">
-              <SectionTitle title="Stock by product type" subtitle="Available units per category" />
+            <div className="card p-6" data-testid="chart-inv-by-type">
+              <SectionTitle
+                title="Stock by product type"
+                subtitle="Available units per category"
+              />
               {summary.by_product_type.length === 0 ? (
                 <Empty />
               ) : (
-                <div style={{ width: "100%", height: 320 }}>
+                <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
-                    <BarChart data={summary.by_product_type} margin={{ bottom: 60 }}>
-                      <CartesianGrid vertical={false} stroke="#E5E0D8" />
+                    <BarChart data={summary.by_product_type.slice(0, 12)} margin={{ bottom: 70 }}>
+                      <CartesianGrid vertical={false} stroke="#1f2b25" />
                       <XAxis
                         dataKey="product_type"
                         interval={0}
                         angle={-25}
                         textAnchor="end"
-                        height={80}
+                        height={86}
                         tick={{ fontSize: 11 }}
                       />
-                      <YAxis tickFormatter={(v) => fmtNumber(v)} />
-                      <Tooltip formatter={(v) => fmtNumber(v)} />
-                      <Bar dataKey="units" fill="#4A5340" radius={[6, 6, 0, 0]} />
+                      <YAxis tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => fmtNum(v)} />
+                      <Bar dataKey="units" fill="#00c853" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -145,64 +162,22 @@ const Inventory = () => {
             </div>
           </div>
 
-          <div className="card-surface p-6" data-testid="inv-by-country">
-            <SectionTitle title="Markets overview" subtitle="Units & store footprint per country" />
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {summary.by_country.map((c) => (
-                <div
-                  key={c.country}
-                  className="p-5 rounded-xl border border-border hover-lift"
-                  data-testid={`inv-country-${c.country}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-2xl">{COUNTRY_FLAGS[c.country] || "🌍"}</span>
-                      <div className="font-display font-bold text-lg">{c.country}</div>
-                    </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                      {c.locations} stores
-                    </span>
-                  </div>
-                  <div className="mt-4 flex items-baseline gap-2">
-                    <div className="kpi-number text-3xl">{fmtNumber(c.units)}</div>
-                    <div className="text-xs text-muted-foreground">units</div>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {fmtNumber(c.skus)} SKUs on hand
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="card-surface p-6" data-testid="low-stock-section">
+          <div className="card p-6" data-testid="low-stock-section">
             <SectionTitle
               title="Low-stock alerts"
-              subtitle={`Items with ≤2 units available`}
-              action={
-                <div className="flex items-center gap-2 bg-muted px-3 py-2 rounded-md">
-                  <MagnifyingGlass size={14} className="text-muted-foreground" />
-                  <input
-                    placeholder="Search"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    data-testid="lowstock-search"
-                    className="bg-transparent outline-none text-sm w-[220px]"
-                  />
-                </div>
-              }
+              subtitle="Items with ≤2 units available"
             />
             <div className="overflow-x-auto">
-              <table className="w-full text-sm" data-testid="lowstock-table">
+              <table className="w-full data" data-testid="lowstock-table">
                 <thead>
-                  <tr className="eyebrow text-left">
-                    <th className="py-3 px-3 font-medium">Product</th>
-                    <th className="py-3 px-3 font-medium">Color</th>
-                    <th className="py-3 px-3 font-medium">Size</th>
-                    <th className="py-3 px-3 font-medium">Store</th>
-                    <th className="py-3 px-3 font-medium">Country</th>
-                    <th className="py-3 px-3 font-medium">SKU</th>
-                    <th className="py-3 px-3 font-medium text-right">Available</th>
+                  <tr>
+                    <th>Product</th>
+                    <th>Color</th>
+                    <th>Size</th>
+                    <th>Location</th>
+                    <th>Country</th>
+                    <th>SKU</th>
+                    <th className="text-right">Available</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -214,28 +189,23 @@ const Inventory = () => {
                     </tr>
                   )}
                   {filteredLow.map((r, i) => (
-                    <tr key={i} className="border-b border-border last:border-0">
-                      <td className="py-3 px-3 font-medium max-w-[280px] truncate" title={r.product_name}>
+                    <tr key={i}>
+                      <td className="font-medium max-w-[300px] truncate" title={r.product_name}>
                         {r.product_name || "—"}
                       </td>
-                      <td className="py-3 px-3 text-muted-foreground">{r.color_print || "—"}</td>
-                      <td className="py-3 px-3">{r.size || "—"}</td>
-                      <td className="py-3 px-3 text-muted-foreground">{r.location_name || "—"}</td>
-                      <td className="py-3 px-3">
-                        <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium capitalize">
+                      <td className="text-muted">{r.color_print || "—"}</td>
+                      <td>{r.size || "—"}</td>
+                      <td className="text-muted">{r.location_name || "—"}</td>
+                      <td>
+                        <span className="pill-green">
+                          {COUNTRY_FLAGS[(r.country || "").charAt(0).toUpperCase() + (r.country || "").slice(1)] || "🌍"}{" "}
                           {r.country || "—"}
                         </span>
                       </td>
-                      <td className="py-3 px-3 font-mono text-[11px] text-muted-foreground">{r.sku || "—"}</td>
-                      <td className="py-3 px-3 text-right">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
-                            (r.available || 0) <= 1
-                              ? "bg-destructive/10 text-destructive"
-                              : "bg-muted text-foreground"
-                          }`}
-                        >
-                          {fmtNumber(r.available)}
+                      <td className="font-mono text-[11.5px] text-muted">{r.sku || "—"}</td>
+                      <td className="text-right">
+                        <span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>
+                          {fmtNum(r.available)}
                         </span>
                       </td>
                     </tr>

@@ -1,17 +1,32 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Topbar from "@/components/Topbar";
-import KPICard from "@/components/KPICard";
-import { Loading, ErrorBox, SectionTitle } from "@/components/common";
-import { api, fmtMoney, fmtNumber, fmtPct, COUNTRY_FLAGS } from "@/lib/api";
+import { KPICard, HighlightCard } from "@/components/KPICard";
+import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import {
+  api,
+  fmtKES,
+  fmtNum,
+  fmtPct,
+  fmtDec,
+  fmtDate,
+  fmtAxisKES,
+  storeToCountry,
+  COUNTRY_FLAGS,
+} from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import {
-  CurrencyDollar,
+  CurrencyCircleDollar,
   ShoppingCart,
   Package,
+  ChartLineUp,
+  Basket,
+  Coins,
+  ArrowsLeftRight,
+  ArrowUUpLeft,
   Percent,
+  Storefront,
   Tag,
-  Buildings,
-  ArrowUpRight,
+  Books,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -25,16 +40,21 @@ import {
   Pie,
   Cell,
   Legend,
+  LineChart,
+  Line,
 } from "recharts";
 
-const CHART_COLORS = ["#C84B31", "#DDA77B", "#4A5340", "#8C7A6B", "#E5E0D8"];
+const DONUT_COLORS = ["#00c853", "#ffb300", "#ff7043"];
 
 const Overview = () => {
-  const { dateFrom, dateTo } = useFilters();
-  const [overview, setOverview] = useState(null);
-  const [byCountry, setByCountry] = useState([]);
+  const { dateFrom, dateTo, country, location } = useFilters();
+
+  const [kpis, setKpis] = useState(null);
+  const [highlights, setHighlights] = useState(null);
   const [summary, setSummary] = useState([]);
-  const [topProducts, setTopProducts] = useState([]);
+  const [byCountry, setByCountry] = useState([]);
+  const [daily, setDaily] = useState([]);
+  const [topSkus, setTopSkus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -42,144 +62,238 @@ const Overview = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = { date_from: dateFrom, date_to: dateTo };
+    const params = {
+      date_from: dateFrom,
+      date_to: dateTo,
+      location: location !== "all" ? location : undefined,
+    };
     Promise.all([
-      api.get("/analytics/overview", { params }),
-      api.get("/analytics/by-country", { params }),
-      api.get("/sales-summary", { params }),
-      api.get("/analytics/top-products", { params: { ...params, limit: 5, metric: "net_sales" } }),
+      api.get("/analytics/kpis-plus", { params }),
+      api.get("/analytics/highlights", { params }),
+      api.get("/sales-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/analytics/by-country", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/daily-trend", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/top-skus", { params: { ...params, limit: 20 } }),
     ])
-      .then(([a, b, c, d]) => {
+      .then(([k, h, s, c, d, t]) => {
         if (cancelled) return;
-        setOverview(a.data);
-        setByCountry(b.data || []);
-        setSummary(c.data || []);
-        setTopProducts(d.data || []);
+        setKpis(k.data);
+        setHighlights(h.data);
+        setSummary(s.data || []);
+        setByCountry(c.data || []);
+        setDaily(d.data || []);
+        setTopSkus(t.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, location]);
 
-  const topStores = useMemo(() => {
-    return [...summary]
-      .sort((a, b) => (b.net_sales || 0) - (a.net_sales || 0))
-      .slice(0, 8)
-      .map((s) => ({
-        ...s,
+  // Apply country filter client-side to summary
+  const filteredSummary = useMemo(() => {
+    let s = summary;
+    if (country !== "all")
+      s = s.filter((r) => storeToCountry(r.store_id) === country);
+    if (location !== "all") s = s.filter((r) => r.location === location);
+    return s;
+  }, [summary, country, location]);
+
+  const top15 = useMemo(() => {
+    return [...filteredSummary]
+      .sort((a, b) => (b.gross_sales || 0) - (a.gross_sales || 0))
+      .slice(0, 15)
+      .map((r) => ({
+        ...r,
         label:
-          s.location && s.location.length > 18
-            ? s.location.slice(0, 17) + "…"
-            : s.location,
+          (r.location || "").length > 18
+            ? (r.location || "").slice(0, 17) + "…"
+            : r.location,
       }));
-  }, [summary]);
+  }, [filteredSummary]);
+
+  const donutCountries = useMemo(() => {
+    if (country === "all") return byCountry;
+    return byCountry.filter((c) => c.country === country);
+  }, [byCountry, country]);
 
   return (
     <div className="space-y-8" data-testid="overview-page">
       <Topbar
         title="Overview"
-        subtitle="Group-wide performance across Kenya, Uganda, and Rwanda."
+        subtitle={`Group performance · ${fmtDate(dateFrom)} → ${fmtDate(dateTo)}`}
       />
 
-      {loading && <Loading label="Aggregating metrics…" />}
+      {loading && <Loading label="Aggregating KPIs…" />}
       {error && <ErrorBox message={error} />}
 
-      {!loading && !error && overview && (
+      {!loading && !error && kpis && (
         <>
-          {/* KPI ROW */}
+          {/* Row 1 KPIs */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <KPICard
               testId="kpi-gross"
-              tone="primary"
-              label="Gross Sales"
-              value={fmtMoney(overview.gross_sales)}
-              sub={`${fmtNumber(overview.units_sold)} units sold`}
-              icon={CurrencyDollar}
+              accent
+              label="Total Gross Sales"
+              value={fmtKES(kpis.total_gross_sales)}
+              icon={CurrencyCircleDollar}
             />
             <KPICard
               testId="kpi-net"
-              label="Net Sales"
-              value={fmtMoney(overview.net_sales)}
-              sub={`After ${fmtMoney(overview.discounts)} discounts`}
-              icon={Tag}
+              label="Total Net Sales"
+              value={fmtKES(kpis.total_net_sales)}
+              icon={Coins}
             />
             <KPICard
               testId="kpi-orders"
-              label="Orders"
-              value={fmtNumber(overview.total_orders)}
-              sub={`AOV ${fmtMoney(overview.avg_order_value)}`}
+              label="Total Orders"
+              value={fmtNum(kpis.total_orders)}
               icon={ShoppingCart}
             />
             <KPICard
-              testId="kpi-discount"
-              label="Discount Rate"
-              value={fmtPct(overview.discount_rate)}
-              sub={`${overview.active_locations} locations · ${overview.countries} countries`}
+              testId="kpi-units"
+              label="Total Units Sold"
+              sub="Excl. shopping bags & gift vouchers"
+              value={fmtNum(kpis.units_clean ?? kpis.total_units)}
+              icon={Package}
+            />
+          </div>
+
+          {/* Row 2 KPIs */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <KPICard
+              testId="kpi-basket"
+              label="Avg Basket Size"
+              value={fmtKES(kpis.avg_basket_size)}
+              icon={Basket}
+            />
+            <KPICard
+              testId="kpi-asp"
+              label="Avg Selling Price"
+              value={fmtKES(kpis.avg_selling_price)}
+              icon={Tag}
+            />
+            <KPICard
+              testId="kpi-upo"
+              label="Units per Order"
+              value={fmtDec(kpis.units_per_order, 2)}
+              icon={ArrowsLeftRight}
+            />
+            <KPICard
+              testId="kpi-return"
+              label="Return Rate"
+              value={fmtPct(kpis.return_rate)}
+              icon={ArrowUUpLeft}
+            />
+            <KPICard
+              testId="kpi-st"
+              label="Sell Through Rate"
+              value={fmtPct(kpis.sell_through_rate)}
               icon={Percent}
             />
           </div>
 
+          {/* Highlights */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <HighlightCard
+              testId="highlight-location"
+              label="Top Location"
+              name={highlights?.top_location?.name}
+              amount={fmtKES(highlights?.top_location?.gross_sales)}
+              icon={Storefront}
+            />
+            <HighlightCard
+              testId="highlight-brand"
+              label="Top Brand"
+              name={highlights?.top_brand?.name}
+              amount={fmtKES(highlights?.top_brand?.gross_sales)}
+              icon={Tag}
+            />
+            <HighlightCard
+              testId="highlight-collection"
+              label="Top Collection"
+              name={highlights?.top_collection?.name}
+              amount={fmtKES(highlights?.top_collection?.gross_sales)}
+              icon={Books}
+            />
+          </div>
+
           {/* Charts row */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="card-surface p-6 lg:col-span-2" data-testid="chart-top-stores">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div className="card p-6 lg:col-span-2" data-testid="chart-top-locations">
               <SectionTitle
-                title="Top stores by net sales"
+                title="Top 15 locations by Gross Sales"
                 subtitle="Ranked across the group"
-                testId="section-top-stores"
               />
-              <div style={{ width: "100%", height: 340 }}>
-                <ResponsiveContainer>
-                  <BarChart data={topStores} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E0D8" vertical={false} />
-                    <XAxis
-                      dataKey="label"
-                      interval={0}
-                      angle={-25}
-                      textAnchor="end"
-                      height={60}
-                      tick={{ fontSize: 11 }}
-                    />
-                    <YAxis tickFormatter={(v) => fmtMoney(v)} />
-                    <Tooltip
-                      formatter={(v) => fmtMoney(v)}
-                      labelFormatter={(l) => `Store: ${l}`}
-                    />
-                    <Bar dataKey="net_sales" fill="#C84B31" radius={[6, 6, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {top15.length === 0 ? (
+                <Empty />
+              ) : (
+                <div style={{ width: "100%", height: 360 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={top15} margin={{ top: 10, right: 12, left: 0, bottom: 56 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2b25" vertical={false} />
+                      <XAxis
+                        dataKey="label"
+                        interval={0}
+                        angle={-30}
+                        textAnchor="end"
+                        height={76}
+                        tick={{ fontSize: 11 }}
+                      />
+                      <YAxis
+                        tickFormatter={(v) => fmtAxisKES(v)}
+                        tick={{ fontSize: 11 }}
+                        width={60}
+                      />
+                      <Tooltip
+                        formatter={(v) => fmtKES(v)}
+                        labelFormatter={(l) => `Store: ${l}`}
+                      />
+                      <Bar dataKey="gross_sales" fill="#00c853" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
 
-            <div className="card-surface p-6" data-testid="chart-country-split">
+            <div className="card p-6" data-testid="chart-country-split">
               <SectionTitle
                 title="Country split"
-                subtitle="Net sales by market"
-                testId="section-country-split"
+                subtitle="Gross Sales by market"
               />
-              <div style={{ width: "100%", height: 240 }}>
-                <ResponsiveContainer>
-                  <PieChart>
-                    <Pie
-                      data={byCountry}
-                      dataKey="net_sales"
-                      nameKey="country"
-                      innerRadius={55}
-                      outerRadius={90}
-                      paddingAngle={3}
-                    >
-                      {byCountry.map((_, i) => (
-                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(v) => fmtMoney(v)} />
-                    <Legend verticalAlign="bottom" height={24} iconType="circle" iconSize={8} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <ul className="mt-2 divide-y divide-border text-sm">
-                {byCountry.map((c) => (
+              {donutCountries.length === 0 ? (
+                <Empty />
+              ) : (
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={donutCountries}
+                        dataKey="gross_sales"
+                        nameKey="country"
+                        innerRadius={55}
+                        outerRadius={90}
+                        paddingAngle={3}
+                      >
+                        {donutCountries.map((_, i) => (
+                          <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(v) => fmtKES(v)} />
+                      <Legend
+                        verticalAlign="bottom"
+                        height={24}
+                        iconType="circle"
+                        iconSize={8}
+                        formatter={(val) => <span style={{ color: "#fff" }}>{val}</span>}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <ul className="mt-2 divide-y divide-border text-[13px]">
+                {donutCountries.map((c) => (
                   <li
                     key={c.country}
                     className="flex items-center justify-between py-2"
@@ -187,55 +301,106 @@ const Overview = () => {
                   >
                     <span className="flex items-center gap-2">
                       <span>{COUNTRY_FLAGS[c.country] || "🌍"}</span>
-                      <span className="font-medium">{c.country}</span>
+                      <span className="font-medium text-white">{c.country}</span>
                     </span>
-                    <span className="font-display font-bold">{fmtMoney(c.net_sales)}</span>
+                    <span className="font-bold text-brand-strong">
+                      {fmtKES(c.gross_sales)}
+                    </span>
                   </li>
                 ))}
               </ul>
             </div>
           </div>
 
-          {/* Top products */}
-          <div className="card-surface p-6" data-testid="section-top-products">
+          <div className="card p-6" data-testid="chart-daily-trend">
+            <SectionTitle title="Daily sales trend" subtitle="Gross Sales per day" />
+            {daily.length === 0 ? (
+              <Empty />
+            ) : (
+              <div style={{ width: "100%", height: 280 }}>
+                <ResponsiveContainer>
+                  <LineChart data={daily} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
+                    <defs>
+                      <linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#00c853" stopOpacity={0.3} />
+                        <stop offset="100%" stopColor="#00c853" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2b25" vertical={false} />
+                    <XAxis
+                      dataKey="day"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(d) =>
+                        new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })
+                      }
+                    />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={60} />
+                    <Tooltip
+                      formatter={(v, n) => (n === "gross_sales" ? fmtKES(v) : fmtNum(v))}
+                      labelFormatter={(l) => fmtDate(l)}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="gross_sales"
+                      stroke="#00c853"
+                      strokeWidth={2.5}
+                      dot={{ r: 3, fill: "#00c853" }}
+                      activeDot={{ r: 5 }}
+                      fill="url(#lg)"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          {/* Top SKUs table */}
+          <div className="card p-6" data-testid="top-skus-section">
             <SectionTitle
-              title="Top products by net sales"
-              subtitle="Bestsellers across the group"
-              action={
-                <a
-                  href="/sales"
-                  className="text-primary text-sm font-medium flex items-center gap-1 hover:underline"
-                  data-testid="link-all-sales"
-                >
-                  All sales <ArrowUpRight size={14} />
-                </a>
-              }
+              title="Top 20 SKUs"
+              subtitle="Best-selling SKUs across the selected scope"
             />
             <div className="overflow-x-auto">
-              <table className="w-full text-sm" data-testid="top-products-table">
+              <table className="w-full data" data-testid="top-skus-table">
                 <thead>
-                  <tr className="eyebrow text-left">
-                    <th className="py-3 px-3 font-medium">#</th>
-                    <th className="py-3 px-3 font-medium">Product</th>
-                    <th className="py-3 px-3 font-medium">Brand</th>
-                    <th className="py-3 px-3 font-medium">Type</th>
-                    <th className="py-3 px-3 font-medium text-right">Units</th>
-                    <th className="py-3 px-3 font-medium text-right">Net sales</th>
+                  <tr>
+                    <th>Rank</th>
+                    <th>SKU</th>
+                    <th>Product Name</th>
+                    <th>Size</th>
+                    <th>Brand</th>
+                    <th className="text-right">Units Sold</th>
+                    <th className="text-right">Total Sales</th>
+                    <th className="text-right">Avg Price</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {topProducts.map((p, i) => (
-                    <tr key={i} className="border-b border-border last:border-0">
-                      <td className="py-3 px-3 text-muted-foreground">{i + 1}</td>
-                      <td className="py-3 px-3 font-medium">{p.product_name}</td>
-                      <td className="py-3 px-3">
-                        <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">
-                          {p.brand || "—"}
-                        </span>
+                  {topSkus.length === 0 && (
+                    <tr>
+                      <td colSpan={8}>
+                        <Empty />
                       </td>
-                      <td className="py-3 px-3 text-muted-foreground">{p.product_type || "—"}</td>
-                      <td className="py-3 px-3 text-right font-medium">{fmtNumber(p.units_sold)}</td>
-                      <td className="py-3 px-3 text-right font-display font-bold">{fmtMoney(p.net_sales)}</td>
+                    </tr>
+                  )}
+                  {topSkus.map((s, i) => (
+                    <tr key={s.sku + i}>
+                      <td className="text-muted">{i + 1}</td>
+                      <td className="font-mono text-[11.5px] text-muted">{s.sku}</td>
+                      <td
+                        className="font-medium max-w-[340px] truncate"
+                        title={s.product_name}
+                      >
+                        {s.product_name}
+                      </td>
+                      <td>{s.size || "—"}</td>
+                      <td>
+                        <span className="pill-green">{s.brand || "—"}</span>
+                      </td>
+                      <td className="text-right font-semibold">{fmtNum(s.units_sold)}</td>
+                      <td className="text-right font-bold text-brand-strong">
+                        {fmtKES(s.total_sales)}
+                      </td>
+                      <td className="text-right">{fmtKES(s.avg_price)}</td>
                     </tr>
                   ))}
                 </tbody>
