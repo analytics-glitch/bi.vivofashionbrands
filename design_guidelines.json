@@ -1,0 +1,114 @@
+{
+  "theme": "light",
+  "archetype": "1_organic_and_earthy",
+  "design_philosophy": "Elegance meets operational clarity. A high-end fashion retail dashboard that uses earthy tones to reflect its African roots (Vivo Fashion Group) while maintaining strict data clarity and high information density.",
+  "typography": {
+    "headings": {
+      "family": "Cabinet Grotesk, sans-serif",
+      "weights": ["500", "700", "900"],
+      "tracking": "tracking-tight",
+      "instruction": "Use Cabinet Grotesk for all KPI numbers, section headers, and main titles to give a premium editorial fashion feel. Use font-black (900) for large KPI numbers."
+    },
+    "body": {
+      "family": "Satoshi, sans-serif",
+      "weights": ["400", "500", "700"],
+      "instruction": "Use Satoshi for all tables, labels, and dense data displays. Ensure high legibility."
+    },
+    "installation_instructions": "Add Fontshare CDN to index.html or install via npm (@fontsource/cabinet-grotesk, @fontsource/satoshi). Default to Inter/system sans if unavailable, but apply tight tracking."
+  },
+  "color_palette": {
+    "background": {
+      "DEFAULT": "#F9F8F6",
+      "css_var": "40 14% 97%"
+    },
+    "surface": {
+      "DEFAULT": "#FFFFFF",
+      "css_var": "0 0% 100%"
+    },
+    "primary": {
+      "DEFAULT": "#C84B31",
+      "css_var": "10 61% 49%",
+      "description": "Deep Terracotta - used for active states, main CTA, and primary KPI metrics."
+    },
+    "secondary": {
+      "DEFAULT": "#4A5340",
+      "css_var": "88 13% 29%",
+      "description": "Safari Green - used for secondary badges or positive trends."
+    },
+    "text": {
+      "primary": "#2C2A29",
+      "secondary": "#7A7571"
+    },
+    "border": {
+      "DEFAULT": "#E5E0D8"
+    },
+    "charts": [
+      "#C84B31",
+      "#DDA77B",
+      "#4A5340",
+      "#8C7A6B",
+      "#E5E0D8"
+    ],
+    "instructions_to_main_agent": "Update the root CSS variables in index.css to match these exact HSL values. Do not use generic tailwind grays (slate/gray). All grays must be tinted warm (stone/orange-tinted)."
+  },
+  "spacing_and_layout": {
+    "grid_system": "The 'Control Room' Grid",
+    "sidebar": "Collapsible left-sidebar with warm off-white background and earthy borders.",
+    "dashboard_padding": "p-6 md:p-8 lg:p-12",
+    "widget_gaps": "gap-4 md:gap-6",
+    "instructions": "Widgets must have h-full applied if in a row to ensure they stretch together. Use pure HTML/Tailwind for the grid structure. The top-left quadrant must contain the North Star Metric (Total Gross Sales)."
+  },
+  "components": {
+    "cards": {
+      "style": "Flat design, bg-white, 1px solid border-border, shadow-sm, rounded-xl.",
+      "padding": "p-5"
+    },
+    "charts": {
+      "library": "recharts (via shadcn/ui charts)",
+      "types": "Line charts for trends, Bar charts for store comparisons, Donut/Map for country breakdown.",
+      "style": "Minimal axes, custom earthy tooltip, no grid lines or very faint (#E5E0D8) grid lines."
+    },
+    "tables": {
+      "style": "Shadcn UI table. Striped rows are forbidden. Use simple border-b for rows. Header text must be uppercase, tracking-wider, text-xs, text-secondary."
+    },
+    "buttons": {
+      "primary": "bg-primary text-white hover:bg-primary/90 rounded-md font-medium",
+      "outline": "border border-border text-primary hover:bg-background rounded-md"
+    }
+  },
+  "motion_and_interaction": {
+    "hover_states": "-translate-y-[2px] shadow-md transition-all duration-200 for clickable cards.",
+    "charts": "Gentle fade-in for recharts.",
+    "sidebar": "Smooth width transition."
+  },
+  "media_and_images": {
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1687137113677-f2a9a6c79fab?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHw0fHxhZnJpY2FuJTIwZmFzaGlvbiUyMG1vZGVsfGVufDB8fHx8MTc3NjQyMzU2MXww&ixlib=rb-4.1.0&q=85",
+        "category": "user_avatar",
+        "description": "Executive avatar"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1621061403547-47987c57c683?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwyfHxhZnJpY2FuJTIwZmFzaGlvbiUyMG1vZGVsfGVufDB8fHx8MTc3NjQyMzU2MXww&ixlib=rb-4.1.0&q=85",
+        "category": "user_avatar_2",
+        "description": "Store manager avatar"
+      }
+    ],
+    "patterns": [
+      {
+        "url": "https://images.unsplash.com/photo-1757140448241-ba7511316754?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHwzfHxjb2xvcmZ1bCUyMGtpdGVuZ2UlMjBmYWJyaWN8ZW58MHx8fHwxNzc2NDIzNTYxfDA&ixlib=rb-4.1.0&q=85",
+        "category": "decorative_background",
+        "description": "Kitenge pattern - use ONLY at 5% opacity in header or empty state background to give African fashion brand feel."
+      }
+    ]
+  },
+  "icons": {
+    "library": "Phosphor Icons",
+    "installation": "yarn add @phosphor-icons/react",
+    "style": "Use 'duotone' weight for main sidebar navigation icons. Use 'regular' for dense table actions."
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure #C84B31 meets 4.5:1 ratio against #F9F8F6.",
+    "testing_attributes": "All interactive elements MUST have data-testid. E.g., data-testid='sidebar-nav-sales'."
+  }
+}
