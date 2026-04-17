@@ -1,63 +1,48 @@
 # Vivo Fashion Group BI Dashboard — PRD
 
-## Original Problem Statement
-Initial user input: `https://vivo-bi-api-666430550422.europe-west1.run.app`
-Second request: full redesign to a dark-green/black theme with KES currency,
-5 tabs (Overview / Locations / Inventory / SOR / CEO Report), and explicit
-KPI layout.
+## Theme (current): Light / White
+- Background #fafaf7, cards white, accent green #00a34a / #00c853.
+- Plus Jakarta Sans, 16px rounded cards, subtle shadows.
 
-## Architecture
-- **Backend**: FastAPI (`/app/backend/server.py`). Proxies upstream endpoints
-  `/`, `/locations`, `/kpis`, `/sales-summary`, `/top-skus`, `/sor`,
-  `/daily-trend`, `/inventory`. Adds aggregation layers under `/api/analytics/*`:
-  - `kpis-plus` (adds units_per_order, return_rate, sell_through_rate,
-    units_clean excluding bags/vouchers)
-  - `highlights` (top location / brand / collection)
-  - `by-country` (Kenya vs Uganda vs Rwanda rollup)
-  - `inventory-summary` (by country/location/product_type + `markets`)
-  - `low-stock` (threshold ≤ 2)
-- **Frontend**: React + TailwindCSS + Recharts + Phosphor Icons.
-  FiltersProvider drives date range (default: first-of-month → today),
-  country, and location filters globally.
-- **Theme**: Dark green #1a3a2a / black #0d0d0d surfaces, white text,
-  bright green #00c853 accent, 16px rounded cards, subtle shadows,
-  Plus Jakarta Sans.
-- **Currency**: All KES amounts formatted `KES 1,534,880` — no M/K
-  abbreviations anywhere except chart axis labels (`fmtAxisKES`).
+## Pages (6 tabs)
+1. Overview — KPIs (with vs last month & vs last year deltas), highlights, bar/donut/line, top-20 SKUs.
+2. Locations — card grid with drill-down to a store's top-20 SKUs.
+3. Inventory — KPIs, stock charts, low-stock alerts (≤ 2).
+4. Sell-Out Rate — filterable/sortable styles with red/amber/green tiers.
+5. **New Styles** (new) — styles launched in the last N months (SKU-decoded). Default N=3.
+6. CEO Report — simplified: Headline KPIs · Country Performance · Top 5 Locations, print-friendly.
 
-## User Personas
-- CEO / Regional Director — CEO Report page, group KPIs, print/PDF.
-- Country & Store managers — Locations page with drill-down to top SKUs.
-- Merchandising — Inventory and SOR pages.
+## Global Filters
+- Date range (default current month 1st → today)
+- Country (drives `store_id` on all backend calls)
+- Location (drives `location` param)
 
-## Core Requirements (current)
-- Overview: 4 KPI row 1 + 5 KPI row 2 + 3 highlight cards + top-15 bar +
-  country donut + daily trend + top-20 SKU table.
-- Locations: card grid with drill-down to top SKUs per store.
-- Inventory: 4 KPIs, stock-by-location bar, stock-by-type bar, low-stock
-  alerts table (product name search, country/location filters).
-- SOR: searchable/sortable sell-out-rate table with red<30% / amber 30–60%
-  / green >60% coding.
-- CEO Report: printable one-page (A4-friendly) exec report with 5 sections
-  + Print/Export PDF button.
+## Backend (FastAPI)
+- Proxies: `/api/locations`, `/api/kpis`, `/api/sales-summary`, `/api/top-skus`,
+  `/api/sor`, `/api/daily-trend`, `/api/inventory`.
+- Analytics: `/api/analytics/kpis-plus` (adds units_clean, units_per_order,
+  return_rate, sell_through_rate), `highlights`, `by-country`,
+  `inventory-summary`, `low-stock`, **`new-styles`** (SKU-date heuristic).
 
-## Implemented (updated 2026-04-17)
-- ✅ Backend redesigned to match new upstream surface (8 proxy + 5 analytics
-  endpoints). 21/21 backend tests passing.
-- ✅ Frontend fully rebuilt around the dark-green theme with all 5 tabs.
-- ✅ KES formatting with full numbers & commas.
-- ✅ Location drill-down on Locations tab.
-- ✅ SOR color coding.
-- ✅ CEO Report print stylesheet (black-on-white with green section headings).
-- ✅ Global filters with default current-month range.
+## Implemented (updated 2026-04-17, iteration 3)
+- ✅ Light/white theme swap (CSS variables, Tailwind config).
+- ✅ KPI cards show vs last month & vs last year delta rows with colored arrows
+  (green = good, red = bad; inverted for return_rate).
+- ✅ Country filter now correctly drives `store_id` on `/kpis-plus` and `/sor`
+  and `/daily-trend` (bug fix).
+- ✅ New Styles page + backend endpoint `/api/analytics/new-styles?months=N`.
+- ✅ CEO Report simplified (removed Top 10 SKUs / Top 10 SOR tables).
+- ✅ 24/24 backend tests passing.
 
-## Prioritized Backlog
-- **P1**: CSV export for SOR and Low-stock tables.
-- **P2**: Auto re-order suggestion panel (days-of-stock threshold).
-- **P2**: Multi-currency toggle (KES / UGX / RWF) if upstream exposes local
-  currency.
-- **P3**: Compare date ranges (this period vs previous).
+## Verified KPI by country (Apr 1-17, 2026)
+- Group: KES 45,223,375
+- Kenya (vivofashiongroup): KES 39,815,393
+- Uganda (vivo-uganda): KES 3,805,746
+- Rwanda (vivo-rwanda): KES 1,602,236
 
-## Next Tasks
-- Gather user feedback on the dark-green theme / numeric formatting.
-- If positive, ship CSV export as the first enhancement.
+## Backlog
+- P1: CSV export on SOR / Low-stock / New-Styles tables.
+- P1: Store first-sale date when upstream adds it (replaces SKU heuristic).
+- P2: Compare-range toggle for charts (current vs previous).
+- P2: Multi-currency toggle (KES / UGX / RWF).
+- P3: Auto re-order suggestion panel.
