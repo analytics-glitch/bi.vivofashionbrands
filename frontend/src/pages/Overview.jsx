@@ -11,6 +11,10 @@ import {
   fmtDate,
   fmtAxisKES,
   storeToCountry,
+  countryToStoreId,
+  prevMonthRange,
+  prevYearRange,
+  pctDelta,
   COUNTRY_FLAGS,
 } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
@@ -18,7 +22,6 @@ import {
   CurrencyCircleDollar,
   ShoppingCart,
   Package,
-  ChartLineUp,
   Basket,
   Coins,
   ArrowsLeftRight,
@@ -44,12 +47,14 @@ import {
   Line,
 } from "recharts";
 
-const DONUT_COLORS = ["#00c853", "#ffb300", "#ff7043"];
+const DONUT_COLORS = ["#00a34a", "#f59e0b", "#ef6c00"];
 
 const Overview = () => {
   const { dateFrom, dateTo, country, location } = useFilters();
 
   const [kpis, setKpis] = useState(null);
+  const [prevMonthKpis, setPrevMonthKpis] = useState(null);
+  const [prevYearKpis, setPrevYearKpis] = useState(null);
   const [highlights, setHighlights] = useState(null);
   const [summary, setSummary] = useState([]);
   const [byCountry, setByCountry] = useState([]);
@@ -62,22 +67,41 @@ const Overview = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = {
+
+    const storeId = countryToStoreId(country);
+    const locParam = location !== "all" ? location : undefined;
+    const baseParams = {
       date_from: dateFrom,
       date_to: dateTo,
-      location: location !== "all" ? location : undefined,
+      store_id: storeId,
+      location: locParam,
     };
+    const prevM = prevMonthRange(dateFrom, dateTo);
+    const prevY = prevYearRange(dateFrom, dateTo);
+    const prevMParams = { ...prevM, store_id: storeId, location: locParam };
+    const prevYParams = { ...prevY, store_id: storeId, location: locParam };
+
     Promise.all([
-      api.get("/analytics/kpis-plus", { params }),
-      api.get("/analytics/highlights", { params }),
-      api.get("/sales-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
-      api.get("/analytics/by-country", { params: { date_from: dateFrom, date_to: dateTo } }),
-      api.get("/daily-trend", { params: { date_from: dateFrom, date_to: dateTo } }),
-      api.get("/top-skus", { params: { ...params, limit: 20 } }),
+      api.get("/analytics/kpis-plus", { params: baseParams }),
+      api.get("/analytics/kpis-plus", { params: prevMParams }),
+      api.get("/analytics/kpis-plus", { params: prevYParams }),
+      api.get("/analytics/highlights", { params: baseParams }),
+      api.get("/sales-summary", {
+        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
+      }),
+      api.get("/analytics/by-country", {
+        params: { date_from: dateFrom, date_to: dateTo },
+      }),
+      api.get("/daily-trend", {
+        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
+      }),
+      api.get("/top-skus", { params: { ...baseParams, limit: 20 } }),
     ])
-      .then(([k, h, s, c, d, t]) => {
+      .then(([k, pm, py, h, s, c, d, t]) => {
         if (cancelled) return;
         setKpis(k.data);
+        setPrevMonthKpis(pm.data);
+        setPrevYearKpis(py.data);
         setHighlights(h.data);
         setSummary(s.data || []);
         setByCountry(c.data || []);
@@ -89,16 +113,22 @@ const Overview = () => {
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo, location]);
+  }, [dateFrom, dateTo, country, location]);
 
-  // Apply country filter client-side to summary
+  const getDeltas = (field, higherBetter = true) => {
+    if (!kpis) return { mom: null, yoy: null };
+    return {
+      mom: prevMonthKpis ? pctDelta(kpis[field], prevMonthKpis[field]) : null,
+      yoy: prevYearKpis ? pctDelta(kpis[field], prevYearKpis[field]) : null,
+    };
+  };
+
+  // Apply location filter client-side; country already applied server-side via store_id
   const filteredSummary = useMemo(() => {
     let s = summary;
-    if (country !== "all")
-      s = s.filter((r) => storeToCountry(r.store_id) === country);
     if (location !== "all") s = s.filter((r) => r.location === location);
     return s;
-  }, [summary, country, location]);
+  }, [summary, location]);
 
   const top15 = useMemo(() => {
     return [...filteredSummary]
@@ -138,18 +168,30 @@ const Overview = () => {
               label="Total Gross Sales"
               value={fmtKES(kpis.total_gross_sales)}
               icon={CurrencyCircleDollar}
+              {...(() => {
+                const { mom, yoy } = getDeltas("total_gross_sales");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-net"
               label="Total Net Sales"
               value={fmtKES(kpis.total_net_sales)}
               icon={Coins}
+              {...(() => {
+                const { mom, yoy } = getDeltas("total_net_sales");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-orders"
               label="Total Orders"
               value={fmtNum(kpis.total_orders)}
               icon={ShoppingCart}
+              {...(() => {
+                const { mom, yoy } = getDeltas("total_orders");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-units"
@@ -157,6 +199,10 @@ const Overview = () => {
               sub="Excl. shopping bags & gift vouchers"
               value={fmtNum(kpis.units_clean ?? kpis.total_units)}
               icon={Package}
+              {...(() => {
+                const { mom, yoy } = getDeltas("total_units");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
           </div>
 
@@ -167,30 +213,51 @@ const Overview = () => {
               label="Avg Basket Size"
               value={fmtKES(kpis.avg_basket_size)}
               icon={Basket}
+              {...(() => {
+                const { mom, yoy } = getDeltas("avg_basket_size");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-asp"
               label="Avg Selling Price"
               value={fmtKES(kpis.avg_selling_price)}
               icon={Tag}
+              {...(() => {
+                const { mom, yoy } = getDeltas("avg_selling_price");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-upo"
               label="Units per Order"
               value={fmtDec(kpis.units_per_order, 2)}
               icon={ArrowsLeftRight}
+              {...(() => {
+                const { mom, yoy } = getDeltas("units_per_order");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-return"
               label="Return Rate"
               value={fmtPct(kpis.return_rate)}
               icon={ArrowUUpLeft}
+              higherIsBetter={false}
+              {...(() => {
+                const { mom, yoy } = getDeltas("return_rate", false);
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
             <KPICard
               testId="kpi-st"
               label="Sell Through Rate"
               value={fmtPct(kpis.sell_through_rate)}
               icon={Percent}
+              {...(() => {
+                const { mom, yoy } = getDeltas("sell_through_rate");
+                return { deltaMoM: mom, deltaYoY: yoy };
+              })()}
             />
           </div>
 
@@ -224,15 +291,18 @@ const Overview = () => {
             <div className="card p-6 lg:col-span-2" data-testid="chart-top-locations">
               <SectionTitle
                 title="Top 15 locations by Gross Sales"
-                subtitle="Ranked across the group"
+                subtitle="Ranked across the current scope"
               />
               {top15.length === 0 ? (
                 <Empty />
               ) : (
                 <div style={{ width: "100%", height: 360 }}>
                   <ResponsiveContainer>
-                    <BarChart data={top15} margin={{ top: 10, right: 12, left: 0, bottom: 56 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2b25" vertical={false} />
+                    <BarChart
+                      data={top15}
+                      margin={{ top: 10, right: 12, left: 0, bottom: 56 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis
                         dataKey="label"
                         interval={0}
@@ -250,7 +320,7 @@ const Overview = () => {
                         formatter={(v) => fmtKES(v)}
                         labelFormatter={(l) => `Store: ${l}`}
                       />
-                      <Bar dataKey="gross_sales" fill="#00c853" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="gross_sales" fill="#00a34a" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -258,10 +328,7 @@ const Overview = () => {
             </div>
 
             <div className="card p-6" data-testid="chart-country-split">
-              <SectionTitle
-                title="Country split"
-                subtitle="Gross Sales by market"
-              />
+              <SectionTitle title="Country split" subtitle="Gross Sales by market" />
               {donutCountries.length === 0 ? (
                 <Empty />
               ) : (
@@ -277,7 +344,10 @@ const Overview = () => {
                         paddingAngle={3}
                       >
                         {donutCountries.map((_, i) => (
-                          <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                          <Cell
+                            key={i}
+                            fill={DONUT_COLORS[i % DONUT_COLORS.length]}
+                          />
                         ))}
                       </Pie>
                       <Tooltip formatter={(v) => fmtKES(v)} />
@@ -286,7 +356,6 @@ const Overview = () => {
                         height={24}
                         iconType="circle"
                         iconSize={8}
-                        formatter={(val) => <span style={{ color: "#fff" }}>{val}</span>}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -301,9 +370,11 @@ const Overview = () => {
                   >
                     <span className="flex items-center gap-2">
                       <span>{COUNTRY_FLAGS[c.country] || "🌍"}</span>
-                      <span className="font-medium text-white">{c.country}</span>
+                      <span className="font-medium text-foreground">
+                        {c.country}
+                      </span>
                     </span>
-                    <span className="font-bold text-brand-strong">
+                    <span className="font-bold text-brand-deep">
                       {fmtKES(c.gross_sales)}
                     </span>
                   </li>
@@ -320,33 +391,33 @@ const Overview = () => {
               <div style={{ width: "100%", height: 280 }}>
                 <ResponsiveContainer>
                   <LineChart data={daily} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
-                    <defs>
-                      <linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#00c853" stopOpacity={0.3} />
-                        <stop offset="100%" stopColor="#00c853" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2b25" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
                       dataKey="day"
                       tick={{ fontSize: 11 }}
                       tickFormatter={(d) =>
-                        new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })
+                        new Date(d).toLocaleDateString("en-GB", {
+                          day: "2-digit",
+                          month: "short",
+                        })
                       }
                     />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={60} />
+                    <YAxis
+                      tickFormatter={(v) => fmtAxisKES(v)}
+                      tick={{ fontSize: 11 }}
+                      width={60}
+                    />
                     <Tooltip
-                      formatter={(v, n) => (n === "gross_sales" ? fmtKES(v) : fmtNum(v))}
+                      formatter={(v) => fmtKES(v)}
                       labelFormatter={(l) => fmtDate(l)}
                     />
                     <Line
                       type="monotone"
                       dataKey="gross_sales"
-                      stroke="#00c853"
+                      stroke="#00a34a"
                       strokeWidth={2.5}
-                      dot={{ r: 3, fill: "#00c853" }}
+                      dot={{ r: 3, fill: "#00a34a" }}
                       activeDot={{ r: 5 }}
-                      fill="url(#lg)"
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -386,20 +457,13 @@ const Overview = () => {
                     <tr key={s.sku + i}>
                       <td className="text-muted">{i + 1}</td>
                       <td className="font-mono text-[11.5px] text-muted">{s.sku}</td>
-                      <td
-                        className="font-medium max-w-[340px] truncate"
-                        title={s.product_name}
-                      >
+                      <td className="font-medium max-w-[340px] truncate" title={s.product_name}>
                         {s.product_name}
                       </td>
                       <td>{s.size || "—"}</td>
-                      <td>
-                        <span className="pill-green">{s.brand || "—"}</span>
-                      </td>
+                      <td><span className="pill-green">{s.brand || "—"}</span></td>
                       <td className="text-right font-semibold">{fmtNum(s.units_sold)}</td>
-                      <td className="text-right font-bold text-brand-strong">
-                        {fmtKES(s.total_sales)}
-                      </td>
+                      <td className="text-right font-bold text-brand-deep">{fmtKES(s.total_sales)}</td>
                       <td className="text-right">{fmtKES(s.avg_price)}</td>
                     </tr>
                   ))}

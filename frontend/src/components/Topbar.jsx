@@ -48,7 +48,7 @@ const Topbar = ({
         <div className="eyebrow" data-testid="topbar-breadcrumb">
           Dashboard · {title}
         </div>
-        <h1 className="font-sans font-extrabold text-[30px] md:text-[36px] tracking-tight mt-1 leading-[1.05] text-white">
+        <h1 className="font-sans font-extrabold text-[30px] md:text-[36px] tracking-tight mt-1 leading-[1.05] text-foreground">
           {title}
         </h1>
         {subtitle && (

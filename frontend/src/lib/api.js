@@ -80,3 +80,45 @@ export const storeToCountry = (sid) => {
   if (s.includes("vivofashiongroup") || s.includes("kenya")) return "Kenya";
   return "Other";
 };
+
+export const countryToStoreId = (country) => {
+  if (!country || country === "all") return undefined;
+  const c = String(country).toLowerCase();
+  if (c === "kenya") return "vivofashiongroup";
+  if (c === "uganda") return "vivo-uganda";
+  if (c === "rwanda") return "vivo-rwanda";
+  return undefined;
+};
+
+// Compute comparable previous periods (same window length).
+// Shift both from & to back by N months / years; clamp day to end of month if overflow.
+const shiftISO = (iso, years, months) => {
+  const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
+  const base = new Date(Date.UTC(y, m - 1, d));
+  base.setUTCFullYear(base.getUTCFullYear() + years);
+  base.setUTCMonth(base.getUTCMonth() + months);
+  // if overflowed (e.g. shifting mar 31 by -1 month -> mar 3), pin to last of target month
+  if (base.getUTCDate() !== d) base.setUTCDate(0);
+  return base.toISOString().slice(0, 10);
+};
+
+export const prevMonthRange = (from, to) => ({
+  date_from: shiftISO(from, 0, -1),
+  date_to: shiftISO(to, 0, -1),
+});
+
+export const prevYearRange = (from, to) => ({
+  date_from: shiftISO(from, -1, 0),
+  date_to: shiftISO(to, -1, 0),
+});
+
+export const pctDelta = (current, prev) => {
+  if (prev === null || prev === undefined || prev === 0) return null;
+  return ((current - prev) / prev) * 100;
+};
+
+export const fmtDelta = (n) => {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(1)}%`;
+};

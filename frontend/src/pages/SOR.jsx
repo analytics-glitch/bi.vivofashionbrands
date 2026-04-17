@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Topbar from "@/components/Topbar";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { api, fmtKES, fmtNum, fmtPct } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtPct, countryToStoreId } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import { MagnifyingGlass, SortAscending, SortDescending } from "@phosphor-icons/react";
 
@@ -13,12 +13,12 @@ const sorBadge = (p) => {
 };
 
 const SOR = () => {
-  const { dateFrom, dateTo, location } = useFilters();
+  const { dateFrom, dateTo, country, location } = useFilters();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
-  const [dir, setDir] = useState("desc"); // desc = high to low
+  const [dir, setDir] = useState("desc");
 
   useEffect(() => {
     let cancelled = false;
@@ -27,6 +27,7 @@ const SOR = () => {
     const params = {
       date_from: dateFrom,
       date_to: dateTo,
+      store_id: countryToStoreId(country),
       location: location !== "all" ? location : undefined,
     };
     api
@@ -37,7 +38,7 @@ const SOR = () => {
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo, location]);
+  }, [dateFrom, dateTo, country, location]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

@@ -103,7 +103,7 @@ const Locations = () => {
                           <Storefront size={20} weight="duotone" />
                         </div>
                         <div>
-                          <div className="font-bold text-[15px] leading-tight text-white">
+                          <div className="font-bold text-[15px] leading-tight text-foreground">
                             {l.location}
                           </div>
                           <div className="text-[11.5px] text-muted mt-0.5 flex items-center gap-1">
@@ -169,7 +169,7 @@ const Locations = () => {
                   action={
                     <button
                       onClick={() => setSelected(null)}
-                      className="text-muted hover:text-white"
+                      className="text-muted hover:text-foreground"
                       aria-label="close"
                     >
                       <X size={18} />

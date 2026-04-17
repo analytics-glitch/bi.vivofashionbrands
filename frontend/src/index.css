@@ -7,8 +7,8 @@
 html,
 body {
     margin: 0;
-    background: #0d0d0d;
-    color: #ffffff;
+    background: #fafaf7;
+    color: #0a1a12;
     font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont,
         "Segoe UI", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -18,30 +18,33 @@ body {
 
 @layer base {
     :root {
-        --bg: #0d0d0d;
-        --panel: #121212;
-        --card: #161e1a;
-        --card-2: #1a3a2a;
-        --border: #1f2b25;
-        --text: #ffffff;
-        --muted: #8a9a91;
-        --accent: #00c853;
-        --accent-strong: #00e676;
-        --danger: #ff5252;
-        --amber: #ffb300;
+        --bg: #fafaf7;
+        --panel: #ffffff;
+        --card: #ffffff;
+        --card-2: #f1f6f2;
+        --border: #e6ebe7;
+        --text: #0a1a12;
+        --text-sub: #4b5a52;
+        --muted: #6e7b74;
+        --accent: #00a34a;
+        --accent-strong: #00c853;
+        --accent-deep: #0f4a2b;
+        --danger: #e53935;
+        --amber: #f59e0b;
+        --ok: #00a34a;
 
-        --background: 0 0% 5%;
-        --foreground: 0 0% 100%;
-        --card-hsl: 150 14% 10%;
-        --card-foreground: 0 0% 100%;
-        --popover: 0 0% 7%;
-        --popover-foreground: 0 0% 100%;
-        --primary: 141 100% 39%;
-        --primary-foreground: 0 0% 0%;
-        --secondary: 142 40% 17%;
-        --secondary-foreground: 0 0% 100%;
-        --muted-col: 150 8% 57%;
-        --border-hsl: 150 16% 14%;
+        --background: 60 9% 97%;
+        --foreground: 150 40% 6%;
+        --card-hsl: 0 0% 100%;
+        --card-foreground: 150 40% 6%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 150 40% 6%;
+        --primary: 145 100% 32%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 142 40% 94%;
+        --secondary-foreground: 150 40% 6%;
+        --muted-col: 150 8% 46%;
+        --border-hsl: 150 10% 90%;
         --radius: 1rem;
     }
 }
@@ -53,13 +56,7 @@ body {
     }
     ::selection {
         background: var(--accent);
-        color: #000;
-    }
-    input[type="date"],
-    input[type="text"],
-    input,
-    select {
-        color-scheme: dark;
+        color: #fff;
     }
 }
 
@@ -69,29 +66,29 @@ body {
         border: 1px solid var(--border);
         border-radius: 16px;
         box-shadow:
-            0 1px 0 rgba(255, 255, 255, 0.02) inset,
-            0 12px 32px rgba(0, 0, 0, 0.45);
+            0 1px 2px rgba(15, 74, 43, 0.04),
+            0 8px 24px rgba(15, 74, 43, 0.05);
     }
     .card-dark {
-        background: #0f0f0f;
+        background: #ffffff;
         border: 1px solid var(--border);
         border-radius: 16px;
     }
     .card-accent {
         background: linear-gradient(
             135deg,
-            rgba(0, 200, 83, 0.18) 0%,
-            rgba(26, 58, 42, 0.75) 100%
+            #edfbf2 0%,
+            #d9f5e4 100%
         );
-        border: 1px solid rgba(0, 200, 83, 0.35);
+        border: 1px solid rgba(0, 163, 74, 0.25);
         border-radius: 16px;
-        box-shadow: 0 12px 40px rgba(0, 200, 83, 0.08);
+        box-shadow: 0 8px 24px rgba(0, 163, 74, 0.1);
     }
     .kpi-value {
         font-weight: 800;
         letter-spacing: -0.02em;
         line-height: 1.05;
-        color: #ffffff;
+        color: var(--text);
     }
     .eyebrow {
         text-transform: uppercase;
@@ -106,8 +103,8 @@ body {
     }
     .hover-lift:hover {
         transform: translateY(-2px);
-        border-color: rgba(0, 200, 83, 0.55);
-        box-shadow: 0 16px 32px rgba(0, 0, 0, 0.55);
+        border-color: rgba(0, 163, 74, 0.45);
+        box-shadow: 0 16px 32px rgba(15, 74, 43, 0.08);
     }
     .fade-in {
         animation: fadeIn 0.45s ease both;
@@ -117,8 +114,9 @@ body {
         align-items: center;
         gap: 0.35rem;
         padding: 0.15rem 0.55rem;
-        background: rgba(0, 200, 83, 0.14);
-        color: var(--accent-strong);
+        background: #e2f6e9;
+        color: var(--accent-deep);
+        border: 1px solid rgba(0, 163, 74, 0.2);
         border-radius: 999px;
         font-size: 0.7rem;
         font-weight: 600;
@@ -128,8 +126,9 @@ body {
         align-items: center;
         gap: 0.35rem;
         padding: 0.15rem 0.55rem;
-        background: rgba(255, 82, 82, 0.14);
-        color: #ff8787;
+        background: #fde8e8;
+        color: #a82020;
+        border: 1px solid rgba(229, 57, 53, 0.2);
         border-radius: 999px;
         font-size: 0.7rem;
         font-weight: 600;
@@ -139,24 +138,38 @@ body {
         align-items: center;
         gap: 0.35rem;
         padding: 0.15rem 0.55rem;
-        background: rgba(255, 179, 0, 0.14);
-        color: #ffc947;
+        background: #fff4dc;
+        color: #8a5a00;
+        border: 1px solid rgba(245, 158, 11, 0.2);
         border-radius: 999px;
         font-size: 0.7rem;
         font-weight: 600;
     }
+    .delta-up {
+        color: #00803a;
+        font-weight: 700;
+    }
+    .delta-down {
+        color: #c92525;
+        font-weight: 700;
+    }
+    .delta-flat {
+        color: #6e7b74;
+        font-weight: 600;
+    }
     .input-pill {
-        background: #0a0a0a;
+        background: #ffffff;
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 0.55rem 0.8rem;
-        color: #fff;
+        color: var(--text);
         font-size: 0.85rem;
         outline: none;
         min-width: 0;
     }
     .input-pill:focus {
         border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(0, 163, 74, 0.12);
     }
     table.data th {
         font-weight: 600;
@@ -164,21 +177,22 @@ body {
         font-size: 0.72rem;
         text-transform: uppercase;
         letter-spacing: 0.09em;
-        padding: 0.9rem 0.75rem;
+        padding: 0.85rem 0.75rem;
         text-align: left;
         border-bottom: 1px solid var(--border);
+        background: #fafaf7;
     }
     table.data td {
         padding: 0.85rem 0.75rem;
-        border-bottom: 1px solid rgba(31, 43, 37, 0.6);
+        border-bottom: 1px solid var(--border);
         font-size: 0.88rem;
-        color: #f4f4f4;
+        color: var(--text);
     }
     table.data tr:last-child td {
         border-bottom: none;
     }
     table.data tr:hover td {
-        background: rgba(0, 200, 83, 0.04);
+        background: rgba(0, 163, 74, 0.04);
     }
 }
 
@@ -193,76 +207,64 @@ body {
     }
 }
 
-/* Recharts polish (dark theme) */
+/* Recharts polish (light theme) */
 .recharts-cartesian-axis-tick text {
-    fill: #8a9a91;
+    fill: #6e7b74;
     font-size: 11px;
+}
+.recharts-cartesian-grid line {
+    stroke: #eceee9;
 }
 .recharts-tooltip-wrapper {
     outline: none !important;
 }
 .recharts-default-tooltip {
-    background: #0f1a14 !important;
-    border: 1px solid #1f2b25 !important;
+    background: #ffffff !important;
+    border: 1px solid #e6ebe7 !important;
     border-radius: 10px !important;
     padding: 10px 12px !important;
-    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.6) !important;
-    color: #fff !important;
+    box-shadow: 0 12px 30px rgba(15, 74, 43, 0.12) !important;
+    color: #0a1a12 !important;
 }
 .recharts-default-tooltip .recharts-tooltip-label,
 .recharts-default-tooltip .recharts-tooltip-item {
-    color: #fff !important;
+    color: #0a1a12 !important;
 }
 
-/* Custom scrollbar */
+/* Scrollbar */
 ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
 }
 ::-webkit-scrollbar-track {
-    background: #0d0d0d;
+    background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: #1f2b25;
+    background: #d7dfd9;
     border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: #00c853;
+    background: #00a34a;
 }
 
 /* Print styles for CEO report */
 @media print {
     body {
         background: #ffffff !important;
-        color: #000000 !important;
     }
     .no-print {
         display: none !important;
     }
     .print-page {
         background: #ffffff !important;
-        color: #000000 !important;
+        color: #000 !important;
         padding: 0 !important;
-    }
-    .print-page * {
-        color: #000000 !important;
-        background: transparent !important;
-        border-color: #cccccc !important;
+        border: none !important;
         box-shadow: none !important;
     }
     .print-page .accent-heading {
         color: #00803a !important;
         border-bottom: 2px solid #00803a !important;
-    }
-    .print-page .kpi-value {
-        color: #000000 !important;
-    }
-    .print-page table.data th {
-        color: #333 !important;
-        border-bottom: 1px solid #999 !important;
-    }
-    .print-page table.data td {
-        border-bottom: 1px solid #e5e5e5 !important;
     }
     @page {
         margin: 14mm;

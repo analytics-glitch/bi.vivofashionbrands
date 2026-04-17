@@ -6,6 +6,7 @@ import Overview from "@/pages/Overview";
 import Locations from "@/pages/Locations";
 import Inventory from "@/pages/Inventory";
 import SOR from "@/pages/SOR";
+import NewStyles from "@/pages/NewStyles";
 import CEOReport from "@/pages/CEOReport";
 import { FiltersProvider } from "@/lib/filters";
 
@@ -32,6 +33,7 @@ function App() {
               <Route path="/locations" element={<Locations />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/sor" element={<SOR />} />
+              <Route path="/new-styles" element={<NewStyles />} />
               <Route path="/ceo-report" element={<CEOReport />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

@@ -337,6 +337,76 @@ async def analytics_inventory_summary(
     }
 
 
+@api_router.get("/analytics/new-styles")
+async def analytics_new_styles(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    store_id: Optional[str] = None,
+    location: Optional[str] = None,
+    months: int = Query(3, ge=1, le=24),
+):
+    """Styles whose launch date (encoded in the SKU as MMYY) falls within the
+    last `months` months relative to date_to. Uses /top-skus (limit 200) as the
+    source; upstream does not expose a first-sale-date field."""
+    from datetime import date
+    import re
+
+    ref = None
+    if date_to:
+        try:
+            y, m, d = [int(x) for x in date_to.split("-")]
+            ref = date(y, m, d)
+        except Exception:
+            ref = date.today()
+    else:
+        ref = date.today()
+
+    # build allowed launch windows (YY, MM) for past `months` + current
+    allowed: set = set()
+    y, m = ref.year, ref.month
+    for _ in range(months + 1):
+        allowed.add((y % 100, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+
+    top = await fetch("/top-skus", {
+        "date_from": date_from, "date_to": date_to,
+        "store_id": store_id, "location": location, "limit": 200,
+    })
+
+    pattern = re.compile(r"^[A-Z]+(\d{2})(\d{2})")
+    agg: Dict[str, Dict[str, Any]] = {}
+    for r in top or []:
+        sku = r.get("sku") or ""
+        mobj = pattern.match(sku)
+        if not mobj:
+            continue
+        mm, yy = int(mobj.group(1)), int(mobj.group(2))
+        if (yy, mm) not in allowed:
+            continue
+        key = r.get("product_name") or sku
+        b = agg.setdefault(key, {
+            "product_name": r.get("product_name"),
+            "first_sku": sku,
+            "launch_month": f"{mm:02d}/20{yy:02d}",
+            "launch_sort": yy * 100 + mm,
+            "brand": r.get("brand"),
+            "collection": r.get("collection"),
+            "size": r.get("size"),
+            "units_sold": 0,
+            "total_sales": 0.0,
+            "skus": 0,
+        })
+        b["units_sold"] += r.get("units_sold") or 0
+        b["total_sales"] += r.get("total_sales") or 0
+        b["skus"] += 1
+
+    rows = sorted(agg.values(), key=lambda x: (-x["launch_sort"], -x["units_sold"]))
+    return rows
+
+
 @api_router.get("/analytics/low-stock")
 async def analytics_low_stock(
     threshold: int = Query(2, ge=0, le=20),

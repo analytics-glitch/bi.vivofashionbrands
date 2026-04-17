@@ -32,7 +32,7 @@ export const SectionTitle = ({ title, subtitle, action, testId }) => (
     data-testid={testId}
   >
     <div>
-      <h2 className="font-sans font-bold text-[17px] tracking-tight text-white">
+      <h2 className="font-sans font-bold text-[17px] tracking-tight text-foreground">
         {title}
       </h2>
       {subtitle && <p className="text-muted text-[12.5px] mt-0.5">{subtitle}</p>}
