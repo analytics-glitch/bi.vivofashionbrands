@@ -176,6 +176,7 @@ async def get_top_skus(
         data = await fetch("/top-skus", {
             **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
         })
+        data = sorted(data or [], key=lambda r: r.get("total_sales") or 0, reverse=True)
         return data[:limit]
     results = await multi_fetch("/top-skus", base, cs, chs)
     merged: Dict[str, Dict[str, Any]] = {}
@@ -209,9 +210,10 @@ async def get_sor(
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
-        return await fetch("/sor", {
+        data = await fetch("/sor", {
             **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
         })
+        return sorted(data or [], key=lambda r: r.get("sor_percent") or 0, reverse=True)
     results = await multi_fetch("/sor", base, cs, chs)
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
