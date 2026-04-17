@@ -1,59 +1,63 @@
 # Vivo Fashion Group BI Dashboard — PRD
 
 ## Original Problem Statement
-User provided only an API URL: `https://vivo-bi-api-666430550422.europe-west1.run.app`
-(Vivo Fashion Group BI API). User skipped clarifying questions, so we proceeded with
-reasonable defaults: build a full dashboard that consumes this public read-only API.
+Initial user input: `https://vivo-bi-api-666430550422.europe-west1.run.app`
+Second request: full redesign to a dark-green/black theme with KES currency,
+5 tabs (Overview / Locations / Inventory / SOR / CEO Report), and explicit
+KPI layout.
 
 ## Architecture
-- **Backend**: FastAPI (/app/backend/server.py). Proxies the upstream Vivo BI API and
-  adds aggregation endpoints under `/api/analytics/*`. Shared httpx.AsyncClient.
-- **Frontend**: React + TailwindCSS + Recharts + Phosphor Icons. Sidebar layout with
-  4 pages (Overview / Sales / Inventory / Locations). Global filters: date range +
-  country, held in a FiltersProvider context.
-- **Design**: Earthy "Vivo" palette — terracotta #C84B31 primary, safari green
-  #4A5340, warm bone background #F9F8F6. Cabinet Grotesk (display) + Satoshi (body)
-  via Fontshare CDN.
-- No database, no auth (public read-only API).
+- **Backend**: FastAPI (`/app/backend/server.py`). Proxies upstream endpoints
+  `/`, `/locations`, `/kpis`, `/sales-summary`, `/top-skus`, `/sor`,
+  `/daily-trend`, `/inventory`. Adds aggregation layers under `/api/analytics/*`:
+  - `kpis-plus` (adds units_per_order, return_rate, sell_through_rate,
+    units_clean excluding bags/vouchers)
+  - `highlights` (top location / brand / collection)
+  - `by-country` (Kenya vs Uganda vs Rwanda rollup)
+  - `inventory-summary` (by country/location/product_type + `markets`)
+  - `low-stock` (threshold ≤ 2)
+- **Frontend**: React + TailwindCSS + Recharts + Phosphor Icons.
+  FiltersProvider drives date range (default: first-of-month → today),
+  country, and location filters globally.
+- **Theme**: Dark green #1a3a2a / black #0d0d0d surfaces, white text,
+  bright green #00c853 accent, 16px rounded cards, subtle shadows,
+  Plus Jakarta Sans.
+- **Currency**: All KES amounts formatted `KES 1,534,880` — no M/K
+  abbreviations anywhere except chart axis labels (`fmtAxisKES`).
 
 ## User Personas
-- Regional Director (Amara K.) — wants group-wide KPIs at a glance.
-- Country/Store manager — needs per-country stock & sales detail.
-- Merchandiser — needs top products, brand mix, low-stock alerts.
+- CEO / Regional Director — CEO Report page, group KPIs, print/PDF.
+- Country & Store managers — Locations page with drill-down to top SKUs.
+- Merchandising — Inventory and SOR pages.
 
-## Core Requirements
-- Group KPIs: Gross, Net, Orders, Units, AOV, Discount rate.
-- Per-country aggregation (Kenya / Uganda / Rwanda).
-- Top stores, top products, top brands, product-type mix.
-- Inventory: units by country/location/type, low-stock alerts.
-- Store directory grouped by country.
-- Date-range & country filters.
+## Core Requirements (current)
+- Overview: 4 KPI row 1 + 5 KPI row 2 + 3 highlight cards + top-15 bar +
+  country donut + daily trend + top-20 SKU table.
+- Locations: card grid with drill-down to top SKUs per store.
+- Inventory: 4 KPIs, stock-by-location bar, stock-by-type bar, low-stock
+  alerts table (product name search, country/location filters).
+- SOR: searchable/sortable sell-out-rate table with red<30% / amber 30–60%
+  / green >60% coding.
+- CEO Report: printable one-page (A4-friendly) exec report with 5 sections
+  + Print/Export PDF button.
 
-## Implemented (2026-01-17)
-- ✅ Backend proxy + aggregation (`/api/locations`, `/api/sales`, `/api/inventory`,
-  `/api/sales-summary`, `/api/analytics/overview`, `/api/analytics/by-country`,
-  `/api/analytics/top-products`, `/api/analytics/top-brands`,
-  `/api/analytics/product-types`, `/api/analytics/inventory-summary`,
-  `/api/analytics/low-stock`).
-- ✅ Overview page — 4 KPI cards, top-stores bar chart, country donut + list,
-  top-5 products table.
-- ✅ Sales page — 4 KPIs, brands horizontal bar, product-type bar, searchable &
-  sortable line-items table (200 rows).
-- ✅ Inventory page — 4 KPIs, stock by location/type charts, country cards,
-  low-stock alerts table.
-- ✅ Locations page — all 29 stores grouped by country with per-store KPIs.
-- ✅ Responsive layout, hover lift, fade-in animations, data-testids everywhere.
-- ✅ Backend testing: 100% (15/15 endpoints).
+## Implemented (updated 2026-04-17)
+- ✅ Backend redesigned to match new upstream surface (8 proxy + 5 analytics
+  endpoints). 21/21 backend tests passing.
+- ✅ Frontend fully rebuilt around the dark-green theme with all 5 tabs.
+- ✅ KES formatting with full numbers & commas.
+- ✅ Location drill-down on Locations tab.
+- ✅ SOR color coding.
+- ✅ CEO Report print stylesheet (black-on-white with green section headings).
+- ✅ Global filters with default current-month range.
 
 ## Prioritized Backlog
-- **P1**: Time-series chart (daily trend) — requires either upstream date bucketing
-  or client-side grouping from /sales.
-- **P1**: Export to CSV on sales & low-stock tables.
-- **P2**: Drill-through from store card to filtered sales.
-- **P2**: Multi-currency toggle (Vivo stores sell in KES/UGX/RWF).
-- **P2**: Loading skeletons (currently uses spinner).
-- **P3**: Dark mode.
+- **P1**: CSV export for SOR and Low-stock tables.
+- **P2**: Auto re-order suggestion panel (days-of-stock threshold).
+- **P2**: Multi-currency toggle (KES / UGX / RWF) if upstream exposes local
+  currency.
+- **P3**: Compare date ranges (this period vs previous).
 
 ## Next Tasks
-- Gather user feedback on the default color palette / layout.
-- If feedback is positive, implement P1 features (trend chart, CSV export).
+- Gather user feedback on the dark-green theme / numeric formatting.
+- If positive, ship CSV export as the first enhancement.
