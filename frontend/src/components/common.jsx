@@ -13,7 +13,7 @@ export const Loading = ({ label = "Loading…" }) => (
 
 export const ErrorBox = ({ message }) => (
   <div
-    className="card p-4 text-sm text-danger border border-danger/40 bg-danger/5"
+    className="card-white p-4 text-sm text-danger border border-danger/40"
     data-testid="error-box"
   >
     {message || "Something went wrong."}
@@ -32,10 +32,12 @@ export const SectionTitle = ({ title, subtitle, action, testId }) => (
     data-testid={testId}
   >
     <div>
-      <h2 className="font-sans font-bold text-[17px] tracking-tight text-foreground">
+      <h2 className="font-sans font-bold text-[16px] tracking-tight text-foreground">
         {title}
       </h2>
-      {subtitle && <p className="text-muted text-[12.5px] mt-0.5">{subtitle}</p>}
+      {subtitle && (
+        <p className="text-muted text-[12.5px] mt-0.5">{subtitle}</p>
+      )}
     </div>
     {action}
   </div>

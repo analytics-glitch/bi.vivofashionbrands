@@ -1,35 +1,33 @@
 import React, { useEffect, useMemo, useState } from "react";
-import Topbar from "@/components/Topbar";
-import { KPICard, HighlightCard } from "@/components/KPICard";
-import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { useFilters } from "@/lib/filters";
 import {
   api,
   fmtKES,
   fmtNum,
   fmtPct,
-  fmtDec,
-  fmtDate,
   fmtAxisKES,
-  storeToCountry,
-  countryToStoreId,
-  prevMonthRange,
-  prevYearRange,
+  fmtDate,
+  buildParams,
   pctDelta,
+  comparePeriod,
   COUNTRY_FLAGS,
 } from "@/lib/api";
-import { useFilters } from "@/lib/filters";
+import { KPICard, HighlightCard } from "@/components/KPICard";
+import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import {
   CurrencyCircleDollar,
+  Coins,
   ShoppingCart,
   Package,
-  Basket,
-  Coins,
-  ArrowsLeftRight,
-  ArrowUUpLeft,
-  Percent,
-  Storefront,
   Tag,
-  Books,
+  Percent,
+  Receipt,
+  ArrowUUpLeft,
+  Basket,
+  ChartBar,
+  Storefront,
+  Globe,
+  ArrowsDownUp,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -47,350 +45,383 @@ import {
   Line,
 } from "recharts";
 
-const DONUT_COLORS = ["#00a34a", "#f59e0b", "#ef6c00"];
+const DONUT_COLORS = ["#1a5c38", "#00c853", "#d97706", "#4b7bec"];
 
 const Overview = () => {
-  const { dateFrom, dateTo, country, location } = useFilters();
+  const { applied } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const filters = { dateFrom, dateTo, countries, channels };
 
   const [kpis, setKpis] = useState(null);
-  const [prevMonthKpis, setPrevMonthKpis] = useState(null);
-  const [prevYearKpis, setPrevYearKpis] = useState(null);
-  const [highlights, setHighlights] = useState(null);
-  const [summary, setSummary] = useState([]);
-  const [byCountry, setByCountry] = useState([]);
+  const [kpisPrev, setKpisPrev] = useState(null);
+  const [country, setCountry] = useState([]);
+  const [countrySummary, setCountrySummary] = useState([]);
+  const [sales, setSales] = useState([]);
   const [daily, setDaily] = useState([]);
-  const [topSkus, setTopSkus] = useState([]);
+  const [dailyPrev, setDailyPrev] = useState([]);
+  const [top, setTop] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [sortKey, setSortKey] = useState("total_sales");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const p = buildParams(filters);
+    const prev = comparePeriod(dateFrom, dateTo, compareMode);
 
-    const storeId = countryToStoreId(country);
-    const locParam = location !== "all" ? location : undefined;
-    const baseParams = {
-      date_from: dateFrom,
-      date_to: dateTo,
-      store_id: storeId,
-      location: locParam,
-    };
-    const prevM = prevMonthRange(dateFrom, dateTo);
-    const prevY = prevYearRange(dateFrom, dateTo);
-    const prevMParams = { ...prevM, store_id: storeId, location: locParam };
-    const prevYParams = { ...prevY, store_id: storeId, location: locParam };
+    const base = [
+      api.get("/kpis", { params: p }),
+      api.get("/country-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/sales-summary", { params: p }),
+      api.get("/daily-trend", { params: { ...p, channel: undefined } }),
+      api.get("/top-skus", { params: { ...p, limit: 20 } }),
+    ];
+    const extras = prev
+      ? [
+          api.get("/kpis", {
+            params: buildParams(
+              { ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }
+            ),
+          }),
+          api.get("/daily-trend", {
+            params: {
+              date_from: prev.date_from,
+              date_to: prev.date_to,
+              country: p.country,
+            },
+          }),
+        ]
+      : [Promise.resolve(null), Promise.resolve(null)];
 
-    Promise.all([
-      api.get("/analytics/kpis-plus", { params: baseParams }),
-      api.get("/analytics/kpis-plus", { params: prevMParams }),
-      api.get("/analytics/kpis-plus", { params: prevYParams }),
-      api.get("/analytics/highlights", { params: baseParams }),
-      api.get("/sales-summary", {
-        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
-      }),
-      api.get("/analytics/by-country", {
-        params: { date_from: dateFrom, date_to: dateTo },
-      }),
-      api.get("/daily-trend", {
-        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
-      }),
-      api.get("/top-skus", { params: { ...baseParams, limit: 20 } }),
-    ])
-      .then(([k, pm, py, h, s, c, d, t]) => {
+    Promise.all([...base, ...extras])
+      .then(([k, cs, s, d, t, kp, dp]) => {
         if (cancelled) return;
         setKpis(k.data);
-        setPrevMonthKpis(pm.data);
-        setPrevYearKpis(py.data);
-        setHighlights(h.data);
-        setSummary(s.data || []);
-        setByCountry(c.data || []);
+        setKpisPrev(kp?.data || null);
+        setCountrySummary(cs.data || []);
+        setSales(s.data || []);
         setDaily(d.data || []);
-        setTopSkus(t.data || []);
+        setDailyPrev(dp?.data || []);
+        setTop(t.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo, country, location]);
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode]);
 
-  const getDeltas = (field, higherBetter = true) => {
-    if (!kpis) return { mom: null, yoy: null };
-    return {
-      mom: prevMonthKpis ? pctDelta(kpis[field], prevMonthKpis[field]) : null,
-      yoy: prevYearKpis ? pctDelta(kpis[field], prevYearKpis[field]) : null,
-    };
+  const delta = (k, higher = true) => {
+    if (!kpis || !kpisPrev) return null;
+    return pctDelta(kpis[k], kpisPrev[k]);
   };
 
-  // Apply location filter client-side; country already applied server-side via store_id
-  const filteredSummary = useMemo(() => {
-    let s = summary;
-    if (location !== "all") s = s.filter((r) => r.location === location);
-    return s;
-  }, [summary, location]);
+  const compareLbl =
+    compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
 
   const top15 = useMemo(() => {
-    return [...filteredSummary]
-      .sort((a, b) => (b.gross_sales || 0) - (a.gross_sales || 0))
+    return [...sales]
+      .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
       .slice(0, 15)
       .map((r) => ({
         ...r,
         label:
-          (r.location || "").length > 18
-            ? (r.location || "").slice(0, 17) + "…"
-            : r.location,
+          (r.channel || "").length > 20
+            ? (r.channel || "").slice(0, 19) + "…"
+            : r.channel,
       }));
-  }, [filteredSummary]);
+  }, [sales]);
 
   const donutCountries = useMemo(() => {
-    if (country === "all") return byCountry;
-    return byCountry.filter((c) => c.country === country);
-  }, [byCountry, country]);
+    let src = countrySummary;
+    if (countries.length) src = src.filter((c) => countries.includes(c.country));
+    return src;
+  }, [countrySummary, countries]);
+
+  const topCountry = useMemo(() => {
+    if (!donutCountries.length) return null;
+    return [...donutCountries].sort(
+      (a, b) => (b.total_sales || 0) - (a.total_sales || 0)
+    )[0];
+  }, [donutCountries]);
+
+  const topChannel = useMemo(() => {
+    if (!sales.length) return null;
+    return [...sales].sort(
+      (a, b) => (b.total_sales || 0) - (a.total_sales || 0)
+    )[0];
+  }, [sales]);
+
+  // merge daily with prev (index-aligned by position)
+  const dailyMerged = useMemo(() => {
+    return daily.map((d, i) => ({
+      ...d,
+      prev: dailyPrev[i]?.total_sales ?? dailyPrev[i]?.gross_sales ?? null,
+    }));
+  }, [daily, dailyPrev]);
+
+  const sortedTop = useMemo(() => {
+    return [...top].sort((a, b) => (b[sortKey] ?? 0) - (a[sortKey] ?? 0));
+  }, [top, sortKey]);
+
+  const clickSort = (k) => setSortKey(k);
 
   return (
-    <div className="space-y-8" data-testid="overview-page">
-      <Topbar
-        title="Overview"
-        subtitle={`Group performance · ${fmtDate(dateFrom)} → ${fmtDate(dateTo)}`}
-      />
+    <div className="space-y-6" data-testid="overview-page">
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <div className="eyebrow">Dashboard · Overview</div>
+          <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+            Overview
+          </h1>
+          <p className="text-muted text-[13px] mt-0.5">
+            {fmtDate(dateFrom)} → {fmtDate(dateTo)}
+            {compareMode !== "none" && (
+              <span className="ml-2 pill-neutral">
+                {compareMode === "last_month" ? "vs Last Month" : "vs Last Year"}
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
 
-      {loading && <Loading label="Aggregating KPIs…" />}
+      {loading && <Loading label="Aggregating group KPIs…" />}
       {error && <ErrorBox message={error} />}
 
       {!loading && !error && kpis && (
         <>
-          {/* Row 1 KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Row 1 — 4 big cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard
-              testId="kpi-gross"
+              testId="kpi-total-sales"
               accent
-              label="Total Gross Sales"
-              value={fmtKES(kpis.total_gross_sales)}
+              label="Total Sales"
+              value={fmtKES(kpis.total_sales)}
               icon={CurrencyCircleDollar}
-              {...(() => {
-                const { mom, yoy } = getDeltas("total_gross_sales");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              delta={delta("total_sales")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
-              testId="kpi-net"
-              label="Total Net Sales"
-              value={fmtKES(kpis.total_net_sales)}
+              testId="kpi-net-sales"
+              label="Net Sales"
+              value={fmtKES(kpis.net_sales)}
               icon={Coins}
-              {...(() => {
-                const { mom, yoy } = getDeltas("total_net_sales");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              delta={delta("net_sales")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
               testId="kpi-orders"
               label="Total Orders"
               value={fmtNum(kpis.total_orders)}
               icon={ShoppingCart}
-              {...(() => {
-                const { mom, yoy } = getDeltas("total_orders");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              delta={delta("total_orders")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
               testId="kpi-units"
               label="Total Units Sold"
-              sub="Excl. shopping bags & gift vouchers"
-              value={fmtNum(kpis.units_clean ?? kpis.total_units)}
+              value={fmtNum(kpis.total_units)}
               icon={Package}
-              {...(() => {
-                const { mom, yoy } = getDeltas("total_units");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              delta={delta("total_units")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
           </div>
 
-          {/* Row 2 KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Row 2 — 5 smaller cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
             <KPICard
+              small
+              testId="kpi-gross"
+              label="Gross Sales"
+              value={fmtKES(kpis.gross_sales)}
+              icon={Tag}
+              delta={delta("gross_sales")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
+            />
+            <KPICard
+              small
+              testId="kpi-discounts"
+              label="Discounts"
+              value={fmtKES(kpis.total_discounts)}
+              icon={Receipt}
+              higherIsBetter={false}
+              delta={delta("total_discounts", false)}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
+            />
+            <KPICard
+              small
+              testId="kpi-returns"
+              label="Returns"
+              value={fmtKES(kpis.total_returns)}
+              icon={ArrowUUpLeft}
+              higherIsBetter={false}
+              delta={delta("total_returns", false)}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
+            />
+            <KPICard
+              small
               testId="kpi-basket"
               label="Avg Basket Size"
               value={fmtKES(kpis.avg_basket_size)}
               icon={Basket}
-              {...(() => {
-                const { mom, yoy } = getDeltas("avg_basket_size");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              delta={delta("avg_basket_size")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
+              small
               testId="kpi-asp"
               label="Avg Selling Price"
               value={fmtKES(kpis.avg_selling_price)}
-              icon={Tag}
-              {...(() => {
-                const { mom, yoy } = getDeltas("avg_selling_price");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
-            />
-            <KPICard
-              testId="kpi-upo"
-              label="Units per Order"
-              value={fmtDec(kpis.units_per_order, 2)}
-              icon={ArrowsLeftRight}
-              {...(() => {
-                const { mom, yoy } = getDeltas("units_per_order");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
-            />
-            <KPICard
-              testId="kpi-return"
-              label="Return Rate"
-              value={fmtPct(kpis.return_rate)}
-              icon={ArrowUUpLeft}
-              higherIsBetter={false}
-              {...(() => {
-                const { mom, yoy } = getDeltas("return_rate", false);
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
-            />
-            <KPICard
-              testId="kpi-st"
-              label="Sell Through Rate"
-              value={fmtPct(kpis.sell_through_rate)}
-              icon={Percent}
-              {...(() => {
-                const { mom, yoy } = getDeltas("sell_through_rate");
-                return { deltaMoM: mom, deltaYoY: yoy };
-              })()}
+              icon={ChartBar}
+              delta={delta("avg_selling_price")}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
             />
           </div>
 
-          {/* Highlights */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Highlight strip */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <HighlightCard
-              testId="highlight-location"
+              testId="highlight-return-rate"
+              label="Return Rate"
+              name={fmtPct(kpis.return_rate, 2)}
+              amount={`Returns: ${fmtKES(kpis.total_returns)}`}
+              icon={Percent}
+            />
+            <HighlightCard
+              testId="highlight-top-country"
+              label="Top Country"
+              name={
+                topCountry
+                  ? `${COUNTRY_FLAGS[topCountry.country] || "🌍"} ${topCountry.country}`
+                  : "—"
+              }
+              amount={topCountry ? fmtKES(topCountry.total_sales) : "—"}
+              icon={Globe}
+            />
+            <HighlightCard
+              testId="highlight-top-location"
               label="Top Location"
-              name={highlights?.top_location?.name}
-              amount={fmtKES(highlights?.top_location?.gross_sales)}
+              name={topChannel ? topChannel.channel : "—"}
+              amount={topChannel ? fmtKES(topChannel.total_sales) : "—"}
               icon={Storefront}
             />
-            <HighlightCard
-              testId="highlight-brand"
-              label="Top Brand"
-              name={highlights?.top_brand?.name}
-              amount={fmtKES(highlights?.top_brand?.gross_sales)}
-              icon={Tag}
-            />
-            <HighlightCard
-              testId="highlight-collection"
-              label="Top Collection"
-              name={highlights?.top_collection?.name}
-              amount={fmtKES(highlights?.top_collection?.gross_sales)}
-              icon={Books}
-            />
           </div>
 
-          {/* Charts row */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <div className="card p-6 lg:col-span-2" data-testid="chart-top-locations">
+          {/* Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
               <SectionTitle
-                title="Top 15 locations by Gross Sales"
+                title="Top 15 channels by Total Sales"
                 subtitle="Ranked across the current scope"
               />
               {top15.length === 0 ? (
                 <Empty />
               ) : (
-                <div style={{ width: "100%", height: 360 }}>
+                <div style={{ width: "100%", height: 380 }}>
                   <ResponsiveContainer>
-                    <BarChart
-                      data={top15}
-                      margin={{ top: 10, right: 12, left: 0, bottom: 56 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis
-                        dataKey="label"
-                        interval={0}
-                        angle={-30}
-                        textAnchor="end"
-                        height={76}
-                        tick={{ fontSize: 11 }}
-                      />
+                    <BarChart data={top15} layout="vertical" margin={{ left: 20, right: 20 }}>
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
                       <YAxis
-                        tickFormatter={(v) => fmtAxisKES(v)}
+                        type="category"
+                        dataKey="label"
+                        width={150}
                         tick={{ fontSize: 11 }}
-                        width={60}
                       />
-                      <Tooltip
-                        formatter={(v) => fmtKES(v)}
-                        labelFormatter={(l) => `Store: ${l}`}
-                      />
-                      <Bar dataKey="gross_sales" fill="#00a34a" radius={[6, 6, 0, 0]} />
+                      <Tooltip formatter={(v) => fmtKES(v)} />
+                      <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}
             </div>
 
-            <div className="card p-6" data-testid="chart-country-split">
-              <SectionTitle title="Country split" subtitle="Gross Sales by market" />
+            <div className="card-white p-5" data-testid="chart-country-split">
+              <SectionTitle title="Country split" subtitle="Total Sales by market" />
               {donutCountries.length === 0 ? (
                 <Empty />
               ) : (
-                <div style={{ width: "100%", height: 240 }}>
-                  <ResponsiveContainer>
-                    <PieChart>
-                      <Pie
-                        data={donutCountries}
-                        dataKey="gross_sales"
-                        nameKey="country"
-                        innerRadius={55}
-                        outerRadius={90}
-                        paddingAngle={3}
-                      >
-                        {donutCountries.map((_, i) => (
-                          <Cell
-                            key={i}
-                            fill={DONUT_COLORS[i % DONUT_COLORS.length]}
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(v) => fmtKES(v)} />
-                      <Legend
-                        verticalAlign="bottom"
-                        height={24}
-                        iconType="circle"
-                        iconSize={8}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+                <>
+                  <div style={{ width: "100%", height: 220 }}>
+                    <ResponsiveContainer>
+                      <PieChart>
+                        <Pie
+                          data={donutCountries}
+                          dataKey="total_sales"
+                          nameKey="country"
+                          innerRadius={52}
+                          outerRadius={86}
+                          paddingAngle={3}
+                        >
+                          {donutCountries.map((_, i) => (
+                            <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(v) => fmtKES(v)} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <ul className="mt-1 divide-y divide-border text-[12.5px]">
+                    {donutCountries.map((c, i) => {
+                      const total = donutCountries.reduce((s, x) => s + (x.total_sales || 0), 0) || 1;
+                      const pct = ((c.total_sales || 0) / total) * 100;
+                      return (
+                        <li
+                          key={c.country}
+                          className="flex items-center justify-between py-2"
+                          data-testid={`country-row-${c.country}`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full"
+                              style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
+                            />
+                            <span className="font-medium">
+                              {COUNTRY_FLAGS[c.country] || "🌍"} {c.country}
+                            </span>
+                          </span>
+                          <span className="num">
+                            <span className="font-bold text-foreground">{fmtKES(c.total_sales)}</span>
+                            <span className="text-muted ml-2">{pct.toFixed(1)}%</span>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
               )}
-              <ul className="mt-2 divide-y divide-border text-[13px]">
-                {donutCountries.map((c) => (
-                  <li
-                    key={c.country}
-                    className="flex items-center justify-between py-2"
-                    data-testid={`country-row-${c.country}`}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span>{COUNTRY_FLAGS[c.country] || "🌍"}</span>
-                      <span className="font-medium text-foreground">
-                        {c.country}
-                      </span>
-                    </span>
-                    <span className="font-bold text-brand-deep">
-                      {fmtKES(c.gross_sales)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
             </div>
           </div>
 
-          <div className="card p-6" data-testid="chart-daily-trend">
-            <SectionTitle title="Daily sales trend" subtitle="Gross Sales per day" />
-            {daily.length === 0 ? (
+          <div className="card-white p-5" data-testid="chart-daily-trend">
+            <SectionTitle
+              title="Daily sales trend"
+              subtitle={
+                compareMode === "none"
+                  ? "Total Sales per day"
+                  : `Solid = current · Dotted = ${
+                      compareMode === "last_month" ? "last month" : "last year"
+                    }`
+              }
+            />
+            {dailyMerged.length === 0 ? (
               <Empty />
             ) : (
-              <div style={{ width: "100%", height: 280 }}>
+              <div style={{ width: "100%", height: 300 }}>
                 <ResponsiveContainer>
-                  <LineChart data={daily} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
+                  <LineChart data={dailyMerged} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
                       dataKey="day"
@@ -402,34 +433,46 @@ const Overview = () => {
                         })
                       }
                     />
-                    <YAxis
-                      tickFormatter={(v) => fmtAxisKES(v)}
-                      tick={{ fontSize: 11 }}
-                      width={60}
-                    />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={60} />
                     <Tooltip
                       formatter={(v) => fmtKES(v)}
                       labelFormatter={(l) => fmtDate(l)}
                     />
                     <Line
                       type="monotone"
-                      dataKey="gross_sales"
-                      stroke="#00a34a"
+                      dataKey="total_sales"
+                      name="Total Sales"
+                      stroke="#1a5c38"
                       strokeWidth={2.5}
-                      dot={{ r: 3, fill: "#00a34a" }}
-                      activeDot={{ r: 5 }}
+                      dot={{ r: 3, fill: "#1a5c38" }}
                     />
+                    {compareMode !== "none" && (
+                      <Line
+                        type="monotone"
+                        dataKey="prev"
+                        name={compareMode === "last_month" ? "Last Month" : "Last Year"}
+                        stroke="#9ca3af"
+                        strokeWidth={2}
+                        strokeDasharray="5 4"
+                        dot={false}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             )}
           </div>
 
-          {/* Top SKUs table */}
-          <div className="card p-6" data-testid="top-skus-section">
+          <div className="card-white p-5" data-testid="top-skus-section">
             <SectionTitle
               title="Top 20 SKUs"
-              subtitle="Best-selling SKUs across the selected scope"
+              subtitle="Click any column header to sort"
+              action={
+                <div className="flex items-center gap-1 text-[11.5px] text-muted">
+                  <ArrowsDownUp size={12} /> Sort:{" "}
+                  <span className="text-foreground font-medium">{sortKey.replace("_", " ")}</span>
+                </div>
+              }
             />
             <div className="overflow-x-auto">
               <table className="w-full data" data-testid="top-skus-table">
@@ -437,34 +480,46 @@ const Overview = () => {
                   <tr>
                     <th>Rank</th>
                     <th>SKU</th>
-                    <th>Product Name</th>
+                    <th>Product</th>
                     <th>Size</th>
                     <th>Brand</th>
-                    <th className="text-right">Units Sold</th>
-                    <th className="text-right">Total Sales</th>
-                    <th className="text-right">Avg Price</th>
+                    <th>Collection</th>
+                    {[
+                      ["units_sold", "Units"],
+                      ["total_sales", "Total Sales"],
+                      ["avg_price", "Avg Price"],
+                    ].map(([k, lbl]) => (
+                      <th
+                        key={k}
+                        className="text-right cursor-pointer select-none"
+                        onClick={() => clickSort(k)}
+                      >
+                        {lbl} {sortKey === k && "↓"}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {topSkus.length === 0 && (
+                  {sortedTop.length === 0 && (
                     <tr>
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         <Empty />
                       </td>
                     </tr>
                   )}
-                  {topSkus.map((s, i) => (
+                  {sortedTop.map((s, i) => (
                     <tr key={s.sku + i}>
-                      <td className="text-muted">{i + 1}</td>
-                      <td className="font-mono text-[11.5px] text-muted">{s.sku}</td>
-                      <td className="font-medium max-w-[340px] truncate" title={s.product_name}>
+                      <td className="text-muted num">{i + 1}</td>
+                      <td className="font-mono text-[11px] text-muted">{s.sku}</td>
+                      <td className="font-medium max-w-[320px] truncate" title={s.product_name}>
                         {s.product_name}
                       </td>
                       <td>{s.size || "—"}</td>
-                      <td><span className="pill-green">{s.brand || "—"}</span></td>
-                      <td className="text-right font-semibold">{fmtNum(s.units_sold)}</td>
-                      <td className="text-right font-bold text-brand-deep">{fmtKES(s.total_sales)}</td>
-                      <td className="text-right">{fmtKES(s.avg_price)}</td>
+                      <td><span className="pill-neutral">{s.brand || "—"}</span></td>
+                      <td className="text-muted">{s.collection || "—"}</td>
+                      <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
+                      <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
+                      <td className="text-right num">{fmtKES(s.avg_price)}</td>
                     </tr>
                   ))}
                 </tbody>

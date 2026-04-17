@@ -1,24 +1,31 @@
 import React, { useEffect, useMemo, useState } from "react";
-import Topbar from "@/components/Topbar";
-import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { useFilters } from "@/lib/filters";
 import {
   api,
   fmtKES,
   fmtNum,
-  storeToCountry,
+  fmtDelta,
+  buildParams,
+  pctDelta,
+  comparePeriod,
   COUNTRY_FLAGS,
-  fmtDate,
 } from "@/lib/api";
-import { useFilters } from "@/lib/filters";
-import { Storefront, X, CaretLeft } from "@phosphor-icons/react";
+import { KPICard } from "@/components/KPICard";
+import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
-  const { dateFrom, dateTo, country, location: locationFilter } = useFilters();
-  const [locations, setLocations] = useState([]);
-  const [summary, setSummary] = useState([]);
+  const { applied } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const filters = { dateFrom, dateTo, countries, channels };
+
+  const [rows, setRows] = useState([]);
+  const [prevRows, setPrevRows] = useState([]);
+  const [kpis, setKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [selected, setSelected] = useState(null); // location name
+  const [sortKey, setSortKey] = useState("total_sales");
+  const [selected, setSelected] = useState(null);
   const [selectedSkus, setSelectedSkus] = useState([]);
   const [selectedLoading, setSelectedLoading] = useState(false);
 
@@ -26,151 +33,244 @@ const Locations = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const p = buildParams(filters);
+    const prev = comparePeriod(dateFrom, dateTo, compareMode);
+    const prevP = prev
+      ? buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to })
+      : null;
+
     Promise.all([
-      api.get("/locations"),
-      api.get("/sales-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/sales-summary", { params: p }),
+      api.get("/kpis", { params: p }),
+      prevP
+        ? api.get("/sales-summary", { params: prevP })
+        : Promise.resolve({ data: [] }),
     ])
-      .then(([l, s]) => {
+      .then(([s, k, ps]) => {
         if (cancelled) return;
-        setLocations(l.data || []);
-        setSummary(s.data || []);
+        setRows(s.data || []);
+        setKpis(k.data);
+        setPrevRows(ps.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo]);
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode]);
 
-  // drill-down
   useEffect(() => {
     if (!selected) return;
     setSelectedLoading(true);
     api
       .get("/top-skus", {
-        params: { date_from: dateFrom, date_to: dateTo, location: selected, limit: 20 },
+        params: { date_from: dateFrom, date_to: dateTo, channel: selected, limit: 10 },
       })
       .then((r) => setSelectedSkus(r.data || []))
       .catch(() => setSelectedSkus([]))
       .finally(() => setSelectedLoading(false));
   }, [selected, dateFrom, dateTo]);
 
-  const salesByLocation = useMemo(() => {
+  const prevMap = useMemo(() => {
     const m = new Map();
-    for (const s of summary)
-      m.set((s.location || "").toLowerCase(), s);
+    for (const r of prevRows) m.set(r.channel, r);
     return m;
-  }, [summary]);
+  }, [prevRows]);
 
-  const visibleLocations = useMemo(() => {
-    let ls = locations;
-    if (country !== "all") ls = ls.filter((l) => l.country === country);
-    if (locationFilter !== "all") ls = ls.filter((l) => l.location === locationFilter);
-    return ls;
-  }, [locations, country, locationFilter]);
+  const enriched = useMemo(() => {
+    return rows.map((r) => {
+      const prev = prevMap.get(r.channel);
+      const basket = r.total_orders ? r.total_sales / r.total_orders : (r.avg_basket_size || 0);
+      return {
+        ...r,
+        avg_basket: basket,
+        delta: prev ? pctDelta(r.total_sales, prev.total_sales) : null,
+      };
+    });
+  }, [rows, prevMap]);
+
+  const avg = useMemo(() => {
+    if (!enriched.length) return 0;
+    return (
+      enriched.reduce((s, r) => s + (r.total_sales || 0), 0) / enriched.length
+    );
+  }, [enriched]);
+
+  const sorted = useMemo(() => {
+    return [...enriched].sort((a, b) => {
+      if (sortKey === "avg_basket") return (b.avg_basket || 0) - (a.avg_basket || 0);
+      return (b[sortKey] || 0) - (a[sortKey] || 0);
+    });
+  }, [enriched, sortKey]);
 
   return (
-    <div className="space-y-8" data-testid="locations-page">
-      <Topbar
-        title="Locations"
-        subtitle={`${visibleLocations.length} stores · ${fmtDate(dateFrom)} → ${fmtDate(dateTo)}`}
-      />
+    <div className="space-y-6" data-testid="locations-page">
+      <div>
+        <div className="eyebrow">Dashboard · Locations</div>
+        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+          Locations
+        </h1>
+      </div>
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
 
-      {!loading && !error && (
+      {!loading && !error && kpis && (
         <>
-          {!selected && (
-            <div
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
-              data-testid="locations-grid"
-            >
-              {visibleLocations.length === 0 && <Empty />}
-              {visibleLocations.map((l, i) => {
-                const s = salesByLocation.get((l.location || "").toLowerCase());
-                const basket = s && s.total_orders ? s.gross_sales / s.total_orders : 0;
-                return (
-                  <button
-                    key={`${l.location}-${i}`}
-                    className="card p-5 hover-lift text-left w-full"
-                    data-testid={`location-card-${l.location}`}
-                    onClick={() => setSelected(l.location)}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-brand/15 text-brand-strong grid place-items-center">
-                          <Storefront size={20} weight="duotone" />
-                        </div>
-                        <div>
-                          <div className="font-bold text-[15px] leading-tight text-foreground">
-                            {l.location}
-                          </div>
-                          <div className="text-[11.5px] text-muted mt-0.5 flex items-center gap-1">
-                            <span>{COUNTRY_FLAGS[l.country] || "🌍"}</span>
-                            <span>{l.country}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <KPICard
+              testId="loc-kpi-count"
+              accent
+              label="Total Locations"
+              value={fmtNum(enriched.length)}
+              showDelta={false}
+            />
+            <KPICard
+              testId="loc-kpi-sales"
+              label="Total Sales"
+              value={fmtKES(kpis.total_sales)}
+              showDelta={false}
+            />
+            <KPICard
+              testId="loc-kpi-orders"
+              label="Total Orders"
+              value={fmtNum(kpis.total_orders)}
+              showDelta={false}
+            />
+            <KPICard
+              testId="loc-kpi-units"
+              label="Total Units"
+              value={fmtNum(kpis.total_units)}
+              showDelta={false}
+            />
+          </div>
 
-                    {s ? (
-                      <div className="grid grid-cols-2 gap-3 mt-5">
-                        <div>
-                          <div className="eyebrow">Net Sales</div>
-                          <div className="font-bold text-[15px] text-brand-strong mt-0.5">
-                            {fmtKES(s.net_sales)}
+          {!selected && (
+            <>
+              <div className="card-white p-3 flex items-center gap-2 flex-wrap">
+                <ArrowsDownUp size={14} className="text-muted ml-1" />
+                <span className="text-[12px] text-muted">Sort by:</span>
+                {[
+                  ["total_sales", "Total Sales"],
+                  ["total_orders", "Orders"],
+                  ["units_sold", "Units"],
+                  ["avg_basket", "Avg Basket"],
+                ].map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    data-testid={`loc-sort-${k}`}
+                    className={`px-2.5 py-1 rounded-lg text-[12px] font-medium ${
+                      sortKey === k
+                        ? "bg-brand text-white"
+                        : "hover:bg-panel text-foreground/70"
+                    }`}
+                    onClick={() => setSortKey(k)}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+
+              <div
+                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3"
+                data-testid="locations-grid"
+              >
+                {sorted.length === 0 && <Empty />}
+                {sorted.map((l, i) => {
+                  const above = (l.total_sales || 0) >= avg;
+                  const borderCls = above
+                    ? "border-brand/40"
+                    : "border-red-300";
+                  return (
+                    <button
+                      key={`${l.channel}-${i}`}
+                      className={`card-white p-4 hover-lift text-left border-l-4 ${borderCls}`}
+                      data-testid={`location-card-${l.channel}`}
+                      onClick={() => setSelected(l.channel)}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-lg bg-brand-soft text-brand grid place-items-center shrink-0">
+                            <Storefront size={18} weight="duotone" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-[14px] leading-tight truncate" title={l.channel}>
+                              {l.channel}
+                            </div>
+                            <div className="text-[11.5px] text-muted mt-0.5">
+                              {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
+                            </div>
                           </div>
                         </div>
+                        {compareMode !== "none" && l.delta !== null && (
+                          <span
+                            className={`text-[11px] font-bold ${
+                              l.delta > 0 ? "delta-up" : "delta-down"
+                            }`}
+                          >
+                            {l.delta > 0 ? "▲" : "▼"} {fmtDelta(l.delta)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-4 font-bold text-[18px] text-brand-deep num">
+                        {fmtKES(l.total_sales)}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mt-3">
                         <div>
                           <div className="eyebrow">Orders</div>
-                          <div className="font-bold text-[15px] mt-0.5">
-                            {fmtNum(s.total_orders)}
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {fmtNum(l.orders || l.total_orders)}
                           </div>
                         </div>
                         <div>
                           <div className="eyebrow">Units</div>
-                          <div className="font-bold text-[15px] mt-0.5">
-                            {fmtNum(s.units_sold)}
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {fmtNum(l.units_sold)}
                           </div>
                         </div>
                         <div>
                           <div className="eyebrow">Avg Basket</div>
-                          <div className="font-bold text-[15px] mt-0.5">
-                            {fmtKES(basket)}
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {fmtKES(l.avg_basket)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="eyebrow">Returns</div>
+                          <div
+                            className={`font-semibold text-[13px] num mt-0.5 ${
+                              (l.returns || 0) > 0 ? "text-danger" : ""
+                            }`}
+                          >
+                            {fmtKES(l.returns || 0)}
                           </div>
                         </div>
                       </div>
-                    ) : (
-                      <div className="mt-5 text-[12.5px] text-muted">
-                        No sales in the selected period.
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
 
           {selected && (
-            <div className="space-y-5" data-testid="location-drill-down">
+            <div className="space-y-4" data-testid="location-drill">
               <button
-                className="flex items-center gap-1 text-brand-strong text-sm font-medium hover:underline"
+                className="flex items-center gap-1 text-brand font-medium hover:underline text-[13px]"
                 onClick={() => setSelected(null)}
                 data-testid="drill-back"
               >
-                <CaretLeft size={16} /> Back to all locations
+                <CaretLeft size={15} /> Back to all locations
               </button>
-
-              <div className="card p-6">
+              <div className="card-white p-5">
                 <SectionTitle
                   title={selected}
-                  subtitle="Top 20 SKUs at this location"
+                  subtitle="Top 10 SKUs at this channel"
                   action={
                     <button
                       onClick={() => setSelected(null)}
                       className="text-muted hover:text-foreground"
-                      aria-label="close"
                     >
                       <X size={18} />
                     </button>
@@ -185,29 +285,29 @@ const Locations = () => {
                     <table className="w-full data">
                       <thead>
                         <tr>
-                          <th>Rank</th>
+                          <th>#</th>
                           <th>SKU</th>
                           <th>Product</th>
                           <th>Size</th>
                           <th>Brand</th>
                           <th className="text-right">Units</th>
                           <th className="text-right">Total Sales</th>
-                          <th className="text-right">Avg Price</th>
                         </tr>
                       </thead>
                       <tbody>
                         {selectedSkus.map((s, i) => (
                           <tr key={s.sku + i}>
-                            <td className="text-muted">{i + 1}</td>
-                            <td className="font-mono text-[11.5px] text-muted">{s.sku}</td>
+                            <td className="text-muted num">{i + 1}</td>
+                            <td className="font-mono text-[11px] text-muted">{s.sku}</td>
                             <td className="font-medium max-w-[340px] truncate" title={s.product_name}>
                               {s.product_name}
                             </td>
                             <td>{s.size || "—"}</td>
-                            <td><span className="pill-green">{s.brand || "—"}</span></td>
-                            <td className="text-right font-semibold">{fmtNum(s.units_sold)}</td>
-                            <td className="text-right font-bold text-brand-strong">{fmtKES(s.total_sales)}</td>
-                            <td className="text-right">{fmtKES(s.avg_price)}</td>
+                            <td>
+                              <span className="pill-neutral">{s.brand || "—"}</span>
+                            </td>
+                            <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
+                            <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
                           </tr>
                         ))}
                       </tbody>

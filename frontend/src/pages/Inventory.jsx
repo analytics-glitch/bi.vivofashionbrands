@@ -1,10 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import Topbar from "@/components/Topbar";
+import { useFilters } from "@/lib/filters";
+import { api, fmtKES, fmtNum, fmtAxisKES, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { api, fmtNum, COUNTRY_FLAGS } from "@/lib/api";
-import { useFilters } from "@/lib/filters";
-import { Package, Warning, Storefront, MagnifyingGlass } from "@phosphor-icons/react";
+import {
+  Package,
+  Warning,
+  Storefront,
+  MagnifyingGlass,
+  Buildings,
+} from "@phosphor-icons/react";
 import {
   BarChart,
   Bar,
@@ -16,202 +21,273 @@ import {
 } from "recharts";
 
 const Inventory = () => {
-  const { country, location } = useFilters();
+  const { applied } = useFilters();
+  const { countries, channels } = applied;
+
   const [summary, setSummary] = useState(null);
-  const [lowStock, setLowStock] = useState([]);
+  const [inv, setInv] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const [brandFilter, setBrandFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = {
-      country: country !== "all" ? country.toLowerCase() : undefined,
-      location: location !== "all" ? location : undefined,
-      product: search.trim() || undefined,
-    };
+    const country = countries.length === 1 ? countries[0].toLowerCase() : undefined;
+    const location = channels.length === 1 ? channels[0] : undefined;
+    const params = { country, location, product: search || undefined };
     Promise.all([
       api.get("/analytics/inventory-summary", { params }),
-      api.get("/analytics/low-stock", { params: { ...params, threshold: 2, limit: 300 } }),
+      api.get("/inventory", { params }),
     ])
-      .then(([a, b]) => {
+      .then(([s, i]) => {
         if (cancelled) return;
-        setSummary(a.data);
-        setLowStock(b.data || []);
+        setSummary(s.data);
+        setInv(i.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [country, location, search]);
+    // eslint-disable-next-line
+  }, [JSON.stringify(countries), JSON.stringify(channels), search]);
 
-  const filteredLow = useMemo(() => lowStock, [lowStock]);
+  const brands = useMemo(
+    () => [...new Set(inv.map((r) => r.brand).filter(Boolean))].sort(),
+    [inv]
+  );
+  const types = useMemo(
+    () => [...new Set(inv.map((r) => r.product_type).filter(Boolean))].sort(),
+    [inv]
+  );
+
+  const filteredInv = useMemo(() => {
+    return inv.filter((r) => {
+      if (countries.length > 1 && !countries.map((c) => c.toLowerCase()).includes((r.country || "").toLowerCase())) return false;
+      if (channels.length && !channels.includes(r.location_name)) return false;
+      if (brandFilter && r.brand !== brandFilter) return false;
+      if (typeFilter && r.product_type !== typeFilter) return false;
+      return true;
+    });
+  }, [inv, countries, channels, brandFilter, typeFilter]);
+
+  const lowStock = useMemo(
+    () => filteredInv.filter((r) => r.sku && (r.available || 0) <= 2).sort((a, b) => (a.available || 0) - (b.available || 0)),
+    [filteredInv]
+  );
 
   return (
-    <div className="space-y-8" data-testid="inventory-page">
-      <Topbar
-        title="Inventory"
-        subtitle="Live stock levels, low-stock alerts, and distribution."
-        showDates={false}
-      />
+    <div className="space-y-6" data-testid="inventory-page">
+      <div>
+        <div className="eyebrow">Dashboard · Inventory</div>
+        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+          Inventory
+        </h1>
+      </div>
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
               label="Total Available Units"
               value={fmtNum(summary.total_units)}
               icon={Package}
+              showDelta={false}
             />
             <KPICard
               testId="inv-kpi-skus"
               label="Active SKUs"
               value={fmtNum(summary.total_skus)}
               icon={Storefront}
+              showDelta={false}
             />
             <KPICard
               testId="inv-kpi-lowstock"
               label="Low-Stock SKUs (≤2)"
               value={fmtNum(summary.low_stock_skus)}
-              sub="Re-order threshold"
               icon={Warning}
+              showDelta={false}
             />
             <KPICard
-              testId="inv-kpi-markets"
-              label="Markets"
-              value={fmtNum(summary.markets)}
-              sub={`${summary.by_country.reduce((s, c) => s + c.locations, 0)} stores`}
-              icon={Storefront}
+              testId="inv-kpi-warehouse"
+              label="Warehouse FG Stock"
+              value={fmtNum(summary.warehouse_fg_stock)}
+              icon={Buildings}
+              showDelta={false}
             />
           </div>
 
-          <div className="card p-4 flex flex-wrap items-center gap-3" data-testid="inv-filters">
-            <div className="flex items-center gap-2 input-pill flex-1 min-w-[220px]">
+          <div className="card-white p-3 flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 input-pill flex-1 min-w-[200px]">
               <MagnifyingGlass size={14} className="text-muted" />
               <input
                 placeholder="Search product name…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 data-testid="inv-search"
-                className="bg-transparent outline-none text-sm w-full"
+                className="bg-transparent outline-none text-[13px] w-full"
               />
             </div>
-            <div className="text-xs text-muted">
-              Tip: use country & location filters in the header to narrow results.
+            <select
+              className="input-pill"
+              value={brandFilter}
+              onChange={(e) => setBrandFilter(e.target.value)}
+              data-testid="inv-brand"
+            >
+              <option value="">All brands</option>
+              {brands.map((b) => (
+                <option key={b}>{b}</option>
+              ))}
+            </select>
+            <select
+              className="input-pill"
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              data-testid="inv-type"
+            >
+              <option value="">All product types</option>
+              {types.map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="card-white p-5" data-testid="chart-inv-location">
+              <SectionTitle title="Stock by location" subtitle="Top 15 stores" />
+              <div style={{ width: "100%", height: 360 }}>
+                <ResponsiveContainer>
+                  <BarChart data={summary.by_location.slice(0, 15)} layout="vertical" margin={{ left: 10 }}>
+                    <CartesianGrid horizontal={false} />
+                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="location" width={140} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v) => fmtNum(v)} />
+                    <Bar dataKey="units" fill="#1a5c38" radius={[0, 5, 5, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="card-white p-5" data-testid="chart-inv-type">
+              <SectionTitle title="Stock by product type" subtitle="Available units per category" />
+              <div style={{ width: "100%", height: 360 }}>
+                <ResponsiveContainer>
+                  <BarChart data={summary.by_product_type.slice(0, 12)} margin={{ bottom: 70 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis
+                      dataKey="product_type"
+                      interval={0}
+                      angle={-25}
+                      textAnchor="end"
+                      height={85}
+                      tick={{ fontSize: 10 }}
+                    />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v) => fmtNum(v)} />
+                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <div className="card p-6" data-testid="chart-inv-by-location">
+          {lowStock.length > 0 && (
+            <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
               <SectionTitle
-                title="Stock by location"
-                subtitle="Top 10 stores by available units"
+                title={`⚠ Low-stock alerts · ${lowStock.length} items`}
+                subtitle="Items with ≤2 units available"
               />
-              {summary.by_location.length === 0 ? (
-                <Empty />
-              ) : (
-                <div style={{ width: "100%", height: 340 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={summary.by_location.slice(0, 10)} layout="vertical" margin={{ left: 10 }}>
-                      <CartesianGrid horizontal={false} stroke="#1f2b25" />
-                      <XAxis type="number" tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
-                      <YAxis type="category" dataKey="location" width={140} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => fmtNum(v)} />
-                      <Bar dataKey="units" fill="#00c853" radius={[0, 6, 6, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
+              <div className="overflow-x-auto">
+                <table className="w-full data">
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Size</th>
+                      <th>SKU</th>
+                      <th>Location</th>
+                      <th>Country</th>
+                      <th className="text-right">Available</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lowStock.slice(0, 50).map((r, i) => (
+                      <tr key={i}>
+                        <td className="font-medium max-w-[280px] truncate" title={r.product_name}>
+                          {r.product_name || "—"}
+                        </td>
+                        <td>{r.size || "—"}</td>
+                        <td className="font-mono text-[11px] text-muted">{r.sku || "—"}</td>
+                        <td className="text-muted">{r.location_name || "—"}</td>
+                        <td className="capitalize">{r.country || "—"}</td>
+                        <td className="text-right">
+                          <span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>
+                            {fmtNum(r.available)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
+          )}
 
-            <div className="card p-6" data-testid="chart-inv-by-type">
-              <SectionTitle
-                title="Stock by product type"
-                subtitle="Available units per category"
-              />
-              {summary.by_product_type.length === 0 ? (
-                <Empty />
-              ) : (
-                <div style={{ width: "100%", height: 340 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={summary.by_product_type.slice(0, 12)} margin={{ bottom: 70 }}>
-                      <CartesianGrid vertical={false} stroke="#1f2b25" />
-                      <XAxis
-                        dataKey="product_type"
-                        interval={0}
-                        angle={-25}
-                        textAnchor="end"
-                        height={86}
-                        tick={{ fontSize: 11 }}
-                      />
-                      <YAxis tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => fmtNum(v)} />
-                      <Bar dataKey="units" fill="#00c853" radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="card p-6" data-testid="low-stock-section">
+          <div className="card-white p-5" data-testid="inventory-table">
             <SectionTitle
-              title="Low-stock alerts"
-              subtitle="Items with ≤2 units available"
+              title="Inventory"
+              subtitle={`${fmtNum(filteredInv.length)} rows`}
             />
             <div className="overflow-x-auto">
-              <table className="w-full data" data-testid="lowstock-table">
+              <table className="w-full data">
                 <thead>
                   <tr>
                     <th>Product</th>
-                    <th>Color</th>
                     <th>Size</th>
+                    <th>SKU</th>
+                    <th>Barcode</th>
                     <th>Location</th>
                     <th>Country</th>
-                    <th>SKU</th>
                     <th className="text-right">Available</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredLow.length === 0 && (
+                  {filteredInv.length === 0 && (
                     <tr>
                       <td colSpan={7}>
-                        <Empty label="No low-stock items in this view." />
+                        <Empty />
                       </td>
                     </tr>
                   )}
-                  {filteredLow.map((r, i) => (
+                  {filteredInv.slice(0, 300).map((r, i) => (
                     <tr key={i}>
-                      <td className="font-medium max-w-[300px] truncate" title={r.product_name}>
+                      <td className="font-medium max-w-[280px] truncate" title={r.product_name}>
                         {r.product_name || "—"}
                       </td>
-                      <td className="text-muted">{r.color_print || "—"}</td>
                       <td>{r.size || "—"}</td>
+                      <td className="font-mono text-[11px] text-muted">{r.sku || "—"}</td>
+                      <td className="font-mono text-[11px] text-muted">{r.barcode || "—"}</td>
                       <td className="text-muted">{r.location_name || "—"}</td>
-                      <td>
-                        <span className="pill-green">
-                          {COUNTRY_FLAGS[(r.country || "").charAt(0).toUpperCase() + (r.country || "").slice(1)] || "🌍"}{" "}
-                          {r.country || "—"}
-                        </span>
-                      </td>
-                      <td className="font-mono text-[11.5px] text-muted">{r.sku || "—"}</td>
-                      <td className="text-right">
-                        <span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>
-                          {fmtNum(r.available)}
-                        </span>
+                      <td className="capitalize">{r.country || "—"}</td>
+                      <td className={`text-right num font-semibold ${(r.available || 0) <= 2 ? "text-danger" : ""}`}>
+                        {fmtNum(r.available)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {filteredInv.length > 300 && (
+                <div className="text-[11.5px] text-muted mt-3">
+                  Showing first 300 of {fmtNum(filteredInv.length)} rows. Narrow via filters.
+                </div>
+              )}
             </div>
           </div>
         </>

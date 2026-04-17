@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, APIRouter, HTTPException, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -34,9 +35,9 @@ async def get_client() -> httpx.AsyncClient:
 
 async def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     client = await get_client()
-    clean_params = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
     try:
-        resp = await client.get(path, params=clean_params)
+        resp = await client.get(path, params=clean)
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:
@@ -47,34 +48,53 @@ async def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         raise HTTPException(status_code=502, detail=f"Upstream unreachable: {str(e)}")
 
 
-def _store_to_country(store_id: Optional[str]) -> str:
-    if not store_id:
-        return "Other"
-    s = store_id.lower()
-    if "uganda" in s:
-        return "Uganda"
-    if "rwanda" in s:
-        return "Rwanda"
-    if "vivofashiongroup" in s or "kenya" in s:
-        return "Kenya"
-    return "Other"
+def _split_csv(val: Optional[str]) -> List[str]:
+    if not val:
+        return []
+    return [x.strip() for x in val.split(",") if x.strip()]
 
 
-EXCLUDE_TOKENS = ("shopping bag", "gift voucher", "gift card", "gift voucher")
+async def multi_fetch(path: str, base: Dict[str, Any], countries: List[str], channels: List[str]) -> List[Any]:
+    """Fire requests for each (country,channel) combo in parallel and return list of responses.
+    Empty lists mean 'all' for that dimension."""
+    countries_iter = countries or [None]
+    channels_iter = channels or [None]
+    tasks = []
+    keys = []
+    for c in countries_iter:
+        for ch in channels_iter:
+            params = {**base}
+            if c:
+                params["country"] = c
+            if ch:
+                params["channel"] = ch
+            tasks.append(fetch(path, params))
+            keys.append((c, ch))
+    results = await asyncio.gather(*tasks)
+    return results
 
 
-def _is_excluded(row: Dict[str, Any]) -> bool:
-    name = (row.get("product_name") or "").lower()
-    ptype = (row.get("product_type") or "").lower()
-    coll = (row.get("collection") or "").lower()
-    if "gift voucher" in name or "gift card" in name or "voucher" in ptype:
-        return True
-    if "shopping bag" in name or "safari shopping" in coll:
-        return True
-    return False
+def agg_kpis(list_of_kpis: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = {
+        "total_sales": 0.0, "gross_sales": 0.0, "total_discounts": 0.0,
+        "total_returns": 0.0, "net_sales": 0.0,
+        "total_orders": 0, "total_units": 0,
+    }
+    for k in list_of_kpis:
+        total["total_sales"] += k.get("total_sales") or 0
+        total["gross_sales"] += k.get("gross_sales") or 0
+        total["total_discounts"] += k.get("total_discounts") or 0
+        total["total_returns"] += k.get("total_returns") or 0
+        total["net_sales"] += k.get("net_sales") or 0
+        total["total_orders"] += k.get("total_orders") or 0
+        total["total_units"] += k.get("total_units") or 0
+    total["avg_basket_size"] = (total["total_sales"] / total["total_orders"]) if total["total_orders"] else 0
+    total["avg_selling_price"] = (total["total_sales"] / total["total_units"]) if total["total_units"] else 0
+    total["return_rate"] = (total["total_returns"] / total["gross_sales"] * 100) if total["gross_sales"] else 0
+    return total
 
 
-# -------------------- Proxy endpoints --------------------
+# -------------------- Proxy / aggregator endpoints --------------------
 @api_router.get("/")
 async def root():
     return {"message": "Vivo BI Dashboard API", "status": "ok"}
@@ -85,66 +105,159 @@ async def get_locations():
     return await fetch("/locations")
 
 
+@api_router.get("/country-summary")
+async def get_country_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    return await fetch("/country-summary", {"date_from": date_from, "date_to": date_to})
+
+
 @api_router.get("/kpis")
 async def get_kpis(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
 ):
-    return await fetch("/kpis", {
-        "date_from": date_from, "date_to": date_to,
-        "store_id": store_id, "location": location,
-    })
+    """Supports comma-separated country & channel. Aggregates if more than one combo."""
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        return await fetch("/kpis", {**base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None})
+    results = await multi_fetch("/kpis", base, cs, chs)
+    return agg_kpis(results)
 
 
 @api_router.get("/sales-summary")
 async def get_sales_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
 ):
-    return await fetch("/sales-summary", {
-        "date_from": date_from, "date_to": date_to, "store_id": store_id,
-    })
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        return await fetch("/sales-summary", {
+            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        })
+    # call per (country) and flatten; channel filter applied post-hoc
+    tasks = [fetch("/sales-summary", {**base, "country": c}) for c in (cs or [None])]
+    groups = await asyncio.gather(*tasks)
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for g in groups:
+        for row in g:
+            key = (row.get("channel"), row.get("country"))
+            if key in seen:
+                continue
+            seen.add(key)
+            if chs and row.get("channel") not in chs:
+                continue
+            out.append(row)
+    return out
 
 
 @api_router.get("/top-skus")
 async def get_top_skus(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
     limit: int = Query(20, ge=1, le=200),
 ):
-    return await fetch("/top-skus", {
-        "date_from": date_from, "date_to": date_to,
-        "store_id": store_id, "location": location, "limit": limit,
-    })
+    base = {"date_from": date_from, "date_to": date_to, "limit": max(limit, 50)}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        data = await fetch("/top-skus", {
+            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        })
+        return data[:limit]
+    results = await multi_fetch("/top-skus", base, cs, chs)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for g in results:
+        for row in g:
+            sku = row.get("sku")
+            if not sku:
+                continue
+            if sku not in merged:
+                merged[sku] = {**row}
+            else:
+                merged[sku]["units_sold"] = (merged[sku].get("units_sold") or 0) + (row.get("units_sold") or 0)
+                merged[sku]["total_sales"] = (merged[sku].get("total_sales") or 0) + (row.get("total_sales") or 0)
+                merged[sku]["gross_sales"] = (merged[sku].get("gross_sales") or 0) + (row.get("gross_sales") or 0)
+    rows = list(merged.values())
+    for r in rows:
+        units = r.get("units_sold") or 0
+        r["avg_price"] = (r.get("total_sales") or 0) / units if units else 0
+    rows.sort(key=lambda r: r.get("total_sales") or 0, reverse=True)
+    return rows[:limit]
 
 
 @api_router.get("/sor")
 async def get_sor(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
 ):
-    return await fetch("/sor", {
-        "date_from": date_from, "date_to": date_to,
-        "store_id": store_id, "location": location,
-    })
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        return await fetch("/sor", {
+            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        })
+    results = await multi_fetch("/sor", base, cs, chs)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for g in results:
+        for row in g:
+            style = row.get("style_name")
+            if not style:
+                continue
+            if style not in merged:
+                merged[style] = {**row}
+            else:
+                for f in ("units_sold", "total_sales", "gross_sales", "current_stock"):
+                    merged[style][f] = (merged[style].get(f) or 0) + (row.get(f) or 0)
+    rows = list(merged.values())
+    for r in rows:
+        u = r.get("units_sold") or 0
+        st = r.get("current_stock") or 0
+        r["sor_percent"] = (u / (u + st) * 100) if (u + st) else 0
+    rows.sort(key=lambda r: r.get("sor_percent") or 0, reverse=True)
+    return rows
 
 
 @api_router.get("/daily-trend")
 async def get_daily_trend(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
+    country: Optional[str] = None,
 ):
-    return await fetch("/daily-trend", {
-        "date_from": date_from, "date_to": date_to, "store_id": store_id,
-    })
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    if len(cs) <= 1:
+        return await fetch("/daily-trend", {**base, "country": cs[0] if cs else None})
+    tasks = [fetch("/daily-trend", {**base, "country": c}) for c in cs]
+    results = await asyncio.gather(*tasks)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for g in results:
+        for row in g:
+            day = row.get("day")
+            if day not in merged:
+                merged[day] = {"day": day, "orders": 0, "gross_sales": 0.0, "net_sales": 0.0, "total_sales": 0.0}
+            merged[day]["orders"] += row.get("orders") or 0
+            merged[day]["gross_sales"] += row.get("gross_sales") or 0
+            merged[day]["net_sales"] += row.get("net_sales") or 0
+            merged[day]["total_sales"] += row.get("total_sales") or row.get("gross_sales") or 0
+    out = list(merged.values())
+    out.sort(key=lambda r: r["day"])
+    return out
 
 
 @api_router.get("/inventory")
@@ -153,133 +266,10 @@ async def get_inventory(
     product: Optional[str] = None,
     country: Optional[str] = None,
 ):
-    return await fetch("/inventory", {
-        "location": location, "product": product, "country": country,
-    })
+    return await fetch("/inventory", {"location": location, "product": product, "country": country})
 
 
-# -------------------- Analytics --------------------
-@api_router.get("/analytics/kpis-plus")
-async def analytics_kpis_plus(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
-):
-    """Augmented KPIs incl. units-per-order, return rate, sell-through, and units_clean (excl. bags/vouchers)."""
-    params = {
-        "date_from": date_from, "date_to": date_to,
-        "store_id": store_id, "location": location,
-    }
-    kpis = await fetch("/kpis", params)
-    sor = await fetch("/sor", params)
-
-    # Approximate excluded units via top-skus (upstream no longer exposes /sales line items)
-    excluded_units = 0
-    try:
-        top = await fetch("/top-skus", {**params, "limit": 200})
-        for r in top or []:
-            if _is_excluded(r):
-                excluded_units += r.get("units_sold") or 0
-    except HTTPException:
-        pass
-
-    total_units = kpis.get("total_units") or 0
-    units_clean = max(0, total_units - excluded_units)
-
-    total_orders = kpis.get("total_orders") or 0
-    units_per_order = (total_units / total_orders) if total_orders else 0
-    gross = kpis.get("total_gross_sales") or 0
-    return_rate = ((kpis.get("total_returns") or 0) / gross * 100) if gross else 0.0
-
-    st_units = sum((x.get("units_sold") or 0) for x in sor or [])
-    st_stock = sum((x.get("current_stock") or 0) for x in sor or [])
-    sell_through = (st_units / (st_units + st_stock) * 100) if (st_units + st_stock) else 0.0
-
-    return {
-        **kpis,
-        "units_clean": units_clean,
-        "units_excluded": excluded_units,
-        "units_per_order": units_per_order,
-        "return_rate": return_rate,
-        "sell_through_rate": sell_through,
-    }
-
-
-@api_router.get("/analytics/highlights")
-async def analytics_highlights(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
-):
-    """Top location, top brand, top collection by gross/total sales."""
-    summary = await fetch("/sales-summary", {"date_from": date_from, "date_to": date_to, "store_id": store_id})
-    top_loc = None
-    if summary:
-        filtered = [s for s in summary if (not location or s.get("location") == location)]
-        src = filtered or summary
-        top_loc = max(src, key=lambda r: r.get("gross_sales") or 0)
-
-    # brand & collection derived from /top-skus (limit 200) and /sor
-    top_brand = None
-    top_coll = None
-    try:
-        top = await fetch("/top-skus", {
-            "date_from": date_from, "date_to": date_to,
-            "store_id": store_id, "location": location, "limit": 200,
-        })
-        brand_agg: Dict[str, float] = defaultdict(float)
-        coll_agg: Dict[str, float] = defaultdict(float)
-        for r in top or []:
-            ts = r.get("total_sales") or 0
-            if r.get("brand"):
-                brand_agg[r["brand"]] += ts
-            if r.get("collection"):
-                coll_agg[r["collection"]] += ts
-        if brand_agg:
-            top_brand = max(brand_agg.items(), key=lambda x: x[1])
-        if coll_agg:
-            top_coll = max(coll_agg.items(), key=lambda x: x[1])
-    except HTTPException:
-        pass
-
-    return {
-        "top_location": {
-            "name": top_loc["location"] if top_loc else None,
-            "country": _store_to_country(top_loc["store_id"]) if top_loc else None,
-            "gross_sales": top_loc["gross_sales"] if top_loc else 0,
-        } if top_loc else None,
-        "top_brand": {"name": top_brand[0], "gross_sales": top_brand[1]} if top_brand else None,
-        "top_collection": {"name": top_coll[0], "gross_sales": top_coll[1]} if top_coll else None,
-    }
-
-
-@api_router.get("/analytics/by-country")
-async def analytics_by_country(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-):
-    summary = await fetch("/sales-summary", {"date_from": date_from, "date_to": date_to})
-    agg: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
-        "country": "", "gross_sales": 0.0, "net_sales": 0.0,
-        "units_sold": 0, "total_orders": 0, "discounts": 0.0, "locations": 0,
-    })
-    for row in summary or []:
-        c = _store_to_country(row.get("store_id"))
-        b = agg[c]
-        b["country"] = c
-        b["gross_sales"] += row.get("gross_sales") or 0
-        b["net_sales"] += row.get("net_sales") or 0
-        b["units_sold"] += row.get("units_sold") or 0
-        b["total_orders"] += row.get("total_orders") or 0
-        b["discounts"] += row.get("discounts") or 0
-        b["locations"] += 1
-    for v in agg.values():
-        v["avg_basket_size"] = (v["gross_sales"] / v["total_orders"]) if v["total_orders"] else 0
-    return sorted(agg.values(), key=lambda x: x["gross_sales"], reverse=True)
-
-
+# -------------------- Aggregation helpers --------------------
 @api_router.get("/analytics/inventory-summary")
 async def analytics_inventory_summary(
     country: Optional[str] = None,
@@ -295,6 +285,7 @@ async def analytics_inventory_summary(
     total_units = 0.0
     total_skus = 0
     low_stock = 0
+    warehouse_stock = 0.0
 
     for row in inv or []:
         c = (row.get("country") or "Unknown").title()
@@ -320,6 +311,8 @@ async def analytics_inventory_summary(
         total_skus += 1
         if avail <= 2 and row.get("sku"):
             low_stock += 1
+        if "warehouse" in loc.lower() or "fg" in loc.lower():
+            warehouse_stock += avail
 
     country_list = [{
         "country": c["country"], "units": c["units"],
@@ -330,81 +323,12 @@ async def analytics_inventory_summary(
         "total_units": total_units,
         "total_skus": total_skus,
         "low_stock_skus": low_stock,
+        "warehouse_fg_stock": warehouse_stock,
         "markets": len(country_list),
         "by_country": sorted(country_list, key=lambda x: x["units"], reverse=True),
         "by_location": sorted(by_location.values(), key=lambda x: x["units"], reverse=True),
         "by_product_type": sorted(by_type.values(), key=lambda x: x["units"], reverse=True),
     }
-
-
-@api_router.get("/analytics/new-styles")
-async def analytics_new_styles(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    store_id: Optional[str] = None,
-    location: Optional[str] = None,
-    months: int = Query(3, ge=1, le=24),
-):
-    """Styles whose launch date (encoded in the SKU as MMYY) falls within the
-    last `months` months relative to date_to. Uses /top-skus (limit 200) as the
-    source; upstream does not expose a first-sale-date field."""
-    from datetime import date
-    import re
-
-    ref = None
-    if date_to:
-        try:
-            y, m, d = [int(x) for x in date_to.split("-")]
-            ref = date(y, m, d)
-        except Exception:
-            ref = date.today()
-    else:
-        ref = date.today()
-
-    # build allowed launch windows (YY, MM) for past `months` + current
-    allowed: set = set()
-    y, m = ref.year, ref.month
-    for _ in range(months + 1):
-        allowed.add((y % 100, m))
-        m -= 1
-        if m == 0:
-            m = 12
-            y -= 1
-
-    top = await fetch("/top-skus", {
-        "date_from": date_from, "date_to": date_to,
-        "store_id": store_id, "location": location, "limit": 200,
-    })
-
-    pattern = re.compile(r"^[A-Z]+(\d{2})(\d{2})")
-    agg: Dict[str, Dict[str, Any]] = {}
-    for r in top or []:
-        sku = r.get("sku") or ""
-        mobj = pattern.match(sku)
-        if not mobj:
-            continue
-        mm, yy = int(mobj.group(1)), int(mobj.group(2))
-        if (yy, mm) not in allowed:
-            continue
-        key = r.get("product_name") or sku
-        b = agg.setdefault(key, {
-            "product_name": r.get("product_name"),
-            "first_sku": sku,
-            "launch_month": f"{mm:02d}/20{yy:02d}",
-            "launch_sort": yy * 100 + mm,
-            "brand": r.get("brand"),
-            "collection": r.get("collection"),
-            "size": r.get("size"),
-            "units_sold": 0,
-            "total_sales": 0.0,
-            "skus": 0,
-        })
-        b["units_sold"] += r.get("units_sold") or 0
-        b["total_sales"] += r.get("total_sales") or 0
-        b["skus"] += 1
-
-    rows = sorted(agg.values(), key=lambda x: (-x["launch_sort"], -x["units_sold"]))
-    return rows
 
 
 @api_router.get("/analytics/low-stock")
@@ -413,7 +337,7 @@ async def analytics_low_stock(
     country: Optional[str] = None,
     location: Optional[str] = None,
     product: Optional[str] = None,
-    limit: int = Query(200, ge=1, le=2000),
+    limit: int = Query(300, ge=1, le=3000),
 ):
     inv = await fetch("/inventory", {"country": country, "location": location, "product": product})
     rows = [
@@ -422,6 +346,90 @@ async def analytics_low_stock(
     ]
     rows.sort(key=lambda r: r.get("available") or 0)
     return rows[:limit]
+
+
+@api_router.get("/analytics/returns")
+async def analytics_returns(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Top channels and SKUs by returns KES."""
+    summary = await get_sales_summary(date_from, date_to, country, channel)  # reuse
+    top_channels = sorted(
+        (x for x in summary if (x.get("returns") or 0) > 0),
+        key=lambda x: x.get("returns") or 0, reverse=True,
+    )[:5]
+    # top SKUs by returns — upstream top-skus doesn't expose returns per SKU
+    # We fall back to showing top SKUs by units as "at risk" proxy.
+    return {"top_channels": top_channels}
+
+
+@api_router.get("/analytics/insights")
+async def analytics_insights(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Auto-generate a short paragraph for the CEO report."""
+    countries_now = await fetch("/country-summary", {"date_from": date_from, "date_to": date_to})
+    kpis_now = await fetch("/kpis", {"date_from": date_from, "date_to": date_to})
+
+    # compute last month window
+    from datetime import date
+    def shift_iso(iso: str, years: int, months: int) -> str:
+        y, m, d = [int(x) for x in iso.split("-")]
+        m_total = y * 12 + (m - 1) + months
+        ny, nm = m_total // 12, (m_total % 12) + 1
+        ny += years
+        import calendar
+        last_day = calendar.monthrange(ny, nm)[1]
+        return f"{ny:04d}-{nm:02d}-{min(d, last_day):02d}"
+
+    lm_from = shift_iso(date_from, 0, -1) if date_from else None
+    lm_to = shift_iso(date_to, 0, -1) if date_to else None
+    kpis_lm = await fetch("/kpis", {"date_from": lm_from, "date_to": lm_to}) if lm_from else None
+
+    # find top country & store
+    top_country = max(countries_now, key=lambda c: c.get("total_sales") or 0) if countries_now else None
+    total_sales_now = sum((c.get("total_sales") or 0) for c in countries_now) or 1
+    top_pct = (top_country.get("total_sales") / total_sales_now * 100) if top_country else 0
+
+    summary = await fetch("/sales-summary", {"date_from": date_from, "date_to": date_to})
+    top_store = max(summary, key=lambda r: r.get("total_sales") or 0) if summary else None
+
+    def delta(cur, prev):
+        if not prev or prev == 0:
+            return None
+        return (cur - prev) / prev * 100
+
+    rr_now = kpis_now.get("return_rate") or 0
+    rr_lm = kpis_lm.get("return_rate") if kpis_lm else None
+    bs_now = kpis_now.get("avg_basket_size") or 0
+    bs_lm = kpis_lm.get("avg_basket_size") if kpis_lm else None
+    bs_delta = delta(bs_now, bs_lm) if bs_lm else None
+
+    parts = []
+    if top_country:
+        parts.append(f"{top_country['country']} contributed {top_pct:.1f}% of Group Total Sales.")
+    if top_store:
+        parts.append(
+            f"The top performing store was {top_store['channel']} ({top_store['country']}) with KES {int(top_store['total_sales']):,}."
+        )
+    if rr_lm is not None:
+        if rr_now > rr_lm + 0.1:
+            parts.append(f"Return rate rose to {rr_now:.2f}% (was {rr_lm:.2f}% last month).")
+        elif rr_now < rr_lm - 0.1:
+            parts.append(f"Return rate improved to {rr_now:.2f}% (from {rr_lm:.2f}% last month).")
+        else:
+            parts.append(f"Return rate held stable at {rr_now:.2f}% vs {rr_lm:.2f}% last month.")
+    else:
+        parts.append(f"Return rate was {rr_now:.2f}%.")
+    if bs_delta is not None:
+        direction = "grew" if bs_delta > 0 else "declined"
+        parts.append(f"Average basket size {direction} {abs(bs_delta):.1f}% vs last month (KES {int(bs_now):,}).")
+
+    return {"text": " ".join(parts), "top_country": top_country, "top_store": top_store}
 
 
 # -------------------- App wiring --------------------

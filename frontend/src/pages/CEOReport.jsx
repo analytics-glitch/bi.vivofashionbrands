@@ -6,35 +6,82 @@ import {
   fmtNum,
   fmtPct,
   fmtDate,
-  countryToStoreId,
+  fmtDelta,
+  pctDelta,
+  comparePeriod,
+  shiftISO,
   COUNTRY_FLAGS,
 } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
 import { Printer, CalendarBlank } from "@phosphor-icons/react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  ResponsiveContainer,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+} from "recharts";
 
-const KPI = ({ label, value, testId }) => (
-  <div
-    className="border border-border rounded-xl p-4 bg-white"
-    data-testid={testId}
-  >
-    <div className="eyebrow">{label}</div>
-    <div className="mt-2 kpi-value text-[22px]">{value}</div>
-  </div>
-);
+const KPIBox = ({ label, value, deltaLM, deltaLY, invert = false, testId }) => {
+  const cls = (d) => {
+    if (d === null || d === undefined) return "delta-flat";
+    const good = invert ? d < 0 : d > 0;
+    const bad = invert ? d > 0 : d < 0;
+    if (Math.abs(d) < 0.05) return "delta-flat";
+    return good ? "delta-up" : bad ? "delta-down" : "delta-flat";
+  };
+  const arrow = (d) => {
+    if (d === null || d === undefined) return "";
+    if (Math.abs(d) < 0.05) return "◆";
+    return d > 0 ? "▲" : "▼";
+  };
+  return (
+    <div
+      className="border border-border rounded-xl p-4 bg-white"
+      data-testid={testId}
+    >
+      <div className="eyebrow">{label}</div>
+      <div className="mt-2 kpi-value num text-[20px]">{value}</div>
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+        <span className={cls(deltaLM)}>
+          <span className="text-muted font-normal mr-1">LM</span>
+          {arrow(deltaLM)} {deltaLM !== null && deltaLM !== undefined ? fmtDelta(deltaLM) : "—"}
+        </span>
+        <span className={cls(deltaLY)}>
+          <span className="text-muted font-normal mr-1">LY</span>
+          {arrow(deltaLY)} {deltaLY !== null && deltaLY !== undefined ? fmtDelta(deltaLY) : "—"}
+        </span>
+      </div>
+    </div>
+  );
+};
 
-const SectionHeader = ({ title }) => (
-  <div className="mt-8 mb-4">
-    <h2 className="accent-heading font-bold text-[17px] text-brand-deep border-b-2 border-brand/40 pb-2">
-      {title}
+const SectionHeader = ({ n, title }) => (
+  <div className="mt-8 mb-3">
+    <h2 className="accent-heading font-bold text-[16px] text-brand-deep border-b-2 border-brand/35 pb-1.5">
+      {n} · {title}
     </h2>
   </div>
 );
 
 const CEOReport = () => {
-  const { dateFrom, dateTo, country } = useFilters();
-  const [kpis, setKpis] = useState(null);
-  const [byCountry, setByCountry] = useState([]);
-  const [summary, setSummary] = useState([]);
+  const { applied } = useFilters();
+  const { dateFrom, dateTo } = applied;
+
+  const [kpi, setKpi] = useState(null);
+  const [kpiLM, setKpiLM] = useState(null);
+  const [kpiLY, setKpiLY] = useState(null);
+  const [countries, setCountries] = useState([]);
+  const [countriesLM, setCountriesLM] = useState([]);
+  const [countriesLY, setCountriesLY] = useState([]);
+  const [sales, setSales] = useState([]);
+  const [salesLM, setSalesLM] = useState([]);
+  const [top, setTop] = useState([]);
+  const [sor, setSor] = useState([]);
+  const [insights, setInsights] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -42,197 +89,524 @@ const CEOReport = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const storeId = countryToStoreId(country);
+    const lm = comparePeriod(dateFrom, dateTo, "last_month");
+    const ly = comparePeriod(dateFrom, dateTo, "last_year");
+    const base = { date_from: dateFrom, date_to: dateTo };
+    const lmP = { date_from: lm.date_from, date_to: lm.date_to };
+    const lyP = { date_from: ly.date_from, date_to: ly.date_to };
+
     Promise.all([
-      api.get("/analytics/kpis-plus", {
-        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
-      }),
-      api.get("/analytics/by-country", {
-        params: { date_from: dateFrom, date_to: dateTo },
-      }),
-      api.get("/sales-summary", {
-        params: { date_from: dateFrom, date_to: dateTo, store_id: storeId },
-      }),
+      api.get("/kpis", { params: base }),
+      api.get("/kpis", { params: lmP }),
+      api.get("/kpis", { params: lyP }),
+      api.get("/country-summary", { params: base }),
+      api.get("/country-summary", { params: lmP }),
+      api.get("/country-summary", { params: lyP }),
+      api.get("/sales-summary", { params: base }),
+      api.get("/sales-summary", { params: lmP }),
+      api.get("/top-skus", { params: { ...base, limit: 10 } }),
+      api.get("/sor", { params: base }),
+      api.get("/analytics/insights", { params: base }),
     ])
-      .then(([k, c, s]) => {
+      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins]) => {
         if (cancelled) return;
-        setKpis(k.data);
-        setByCountry(c.data || []);
-        setSummary(s.data || []);
+        setKpi(k.data);
+        setKpiLM(klm.data);
+        setKpiLY(kly.data);
+        setCountries(cs.data || []);
+        setCountriesLM(cslm.data || []);
+        setCountriesLY(csly.data || []);
+        setSales(s.data || []);
+        setSalesLM(slm.data || []);
+        setTop(t.data || []);
+        setSor(r.data || []);
+        setInsights(ins.data);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo, country]);
+  }, [dateFrom, dateTo]);
 
-  const top5Locations = useMemo(
-    () =>
-      [...summary]
-        .sort((a, b) => (b.gross_sales || 0) - (a.gross_sales || 0))
-        .slice(0, 5),
-    [summary]
+  const delta = (k, prev) => {
+    if (!kpi || !prev) return null;
+    return pctDelta(kpi[k], prev[k]);
+  };
+
+  const cMap = (arr) => {
+    const m = new Map();
+    for (const r of arr) m.set(r.country, r);
+    return m;
+  };
+  const cLMm = useMemo(() => cMap(countriesLM), [countriesLM]);
+  const cLYm = useMemo(() => cMap(countriesLY), [countriesLY]);
+  const salesLMm = useMemo(() => {
+    const m = new Map();
+    for (const r of salesLM) m.set(r.channel, r);
+    return m;
+  }, [salesLM]);
+
+  const top10Loc = useMemo(() => {
+    return [...sales]
+      .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
+      .slice(0, 10);
+  }, [sales]);
+
+  const totalsRow = useMemo(() => {
+    const acc = { country: "TOTAL", total_sales: 0, orders: 0, units_sold: 0, total_returns: 0 };
+    const acc_prev_lm = { total_sales: 0 };
+    const acc_prev_ly = { total_sales: 0 };
+    for (const c of countries) {
+      acc.total_sales += c.total_sales || 0;
+      acc.orders += c.orders || 0;
+      acc.units_sold += c.units_sold || 0;
+      acc.total_returns += c.returns || 0;
+    }
+    for (const c of countriesLM) acc_prev_lm.total_sales += c.total_sales || 0;
+    for (const c of countriesLY) acc_prev_ly.total_sales += c.total_sales || 0;
+    acc.avg_basket = acc.orders ? acc.total_sales / acc.orders : 0;
+    acc.return_rate = kpi?.return_rate ?? 0;
+    acc.lm = acc_prev_lm.total_sales ? pctDelta(acc.total_sales, acc_prev_lm.total_sales) : null;
+    acc.ly = acc_prev_ly.total_sales ? pctDelta(acc.total_sales, acc_prev_ly.total_sales) : null;
+    return acc;
+  }, [countries, countriesLM, countriesLY, kpi]);
+
+  const sortedSor = useMemo(
+    () => [...sor].sort((a, b) => (b.sor_percent || 0) - (a.sor_percent || 0)),
+    [sor]
   );
+  const bestSor = sortedSor.slice(0, 10);
+  const worstSor = sortedSor.slice(-10).reverse();
+  const starsCount = sor.filter((r) => (r.sor_percent || 0) > 80).length;
+  const slowCount = sor.filter((r) => (r.sor_percent || 0) < 20).length;
+  const avgSor = sor.length
+    ? sor.reduce((s, r) => s + (r.sor_percent || 0), 0) / sor.length
+    : 0;
 
-  const scopedCountries = useMemo(() => {
-    if (country === "all") return byCountry;
-    return byCountry.filter((c) => c.country === country);
-  }, [byCountry, country]);
+  // SOR distribution buckets
+  const distBuckets = useMemo(() => {
+    const buckets = [
+      { range: "0–20%", count: 0, color: "#dc2626" },
+      { range: "20–40%", count: 0, color: "#ea580c" },
+      { range: "40–60%", count: 0, color: "#d97706" },
+      { range: "60–80%", count: 0, color: "#059669" },
+      { range: "80–100%", count: 0, color: "#1a5c38" },
+    ];
+    for (const r of sor) {
+      const p = r.sor_percent || 0;
+      if (p < 20) buckets[0].count++;
+      else if (p < 40) buckets[1].count++;
+      else if (p < 60) buckets[2].count++;
+      else if (p < 80) buckets[3].count++;
+      else buckets[4].count++;
+    }
+    return buckets;
+  }, [sor]);
+
+  const top5Returns = useMemo(() => {
+    return [...sales]
+      .filter((r) => (r.returns || 0) > 0)
+      .sort((a, b) => (b.returns || 0) - (a.returns || 0))
+      .slice(0, 5);
+  }, [sales]);
 
   return (
     <div data-testid="ceo-report-page">
-      <div className="flex items-center justify-between pb-5 border-b border-border no-print">
+      <div className="flex items-center justify-between pb-4 border-b border-border no-print mb-4">
         <div>
           <div className="eyebrow">Dashboard · Executive</div>
-          <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+          <h1 className="font-extrabold text-[26px] tracking-tight mt-1">
             CEO Report
           </h1>
         </div>
         <button
           onClick={() => window.print()}
-          className="flex items-center gap-2 bg-brand text-white font-semibold px-4 py-2.5 rounded-xl hover:bg-brand-strong transition-colors"
+          className="btn-primary flex items-center gap-1.5"
           data-testid="print-report-btn"
         >
-          <Printer size={16} weight="bold" /> Print / Export PDF
+          <Printer size={14} weight="bold" /> Print / Export PDF
         </button>
       </div>
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
 
-      {!loading && !error && kpis && (
+      {!loading && !error && kpi && (
         <div
-          className="print-page mt-6 bg-white border border-border rounded-2xl p-8 md:p-10 max-w-[980px] mx-auto"
+          className="print-page bg-white border border-border rounded-2xl p-8 md:p-10 max-w-[1000px] mx-auto"
           data-testid="ceo-report-content"
         >
-          <div className="flex items-start justify-between gap-6 pb-6 border-b border-border">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-6 pb-5 border-b border-border">
             <div>
               <div className="eyebrow text-brand-deep">Vivo Fashion Group</div>
-              <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+              <h1 className="font-extrabold text-[26px] tracking-tight mt-1">
                 Executive Sales Report
               </h1>
-              <div className="text-[13px] text-muted mt-2 flex items-center gap-2">
-                <CalendarBlank size={14} />
-                <span>
-                  {fmtDate(dateFrom)} &nbsp;→&nbsp; {fmtDate(dateTo)}
-                  {country !== "all" ? ` · ${country}` : ""}
+              <div className="text-[12.5px] text-muted mt-2 flex items-center gap-3">
+                <span className="flex items-center gap-1.5">
+                  <CalendarBlank size={13} />
+                  {fmtDate(dateFrom)} → {fmtDate(dateTo)}
                 </span>
+                <span>· Generated {fmtDate(new Date().toISOString())}</span>
               </div>
             </div>
-            <div className="w-14 h-14 rounded-2xl bg-brand text-white grid place-items-center font-extrabold text-2xl">
+            <div className="w-12 h-12 rounded-xl bg-brand text-white grid place-items-center font-extrabold text-xl">
               V
             </div>
           </div>
 
-          {/* Section 1 · Headline KPIs */}
-          <SectionHeader title="Headline KPIs" />
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <KPI
-              label="Gross Sales"
-              value={fmtKES(kpis.total_gross_sales)}
-              testId="ceo-kpi-gross"
+          {/* Section 1 — Group Performance Scorecard */}
+          <SectionHeader n="1" title="Group Performance Scorecard" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+            <KPIBox
+              label="Total Sales"
+              value={fmtKES(kpi.total_sales)}
+              deltaLM={delta("total_sales", kpiLM)}
+              deltaLY={delta("total_sales", kpiLY)}
+              testId="ceo-k-total"
             />
-            <KPI
+            <KPIBox
               label="Net Sales"
-              value={fmtKES(kpis.total_net_sales)}
-              testId="ceo-kpi-net"
+              value={fmtKES(kpi.net_sales)}
+              deltaLM={delta("net_sales", kpiLM)}
+              deltaLY={delta("net_sales", kpiLY)}
+              testId="ceo-k-net"
             />
-            <KPI
-              label="Orders"
-              value={fmtNum(kpis.total_orders)}
-              testId="ceo-kpi-orders"
+            <KPIBox
+              label="Gross Sales"
+              value={fmtKES(kpi.gross_sales)}
+              deltaLM={delta("gross_sales", kpiLM)}
+              deltaLY={delta("gross_sales", kpiLY)}
+              testId="ceo-k-gross"
             />
-            <KPI
-              label="Units Sold"
-              value={fmtNum(kpis.units_clean ?? kpis.total_units)}
-              testId="ceo-kpi-units"
+            <KPIBox
+              label="Total Orders"
+              value={fmtNum(kpi.total_orders)}
+              deltaLM={delta("total_orders", kpiLM)}
+              deltaLY={delta("total_orders", kpiLY)}
+              testId="ceo-k-orders"
             />
-            <KPI
+            <KPIBox
+              label="Total Units"
+              value={fmtNum(kpi.total_units)}
+              deltaLM={delta("total_units", kpiLM)}
+              deltaLY={delta("total_units", kpiLY)}
+              testId="ceo-k-units"
+            />
+            <KPIBox
               label="Avg Basket Size"
-              value={fmtKES(kpis.avg_basket_size)}
-              testId="ceo-kpi-basket"
+              value={fmtKES(kpi.avg_basket_size)}
+              deltaLM={delta("avg_basket_size", kpiLM)}
+              deltaLY={delta("avg_basket_size", kpiLY)}
+              testId="ceo-k-basket"
             />
-            <KPI
+            <KPIBox
               label="Avg Selling Price"
-              value={fmtKES(kpis.avg_selling_price)}
-              testId="ceo-kpi-asp"
+              value={fmtKES(kpi.avg_selling_price)}
+              deltaLM={delta("avg_selling_price", kpiLM)}
+              deltaLY={delta("avg_selling_price", kpiLY)}
+              testId="ceo-k-asp"
             />
-            <KPI
-              label="Sell Through"
-              value={fmtPct(kpis.sell_through_rate)}
-              testId="ceo-kpi-st"
-            />
-            <KPI
+            <KPIBox
               label="Return Rate"
-              value={fmtPct(kpis.return_rate)}
-              testId="ceo-kpi-return"
+              value={fmtPct(kpi.return_rate, 2)}
+              deltaLM={delta("return_rate", kpiLM)}
+              deltaLY={delta("return_rate", kpiLY)}
+              invert
+              testId="ceo-k-rr"
             />
           </div>
 
-          {/* Section 2 · Country Performance */}
-          <SectionHeader title="Country Performance" />
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {scopedCountries.map((c) => (
-              <div
-                key={c.country}
-                className="border border-border rounded-xl p-5"
-                data-testid={`ceo-country-${c.country}`}
-              >
-                <div className="flex items-center gap-2 text-[15px] font-bold">
-                  <span>{COUNTRY_FLAGS[c.country] || "🌍"}</span>
-                  <span>{c.country}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3 mt-4">
-                  <div>
-                    <div className="eyebrow">Gross Sales</div>
-                    <div className="font-bold mt-0.5">{fmtKES(c.gross_sales)}</div>
-                  </div>
-                  <div>
-                    <div className="eyebrow">Orders</div>
-                    <div className="font-bold mt-0.5">{fmtNum(c.total_orders)}</div>
-                  </div>
-                  <div>
-                    <div className="eyebrow">Units</div>
-                    <div className="font-bold mt-0.5">{fmtNum(c.units_sold)}</div>
-                  </div>
-                  <div>
-                    <div className="eyebrow">Avg Basket</div>
-                    <div className="font-bold mt-0.5">{fmtKES(c.avg_basket_size)}</div>
-                  </div>
-                </div>
-              </div>
-            ))}
+          {/* Section 2 — Country Performance */}
+          <SectionHeader n="2" title="Country Performance" />
+          <div className="overflow-x-auto">
+            <table className="w-full data" data-testid="ceo-country-table">
+              <thead>
+                <tr>
+                  <th>Country</th>
+                  <th className="text-right">Total Sales</th>
+                  <th className="text-right">vs LM</th>
+                  <th className="text-right">vs LY</th>
+                  <th className="text-right">Orders</th>
+                  <th className="text-right">Units</th>
+                  <th className="text-right">Avg Basket</th>
+                  <th className="text-right">Returns</th>
+                </tr>
+              </thead>
+              <tbody>
+                {["Kenya", "Uganda", "Rwanda", "Online"].map((cname) => {
+                  const c = countries.find((x) => x.country === cname);
+                  const lm = cLMm.get(cname);
+                  const ly = cLYm.get(cname);
+                  const dLM = c && lm ? pctDelta(c.total_sales, lm.total_sales) : null;
+                  const dLY = c && ly ? pctDelta(c.total_sales, ly.total_sales) : null;
+                  return (
+                    <tr key={cname}>
+                      <td className="font-medium">
+                        {COUNTRY_FLAGS[cname] || "🌍"} {cname}
+                      </td>
+                      <td className="text-right num font-bold">{fmtKES(c?.total_sales)}</td>
+                      <td className={`text-right num ${dLM > 0 ? "delta-up" : dLM < 0 ? "delta-down" : "delta-flat"}`}>
+                        {dLM !== null ? `${dLM > 0 ? "▲" : "▼"} ${fmtDelta(dLM)}` : "—"}
+                      </td>
+                      <td className={`text-right num ${dLY > 0 ? "delta-up" : dLY < 0 ? "delta-down" : "delta-flat"}`}>
+                        {dLY !== null ? `${dLY > 0 ? "▲" : "▼"} ${fmtDelta(dLY)}` : "—"}
+                      </td>
+                      <td className="text-right num">{fmtNum(c?.orders)}</td>
+                      <td className="text-right num">{fmtNum(c?.units_sold)}</td>
+                      <td className="text-right num">{fmtKES(c?.avg_basket_size)}</td>
+                      <td className="text-right num">{fmtKES(c?.returns)}</td>
+                    </tr>
+                  );
+                })}
+                <tr className="bg-panel font-bold">
+                  <td>TOTAL</td>
+                  <td className="text-right num">{fmtKES(totalsRow.total_sales)}</td>
+                  <td className={`text-right num ${totalsRow.lm > 0 ? "delta-up" : totalsRow.lm < 0 ? "delta-down" : "delta-flat"}`}>
+                    {totalsRow.lm !== null ? `${totalsRow.lm > 0 ? "▲" : "▼"} ${fmtDelta(totalsRow.lm)}` : "—"}
+                  </td>
+                  <td className={`text-right num ${totalsRow.ly > 0 ? "delta-up" : totalsRow.ly < 0 ? "delta-down" : "delta-flat"}`}>
+                    {totalsRow.ly !== null ? `${totalsRow.ly > 0 ? "▲" : "▼"} ${fmtDelta(totalsRow.ly)}` : "—"}
+                  </td>
+                  <td className="text-right num">{fmtNum(totalsRow.orders)}</td>
+                  <td className="text-right num">{fmtNum(totalsRow.units_sold)}</td>
+                  <td className="text-right num">{fmtKES(totalsRow.avg_basket)}</td>
+                  <td className="text-right num">{fmtKES(totalsRow.total_returns)}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
-          {/* Section 3 · Top 5 Locations */}
-          <SectionHeader title="Top 5 Locations" />
-          <table className="w-full data" data-testid="ceo-top-locations">
+          {/* Section 3 — Top 10 Locations */}
+          <SectionHeader n="3" title="Top 10 Locations" />
+          <div className="overflow-x-auto">
+            <table className="w-full data" data-testid="ceo-locations-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Location</th>
+                  <th>Country</th>
+                  <th className="text-right">Total Sales</th>
+                  <th className="text-right">vs LM</th>
+                  <th className="text-right">Orders</th>
+                  <th className="text-right">Units</th>
+                  <th className="text-right">Avg Basket</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top10Loc.map((l, i) => {
+                  const prev = salesLMm.get(l.channel);
+                  const d = prev ? pctDelta(l.total_sales, prev.total_sales) : null;
+                  const basket = l.orders ? l.total_sales / l.orders : l.avg_basket_size;
+                  return (
+                    <tr key={l.channel + i}>
+                      <td className="text-muted num">{i + 1}</td>
+                      <td className="font-medium">{l.channel}</td>
+                      <td className="text-muted">
+                        {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
+                      </td>
+                      <td className="text-right num font-bold">{fmtKES(l.total_sales)}</td>
+                      <td className={`text-right num ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : "delta-flat"}`}>
+                        {d !== null ? `${d > 0 ? "▲" : "▼"} ${fmtDelta(d)}` : "—"}
+                      </td>
+                      <td className="text-right num">{fmtNum(l.orders)}</td>
+                      <td className="text-right num">{fmtNum(l.units_sold)}</td>
+                      <td className="text-right num">{fmtKES(basket)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Section 4 — Top 10 SKUs */}
+          <SectionHeader n="4" title="Top 10 Best-Selling SKUs" />
+          <div className="overflow-x-auto">
+            <table className="w-full data" data-testid="ceo-top-skus">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>SKU</th>
+                  <th>Product</th>
+                  <th>Brand</th>
+                  <th>Collection</th>
+                  <th className="text-right">Units</th>
+                  <th className="text-right">Total Sales</th>
+                  <th className="text-right">Avg Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top.map((s, i) => (
+                  <tr key={s.sku + i}>
+                    <td className="text-muted num">{i + 1}</td>
+                    <td className="font-mono text-[11px] text-muted">{s.sku}</td>
+                    <td className="font-medium max-w-[300px] truncate" title={s.product_name}>
+                      {s.product_name}
+                    </td>
+                    <td>{s.brand || "—"}</td>
+                    <td className="text-muted">{s.collection || "—"}</td>
+                    <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
+                    <td className="text-right num font-bold">{fmtKES(s.total_sales)}</td>
+                    <td className="text-right num">{fmtKES(s.avg_price)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Section 5 — SOR */}
+          <SectionHeader n="5" title="SOR Analysis · Head of Products" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4">
+            <KPIBox label="Styles tracked" value={fmtNum(sor.length)} testId="ceo-sor-tracked" />
+            <KPIBox label="Avg SOR" value={fmtPct(avgSor)} testId="ceo-sor-avg" />
+            <KPIBox label="⭐ Stars (>80%)" value={fmtNum(starsCount)} testId="ceo-sor-stars" />
+            <KPIBox label="🐌 Slow (<20%)" value={fmtNum(slowCount)} invert testId="ceo-sor-slow" />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <h3 className="font-bold text-[13px] mb-2 text-brand-deep">Top 10 Best SOR</h3>
+              <table className="w-full data">
+                <thead>
+                  <tr>
+                    <th>Style</th>
+                    <th>Collection</th>
+                    <th className="text-right">Units</th>
+                    <th className="text-right">Stock</th>
+                    <th className="text-right">SOR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bestSor.map((r, i) => (
+                    <tr key={(r.style_name || "") + i}>
+                      <td className="font-medium max-w-[180px] truncate" title={r.style_name}>
+                        {r.style_name}
+                      </td>
+                      <td className="text-muted text-[11.5px]">{r.collection}</td>
+                      <td className="text-right num">{fmtNum(r.units_sold)}</td>
+                      <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                      <td className="text-right"><span className="pill-green">{fmtPct(r.sor_percent)}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3 className="font-bold text-[13px] mb-2 text-danger">Bottom 10 Worst SOR</h3>
+              <table className="w-full data">
+                <thead>
+                  <tr>
+                    <th>Style</th>
+                    <th>Collection</th>
+                    <th className="text-right">Units</th>
+                    <th className="text-right">Stock</th>
+                    <th className="text-right">SOR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {worstSor.map((r, i) => (
+                    <tr key={(r.style_name || "") + i} style={{ background: "rgba(220,38,38,0.04)" }}>
+                      <td className="font-medium max-w-[180px] truncate" title={r.style_name}>
+                        {r.style_name}
+                      </td>
+                      <td className="text-muted text-[11.5px]">{r.collection}</td>
+                      <td className="text-right num">{fmtNum(r.units_sold)}</td>
+                      <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                      <td className="text-right"><span className="pill-red">{fmtPct(r.sor_percent)}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="mt-5 border border-border rounded-xl p-4 bg-white">
+            <h3 className="font-bold text-[13px] mb-2">SOR distribution</h3>
+            <div style={{ width: "100%", height: 220 }}>
+              <ResponsiveContainer>
+                <BarChart data={distBuckets} margin={{ top: 10, left: 0, right: 10, bottom: 10 }}>
+                  <CartesianGrid vertical={false} />
+                  <XAxis dataKey="range" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v) => fmtNum(v)} />
+                  <Bar dataKey="count" radius={[5, 5, 0, 0]}>
+                    {distBuckets.map((b, i) => (
+                      <Cell key={i} fill={b.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Section 6 — Returns */}
+          <SectionHeader n="6" title="Returns Analysis" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-3">
+            <KPIBox label="Total Returns" value={fmtKES(kpi.total_returns)} invert testId="ceo-ret-total" />
+            <KPIBox label="Return Rate" value={fmtPct(kpi.return_rate, 2)} invert testId="ceo-ret-rate" />
+            <KPIBox
+              label="Returned Share of Gross"
+              value={fmtPct(
+                kpi.gross_sales
+                  ? (kpi.total_returns / kpi.gross_sales) * 100
+                  : 0,
+                2
+              )}
+              invert
+              testId="ceo-ret-share"
+            />
+          </div>
+          <h3 className="font-bold text-[13px] mb-2">Top 5 locations by returns</h3>
+          <table className="w-full data" data-testid="ceo-returns-table">
             <thead>
               <tr>
                 <th>#</th>
                 <th>Location</th>
-                <th className="text-right">Gross Sales</th>
-                <th className="text-right">Orders</th>
-                <th className="text-right">Units</th>
+                <th>Country</th>
+                <th className="text-right">Returns</th>
+                <th className="text-right">Total Sales</th>
+                <th className="text-right">Return Rate</th>
               </tr>
             </thead>
             <tbody>
-              {top5Locations.map((l, i) => (
-                <tr key={l.location}>
-                  <td className="text-muted">{i + 1}</td>
-                  <td className="font-medium">{l.location}</td>
-                  <td className="text-right font-bold">{fmtKES(l.gross_sales)}</td>
-                  <td className="text-right">{fmtNum(l.total_orders)}</td>
-                  <td className="text-right">{fmtNum(l.units_sold)}</td>
+              {top5Returns.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="text-muted text-center py-4">
+                    No returns recorded in this period.
+                  </td>
                 </tr>
-              ))}
+              )}
+              {top5Returns.map((l, i) => {
+                const rr = l.gross_sales ? (l.returns / l.gross_sales) * 100 : 0;
+                return (
+                  <tr key={l.channel + i}>
+                    <td className="text-muted num">{i + 1}</td>
+                    <td className="font-medium">{l.channel}</td>
+                    <td className="text-muted">
+                      {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
+                    </td>
+                    <td className="text-right num font-bold text-danger">{fmtKES(l.returns)}</td>
+                    <td className="text-right num">{fmtKES(l.total_sales)}</td>
+                    <td className="text-right num">{fmtPct(rr, 2)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
 
-          <div className="mt-10 pt-5 border-t border-border text-[11px] text-muted text-center">
-            Confidential · Vivo Fashion Group · Generated{" "}
-            {fmtDate(new Date().toISOString())}
+          {/* Section 7 — Insights */}
+          <SectionHeader n="7" title="Executive Insights" />
+          <div
+            className="border border-brand/30 bg-brand-soft rounded-xl p-5 text-[13.5px] leading-relaxed text-foreground"
+            data-testid="ceo-insights"
+          >
+            {insights?.text || "Generating insights…"}
+          </div>
+
+          <div className="mt-8 pt-4 border-t border-border text-[11px] text-muted text-center">
+            Confidential · Vivo Fashion Group · Prepared for CEO & Head of Products
           </div>
         </div>
       )}
