@@ -1,52 +1,37 @@
-import { useEffect } from "react";
+import React from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import Sidebar from "@/components/Sidebar";
+import Overview from "@/pages/Overview";
+import Sales from "@/pages/Sales";
+import Inventory from "@/pages/Inventory";
+import Locations from "@/pages/Locations";
+import { FiltersProvider } from "@/lib/filters";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+const Shell = ({ children }) => (
+  <div className="flex min-h-screen bg-background text-foreground" data-testid="app-shell">
+    <Sidebar />
+    <main className="flex-1 min-w-0 px-5 md:px-8 lg:px-12 py-8 max-w-[1600px] mx-auto w-full">
+      {children}
+    </main>
+  </div>
+);
 
 function App() {
   return (
     <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <FiltersProvider>
+        <BrowserRouter>
+          <Shell>
+            <Routes>
+              <Route path="/" element={<Overview />} />
+              <Route path="/sales" element={<Sales />} />
+              <Route path="/inventory" element={<Inventory />} />
+              <Route path="/locations" element={<Locations />} />
+            </Routes>
+          </Shell>
+        </BrowserRouter>
+      </FiltersProvider>
     </div>
   );
 }
