@@ -1,73 +1,143 @@
-# Vivo Fashion Group BI Dashboard — PRD (v4)
+# Vivo Fashion Group BI Dashboard — PRD (v6)
+
+A read-only, multi-country retail BI proxy on top of the Vivo BI API.
+Proxies + aggregates 14+ upstream endpoints into 7 operating views.
 
 ## Theme
-Bloomberg-terminal-style clean white (#ffffff background, #f8f9fa panel
-cards), dark green #1a5c38 accents + bright #00c853 highlights, dark grey
-#1a1a1a text, 12px rounded corners, subtle drop shadows, Plus Jakarta Sans.
+Clean white (#ffffff background, #f8f9fa panel cards), dark green #1a5c38
+accents, bright #00c853 highlights, dark grey text, 12px radius, Plus Jakarta
+Sans. Currency ALWAYS in KES (never $).
 
-## Navigation — Top bar (horizontal tabs)
-- Overview · Locations · Inventory · SOR · CEO Report
-- Persistent filter bar below with:
-  - Quick presets (Today / This Week / This Month / Last Month / This Year / Custom)
-  - Date range inputs
-  - Country multi-select with checkboxes (Kenya / Uganda / Rwanda / Online)
-  - Channel multi-select with checkboxes, grouped by country
-  - Compare toggle (None / Last Month / Last Year)
-  - Apply Filters button (pending vs applied state)
+## Navigation (top bar, horizontal tabs)
+1. Overview
+2. Locations
+3. **Footfall** *(new v6)*
+4. Products
+5. Inventory
+6. Customers
+7. CEO Report
+
+## Filter bar (persistent, auto-applying)
+Presets: **Yesterday** *(new v6)* · Today · This Week · This Month · Last
+Month · This Year · Custom.
+- `This Month` now ends at **yesterday** (data is not live).
+- `Custom` uses date inputs.
+- Country multi-select (Kenya / Uganda / Rwanda / Online).
+- Channel multi-select, grouped by country.
+- Compare toggle: None · vs Last Month · vs Last Year.
 
 ## Upstream API
 `https://vivo-bi-api-666430550422.europe-west1.run.app`
-Endpoints used: `/`, `/locations`, `/kpis`, `/sales-summary`, `/top-skus`,
-`/sor`, `/daily-trend`, `/inventory`, `/country-summary`. Query params:
-`country`, `channel`, `date_from`, `date_to`, `limit`.
+Used: `/`, `/locations`, `/kpis`, `/sales-summary`, `/top-skus`, `/sor`,
+`/daily-trend`, `/inventory`, `/country-summary`, `/stock-to-sales`,
+`/customers`, `/customer-trend`, `/footfall`, `/subcategory-sales`,
+`/subcategory-stock-sales`. Params: `country`, `channel`, `date_from`,
+`date_to`, `limit`.
 
-## Backend (FastAPI)
-- Proxies all 9 upstream endpoints. Accepts **comma-separated** country &
-  channel values and aggregates with parallel upstream calls:
-  - KPI aggregation recomputes avg_basket_size, avg_selling_price, return_rate.
-  - SKU aggregation merges same-SKU rows and recomputes avg_price.
-  - SOR aggregation merges same-style rows and recomputes sor_percent.
-- Analytics: `/inventory-summary`, `/low-stock`, `/returns` (top channels by
-  returns KES), `/insights` (auto-generated CEO paragraph: top country %,
-  top store, RR vs last month, basket size change).
+## Backend (FastAPI — `/app/backend/server.py`)
+- All upstream endpoints proxied through `/api/*`.
+- Accepts **comma-separated** country & channel values; fans out in parallel
+  and aggregates (KPI avg recompute, SOR recompute, SKU merge, etc.).
+- Analytics:
+  - `/api/analytics/inventory-summary` — by country / location / product type.
+  - `/api/analytics/low-stock` — threshold flag.
+  - `/api/analytics/returns` — top channels by returns.
+  - `/api/analytics/insights` — auto-generated CEO narrative.
+  - **`/api/analytics/new-styles`** *(new v6)* — styles whose first-ever sale
+    is within last 90 days (relative to `date_to`). Uses `/top-skus`
+    `limit=10000` for historical existence check (bypasses `/sor` 200-row cap).
 
 ## Pages
+### Overview
+- Row 1 KPIs: Total Sales · Net Sales · Orders · Units.
+- Row 2 KPIs: Basket · ASP · Return Rate · Return Amount.
+- **Row 3 KPIs *(new v6)*: Total Footfall · Conversion Rate** (with LM/LY
+  deltas; excludes locations with conv >50% — data-quality rule).
+- Highlight cards: Top Country · Top Location · Best Conversion Rate.
+- Top 15 locations bar chart, country split donut, daily trend (with compare
+  dotted line), subcategory sales bar, Top 20 styles table.
 
-**Overview** — 4 big KPIs + 5 smaller + 3 green highlight cards (Return
-Rate · Top Country · Top Location), Top-15 channels horizontal bar, country
-donut w/ KES + %, daily trend line with prior-period dashed overlay, Top 20
-SKUs sortable table.
+### Locations
+- KPIs, sortable location cards, drill-down to top 10 SKUs at a channel.
+- Footfall table below (excludes conv >50%).
 
-**Locations** — 4 summary KPIs, sort chips, store cards color-coded green
-(above avg) / red (below avg), comparison delta badge per card. Click card →
-drill-down to that channel's top 10 SKUs.
+### Footfall *(new v6)*
+- 4 KPIs: Total Footfall, Orders, Group Conversion, Sales/Visitor (with LM/LY
+  deltas).
+- Charts: Footfall by location, Conversion by location (red/green vs group
+  avg), Sales/visitor bars.
+- Location-level table with Δ Footfall vs compare period.
+- Excluded-locations panel (conv >50% — e.g. Vivo Junction counter issue).
 
-**Inventory** — 4 KPIs (Total Units, Active SKUs, Low Stock ≤2, Warehouse
-FG Stock), brand/type/product filters, Stock by location bar, Stock by
-product type bar, Low-stock alerts table, full inventory table (first 300).
+### Products
+- 4 KPIs: Styles, Units, Sales, ASP.
+- **Subcategory tornado chart: Stock (blue, LEFT) vs Sales (green, RIGHT)**
+  *(re-ordered v6)*.
+- SOR KPIs & style-level SOR table with search.
+- Top 20 SKUs table — product name + collection (SKU identifier).
+- **New Styles Performance *(new v6)*** — styles whose first sale is < 90 days
+  old, with period + since-launch units & sales.
 
-**SOR** — 4 tier KPIs (Avg / >60% / 30–60% / <30%), search & brand/type
-filters, color-coded Top-20 units bar chart, sortable SOR table with red /
-amber / green pills.
+### Inventory
+- 4 KPIs: Units, Active SKUs, **Low-Stock Styles (≤10)** *(v6)*, Locations.
+- Brand / product-type / search filters.
+- Stock by location + by product type charts.
+- **Understocked subcategories panel *(new v6)*** — where % of total sales > %
+  of total stock (red if gap ≥3 pts, amber ≥1 pt).
+- **Low-stock alerts by STYLE *(new v6)*** — styles with ≤10 total available
+  units summed across all their SKUs in the scope.
+- Stock-to-Sales ratio table (red >10×, amber 3-10×, green 1-3×, blue <1×).
+- Inventory drill-down table.
 
-**CEO Report** — 7-section executive report, white print-ready layout:
-1. Group Performance Scorecard (8 KPIs with vs LM + vs LY)
-2. Country Performance table (Kenya / Uganda / Rwanda / Online + TOTAL)
-3. Top 10 Locations ranked (with vs LM column)
-4. Top 10 Best-Selling SKUs
-5. SOR analysis with Best 10, Worst 10 (highlighted red), SOR distribution bar
-6. Returns Analysis — totals + Top 5 locations by returns
-7. Auto-generated Executive Insights text box
-Print / Export PDF button applies black-on-white print styles.
+### Customers
+- KPIs: Total · New · Repeat · Returning · Avg Spend · Avg Orders.
+- **Conditional churn *(v6)*:**
+  - Period ≥ 90 days → Churn KPI + Churn-box shown (churned / total with rate).
+  - Period < 90 days → Churn hidden, "churn unavailable" note; donut shows
+    only New vs Repeat.
+- Daily new vs returning line chart, by-country bar chart.
 
-## Verified (iteration 4 · 2026-04-17)
-- ✅ 26/26 backend tests passing.
-- ✅ Multi-value aggregation verified (Kenya+Uganda = Kenya sum + Uganda sum).
-- ✅ All 5 pages render. Screenshots taken.
-- ✅ Sort fixes applied to single-country /top-skus and /sor.
+### CEO Report
+9 print-friendly sections with auto-generated narrative, including top
+country, top store, return rate vs LM, avg basket delta.
 
-## Backlog
-- P1: CSV export for all data tables.
-- P2: Channel-level compare metrics in Locations (not just total_sales).
-- P2: Hover tooltip on charts showing more context.
-- P3: Schedule CEO Report email export.
+## Data rules
+- Currency: KES only with commas; never `$`.
+- Footfall: exclude locations with conversion_rate > 50% (Vivo Junction data
+  quality issue).
+- Churn: purchased in period but no purchase in the last 3 months; require
+  selected period ≥ 3 months.
+- New Style: first-ever sale within last 90 days of `date_to`.
+- Understocked Subcategory: `% units sold − % total stock > 0.5`.
+
+## Architecture
+```
+/app
+├── backend/
+│   ├── .env                # VIVO_API_BASE, MONGO_URL
+│   └── server.py           # Proxy + aggregation + analytics
+└── frontend/src/
+    ├── App.js              # Router
+    ├── lib/{api.js,filters.jsx}
+    ├── components/{Sidebar,FilterBar,KPICard,MultiSelect,common}.jsx
+    └── pages/{Overview,Locations,Footfall,Products,Inventory,Customers,CEOReport}.jsx
+```
+
+## Changelog
+- **v6 (Apr 2026)**
+  - Added Footfall + Conversion KPIs on Overview.
+  - Added **Yesterday** preset; `This Month` ends yesterday.
+  - Added Footfall Analysis page.
+  - Added New Styles Performance section (Products).
+  - Added Understocked Subcategories panel & Low-stock by Style (Inventory).
+  - Reversed tornado chart order (Stock left, Sales right).
+  - Churn logic gated on ≥90-day selected period.
+  - New backend endpoint `/api/analytics/new-styles`.
+- v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
+  formatting, comparison toggle.
+
+## Backlog / P1
+- CEO-report narrative: tune wording for new-styles + understock callouts.
+- Pagination / virtualization for inventory & SOR tables when row count > 500.
+- Persist filter state in URL query string (shareable links).
+- Optional CSV export for the footfall & new-styles tables.
