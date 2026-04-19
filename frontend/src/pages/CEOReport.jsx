@@ -84,6 +84,7 @@ const CEOReport = () => {
   const [insights, setInsights] = useState(null);
   const [subcats, setSubcats] = useState([]);
   const [footfall, setFootfall] = useState([]);
+  const [newStyles, setNewStyles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -111,8 +112,9 @@ const CEOReport = () => {
       api.get("/analytics/insights", { params: base }),
       api.get("/subcategory-stock-sales", { params: base }),
       api.get("/footfall", { params: base }),
+      api.get("/analytics/new-styles", { params: base }),
     ])
-      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins, sc, ff]) => {
+      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins, sc, ff, ns]) => {
         if (cancelled) return;
         setKpi(k.data);
         setKpiLM(klm.data);
@@ -127,6 +129,7 @@ const CEOReport = () => {
         setInsights(ins.data);
         setSubcats(sc.data || []);
         setFootfall(ff.data || []);
+        setNewStyles(ns.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -216,6 +219,17 @@ const CEOReport = () => {
       .sort((a, b) => (b.returns || 0) - (a.returns || 0))
       .slice(0, 5);
   }, [sales]);
+
+  // Top 3 new-style rising stars by period sales; flag those with SOR > 60%
+  const risingStars = useMemo(() => {
+    return [...newStyles]
+      .sort((a, b) => (b.total_sales_period || 0) - (a.total_sales_period || 0))
+      .slice(0, 3)
+      .map((r) => ({
+        ...r,
+        doubleDown: (r.sor_percent || 0) > 60,
+      }));
+  }, [newStyles]);
 
   return (
     <div data-testid="ceo-report-page">
@@ -428,17 +442,17 @@ const CEOReport = () => {
             </table>
           </div>
 
-          {/* Section 4 — Top 10 SKUs */}
+          {/* Section 4 — Top 10 Best-Selling Styles */}
           <SectionHeader n="4" title="Top 10 Best-Selling Styles" />
           <div className="overflow-x-auto">
             <table className="w-full data" data-testid="ceo-top-skus">
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>SKU</th>
-                  <th>Product</th>
+                  <th>Product Name</th>
                   <th>Brand</th>
                   <th>Collection</th>
+                  <th>Subcategory</th>
                   <th className="text-right">Units</th>
                   <th className="text-right">Total Sales</th>
                   <th className="text-right">Avg Price</th>
@@ -446,14 +460,14 @@ const CEOReport = () => {
               </thead>
               <tbody>
                 {top.map((s, i) => (
-                  <tr key={s.sku + i}>
+                  <tr key={(s.style_name || "") + i}>
                     <td className="text-muted num">{i + 1}</td>
-                    <td className="font-mono text-[11px] text-muted">{s.sku}</td>
-                    <td className="font-medium max-w-[300px] truncate" title={s.product_name}>
-                      {s.product_name}
+                    <td className="font-medium max-w-[300px] truncate" title={s.style_name}>
+                      {s.style_name || "—"}
                     </td>
                     <td>{s.brand || "—"}</td>
                     <td className="text-muted">{s.collection || "—"}</td>
+                    <td className="text-muted">{s.product_type || "—"}</td>
                     <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
                     <td className="text-right num font-bold">{fmtKES(s.total_sales)}</td>
                     <td className="text-right num">{fmtKES(s.avg_price)}</td>
@@ -671,8 +685,80 @@ const CEOReport = () => {
             </table>
           </div>
 
-          {/* Section 9 — Insights */}
-          <SectionHeader n="9" title="Executive Insights" />
+          {/* Section 9 — New Styles: Rising Stars */}
+          <SectionHeader n="9" title="New Styles · Rising Stars" />
+          <p className="text-[12.5px] text-muted -mt-1 mb-3">
+            Top 3 new styles (first sale within last 90 days) ranked by period sales.
+            Styles with SOR &gt; 60% are flagged <span className="font-semibold text-brand-deep">⚡ double-down candidates</span> —
+            demand is outstripping supply, consider doubling production.
+          </p>
+          {risingStars.length === 0 ? (
+            <div className="text-muted text-[13px] py-4 text-center border border-dashed border-border rounded-xl">
+              No new-style launches in the selected period.
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="ceo-rising-stars">
+                {risingStars.map((r, i) => (
+                  <div
+                    key={(r.style_name || "") + i}
+                    className={`rounded-xl p-4 border ${r.doubleDown ? "border-brand bg-brand-soft" : "border-border bg-white"}`}
+                    data-testid={`rising-star-${i + 1}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="eyebrow text-brand-deep">#{i + 1} Rising star</div>
+                      {r.doubleDown && (
+                        <span className="pill-green text-[10px]" data-testid={`double-down-${i + 1}`}>
+                          ⚡ Double-down
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1.5 font-bold text-[14px] leading-tight" title={r.style_name}>
+                      {r.style_name}
+                    </div>
+                    <div className="text-[11.5px] text-muted mt-0.5">
+                      {r.brand || "—"} · {r.collection || "—"}
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
+                      <div>
+                        <div className="eyebrow">Sales (period)</div>
+                        <div className="num font-bold text-brand-deep">{fmtKES(r.total_sales_period)}</div>
+                      </div>
+                      <div>
+                        <div className="eyebrow">Units</div>
+                        <div className="num font-semibold">{fmtNum(r.units_sold_period)}</div>
+                      </div>
+                      <div>
+                        <div className="eyebrow">Current Stock</div>
+                        <div className="num">{fmtNum(r.current_stock)}</div>
+                      </div>
+                      <div>
+                        <div className="eyebrow">SOR</div>
+                        <div>
+                          <span className={(r.sor_percent || 0) >= 60 ? "pill-green" : (r.sor_percent || 0) >= 30 ? "pill-amber" : "pill-red"}>
+                            {fmtPct(r.sor_percent)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {risingStars.some((r) => r.doubleDown) && (
+                <div className="mt-3 p-3 rounded-lg bg-brand-soft border border-brand/30 text-[12.5px] text-foreground">
+                  <span className="font-bold text-brand-deep">Action for merchandising: </span>
+                  {risingStars
+                    .filter((r) => r.doubleDown)
+                    .map((r) => r.style_name)
+                    .join(", ")}
+                  {" — SOR already above 60% and climbing. Worth doubling production before stockout."}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Section 10 — Insights */}
+          <SectionHeader n="10" title="Executive Insights" />
           <div
             className="border border-brand/30 bg-brand-soft rounded-xl p-5 text-[13.5px] leading-relaxed text-foreground"
             data-testid="ceo-insights"

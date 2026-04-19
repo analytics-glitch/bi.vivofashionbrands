@@ -486,6 +486,82 @@ async def analytics_inventory_summary(
     }
 
 
+@api_router.get("/analytics/churn")
+async def analytics_churn(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Churn = customers who purchased in the selected period but have NOT
+    returned in the last 3 months OF THE PERIOD (i.e. last 90 days of
+    [date_from, date_to]).
+
+    Uses set math on upstream /customers aggregates:
+       churned = customers_full_period − customers_last_90d_of_period
+
+    If period length < 90 days, churn is not meaningful → returns null.
+    """
+    from datetime import datetime, timedelta
+
+    if not date_from or not date_to:
+        raise HTTPException(status_code=400, detail="date_from and date_to required")
+    try:
+        df = datetime.fromisoformat(date_from)
+        dt = datetime.fromisoformat(date_to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid date format")
+    period_days = (dt - df).days + 1
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def count_customers(df_s: str, dt_s: str) -> int:
+        """Sum unique-per-country customers across countries/channels.
+        Note: cross-country sum slightly overcounts customers who shop in
+        multiple markets, but upstream gives no cross-market de-dupe."""
+        base = {"date_from": df_s, "date_to": dt_s}
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/customers", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            })
+            return int(data.get("total_customers") or 0)
+        results = await multi_fetch("/customers", base, cs, chs)
+        return sum(int((r or {}).get("total_customers") or 0) for r in results)
+
+    # Full period customers (always needed)
+    full_count = await count_customers(date_from, date_to)
+
+    if period_days < 90:
+        return {
+            "period_days": period_days,
+            "total_customers": full_count,
+            "recent_customers": None,
+            "churned_customers": None,
+            "churn_rate": None,
+            "applicable": False,
+            "reason": "Selected period shorter than 3 months — churn is not meaningful.",
+        }
+
+    recent_from = (dt - timedelta(days=89)).date().isoformat()
+    recent_count = await count_customers(recent_from, date_to)
+
+    churned = max(0, full_count - recent_count)
+    rate = (churned / full_count * 100) if full_count else 0
+
+    return {
+        "period_days": period_days,
+        "total_customers": full_count,
+        "recent_customers": recent_count,
+        "recent_from": recent_from,
+        "recent_to": date_to,
+        "churned_customers": churned,
+        "churn_rate": rate,
+        "applicable": True,
+    }
+
+
 @api_router.get("/analytics/new-styles")
 async def analytics_new_styles(
     date_from: Optional[str] = None,

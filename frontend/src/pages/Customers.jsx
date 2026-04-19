@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import {
-  api, fmtKES, fmtNum, fmtDec, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS,
+  api, fmtKES, fmtNum, fmtDec, fmtDate, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS,
 } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -25,6 +25,7 @@ const Customers = () => {
   const [custPrev, setCustPrev] = useState(null);
   const [trend, setTrend] = useState([]);
   const [byCountry, setByCountry] = useState([]);
+  const [churn, setChurn] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -46,13 +47,15 @@ const Customers = () => {
       api.get("/customer-trend", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length === 1 ? countries[0] : undefined } }),
       prev ? api.get("/customers", { params: buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }) }) : Promise.resolve(null),
       Promise.all(byCountryCalls),
+      api.get("/analytics/churn", { params: p }),
     ])
-      .then(([c, t, cp, bc]) => {
+      .then(([c, t, cp, bc, ch]) => {
         if (cancelled) return;
         setCust(c.data);
         setTrend(t.data || []);
         setCustPrev(cp?.data || null);
         setByCountry(bc);
+        setChurn(ch?.data || null);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -71,7 +74,9 @@ const Customers = () => {
     const b = new Date(dateTo);
     return Math.max(1, Math.round((b - a) / (1000 * 60 * 60 * 24)) + 1);
   }, [dateFrom, dateTo]);
-  const showChurn = periodDays >= 90;
+  const showChurn = periodDays >= 90 && churn && churn.applicable;
+  const churnedCount = showChurn ? (churn.churned_customers || 0) : 0;
+  const churnRate = showChurn ? (churn.churn_rate || 0) : 0;
 
   const donut = useMemo(() => {
     if (!cust) return [];
@@ -115,7 +120,7 @@ const Customers = () => {
 
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
             {showChurn && (
-              <KPICard testId="cu-kpi-churn" small label="Churned Customers" sub="No purchase in last 3 months" value={fmtNum(cust.churned_customers)} icon={UserMinus}
+              <KPICard testId="cu-kpi-churn" small label="Churned Customers" sub="Bought in period, not in last 3 months" value={fmtNum(churnedCount)} icon={UserMinus}
                 higherIsBetter={false} showDelta={false} />
             )}
             <KPICard testId="cu-kpi-spend" small label="Avg Spend / Customer" value={fmtKES(cust.avg_customer_spend)} icon={Coins}
@@ -188,15 +193,16 @@ const Customers = () => {
                 <div>
                   <div className="eyebrow">Churn analysis</div>
                   <div className="mt-1 font-bold text-[22px] num">
-                    {fmtNum(cust.churned_customers)} churned of {fmtNum(cust.total_customers)}
+                    {fmtNum(churnedCount)} churned of {fmtNum(churn.total_customers)}
                     <span className="ml-2 text-[14px] text-muted font-medium">
-                      ({cust.total_customers ? ((cust.churned_customers / cust.total_customers) * 100).toFixed(1) : 0}% churn rate)
+                      ({churnRate.toFixed(1)}% churn rate)
                     </span>
                   </div>
                   <p className="text-muted text-[13px] mt-1 max-w-2xl">
-                    Of customers who purchased during this {Math.round(periodDays / 30)}-month period,{" "}
-                    <span className="font-semibold text-foreground">{fmtNum(cust.churned_customers)}</span> have not returned in the
-                    last 3 months. Consider a targeted win-back campaign.
+                    Of the <span className="font-semibold text-foreground">{fmtNum(churn.total_customers)}</span> customers who
+                    shopped during this {Math.round(periodDays / 30)}-month period, <span className="font-semibold text-foreground">{fmtNum(churnedCount)}</span>{" "}
+                    have <span className="font-semibold text-foreground">not returned</span> in the last 3 months of the period
+                    ({fmtDate(churn.recent_from)} → {fmtDate(churn.recent_to)}). Consider a targeted win-back campaign.
                   </p>
                 </div>
               </div>

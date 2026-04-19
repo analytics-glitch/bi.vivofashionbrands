@@ -124,6 +124,18 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v6.1 (Apr 2026)**
+  - CEO Report Section 4: removed empty SKU column (upstream doesn't expose
+    SKU at style level); now shows Product Name, Brand, Collection,
+    Subcategory, Units, Sales, Avg Price.
+  - Added CEO Report Section 9 — **New Styles · Rising Stars**: top 3 new
+    styles by period sales with ⚡ Double-down flags when SOR > 60% + auto
+    merchandising action callout.
+  - Rebuilt churn computation via new `/api/analytics/churn` endpoint.
+    Definition: customers who shopped during selected period but did NOT
+    return in the last 90 days of that period (set-math:
+    `full - last_90d_of_period`). Returns `applicable=false` when period
+    length < 90 days.
 - **v6 (Apr 2026)**
   - Added Footfall + Conversion KPIs on Overview.
   - Added **Yesterday** preset; `This Month` ends yesterday.
