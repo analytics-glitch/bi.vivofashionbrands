@@ -124,6 +124,18 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v6.2 (Apr 2026)**
+  - Fixed Inventory data completeness: upstream `/inventory` is hard-capped at
+    2000 rows, only returning 5 of 51 locations. Backend now fans-out per
+    location (with 60s in-memory cache) so Total Available Units, by-location,
+    by-product-type charts reflect the true 62k+ units across 27 active stores.
+  - Fixed upstream `country` param: must be lowercase (e.g. `kenya`) — was
+    sending title-case, producing empty responses.
+  - New KPIs on Inventory: **Stock in Stores** vs **Stock in Warehouse** (split
+    by location name rules: warehouse/wholesale/holding/sale stock/etc.).
+  - New section **"Stock per subcategory · Stores vs Warehouse"** with stacked
+    bar chart + breakdown table showing store units, warehouse units, total,
+    and store share per subcategory.
 - **v6.1 (Apr 2026)**
   - CEO Report Section 4: removed empty SKU column (upstream doesn't expose
     SKU at style level); now shows Product Name, Brand, Collection,

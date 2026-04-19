@@ -10,6 +10,7 @@ import {
   MagnifyingGlass,
   Buildings,
   TrendDown,
+  Cube,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -19,6 +20,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   Tooltip,
+  Legend,
 } from "recharts";
 
 const Inventory = () => {
@@ -144,10 +146,19 @@ const Inventory = () => {
               showDelta={false}
             />
             <KPICard
-              testId="inv-kpi-skus"
-              label="Active SKUs"
-              value={fmtNum(summary.total_skus)}
+              testId="inv-kpi-store-stock"
+              label="Stock in Stores"
+              sub="Customer-facing units (excl. warehouse / holding)"
+              value={fmtNum(summary.store_units)}
               icon={Storefront}
+              showDelta={false}
+            />
+            <KPICard
+              testId="inv-kpi-warehouse-stock"
+              label="Stock in Warehouse"
+              sub="Warehouse, wholesale, holding, staging"
+              value={fmtNum(summary.warehouse_units)}
+              icon={Cube}
               showDelta={false}
             />
             <KPICard
@@ -155,13 +166,6 @@ const Inventory = () => {
               label="Low-Stock Styles (≤10)"
               value={fmtNum(lowStockByStyle.length)}
               icon={Warning}
-              showDelta={false}
-            />
-            <KPICard
-              testId="inv-kpi-warehouse"
-              label="Locations with Stock"
-              value={fmtNum(summary.by_location.length)}
-              icon={Buildings}
               showDelta={false}
             />
           </div>
@@ -238,6 +242,79 @@ const Inventory = () => {
               </div>
             </div>
           </div>
+
+          {summary.by_subcategory_split && summary.by_subcategory_split.length > 0 && (
+            <div className="card-white p-5" data-testid="stores-vs-warehouse">
+              <SectionTitle
+                title="Stock per subcategory · Stores vs Warehouse"
+                subtitle={`Stores = ${fmtNum(summary.store_units)} units · Warehouse = ${fmtNum(summary.warehouse_units)} units`}
+              />
+              <div style={{ width: "100%", height: 32 + summary.by_subcategory_split.length * 28 }}>
+                <ResponsiveContainer>
+                  <BarChart
+                    data={summary.by_subcategory_split}
+                    layout="vertical"
+                    margin={{ left: 20, right: 20 }}
+                  >
+                    <CartesianGrid horizontal={false} />
+                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v) => fmtNum(v)} />
+                    <Legend />
+                    <Bar dataKey="store_units" stackId="a" fill="#1a5c38" name="Stores" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="warehouse_units" stackId="a" fill="#4b7bec" name="Warehouse" radius={[0, 5, 5, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full data" data-testid="stores-vs-warehouse-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Subcategory</th>
+                      <th className="text-right">Stores</th>
+                      <th className="text-right">Warehouse</th>
+                      <th className="text-right">Total</th>
+                      <th className="text-right">Store Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.by_subcategory_split.map((r, i) => {
+                      const share = r.total_units ? (r.store_units / r.total_units) * 100 : 0;
+                      return (
+                        <tr key={(r.subcategory || "") + i}>
+                          <td className="text-muted num">{i + 1}</td>
+                          <td className="font-medium">{r.subcategory}</td>
+                          <td className="text-right num font-semibold">{fmtNum(r.store_units)}</td>
+                          <td className="text-right num">{fmtNum(r.warehouse_units)}</td>
+                          <td className="text-right num font-bold text-brand">{fmtNum(r.total_units)}</td>
+                          <td className="text-right num">{share.toFixed(1)}%</td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="bg-panel font-bold">
+                      <td></td>
+                      <td>TOTAL</td>
+                      <td className="text-right num">{fmtNum(summary.store_units)}</td>
+                      <td className="text-right num">{fmtNum(summary.warehouse_units)}</td>
+                      <td className="text-right num">{fmtNum(summary.total_units)}</td>
+                      <td className="text-right num">
+                        {summary.total_units
+                          ? ((summary.store_units / summary.total_units) * 100).toFixed(1)
+                          : 0}%
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {summary.warehouse_units === 0 && (
+                <p className="mt-3 text-[12px] text-muted italic">
+                  Note: Upstream inventory API currently returns 0 units from warehouse / wholesale / holding locations.
+                  All stock is live in stores.
+                </p>
+              )}
+            </div>
+          )}
 
           {understockedSubcats.length > 0 && (
             <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">

@@ -270,7 +270,11 @@ async def get_inventory(
     product: Optional[str] = None,
     country: Optional[str] = None,
 ):
-    return await fetch("/inventory", {"location": location, "product": product, "country": country})
+    """Fans out per-location because upstream /inventory is hard-capped at
+    2000 rows. When `location` is given, use the single-call path."""
+    if location:
+        return await fetch("/inventory", {"location": location, "product": product, "country": country})
+    return await fetch_all_inventory(country=country, product=product)
 
 
 @api_router.get("/stock-to-sales")
@@ -424,6 +428,70 @@ async def get_subcategory_stock_sales(
     })
 
 
+# -------------------- Inventory helpers --------------------
+WAREHOUSE_KEYS = (
+    "warehouse", "wholesale", "holding", "sale stock", "bundling",
+    "defect", "shopping bags", "buying and merchandise", "mockup",
+    "online orders location",
+)
+
+# Simple in-memory cache for inventory fan-out (60s TTL).
+import time
+_inv_cache: Dict[str, Any] = {"ts": 0, "key": None, "data": None}
+_INV_TTL = 60.0
+
+
+def is_warehouse_location(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    n = name.lower()
+    return any(k in n for k in WAREHOUSE_KEYS)
+
+
+async def fetch_all_inventory(
+    country: Optional[str] = None,
+    location: Optional[str] = None,
+    product: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Upstream /inventory hard-caps at 2000 rows. To get the full picture
+    across all 51 locations we fan-out per-location and merge. Cached 60s."""
+    if location:
+        return await fetch("/inventory", {
+            "country": (country or "").lower() or None,
+            "location": location, "product": product,
+        }) or []
+
+    cache_key = f"{country or ''}|{product or ''}"
+    if _inv_cache.get("key") == cache_key and (time.time() - _inv_cache.get("ts", 0)) < _INV_TTL:
+        return _inv_cache["data"]
+
+    locs_raw = await fetch("/locations") or []
+    cs = _split_csv(country)
+    if cs:
+        locs_raw = [loc for loc in locs_raw if (loc.get("country") or "") in cs]
+
+    async def _one(loc):
+        try:
+            return await fetch("/inventory", {
+                "country": (loc.get("country") or "").lower() or None,
+                "location": loc.get("channel"),
+                "product": product,
+            })
+        except HTTPException:
+            return []
+
+    results = await asyncio.gather(*[_one(loc) for loc in locs_raw], return_exceptions=False)
+    merged: List[Dict[str, Any]] = []
+    for r in results:
+        if r:
+            merged.extend(r)
+
+    _inv_cache["ts"] = time.time()
+    _inv_cache["key"] = cache_key
+    _inv_cache["data"] = merged
+    return merged
+
+
 # -------------------- Aggregation helpers --------------------
 @api_router.get("/analytics/inventory-summary")
 async def analytics_inventory_summary(
@@ -431,22 +499,28 @@ async def analytics_inventory_summary(
     location: Optional[str] = None,
     product: Optional[str] = None,
 ):
-    inv = await fetch("/inventory", {"country": country, "location": location, "product": product})
+    inv = await fetch_all_inventory(country=country, location=location, product=product)
 
     by_country: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"country": "", "units": 0.0, "skus": 0, "locations": set()})
-    by_location: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"location": "", "country": "", "units": 0.0, "skus": 0})
+    by_location: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"location": "", "country": "", "units": 0.0, "skus": 0, "is_warehouse": False})
     by_type: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"product_type": "", "units": 0.0})
+    # Subcategory split — stores vs warehouse
+    by_subcat: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "subcategory": "", "store_units": 0.0, "warehouse_units": 0.0, "total_units": 0.0,
+    })
 
     total_units = 0.0
     total_skus = 0
     low_stock = 0
     warehouse_stock = 0.0
+    store_stock = 0.0
 
     for row in inv or []:
         c = (row.get("country") or "Unknown").title()
         loc = row.get("location_name") or "Unknown"
         pt = row.get("product_type") or "Other"
         avail = float(row.get("available") or 0)
+        is_wh = is_warehouse_location(loc)
 
         by_country[c]["country"] = c
         by_country[c]["units"] += avail
@@ -458,31 +532,44 @@ async def analytics_inventory_summary(
         by_location[key]["country"] = c
         by_location[key]["units"] += avail
         by_location[key]["skus"] += 1
+        by_location[key]["is_warehouse"] = is_wh
 
         by_type[pt]["product_type"] = pt
         by_type[pt]["units"] += avail
+
+        by_subcat[pt]["subcategory"] = pt
+        if is_wh:
+            by_subcat[pt]["warehouse_units"] += avail
+            warehouse_stock += avail
+        else:
+            by_subcat[pt]["store_units"] += avail
+            store_stock += avail
+        by_subcat[pt]["total_units"] += avail
 
         total_units += avail
         total_skus += 1
         if avail <= 2 and row.get("sku"):
             low_stock += 1
-        if "warehouse" in loc.lower() or "fg" in loc.lower():
-            warehouse_stock += avail
 
     country_list = [{
         "country": c["country"], "units": c["units"],
         "skus": c["skus"], "locations": len(c["locations"]),
     } for c in by_country.values()]
 
+    subcat_list = sorted(by_subcat.values(), key=lambda x: x["total_units"], reverse=True)
+
     return {
         "total_units": total_units,
+        "store_units": store_stock,
+        "warehouse_units": warehouse_stock,
         "total_skus": total_skus,
         "low_stock_skus": low_stock,
-        "warehouse_fg_stock": warehouse_stock,
+        "warehouse_fg_stock": warehouse_stock,  # legacy name
         "markets": len(country_list),
         "by_country": sorted(country_list, key=lambda x: x["units"], reverse=True),
         "by_location": sorted(by_location.values(), key=lambda x: x["units"], reverse=True),
         "by_product_type": sorted(by_type.values(), key=lambda x: x["units"], reverse=True),
+        "by_subcategory_split": subcat_list,
     }
 
 
