@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useMemo } from "react";
+import React, { createContext, useContext, useState, useMemo, useCallback } from "react";
 import { datePresets } from "@/lib/api";
 
 const FiltersContext = createContext(null);
@@ -11,6 +11,8 @@ export const FiltersProvider = ({ children }) => {
   const [countries, setCountries] = useState([]); // [] = all
   const [channels, setChannels] = useState([]); // [] = all
   const [compareMode, setCompareMode] = useState("last_month");
+  const [dataVersion, setDataVersion] = useState(0);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   const setPreset = (key) => {
     if (key === "custom") {
@@ -24,10 +26,13 @@ export const FiltersProvider = ({ children }) => {
     setDateTo(p.date_to);
   };
 
+  const refresh = useCallback(() => setDataVersion((v) => v + 1), []);
+  const touchLastUpdated = useCallback(() => setLastUpdated(new Date()), []);
+
   // Applied object (same as live values — auto-apply)
   const applied = useMemo(
-    () => ({ dateFrom, dateTo, countries, channels, compareMode }),
-    [dateFrom, dateTo, countries, channels, compareMode]
+    () => ({ dateFrom, dateTo, countries, channels, compareMode, dataVersion }),
+    [dateFrom, dateTo, countries, channels, compareMode, dataVersion]
   );
 
   const value = useMemo(
@@ -38,9 +43,11 @@ export const FiltersProvider = ({ children }) => {
       countries, setCountries,
       channels, setChannels,
       compareMode, setCompareMode,
+      dataVersion, refresh,
+      lastUpdated, touchLastUpdated,
       applied,
     }),
-    [dateFrom, dateTo, preset, countries, channels, compareMode, applied]
+    [dateFrom, dateTo, preset, countries, channels, compareMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };

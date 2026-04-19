@@ -17,8 +17,8 @@ const DONUT_COLORS = ["#1a5c38", "#00c853", "#4b7bec"];
 const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Customers = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [cust, setCust] = useState(null);
@@ -56,12 +56,13 @@ const Customers = () => {
         setCustPrev(cp?.data || null);
         setByCountry(bc);
         setChurn(ch?.data || null);
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
 
   const delta = (k, inv = false) =>
     cust && custPrev ? pctDelta(cust[k], custPrev[k]) : null;

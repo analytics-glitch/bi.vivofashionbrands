@@ -56,8 +56,8 @@ const COUNTRY_LINE_COLORS = {
 const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [kpis, setKpis] = useState(null);
@@ -127,12 +127,13 @@ const Overview = () => {
         setKpisPrev(kp?.data || null);
         setDailyByCountry(Object.fromEntries(daily));
         setDailyByCountryPrev(Object.fromEntries(dailyP));
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;

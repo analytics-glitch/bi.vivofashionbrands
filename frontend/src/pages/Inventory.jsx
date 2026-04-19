@@ -24,8 +24,8 @@ import {
 } from "recharts";
 
 const Inventory = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
 
   const [summary, setSummary] = useState(null);
   const [inv, setInv] = useState([]);
@@ -44,9 +44,11 @@ const Inventory = () => {
     const country = countries.length === 1 ? countries[0].toLowerCase() : undefined;
     const location = channels.length === 1 ? channels[0] : undefined;
     const params = { country, location, product: search || undefined };
+    // On manual refresh, bust the 60s backend cache.
+    const refreshParams = dataVersion > 0 ? { ...params, refresh: true } : params;
     Promise.all([
-      api.get("/analytics/inventory-summary", { params }),
-      api.get("/inventory", { params }),
+      api.get("/analytics/inventory-summary", { params: refreshParams }),
+      api.get("/inventory", { params: refreshParams }),
       api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined } }),
       api.get("/subcategory-stock-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined, channel: channels.length ? channels.join(",") : undefined } }),
     ])
@@ -56,12 +58,13 @@ const Inventory = () => {
         setInv(i.data || []);
         setSts(st.data || []);
         setSubcatSS(sc.data || []);
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), search]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), search, dataVersion]);
 
   const brands = useMemo(
     () => [...new Set(inv.map((r) => r.brand).filter(Boolean))].sort(),

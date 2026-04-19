@@ -6,8 +6,8 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [rows, setRows] = useState([]);
@@ -45,6 +45,7 @@ const Locations = () => {
         setKpis(k.data);
         setPrevRows(ps.data || []);
         setFootfall(ff.data || []);
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -52,7 +53,7 @@ const Locations = () => {
       cancelled = true;
     };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
 
   useEffect(() => {
     if (!selected) return;

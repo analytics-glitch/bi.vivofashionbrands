@@ -68,8 +68,8 @@ const SectionHeader = ({ n, title }) => (
 );
 
 const CEOReport = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, dataVersion } = applied;
 
   const [kpi, setKpi] = useState(null);
   const [kpiLM, setKpiLM] = useState(null);
@@ -130,13 +130,15 @@ const CEOReport = () => {
         setSubcats(sc.data || []);
         setFootfall(ff.data || []);
         setNewStyles(ns.data || []);
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo]);
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, dataVersion]);
 
   const delta = (k, prev) => {
     if (!kpi || !prev) return null;

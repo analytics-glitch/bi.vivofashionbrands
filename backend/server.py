@@ -179,9 +179,12 @@ async def get_top_skus(
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    brand: Optional[str] = None,
     limit: int = Query(20, ge=1, le=200),
 ):
     base = {"date_from": date_from, "date_to": date_to, "limit": max(limit, 50)}
+    if brand:
+        base["product"] = brand
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
@@ -217,8 +220,11 @@ async def get_sor(
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    brand: Optional[str] = None,
 ):
     base = {"date_from": date_from, "date_to": date_to}
+    if brand:
+        base["product"] = brand
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
@@ -279,10 +285,14 @@ async def get_inventory(
     location: Optional[str] = None,
     product: Optional[str] = None,
     country: Optional[str] = None,
+    refresh: Optional[bool] = False,
 ):
     """Fans out per-location because upstream /inventory is hard-capped at
     2000 rows. When `location` is given, still go through the helper so
     that Warehouse Finished Goods gets chunked & country is lowercased."""
+    if refresh:
+        _inv_cache["ts"] = 0
+        _inv_cache["key"] = None
     return await fetch_all_inventory(country=country, location=location, product=product)
 
 
@@ -403,6 +413,8 @@ async def get_subcategory_sales(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    """Upstream now returns one clean row per subcategory (no brand split),
+    so we fan out per country/channel and merge by subcategory only."""
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     chs = _split_csv(channel)
@@ -414,7 +426,9 @@ async def get_subcategory_sales(
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
         for r in g:
-            key = (r.get("subcategory"), r.get("brand"))
+            key = r.get("subcategory")
+            if not key:
+                continue
             if key not in merged:
                 merged[key] = {**r}
             else:
@@ -483,6 +497,18 @@ def is_excluded_brand(brand: Optional[str]) -> bool:
     return brand.strip().lower() in INVENTORY_EXCLUDED_BRANDS
 
 
+EXCLUDED_PRODUCT_TOKENS = ("shopping bag", "gift voucher", "gift card")
+EXCLUDED_SKU_PREFIXES = ("VB00",)
+
+
+def is_excluded_product(row: Dict[str, Any]) -> bool:
+    name = (row.get("product_name") or "").lower()
+    if any(tok in name for tok in EXCLUDED_PRODUCT_TOKENS):
+        return True
+    sku = row.get("sku") or ""
+    return any(sku.startswith(p) for p in EXCLUDED_SKU_PREFIXES)
+
+
 # Locations not in /locations channel list but that hold stock in /inventory.
 # Upstream /inventory for this location is hard-capped at 2000 rows, so we
 # chunk by product-prefix letter to try to get the full 8k+ SKU set.
@@ -525,6 +551,7 @@ async def fetch_all_inventory(
             r for r in rows
             if (r.get("product_name") or r.get("sku"))
             and not is_excluded_brand(r.get("brand"))
+            and not is_excluded_product(r)
         ]
 
     cache_key = f"{country or ''}|{product or ''}"
@@ -555,10 +582,12 @@ async def fetch_all_inventory(
             # 1. Excluded brands (e.g. Third Party Brands).
             # 2. Upstream phantom/aggregate rows that have no product_name AND
             #    no SKU — these carry inflated unit counts and pollute totals.
+            # 3. Shopping bags / gift vouchers / gift cards / VB00 SKUs.
             return [
                 r for r in rows
                 if (r.get("product_name") or r.get("sku"))
                 and not is_excluded_brand(r.get("brand"))
+                and not is_excluded_product(r)
             ]
         except HTTPException:
             return []
@@ -617,7 +646,11 @@ async def analytics_inventory_summary(
     country: Optional[str] = None,
     location: Optional[str] = None,
     product: Optional[str] = None,
+    refresh: Optional[bool] = False,
 ):
+    if refresh:
+        _inv_cache["ts"] = 0
+        _inv_cache["key"] = None
     inv = await fetch_all_inventory(country=country, location=location, product=product)
 
     by_country: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"country": "", "units": 0.0, "skus": 0, "locations": set()})
@@ -637,7 +670,11 @@ async def analytics_inventory_summary(
     for row in inv or []:
         c = (row.get("country") or "Unknown").title()
         loc = row.get("location_name") or "Unknown"
-        pt = row.get("product_type") or "Uncategorized"
+        pt = row.get("product_type")
+        if not pt:
+            # Skip rows without a subcategory — API is clean now, any null pt
+            # is a phantom/pre-release row we don't want in aggregates.
+            continue
         avail = float(row.get("available") or 0)
         is_wh = is_warehouse_location(loc)
 
@@ -774,6 +811,7 @@ async def analytics_new_styles(
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    brand: Optional[str] = None,
 ):
     """New styles = style whose first-ever sale is within the last 90 days
     (relative to date_to). Returns performance across the *selected* period
@@ -797,6 +835,8 @@ async def analytics_new_styles(
         """List all unique style_names that had any sales in [df, dt]. Uses /top-skus
         with a high limit to bypass the /sor 200-row cap."""
         base = {"date_from": df, "date_to": dt, "limit": 10000}
+        if brand:
+            base["product"] = brand
         if len(cs) <= 1 and len(chs) <= 1:
             data = await fetch("/top-skus", {
                 **base,
@@ -821,6 +861,8 @@ async def analytics_new_styles(
     async def sor_call(df: Optional[str], dt: Optional[str]) -> List[Dict[str, Any]]:
         """SOR gives style + current_stock + sor_percent (capped at 200 styles)."""
         base = {"date_from": df, "date_to": dt}
+        if brand:
+            base["product"] = brand
         if len(cs) <= 1 and len(chs) <= 1:
             data = await fetch("/sor", {
                 **base,

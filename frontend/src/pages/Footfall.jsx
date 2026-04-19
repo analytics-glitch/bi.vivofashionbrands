@@ -35,8 +35,8 @@ import {
 } from "recharts";
 
 const Footfall = () => {
-  const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode } = applied;
+  const { applied, touchLastUpdated } = useFilters();
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
 
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
@@ -61,12 +61,13 @@ const Footfall = () => {
         setRows(f.data || []);
         setPrev(p.data || []);
         setLocations(l.data || []);
+        touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, compareMode]);
+  }, [dateFrom, dateTo, compareMode, dataVersion]);
 
   const channelCountry = useMemo(() => {
     const m = {};

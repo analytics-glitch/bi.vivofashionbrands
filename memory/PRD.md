@@ -124,6 +124,26 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v6.5 (Apr 2026)**
+  - Picked up upstream data cleanup: `/subcategory-sales` now returns one
+    clean row per subcategory (no brand duplication). Backend merge key
+    updated to subcategory-only.
+  - Added **Brand multi-select filter on Products page** (Vivo, Safari,
+    Zoya, Sowairina, Third Party Brands). Applied client-side to SOR table,
+    Top 20 SKUs and New Styles. Upstream `product` param is a prefix-match
+    on product_name (not brand), so server-side filtering isn't reliable.
+  - Removed "Uncategorized" fallback bucket — rows without a product_type
+    (phantom upstream rows) are now dropped from inventory aggregates.
+  - **Shopping bag / gift voucher / gift card / VB00 SKUs** now excluded
+    from all inventory data: KPIs, charts and the inventory table.
+  - "Warehouse Finished Goods" stays as a separate **Warehouse Stock KPI**,
+    fan-out through 61 product-prefix chunks (A-Z + 0-9 + top-brand 2-letter
+    vowels), cache-busted on manual refresh.
+  - New **"Updated … ago" indicator + Refresh button** in the top nav.
+    Clicking the button increments a `dataVersion` counter in the filter
+    context which triggers every page's useEffect to refetch. Inventory
+    endpoints additionally accept `?refresh=true` to bust the backend 60s
+    in-memory cache.
 - **v6.4 (Apr 2026)**
   - Fixed Locations drill-down (top styles at a channel): removed SKU/Size
     columns (upstream `/top-skus` doesn't expose them); now shows Style,
