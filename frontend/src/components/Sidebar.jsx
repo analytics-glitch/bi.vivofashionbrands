@@ -4,15 +4,17 @@ import {
   ChartPieSlice,
   MapPin,
   Package,
-  Gauge,
+  Tag,
+  Users,
   FileText,
 } from "@phosphor-icons/react";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
+  { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
-  { to: "/sor", label: "SOR", icon: Gauge, id: "sor" },
+  { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
 ];
 

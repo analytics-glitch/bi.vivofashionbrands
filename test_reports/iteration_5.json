@@ -1,0 +1,84 @@
+{
+  "summary": "Backend API testing completed for Vivo BI Dashboard iteration 5 (complete rebuild with 6 NEW endpoints). All 24 tests passed. Verified: (1) NEW /api/customers returns all 8 fields with weighted avg aggregation for multi-country, (2) NEW /api/customer-trend returns daily rows with multi-country merge, (3) NEW /api/footfall returns ~28 locations with channel filter, (4) NEW /api/subcategory-sales returns subcategory data with multi-country merge, (5) NEW /api/subcategory-stock-sales returns stock/sales data, (6) NEW /api/stock-to-sales returns location data with deduplication. All existing endpoints still work.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/customers (multi-country)",
+        "issue": "churn_rate field missing from aggregated response. Single-country returns churn_rate, but multi-country aggregation doesn't compute/include it.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_vivo_bi_api_v5.py",
+    "/app/test_reports/pytest/pytest_results_v5.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Add churn_rate to multi-country /api/customers aggregation (currently missing from aggregated response)"
+  ],
+  "critical_code_review_comments": [
+    "All 6 NEW endpoints working correctly: /api/customers, /api/customer-trend, /api/footfall, /api/subcategory-sales, /api/subcategory-stock-sales, /api/stock-to-sales",
+    "Weighted average aggregation for /api/customers verified: avg_customer_spend and avg_orders_per_customer correctly computed as weighted averages",
+    "Multi-country merge for /api/customer-trend verified: daily totals correctly summed per day",
+    "Deduplication for /api/stock-to-sales verified: unique (location, country) pairs",
+    "Sort stability verified: /api/top-skus?country=Kenya sorted by total_sales desc, /api/sor?country=Kenya sorted by sor_percent desc",
+    "All existing endpoints from iteration 4 still work (regression passed)"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_vivo_bi_api_v5.py"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24 tests passed)",
+    "frontend": "N/A - skipped per request"
+  },
+  "test_credentials": "None required - read-only public API proxy",
+  "seed_data_creation": "None - uses external Vivo BI API data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 5 complete. All 6 NEW endpoints verified: /api/customers (weighted avg aggregation), /api/customer-trend (daily merge), /api/footfall (channel filter), /api/subcategory-sales (multi-country merge), /api/subcategory-stock-sales, /api/stock-to-sales (deduplication). Date range 2026-04-01 to 2026-04-17 has data. Minor issue: churn_rate missing from multi-country /api/customers aggregation.",
+  "verified_endpoints": {
+    "new_endpoints_iteration_5": [
+      "/api/customers",
+      "/api/customer-trend",
+      "/api/footfall",
+      "/api/subcategory-sales",
+      "/api/subcategory-stock-sales",
+      "/api/stock-to-sales"
+    ],
+    "verified_filters": {
+      "customers": ["country (single)", "country (multi-comma)", "channel"],
+      "customer-trend": ["country (single)", "country (multi-comma)"],
+      "footfall": ["channel"],
+      "subcategory-sales": ["country (multi-comma)", "channel"],
+      "subcategory-stock-sales": ["country", "channel"],
+      "stock-to-sales": ["country (single)", "country (multi-comma)"]
+    },
+    "regression_passed": [
+      "/api/kpis",
+      "/api/country-summary",
+      "/api/sales-summary",
+      "/api/top-skus",
+      "/api/sor",
+      "/api/daily-trend",
+      "/api/inventory",
+      "/api/analytics/inventory-summary",
+      "/api/analytics/low-stock",
+      "/api/analytics/insights"
+    ]
+  },
+  "verified_data": {
+    "customers_total": 4895,
+    "customers_kenya": 3988,
+    "customers_kenya_uganda_combined": 4226,
+    "customer_trend_days": 17,
+    "footfall_locations": 28,
+    "subcategory_sales_items": "multiple",
+    "stock_to_sales_locations": "multiple"
+  }
+}

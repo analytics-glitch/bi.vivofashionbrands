@@ -273,6 +273,153 @@ async def get_inventory(
     return await fetch("/inventory", {"location": location, "product": product, "country": country})
 
 
+@api_router.get("/stock-to-sales")
+async def get_stock_to_sales(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    if len(cs) <= 1:
+        return await fetch("/stock-to-sales", {**base, "country": cs[0] if cs else None})
+    tasks = [fetch("/stock-to-sales", {**base, "country": c}) for c in cs]
+    results = await asyncio.gather(*tasks)
+    out = []
+    seen = set()
+    for g in results:
+        for r in g:
+            k = (r.get("location"), r.get("country"))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+    return out
+
+
+@api_router.get("/customers")
+async def get_customers(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        return await fetch("/customers", {
+            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        })
+    results = await multi_fetch("/customers", base, cs, chs)
+    total = {
+        "total_customers": 0, "new_customers": 0, "repeat_customers": 0,
+        "returning_customers": 0, "churned_customers": 0,
+        "_sum_spend": 0.0, "_sum_orders": 0.0, "_n": 0,
+    }
+    for r in results:
+        for k in ("total_customers", "new_customers", "repeat_customers", "returning_customers", "churned_customers"):
+            total[k] += r.get(k) or 0
+        total["_sum_spend"] += (r.get("avg_customer_spend") or 0) * (r.get("total_customers") or 0)
+        total["_sum_orders"] += (r.get("avg_orders_per_customer") or 0) * (r.get("total_customers") or 0)
+        total["_n"] += r.get("total_customers") or 0
+    total["avg_customer_spend"] = (total["_sum_spend"] / total["_n"]) if total["_n"] else 0
+    total["avg_orders_per_customer"] = (total["_sum_orders"] / total["_n"]) if total["_n"] else 0
+    for k in ("_sum_spend", "_sum_orders", "_n"):
+        total.pop(k)
+    return total
+
+
+@api_router.get("/customer-trend")
+async def get_customer_trend(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    if len(cs) <= 1:
+        return await fetch("/customer-trend", {**base, "country": cs[0] if cs else None})
+    tasks = [fetch("/customer-trend", {**base, "country": c}) for c in cs]
+    results = await asyncio.gather(*tasks)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for g in results:
+        for r in g:
+            day = r.get("day")
+            if day not in merged:
+                merged[day] = {"day": day, "total_customers": 0, "new_customers": 0, "returning_customers": 0}
+            for k in ("total_customers", "new_customers", "returning_customers"):
+                merged[day][k] += r.get(k) or 0
+    out = list(merged.values())
+    out.sort(key=lambda r: r["day"])
+    return out
+
+
+@api_router.get("/footfall")
+async def get_footfall(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    base = {"date_from": date_from, "date_to": date_to}
+    chs = _split_csv(channel)
+    if len(chs) <= 1:
+        return await fetch("/footfall", {**base, "channel": chs[0] if chs else None})
+    tasks = [fetch("/footfall", {**base, "channel": ch}) for ch in chs]
+    results = await asyncio.gather(*tasks)
+    out = []
+    seen = set()
+    for g in results:
+        for r in g:
+            k = r.get("location")
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+    return out
+
+
+@api_router.get("/subcategory-sales")
+async def get_subcategory_sales(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    base = {"date_from": date_from, "date_to": date_to}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        return await fetch("/subcategory-sales", {
+            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        })
+    results = await multi_fetch("/subcategory-sales", base, cs, chs)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for g in results:
+        for r in g:
+            key = (r.get("subcategory"), r.get("brand"))
+            if key not in merged:
+                merged[key] = {**r}
+            else:
+                for f in ("units_sold", "total_sales", "gross_sales", "orders"):
+                    merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
+    return sorted(merged.values(), key=lambda r: r.get("total_sales") or 0, reverse=True)
+
+
+@api_router.get("/subcategory-stock-sales")
+async def get_subcategory_stock_sales(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    return await fetch("/subcategory-stock-sales", {
+        "date_from": date_from, "date_to": date_to,
+        "country": country if country and "," not in country else country,
+        "channel": channel,
+    })
+
+
 # -------------------- Aggregation helpers --------------------
 @api_router.get("/analytics/inventory-summary")
 async def analytics_inventory_summary(

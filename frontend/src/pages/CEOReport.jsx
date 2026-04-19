@@ -82,6 +82,8 @@ const CEOReport = () => {
   const [top, setTop] = useState([]);
   const [sor, setSor] = useState([]);
   const [insights, setInsights] = useState(null);
+  const [subcats, setSubcats] = useState([]);
+  const [footfall, setFootfall] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -107,8 +109,10 @@ const CEOReport = () => {
       api.get("/top-skus", { params: { ...base, limit: 10 } }),
       api.get("/sor", { params: base }),
       api.get("/analytics/insights", { params: base }),
+      api.get("/subcategory-stock-sales", { params: base }),
+      api.get("/footfall", { params: base }),
     ])
-      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins]) => {
+      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins, sc, ff]) => {
         if (cancelled) return;
         setKpi(k.data);
         setKpiLM(klm.data);
@@ -121,6 +125,8 @@ const CEOReport = () => {
         setTop(t.data || []);
         setSor(r.data || []);
         setInsights(ins.data);
+        setSubcats(sc.data || []);
+        setFootfall(ff.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -275,11 +281,12 @@ const CEOReport = () => {
               testId="ceo-k-net"
             />
             <KPIBox
-              label="Gross Sales"
-              value={fmtKES(kpi.gross_sales)}
-              deltaLM={delta("gross_sales", kpiLM)}
-              deltaLY={delta("gross_sales", kpiLY)}
-              testId="ceo-k-gross"
+              label="Returns"
+              value={fmtKES(kpi.total_returns)}
+              deltaLM={delta("total_returns", kpiLM)}
+              deltaLY={delta("total_returns", kpiLY)}
+              invert
+              testId="ceo-k-returns"
             />
             <KPIBox
               label="Total Orders"
@@ -422,7 +429,7 @@ const CEOReport = () => {
           </div>
 
           {/* Section 4 — Top 10 SKUs */}
-          <SectionHeader n="4" title="Top 10 Best-Selling SKUs" />
+          <SectionHeader n="4" title="Top 10 Best-Selling Styles" />
           <div className="overflow-x-auto">
             <table className="w-full data" data-testid="ceo-top-skus">
               <thead>
@@ -456,8 +463,40 @@ const CEOReport = () => {
             </table>
           </div>
 
-          {/* Section 5 — SOR */}
-          <SectionHeader n="5" title="SOR Analysis · Head of Products" />
+          {/* Section 5 — Subcategory */}
+          <SectionHeader n="5" title="Subcategory Analysis · Head of Products" />
+          <div className="overflow-x-auto">
+            <table className="w-full data" data-testid="ceo-subcat-table">
+              <thead>
+                <tr>
+                  <th>Subcategory</th>
+                  <th className="text-right">Units Sold</th>
+                  <th className="text-right">% of Sold</th>
+                  <th className="text-right">Current Stock</th>
+                  <th className="text-right">% of Stock</th>
+                  <th className="text-right">SOR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subcats.slice(0, 15).map((r, i) => {
+                  const pill = (r.sor_percent || 0) < 30 ? "pill-red" : (r.sor_percent || 0) < 60 ? "pill-amber" : "pill-green";
+                  return (
+                    <tr key={r.subcategory + i}>
+                      <td className="font-medium">{r.subcategory}</td>
+                      <td className="text-right num">{fmtNum(r.units_sold)}</td>
+                      <td className="text-right num">{fmtPct(r.pct_of_total_sold)}</td>
+                      <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                      <td className="text-right num">{fmtPct(r.pct_of_total_stock)}</td>
+                      <td className="text-right"><span className={pill}>{fmtPct(r.sor_percent)}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Section 6 — SOR */}
+          <SectionHeader n="6" title="SOR: Stars & Slow Movers" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4">
             <KPIBox label="Styles tracked" value={fmtNum(sor.length)} testId="ceo-sor-tracked" />
             <KPIBox label="Avg SOR" value={fmtPct(avgSor)} testId="ceo-sor-avg" />
@@ -541,8 +580,8 @@ const CEOReport = () => {
             </div>
           </div>
 
-          {/* Section 6 — Returns */}
-          <SectionHeader n="6" title="Returns Analysis" />
+          {/* Section 7 — Returns */}
+          <SectionHeader n="7" title="Returns Analysis" />
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-3">
             <KPIBox label="Total Returns" value={fmtKES(kpi.total_returns)} invert testId="ceo-ret-total" />
             <KPIBox label="Return Rate" value={fmtPct(kpi.return_rate, 2)} invert testId="ceo-ret-rate" />
@@ -596,8 +635,44 @@ const CEOReport = () => {
             </tbody>
           </table>
 
-          {/* Section 7 — Insights */}
-          <SectionHeader n="7" title="Executive Insights" />
+          {/* Section 8 — Footfall */}
+          <SectionHeader n="8" title="Footfall & Conversion · Top 10" />
+          <div className="overflow-x-auto">
+            <table className="w-full data" data-testid="ceo-footfall-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Location</th>
+                  <th className="text-right">Footfall</th>
+                  <th className="text-right">Orders</th>
+                  <th className="text-right">Conversion</th>
+                  <th className="text-right">Sales / Visitor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {footfall
+                  .filter((r) => (r.conversion_rate || 0) <= 50)
+                  .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
+                  .slice(0, 10)
+                  .map((r, i) => {
+                    const pill = (r.conversion_rate || 0) > 15 ? "pill-green" : (r.conversion_rate || 0) >= 10 ? "pill-amber" : "pill-red";
+                    return (
+                      <tr key={r.location + i}>
+                        <td className="text-muted num">{i + 1}</td>
+                        <td className="font-medium">{r.location}</td>
+                        <td className="text-right num">{fmtNum(r.total_footfall)}</td>
+                        <td className="text-right num">{fmtNum(r.orders)}</td>
+                        <td className="text-right"><span className={pill}>{fmtPct(r.conversion_rate)}</span></td>
+                        <td className="text-right num">{fmtKES(r.sales_per_visitor)}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Section 9 — Insights */}
+          <SectionHeader n="9" title="Executive Insights" />
           <div
             className="border border-brand/30 bg-brand-soft rounded-xl p-5 text-[13.5px] leading-relaxed text-foreground"
             data-testid="ceo-insights"

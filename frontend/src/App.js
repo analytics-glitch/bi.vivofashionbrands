@@ -5,8 +5,9 @@ import TopNav from "@/components/Sidebar";
 import FilterBar from "@/components/FilterBar";
 import Overview from "@/pages/Overview";
 import Locations from "@/pages/Locations";
+import Products from "@/pages/Products";
 import Inventory from "@/pages/Inventory";
-import SOR from "@/pages/SOR";
+import Customers from "@/pages/Customers";
 import CEOReport from "@/pages/CEOReport";
 import { FiltersProvider } from "@/lib/filters";
 
@@ -29,8 +30,9 @@ function App() {
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/locations" element={<Locations />} />
+              <Route path="/products" element={<Products />} />
               <Route path="/inventory" element={<Inventory />} />
-              <Route path="/sor" element={<SOR />} />
+              <Route path="/customers" element={<Customers />} />
               <Route path="/ceo-report" element={<CEOReport />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

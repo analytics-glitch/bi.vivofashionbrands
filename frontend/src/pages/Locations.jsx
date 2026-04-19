@@ -1,15 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import {
-  api,
-  fmtKES,
-  fmtNum,
-  fmtDelta,
-  buildParams,
-  pctDelta,
-  comparePeriod,
-  COUNTRY_FLAGS,
-} from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
@@ -22,6 +13,7 @@ const Locations = () => {
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
   const [kpis, setKpis] = useState(null);
+  const [footfall, setFootfall] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("total_sales");
@@ -45,12 +37,14 @@ const Locations = () => {
       prevP
         ? api.get("/sales-summary", { params: prevP })
         : Promise.resolve({ data: [] }),
+      api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
     ])
-      .then(([s, k, ps]) => {
+      .then(([s, k, ps, ff]) => {
         if (cancelled) return;
         setRows(s.data || []);
         setKpis(k.data);
         setPrevRows(ps.data || []);
+        setFootfall(ff.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -250,6 +244,49 @@ const Locations = () => {
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="card-white p-5" data-testid="footfall-section">
+                <SectionTitle
+                  title="Footfall & Conversion"
+                  subtitle="Traffic, orders, conversion rate, and revenue per visitor. Locations with conversion >50% are excluded (data quality)."
+                />
+                <div className="overflow-x-auto">
+                  <table className="w-full data" data-testid="footfall-table">
+                    <thead>
+                      <tr>
+                        <th>Location</th>
+                        <th className="text-right">Footfall</th>
+                        <th className="text-right">Orders</th>
+                        <th className="text-right">Conversion</th>
+                        <th className="text-right">Sales / Visitor</th>
+                        <th className="text-right">Total Sales</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {footfall.filter((r) => (r.conversion_rate || 0) <= 50).length === 0 && (
+                        <tr><td colSpan={6}><Empty label="No footfall data in this period." /></td></tr>
+                      )}
+                      {footfall
+                        .filter((r) => (r.conversion_rate || 0) <= 50)
+                        .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
+                        .map((r, i) => {
+                          const cr = r.conversion_rate || 0;
+                          const pill = cr > 15 ? "pill-green" : cr >= 10 ? "pill-amber" : "pill-red";
+                          return (
+                            <tr key={r.location + i}>
+                              <td className="font-medium">{r.location}</td>
+                              <td className="text-right num">{fmtNum(r.total_footfall)}</td>
+                              <td className="text-right num">{fmtNum(r.orders)}</td>
+                              <td className="text-right"><span className={pill}>{fmtPct(cr)}</span></td>
+                              <td className="text-right num">{fmtKES(r.sales_per_visitor)}</td>
+                              <td className="text-right num font-bold">{fmtKES(r.total_sales)}</td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           )}

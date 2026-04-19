@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtAxisKES, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDec, fmtAxisKES, COUNTRY_FLAGS, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import {
@@ -22,10 +22,11 @@ import {
 
 const Inventory = () => {
   const { applied } = useFilters();
-  const { countries, channels } = applied;
+  const { dateFrom, dateTo, countries, channels } = applied;
 
   const [summary, setSummary] = useState(null);
   const [inv, setInv] = useState([]);
+  const [sts, setSts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -42,19 +43,19 @@ const Inventory = () => {
     Promise.all([
       api.get("/analytics/inventory-summary", { params }),
       api.get("/inventory", { params }),
+      api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined } }),
     ])
-      .then(([s, i]) => {
+      .then(([s, i, st]) => {
         if (cancelled) return;
         setSummary(s.data);
         setInv(i.data || []);
+        setSts(st.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), search]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), search]);
 
   const brands = useMemo(
     () => [...new Set(inv.map((r) => r.brand).filter(Boolean))].sort(),
@@ -119,8 +120,8 @@ const Inventory = () => {
             />
             <KPICard
               testId="inv-kpi-warehouse"
-              label="Warehouse FG Stock"
-              value={fmtNum(summary.warehouse_fg_stock)}
+              label="Locations with Stock"
+              value={fmtNum(summary.by_location.length)}
               icon={Buildings}
               showDelta={false}
             />
@@ -209,29 +210,19 @@ const Inventory = () => {
                 <table className="w-full data">
                   <thead>
                     <tr>
-                      <th>Product</th>
-                      <th>Size</th>
-                      <th>SKU</th>
-                      <th>Location</th>
-                      <th>Country</th>
+                      <th>Product</th><th>Size</th><th>SKU</th><th>Location</th><th>Country</th>
                       <th className="text-right">Available</th>
                     </tr>
                   </thead>
                   <tbody>
                     {lowStock.slice(0, 50).map((r, i) => (
                       <tr key={i}>
-                        <td className="font-medium max-w-[280px] truncate" title={r.product_name}>
-                          {r.product_name || "—"}
-                        </td>
+                        <td className="font-medium max-w-[280px] truncate" title={r.product_name}>{r.product_name || "—"}</td>
                         <td>{r.size || "—"}</td>
                         <td className="font-mono text-[11px] text-muted">{r.sku || "—"}</td>
                         <td className="text-muted">{r.location_name || "—"}</td>
                         <td className="capitalize">{r.country || "—"}</td>
-                        <td className="text-right">
-                          <span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>
-                            {fmtNum(r.available)}
-                          </span>
-                        </td>
+                        <td className="text-right"><span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>{fmtNum(r.available)}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -239,6 +230,43 @@ const Inventory = () => {
               </div>
             </div>
           )}
+
+          <div className="card-white p-5" data-testid="stock-to-sales-section">
+            <SectionTitle
+              title="Stock-to-Sales ratio"
+              subtitle="Weeks of cover proxy — red >10x (overstocked), amber 3–10x, green 1–3x, blue <1x (understocked)"
+            />
+            <div className="overflow-x-auto">
+              <table className="w-full data" data-testid="sts-table">
+                <thead>
+                  <tr>
+                    <th>Location</th><th>Country</th>
+                    <th className="text-right">Units Sold</th>
+                    <th className="text-right">Current Stock</th>
+                    <th className="text-right">Total Sales</th>
+                    <th className="text-right">Ratio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sts.length === 0 && <tr><td colSpan={6}><Empty /></td></tr>}
+                  {sts.sort((a, b) => (b.stock_to_sales_ratio || 0) - (a.stock_to_sales_ratio || 0)).map((r, i) => {
+                    const v = r.stock_to_sales_ratio || 0;
+                    const pill = v > 10 ? "pill-red" : v >= 3 ? "pill-amber" : v >= 1 ? "pill-green" : "pill-neutral";
+                    return (
+                      <tr key={r.location + i}>
+                        <td className="font-medium">{r.location}</td>
+                        <td>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country}</td>
+                        <td className="text-right num">{fmtNum(r.units_sold)}</td>
+                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                        <td className="text-right num font-semibold">{fmtKES(r.total_sales)}</td>
+                        <td className="text-right"><span className={pill}>{fmtDec(v, 2)}×</span></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
           <div className="card-white p-5" data-testid="inventory-table">
             <SectionTitle
