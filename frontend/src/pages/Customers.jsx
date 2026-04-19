@@ -64,14 +64,30 @@ const Customers = () => {
     cust && custPrev ? pctDelta(cust[k], custPrev[k]) : null;
   const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
 
+  // Period length in days → churn is only meaningful when selected period ≥ 90 days
+  const periodDays = useMemo(() => {
+    if (!dateFrom || !dateTo) return 0;
+    const a = new Date(dateFrom);
+    const b = new Date(dateTo);
+    return Math.max(1, Math.round((b - a) / (1000 * 60 * 60 * 24)) + 1);
+  }, [dateFrom, dateTo]);
+  const showChurn = periodDays >= 90;
+
   const donut = useMemo(() => {
     if (!cust) return [];
+    if (!showChurn) {
+      // < 3 months: only New vs Repeat
+      return [
+        { name: "New", value: cust.new_customers || 0 },
+        { name: "Repeat", value: (cust.repeat_customers || 0) + (cust.returning_customers || 0) },
+      ];
+    }
     return [
       { name: "New", value: cust.new_customers || 0 },
       { name: "Repeat", value: cust.repeat_customers || 0 },
       { name: "Returning", value: cust.returning_customers || 0 },
     ];
-  }, [cust]);
+  }, [cust, showChurn]);
 
   return (
     <div className="space-y-6" data-testid="customers-page">
@@ -98,8 +114,10 @@ const Customers = () => {
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-            <KPICard testId="cu-kpi-churn" small label="Churned Customers" sub="No purchase in last 3 months" value={fmtNum(cust.churned_customers)} icon={UserMinus}
-              higherIsBetter={false} showDelta={false} />
+            {showChurn && (
+              <KPICard testId="cu-kpi-churn" small label="Churned Customers" sub="No purchase in last 3 months" value={fmtNum(cust.churned_customers)} icon={UserMinus}
+                higherIsBetter={false} showDelta={false} />
+            )}
             <KPICard testId="cu-kpi-spend" small label="Avg Spend / Customer" value={fmtKES(cust.avg_customer_spend)} icon={Coins}
               delta={delta("avg_customer_spend")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="cu-kpi-opc" small label="Avg Orders / Customer" value={fmtDec(cust.avg_orders_per_customer, 2)} icon={ShoppingCart}
@@ -161,21 +179,45 @@ const Customers = () => {
             </div>
           </div>
 
-          <div className="card-white p-5 border-l-4 border-amber" data-testid="churn-box">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 rounded-xl bg-amber/15 grid place-items-center">
-                <UserMinus size={22} className="text-amber" weight="duotone" />
-              </div>
-              <div>
-                <div className="eyebrow">Churn analysis</div>
-                <div className="mt-1 font-bold text-[22px] num">{fmtNum(cust.churned_customers)} churned customers</div>
-                <p className="text-muted text-[13px] mt-1 max-w-2xl">
-                  Customers who purchased from Vivo before but have <span className="font-semibold text-foreground">not returned in the last 3 months</span>.
-                  Consider a targeted win-back campaign.
-                </p>
+          {showChurn ? (
+            <div className="card-white p-5 border-l-4 border-amber" data-testid="churn-box">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-xl bg-amber/15 grid place-items-center">
+                  <UserMinus size={22} className="text-amber" weight="duotone" />
+                </div>
+                <div>
+                  <div className="eyebrow">Churn analysis</div>
+                  <div className="mt-1 font-bold text-[22px] num">
+                    {fmtNum(cust.churned_customers)} churned of {fmtNum(cust.total_customers)}
+                    <span className="ml-2 text-[14px] text-muted font-medium">
+                      ({cust.total_customers ? ((cust.churned_customers / cust.total_customers) * 100).toFixed(1) : 0}% churn rate)
+                    </span>
+                  </div>
+                  <p className="text-muted text-[13px] mt-1 max-w-2xl">
+                    Of customers who purchased during this {Math.round(periodDays / 30)}-month period,{" "}
+                    <span className="font-semibold text-foreground">{fmtNum(cust.churned_customers)}</span> have not returned in the
+                    last 3 months. Consider a targeted win-back campaign.
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="card-white p-5 border-l-4 border-brand/50" data-testid="churn-disabled-note">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-xl bg-brand-soft grid place-items-center">
+                  <UserMinus size={22} className="text-brand" weight="duotone" />
+                </div>
+                <div>
+                  <div className="eyebrow">Churn analysis unavailable</div>
+                  <p className="text-muted text-[13px] mt-1 max-w-2xl">
+                    Selected period is {periodDays} day{periodDays === 1 ? "" : "s"} (less than 3 months), so churn cannot be
+                    calculated meaningfully. Showing <span className="font-semibold text-foreground">new vs repeat</span> customers
+                    only — extend the date range to 3+ months to surface churn.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

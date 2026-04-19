@@ -18,7 +18,7 @@ const FilterBar = () => {
   }, []);
 
   const presets = datePresets();
-  const presetKeys = ["today", "this_week", "this_month", "last_month", "this_year"];
+  const presetKeys = ["yesterday", "today", "this_week", "this_month", "last_month", "this_year"];
 
   const channelOptions = useMemo(() => {
     const filtered =

@@ -26,6 +26,8 @@ import {
   Storefront,
   Globe,
   TrendUp,
+  Footprints,
+  Target,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -67,6 +69,8 @@ const Overview = () => {
   const [topStyles, setTopStyles] = useState([]);
   const [subcats, setSubcats] = useState([]);
   const [footfall, setFootfall] = useState([]);
+  const [footfallPrev, setFootfallPrev] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
@@ -105,8 +109,12 @@ const Overview = () => {
         : Promise.resolve(null),
       Promise.all(dailyCalls),
       Promise.all(dailyPrevCalls),
+      prev
+        ? api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } })
+        : Promise.resolve({ data: [] }),
+      api.get("/locations"),
     ])
-      .then(([k, cs, s, sor, sc, ff, kp, daily, dailyP]) => {
+      .then(([k, cs, s, sor, sc, ff, kp, daily, dailyP, ffp, locs]) => {
         if (cancelled) return;
         setKpis(k.data);
         setCountrySummary(cs.data || []);
@@ -114,6 +122,8 @@ const Overview = () => {
         setTopStyles((sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20));
         setSubcats(sc.data || []);
         setFootfall(ff.data || []);
+        setFootfallPrev(ffp?.data || []);
+        setLocations(locs?.data || []);
         setKpisPrev(kp?.data || null);
         setDailyByCountry(Object.fromEntries(daily));
         setDailyByCountryPrev(Object.fromEntries(dailyP));
@@ -160,6 +170,36 @@ const Overview = () => {
     if (!realistic.length) return null;
     return [...realistic].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0))[0];
   }, [footfall]);
+
+  // Channel -> country map for filtering footfall by country selection
+  const channelCountryMap = useMemo(() => {
+    const m = {};
+    for (const l of locations) m[l.channel] = l.country;
+    return m;
+  }, [locations]);
+
+  // Aggregate footfall (excluding Vivo Junction due to >50% conv rate data-quality rule)
+  const aggFootfall = (rows) => {
+    let fVisits = 0;
+    let fOrders = 0;
+    for (const r of rows || []) {
+      if ((r.conversion_rate || 0) > 50) continue; // data-quality rule
+      // Apply country filter if active
+      if (countries.length) {
+        const c = channelCountryMap[r.location];
+        if (!c || !countries.includes(c)) continue;
+      }
+      // Apply channel filter if active
+      if (channels.length && !channels.includes(r.location)) continue;
+      fVisits += r.total_footfall || 0;
+      fOrders += r.orders || 0;
+    }
+    const conv = fVisits > 0 ? (fOrders / fVisits) * 100 : 0;
+    return { total_footfall: fVisits, orders: fOrders, conversion_rate: conv };
+  };
+
+  const footfallAgg = useMemo(() => aggFootfall(footfall), [footfall, countries, channels, channelCountryMap]);
+  const footfallAggPrev = useMemo(() => aggFootfall(footfallPrev), [footfallPrev, countries, channels, channelCountryMap]);
 
   // merge daily by day; one key per country (current) + country_prev for previous
   const dailyMerged = useMemo(() => {
@@ -236,6 +276,15 @@ const Overview = () => {
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <KPICard small testId="kpi-footfall" label="Total Footfall" sub="Visitors to stores (excl. data-quality outliers)" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+              delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+            <KPICard small testId="kpi-conversion" label="Conversion Rate" sub="Orders ÷ Footfall" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
+              delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

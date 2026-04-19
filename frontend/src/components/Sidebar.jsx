@@ -7,11 +7,13 @@ import {
   Tag,
   Users,
   FileText,
+  Footprints,
 } from "@phosphor-icons/react";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
+  { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },

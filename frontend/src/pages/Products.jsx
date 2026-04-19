@@ -26,6 +26,7 @@ const Products = () => {
   const [stockSales, setStockSales] = useState([]);
   const [kpis, setKpis] = useState(null);
   const [top, setTop] = useState([]);
+  const [newStyles, setNewStyles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -40,13 +41,15 @@ const Products = () => {
       api.get("/subcategory-stock-sales", { params: p }),
       api.get("/kpis", { params: p }),
       api.get("/top-skus", { params: { ...p, limit: 20 } }),
+      api.get("/analytics/new-styles", { params: p }),
     ])
-      .then(([s, ss, k, t]) => {
+      .then(([s, ss, k, t, ns]) => {
         if (cancelled) return;
         setSor(s.data || []);
         setStockSales(ss.data || []);
         setKpis(k.data);
         setTop(t.data || []);
+        setNewStyles(ns.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -71,15 +74,15 @@ const Products = () => {
     return [...base].sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0));
   }, [sor, search]);
 
-  // Tornado chart data — sales % (left negative) vs stock % (right positive) per subcategory
+  // Tornado chart data — stock % (left negative) vs sales % (right positive) per subcategory
   const tornado = useMemo(() => {
     return [...stockSales]
       .sort((a, b) => (b.pct_of_total_sold || 0) - (a.pct_of_total_sold || 0))
       .map((r) => ({
         subcategory: r.subcategory,
-        sold_neg: -(r.pct_of_total_sold || 0),
-        sold: r.pct_of_total_sold || 0,
+        stock_neg: -(r.pct_of_total_stock || 0),
         stock: r.pct_of_total_stock || 0,
+        sold: r.pct_of_total_sold || 0,
         sor: r.sor_percent || 0,
       }));
   }, [stockSales]);
@@ -105,7 +108,7 @@ const Products = () => {
           </div>
 
           <div className="card-white p-5" data-testid="tornado-chart">
-            <SectionTitle title="Subcategory: Sales vs Stock" subtitle="% of total units sold (green, left) vs % of total stock (blue, right)" />
+            <SectionTitle title="Subcategory: Stock vs Sales" subtitle="% of total stock (blue, left) vs % of total units sold (green, right)" />
             {tornado.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 28 + tornado.length * 28 }}>
                 <ResponsiveContainer>
@@ -115,20 +118,20 @@ const Products = () => {
                     <YAxis type="category" dataKey="subcategory" width={180} tick={{ fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => {
-                        if (name === "sold_neg") return [`${Math.abs(v).toFixed(2)}%`, "Sold %"];
-                        if (name === "stock") return [`${Number(v).toFixed(2)}%`, "Stock %"];
+                        if (name === "stock_neg") return [`${Math.abs(v).toFixed(2)}%`, "Stock %"];
+                        if (name === "sold") return [`${Number(v).toFixed(2)}%`, "Sold %"];
                         return v;
                       }}
                     />
-                    <Bar dataKey="sold_neg" fill="#00c853" stackId="a" />
-                    <Bar dataKey="stock" fill="#4b7bec" stackId="b" />
+                    <Bar dataKey="stock_neg" fill="#4b7bec" stackId="a" />
+                    <Bar dataKey="sold" fill="#00c853" stackId="b" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             )}
             <div className="flex gap-5 mt-3 text-[12px] text-muted">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-brand-strong" /> % units sold</span>
               <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: "#4b7bec" }} /> % of total stock</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-brand-strong" /> % units sold</span>
             </div>
           </div>
 
@@ -185,21 +188,21 @@ const Products = () => {
           </div>
 
           <div className="card-white p-5" data-testid="products-top-skus">
-            <SectionTitle title="Top 20 SKUs" subtitle="Best-selling individual SKUs across the scope" />
+            <SectionTitle title="Top 20 SKUs" subtitle="Best-selling products across the scope — Product Name & SKU (style key)" />
             <div className="overflow-x-auto">
               <table className="w-full data">
                 <thead>
                   <tr>
-                    <th>#</th><th>Style Name</th><th>Collection</th><th>Brand</th><th>Subcategory</th>
+                    <th>#</th><th>Product Name</th><th>SKU</th><th>Brand</th><th>Subcategory</th>
                     <th className="text-right">Units</th><th className="text-right">Total Sales</th><th className="text-right">Avg Price</th>
                   </tr>
                 </thead>
                 <tbody>
                   {top.map((s, i) => (
-                    <tr key={s.sku + i}>
+                    <tr key={(s.style_name || "") + i}>
                       <td className="text-muted num">{i + 1}</td>
-                      <td className="font-medium max-w-[260px] truncate" title={s.product_name}>{s.product_name}</td>
-                      <td className="text-muted">{s.collection || "—"}</td>
+                      <td className="font-medium max-w-[280px] truncate" title={s.style_name}>{s.style_name}</td>
+                      <td className="font-mono text-[11px] text-muted">{s.collection || "—"}</td>
                       <td><span className="pill-neutral">{s.brand || "—"}</span></td>
                       <td className="text-muted">{s.product_type || "—"}</td>
                       <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
@@ -210,6 +213,51 @@ const Products = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          <div className="card-white p-5" data-testid="new-styles-section">
+            <SectionTitle
+              title={`New styles performance · ${newStyles.length} styles`}
+              subtitle="Styles whose first ever sale is within the last 3 months. Performance shown for the selected period."
+            />
+            {newStyles.length === 0 ? <Empty label="No new styles launched in the last 90 days." /> : (
+              <div className="overflow-x-auto">
+                <table className="w-full data" data-testid="new-styles-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Product Name</th>
+                      <th>Collection</th>
+                      <th>Brand</th>
+                      <th>Subcategory</th>
+                      <th className="text-right">Units (Period)</th>
+                      <th className="text-right">Sales (Period)</th>
+                      <th className="text-right">Units (Since Launch)</th>
+                      <th className="text-right">Sales (Since Launch)</th>
+                      <th className="text-right">Current Stock</th>
+                      <th className="text-right">SOR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newStyles.slice(0, 100).map((r, i) => (
+                      <tr key={(r.style_name || "") + i}>
+                        <td className="text-muted num">{i + 1}</td>
+                        <td className="font-medium max-w-[260px] truncate" title={r.style_name}>{r.style_name}</td>
+                        <td className="text-muted">{r.collection || "—"}</td>
+                        <td><span className="pill-neutral">{r.brand || "—"}</span></td>
+                        <td className="text-muted">{r.product_type || "—"}</td>
+                        <td className="text-right num font-semibold">{fmtNum(r.units_sold_period)}</td>
+                        <td className="text-right num font-bold text-brand">{fmtKES(r.total_sales_period)}</td>
+                        <td className="text-right num">{fmtNum(r.units_sold_launch)}</td>
+                        <td className="text-right num">{fmtKES(r.total_sales_launch)}</td>
+                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                        <td className="text-right"><span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}

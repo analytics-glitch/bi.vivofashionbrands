@@ -8,6 +8,7 @@ import Locations from "@/pages/Locations";
 import Products from "@/pages/Products";
 import Inventory from "@/pages/Inventory";
 import Customers from "@/pages/Customers";
+import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
 import { FiltersProvider } from "@/lib/filters";
 
@@ -33,6 +34,7 @@ function App() {
               <Route path="/products" element={<Products />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/customers" element={<Customers />} />
+              <Route path="/footfall" element={<Footfall />} />
               <Route path="/ceo-report" element={<CEOReport />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

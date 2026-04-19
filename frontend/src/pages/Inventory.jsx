@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtDec, fmtAxisKES, COUNTRY_FLAGS, buildParams } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import {
@@ -9,6 +9,7 @@ import {
   Storefront,
   MagnifyingGlass,
   Buildings,
+  TrendDown,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -27,6 +28,7 @@ const Inventory = () => {
   const [summary, setSummary] = useState(null);
   const [inv, setInv] = useState([]);
   const [sts, setSts] = useState([]);
+  const [subcatSS, setSubcatSS] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -44,12 +46,14 @@ const Inventory = () => {
       api.get("/analytics/inventory-summary", { params }),
       api.get("/inventory", { params }),
       api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined } }),
+      api.get("/subcategory-stock-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined, channel: channels.length ? channels.join(",") : undefined } }),
     ])
-      .then(([s, i, st]) => {
+      .then(([s, i, st, sc]) => {
         if (cancelled) return;
         setSummary(s.data);
         setInv(i.data || []);
         setSts(st.data || []);
+        setSubcatSS(sc.data || []);
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -76,10 +80,45 @@ const Inventory = () => {
     });
   }, [inv, countries, channels, brandFilter, typeFilter]);
 
-  const lowStock = useMemo(
-    () => filteredInv.filter((r) => r.sku && (r.available || 0) <= 2).sort((a, b) => (a.available || 0) - (b.available || 0)),
-    [filteredInv]
-  );
+  const lowStockByStyle = useMemo(() => {
+    const m = new Map();
+    for (const r of filteredInv) {
+      const style = r.style_name || r.product_name;
+      if (!style) continue;
+      if (!m.has(style)) {
+        m.set(style, {
+          style_name: style,
+          brand: r.brand,
+          product_type: r.product_type,
+          collection: r.collection,
+          available: 0,
+          sku_count: 0,
+          locations: new Set(),
+        });
+      }
+      const e = m.get(style);
+      e.available += r.available || 0;
+      e.sku_count += 1;
+      if (r.location_name) e.locations.add(r.location_name);
+    }
+    const rows = [...m.values()]
+      .filter((e) => e.available <= 10)
+      .map((e) => ({ ...e, locations: e.locations.size }))
+      .sort((a, b) => a.available - b.available);
+    return rows;
+  }, [filteredInv]);
+
+  // Understocked subcategories = % of total stock is LESS than % of total units sold.
+  // understock_pct = pct_of_total_sold − pct_of_total_stock (positive = understocked magnitude).
+  const understockedSubcats = useMemo(() => {
+    return [...subcatSS]
+      .map((r) => ({
+        ...r,
+        understock_pct: (r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0),
+      }))
+      .filter((r) => r.understock_pct > 0.5)
+      .sort((a, b) => b.understock_pct - a.understock_pct);
+  }, [subcatSS]);
 
   return (
     <div className="space-y-6" data-testid="inventory-page">
@@ -113,8 +152,8 @@ const Inventory = () => {
             />
             <KPICard
               testId="inv-kpi-lowstock"
-              label="Low-Stock SKUs (≤2)"
-              value={fmtNum(summary.low_stock_skus)}
+              label="Low-Stock Styles (≤10)"
+              value={fmtNum(lowStockByStyle.length)}
               icon={Warning}
               showDelta={false}
             />
@@ -200,29 +239,78 @@ const Inventory = () => {
             </div>
           </div>
 
-          {lowStock.length > 0 && (
-            <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
+          {understockedSubcats.length > 0 && (
+            <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">
               <SectionTitle
-                title={`⚠ Low-stock alerts · ${lowStock.length} items`}
-                subtitle="Items with ≤2 units available"
+                title={`Understocked subcategories · ${understockedSubcats.length}`}
+                subtitle="Selling more than their share of inventory. Understock % = % of Units Sold − % of Total Stock."
               />
               <div className="overflow-x-auto">
-                <table className="w-full data">
+                <table className="w-full data" data-testid="understocked-table">
                   <thead>
                     <tr>
-                      <th>Product</th><th>Size</th><th>SKU</th><th>Location</th><th>Country</th>
-                      <th className="text-right">Available</th>
+                      <th>#</th>
+                      <th>Subcategory</th>
+                      <th className="text-right">% of Sales</th>
+                      <th className="text-right">% of Stock</th>
+                      <th className="text-right">Understock</th>
+                      <th className="text-right">Units Sold</th>
+                      <th className="text-right">Current Stock</th>
+                      <th className="text-right">SOR</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {lowStock.slice(0, 50).map((r, i) => (
-                      <tr key={i}>
-                        <td className="font-medium max-w-[280px] truncate" title={r.product_name}>{r.product_name || "—"}</td>
-                        <td>{r.size || "—"}</td>
-                        <td className="font-mono text-[11px] text-muted">{r.sku || "—"}</td>
-                        <td className="text-muted">{r.location_name || "—"}</td>
-                        <td className="capitalize">{r.country || "—"}</td>
-                        <td className="text-right"><span className={(r.available || 0) <= 1 ? "pill-red" : "pill-amber"}>{fmtNum(r.available)}</span></td>
+                    {understockedSubcats.map((r, i) => (
+                      <tr key={(r.subcategory || "") + i}>
+                        <td className="text-muted num">{i + 1}</td>
+                        <td className="font-medium">{r.subcategory}</td>
+                        <td className="text-right num">{fmtPct(r.pct_of_total_sold, 2)}</td>
+                        <td className="text-right num">{fmtPct(r.pct_of_total_stock, 2)}</td>
+                        <td className="text-right">
+                          <span className={r.understock_pct >= 3 ? "pill-red" : r.understock_pct >= 1 ? "pill-amber" : "pill-neutral"}>
+                            −{r.understock_pct.toFixed(2)} pts
+                          </span>
+                        </td>
+                        <td className="text-right num">{fmtNum(r.units_sold)}</td>
+                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
+                        <td className="text-right num">{fmtPct(r.sor_percent)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {lowStockByStyle.length > 0 && (
+            <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
+              <SectionTitle
+                title={`Low-stock alerts · ${lowStockByStyle.length} styles`}
+                subtitle="Styles with ≤10 total available units across all SKUs in the current scope"
+              />
+              <div className="overflow-x-auto">
+                <table className="w-full data" data-testid="low-stock-table">
+                  <thead>
+                    <tr>
+                      <th>Style</th>
+                      <th>Brand</th>
+                      <th>Subcategory</th>
+                      <th className="text-right">SKUs</th>
+                      <th className="text-right">Locations</th>
+                      <th className="text-right">Total Available</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lowStockByStyle.slice(0, 80).map((r, i) => (
+                      <tr key={(r.style_name || "") + i}>
+                        <td className="font-medium max-w-[300px] truncate" title={r.style_name}>{r.style_name || "—"}</td>
+                        <td><span className="pill-neutral">{r.brand || "—"}</span></td>
+                        <td className="text-muted">{r.product_type || "—"}</td>
+                        <td className="text-right num">{fmtNum(r.sku_count)}</td>
+                        <td className="text-right num">{fmtNum(r.locations)}</td>
+                        <td className="text-right">
+                          <span className={r.available <= 3 ? "pill-red" : r.available <= 6 ? "pill-amber" : "pill-neutral"}>{fmtNum(r.available)}</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

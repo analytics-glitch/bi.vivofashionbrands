@@ -325,6 +325,10 @@ async def get_customers(
         total["_n"] += r.get("total_customers") or 0
     total["avg_customer_spend"] = (total["_sum_spend"] / total["_n"]) if total["_n"] else 0
     total["avg_orders_per_customer"] = (total["_sum_orders"] / total["_n"]) if total["_n"] else 0
+    # churn_rate as ratio of churned / active-in-period (same definition upstream uses)
+    total["churn_rate"] = (
+        (total["churned_customers"] / total["total_customers"] * 100) if total["total_customers"] else 0
+    )
     for k in ("_sum_spend", "_sum_orders", "_n"):
         total.pop(k)
     return total
@@ -480,6 +484,114 @@ async def analytics_inventory_summary(
         "by_location": sorted(by_location.values(), key=lambda x: x["units"], reverse=True),
         "by_product_type": sorted(by_type.values(), key=lambda x: x["units"], reverse=True),
     }
+
+
+@api_router.get("/analytics/new-styles")
+async def analytics_new_styles(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """New styles = style whose first-ever sale is within the last 90 days
+    (relative to date_to). Returns performance across the *selected* period
+    plus total lifetime (since first sale) figures.
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        ref = datetime.fromisoformat(date_to) if date_to else datetime.utcnow()
+    except Exception:
+        ref = datetime.utcnow()
+    cutoff = ref - timedelta(days=90)
+    cutoff_iso = cutoff.date().isoformat()
+    pre_cutoff_iso = (cutoff - timedelta(days=1)).date().isoformat()
+    to_iso = ref.date().isoformat()
+
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def styles_call(df: Optional[str], dt: Optional[str]) -> List[Dict[str, Any]]:
+        """List all unique style_names that had any sales in [df, dt]. Uses /top-skus
+        with a high limit to bypass the /sor 200-row cap."""
+        base = {"date_from": df, "date_to": dt, "limit": 10000}
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/top-skus", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            })
+            return data or []
+        results = await multi_fetch("/top-skus", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for row in g:
+                s = row.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**row}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
+        return list(merged.values())
+
+    async def sor_call(df: Optional[str], dt: Optional[str]) -> List[Dict[str, Any]]:
+        """SOR gives style + current_stock + sor_percent (capped at 200 styles)."""
+        base = {"date_from": df, "date_to": dt}
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/sor", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            })
+            return data or []
+        results = await multi_fetch("/sor", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for row in g:
+                s = row.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**row}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales", "current_stock"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
+        return list(merged.values())
+
+    # Historical existence (all styles with any sale before cutoff)
+    # Recent + period use /sor to get current_stock & SOR for those styles.
+    old_styles_raw, recent, period = await asyncio.gather(
+        styles_call("2020-01-01", pre_cutoff_iso),
+        sor_call(cutoff_iso, to_iso),
+        sor_call(date_from, date_to),
+    )
+
+    old_styles = {r.get("style_name") for r in old_styles_raw if r.get("style_name")}
+    new_styles = [r for r in recent if r.get("style_name") and r.get("style_name") not in old_styles]
+
+    period_map: Dict[str, Dict[str, Any]] = {r.get("style_name"): r for r in period if r.get("style_name")}
+
+    out: List[Dict[str, Any]] = []
+    for r in new_styles:
+        p = period_map.get(r.get("style_name")) or {}
+        out.append({
+            "style_name": r.get("style_name"),
+            "brand": r.get("brand"),
+            "collection": r.get("collection"),
+            "product_type": r.get("product_type"),
+            # Period slice
+            "units_sold_period": p.get("units_sold") or 0,
+            "total_sales_period": p.get("total_sales") or 0,
+            # Since launch (last 90d)
+            "units_sold_launch": r.get("units_sold") or 0,
+            "total_sales_launch": r.get("total_sales") or 0,
+            "current_stock": r.get("current_stock") or 0,
+            "sor_percent": r.get("sor_percent") or 0,
+        })
+    out.sort(key=lambda x: x.get("total_sales_period") or 0, reverse=True)
+    return out
 
 
 @api_router.get("/analytics/low-stock")

@@ -69,22 +69,30 @@ export const datePresets = () => {
   const m = now.getMonth();
   const d = now.getDate();
   const today = new Date(y, m, d);
+  const yesterday = new Date(y, m, d - 1);
 
-  // This week (Mon-Sun)
+  // This week (Mon-Sun), but end at yesterday (not live data)
   const weekDay = today.getDay() || 7;
   const weekStart = new Date(y, m, d - (weekDay - 1));
+  // If today is Monday, "this week" collapses — fall back to last 7 days ending yesterday
+  const weekEnd = yesterday < weekStart ? yesterday : yesterday;
 
   const monthStart = new Date(y, m, 1);
+  // Month-to-date, ending yesterday (data isn't live)
+  const monthEnd = yesterday < monthStart ? monthStart : yesterday;
+
   const lastMonthStart = new Date(y, m - 1, 1);
   const lastMonthEnd = new Date(y, m, 0); // day 0 of this month = last day of previous month
   const yearStart = new Date(y, 0, 1);
+  const yearEnd = yesterday < yearStart ? yearStart : yesterday;
 
   return {
+    yesterday: { date_from: toISO(yesterday), date_to: toISO(yesterday), label: "Yesterday" },
     today: { date_from: toISO(today), date_to: toISO(today), label: "Today" },
-    this_week: { date_from: toISO(weekStart), date_to: toISO(today), label: "This Week" },
-    this_month: { date_from: toISO(monthStart), date_to: toISO(today), label: "This Month" },
+    this_week: { date_from: toISO(weekStart), date_to: toISO(weekEnd), label: "This Week" },
+    this_month: { date_from: toISO(monthStart), date_to: toISO(monthEnd), label: "This Month" },
     last_month: { date_from: toISO(lastMonthStart), date_to: toISO(lastMonthEnd), label: "Last Month" },
-    this_year: { date_from: toISO(yearStart), date_to: toISO(today), label: "This Year" },
+    this_year: { date_from: toISO(yearStart), date_to: toISO(yearEnd), label: "This Year" },
   };
 };
 
