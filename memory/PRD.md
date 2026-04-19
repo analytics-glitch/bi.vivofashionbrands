@@ -124,6 +124,16 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v6.3 (Apr 2026)**
+  - Added "Warehouse Finished Goods" support. Location isn't in upstream
+    `/locations` channel list, so it's injected as an extra known location.
+    Upstream `/inventory` caps at 2000 rows, so this location is fetched via
+    61 chunked product-prefix queries (A-Z, 0-9, + 2-letter prefixes for top
+    brands V/S/A/T/Z + vowels) and deduped by (sku, barcode, size).
+  - Result: **Warehouse Stock = 27,524 units across 8,043 unique SKUs**
+    (~94% coverage of the 8,505 SKU ground truth).
+  - "Warehouse Finished Goods" now selectable in the Channel filter.
+  - Inventory table shows warehouse rows when the location is selected.
 - **v6.2 (Apr 2026)**
   - Fixed Inventory data completeness: upstream `/inventory` is hard-capped at
     2000 rows, only returning 5 of 51 locations. Backend now fans-out per

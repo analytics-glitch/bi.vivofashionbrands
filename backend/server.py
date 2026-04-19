@@ -104,7 +104,17 @@ async def root():
 
 @api_router.get("/locations")
 async def get_locations():
-    return await fetch("/locations")
+    data = await fetch("/locations") or []
+    # Merge in known-but-unlisted inventory locations so the filter can select them.
+    existing = {(loc.get("channel"), loc.get("country")) for loc in data}
+    for extra in EXTRA_INVENTORY_LOCATIONS:
+        if (extra["channel"], extra["country"]) not in existing:
+            data.append({
+                "channel": extra["channel"],
+                "pos_location_name": extra["channel"],
+                "country": extra["country"],
+            })
+    return data
 
 
 @api_router.get("/country-summary")
@@ -271,10 +281,9 @@ async def get_inventory(
     country: Optional[str] = None,
 ):
     """Fans out per-location because upstream /inventory is hard-capped at
-    2000 rows. When `location` is given, use the single-call path."""
-    if location:
-        return await fetch("/inventory", {"location": location, "product": product, "country": country})
-    return await fetch_all_inventory(country=country, product=product)
+    2000 rows. When `location` is given, still go through the helper so
+    that Warehouse Finished Goods gets chunked & country is lowercased."""
+    return await fetch_all_inventory(country=country, location=location, product=product)
 
 
 @api_router.get("/stock-to-sales")
@@ -448,14 +457,38 @@ def is_warehouse_location(name: Optional[str]) -> bool:
     return any(k in n for k in WAREHOUSE_KEYS)
 
 
+# Locations not in /locations channel list but that hold stock in /inventory.
+# Upstream /inventory for this location is hard-capped at 2000 rows, so we
+# chunk by product-prefix letter to try to get the full 8k+ SKU set.
+EXTRA_INVENTORY_LOCATIONS = [
+    {"channel": "Warehouse Finished Goods", "country": "Kenya"},
+]
+# Chunk keys used to bypass upstream /inventory 2000-row cap for the large
+# Warehouse Finished Goods location (8k+ SKUs). A-Z + 0-9 covers most; the
+# 2-letter prefixes for the top brands (V, S, A, T, Z with vowels) pick up
+# the remaining SKUs that hit the 2000-row cap on single-letter queries.
+WAREHOUSE_CHUNK_KEYS = (
+    list("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    + [f"V{c}" for c in "aeiou"]
+    + [f"S{c}" for c in "aeiou"]
+    + [f"A{c}" for c in "aeiou"]
+    + [f"T{c}" for c in "aeiou"]
+    + [f"Z{c}" for c in "aeiou"]
+)
+
+
 async def fetch_all_inventory(
     country: Optional[str] = None,
     location: Optional[str] = None,
     product: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Upstream /inventory hard-caps at 2000 rows. To get the full picture
-    across all 51 locations we fan-out per-location and merge. Cached 60s."""
+    across all 51 locations we fan-out per-location and merge. For the
+    Warehouse Finished Goods location (8k+ SKUs) we additionally chunk by
+    product-prefix letter and dedupe. Cached 60s."""
     if location:
+        if location == "Warehouse Finished Goods":
+            return await _fetch_warehouse_chunked(country=country, product=product)
         return await fetch("/inventory", {
             "country": (country or "").lower() or None,
             "location": location, "product": product,
@@ -466,12 +499,16 @@ async def fetch_all_inventory(
         return _inv_cache["data"]
 
     locs_raw = await fetch("/locations") or []
+    # Merge in extra known-but-unlisted locations (e.g. Warehouse Finished Goods).
+    locs_raw = list(locs_raw) + [e for e in EXTRA_INVENTORY_LOCATIONS if not any(loc.get("channel") == e["channel"] for loc in locs_raw)]
     cs = _split_csv(country)
     if cs:
         locs_raw = [loc for loc in locs_raw if (loc.get("country") or "") in cs]
 
     async def _one(loc):
         try:
+            if loc.get("channel") == "Warehouse Finished Goods":
+                return await _fetch_warehouse_chunked(country=loc.get("country"), product=product)
             return await fetch("/inventory", {
                 "country": (loc.get("country") or "").lower() or None,
                 "location": loc.get("channel"),
@@ -490,6 +527,42 @@ async def fetch_all_inventory(
     _inv_cache["key"] = cache_key
     _inv_cache["data"] = merged
     return merged
+
+
+async def _fetch_warehouse_chunked(
+    country: Optional[str] = None,
+    product: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Warehouse Finished Goods has 8k+ SKUs but upstream caps at 2000 rows.
+    Chunk by product-prefix letter and dedupe by (sku, size)."""
+    c = (country or "Kenya").lower()
+    # If caller passed an explicit product filter, just do a single call — no chunking.
+    if product:
+        return await fetch("/inventory", {
+            "country": c, "location": "Warehouse Finished Goods", "product": product,
+        }) or []
+
+    async def _chunk(letter):
+        try:
+            return await fetch("/inventory", {
+                "country": c, "location": "Warehouse Finished Goods", "product": letter,
+            })
+        except HTTPException:
+            return []
+
+    results = await asyncio.gather(*[_chunk(L) for L in WAREHOUSE_CHUNK_KEYS], return_exceptions=False)
+    seen: Dict[str, Dict[str, Any]] = {}
+    for group in results:
+        for r in group or []:
+            key = f"{r.get('sku') or ''}|{r.get('barcode') or ''}|{r.get('size') or ''}"
+            if key == "||" and not r.get("product_name"):
+                # Aggregate null-row — keep only once
+                if "_null_agg" in seen:
+                    continue
+                seen["_null_agg"] = r
+            elif key not in seen:
+                seen[key] = r
+    return list(seen.values())
 
 
 # -------------------- Aggregation helpers --------------------
