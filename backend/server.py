@@ -457,6 +457,32 @@ def is_warehouse_location(name: Optional[str]) -> bool:
     return any(k in n for k in WAREHOUSE_KEYS)
 
 
+# Locations that should be EXCLUDED from inventory analysis entirely
+# (non-retail, non-physical, non-real-stock locations).
+INVENTORY_EXCLUDED_LOCATIONS = {
+    "bundling", "buying and merchandise", "defectss location",
+    "shopping bags location", "mockup store", "holding location",
+    "the oasis mall holding location", "online orders location",
+    "third-party app", "sale stock location", "a vivo warehouse location",
+    "vivo wholesale location",
+}
+
+# Brands to exclude from inventory analysis (per user request)
+INVENTORY_EXCLUDED_BRANDS = {"third party brands"}
+
+
+def is_excluded_location(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    return name.strip().lower() in INVENTORY_EXCLUDED_LOCATIONS
+
+
+def is_excluded_brand(brand: Optional[str]) -> bool:
+    if not brand:
+        return False
+    return brand.strip().lower() in INVENTORY_EXCLUDED_BRANDS
+
+
 # Locations not in /locations channel list but that hold stock in /inventory.
 # Upstream /inventory for this location is hard-capped at 2000 rows, so we
 # chunk by product-prefix letter to try to get the full 8k+ SKU set.
@@ -488,11 +514,18 @@ async def fetch_all_inventory(
     product-prefix letter and dedupe. Cached 60s."""
     if location:
         if location == "Warehouse Finished Goods":
-            return await _fetch_warehouse_chunked(country=country, product=product)
-        return await fetch("/inventory", {
-            "country": (country or "").lower() or None,
-            "location": location, "product": product,
-        }) or []
+            rows = await _fetch_warehouse_chunked(country=country, product=product)
+        else:
+            rows = await fetch("/inventory", {
+                "country": (country or "").lower() or None,
+                "location": location, "product": product,
+            }) or []
+        # Same filtering as fan-out path
+        return [
+            r for r in rows
+            if (r.get("product_name") or r.get("sku"))
+            and not is_excluded_brand(r.get("brand"))
+        ]
 
     cache_key = f"{country or ''}|{product or ''}"
     if _inv_cache.get("key") == cache_key and (time.time() - _inv_cache.get("ts", 0)) < _INV_TTL:
@@ -501,6 +534,9 @@ async def fetch_all_inventory(
     locs_raw = await fetch("/locations") or []
     # Merge in extra known-but-unlisted locations (e.g. Warehouse Finished Goods).
     locs_raw = list(locs_raw) + [e for e in EXTRA_INVENTORY_LOCATIONS if not any(loc.get("channel") == e["channel"] for loc in locs_raw)]
+    # Filter out non-retail / non-real-stock locations so they don't pollute
+    # the aggregate.
+    locs_raw = [loc for loc in locs_raw if not is_excluded_location(loc.get("channel"))]
     cs = _split_csv(country)
     if cs:
         locs_raw = [loc for loc in locs_raw if (loc.get("country") or "") in cs]
@@ -508,12 +544,22 @@ async def fetch_all_inventory(
     async def _one(loc):
         try:
             if loc.get("channel") == "Warehouse Finished Goods":
-                return await _fetch_warehouse_chunked(country=loc.get("country"), product=product)
-            return await fetch("/inventory", {
-                "country": (loc.get("country") or "").lower() or None,
-                "location": loc.get("channel"),
-                "product": product,
-            })
+                rows = await _fetch_warehouse_chunked(country=loc.get("country"), product=product)
+            else:
+                rows = await fetch("/inventory", {
+                    "country": (loc.get("country") or "").lower() or None,
+                    "location": loc.get("channel"),
+                    "product": product,
+                }) or []
+            # Filter out:
+            # 1. Excluded brands (e.g. Third Party Brands).
+            # 2. Upstream phantom/aggregate rows that have no product_name AND
+            #    no SKU — these carry inflated unit counts and pollute totals.
+            return [
+                r for r in rows
+                if (r.get("product_name") or r.get("sku"))
+                and not is_excluded_brand(r.get("brand"))
+            ]
         except HTTPException:
             return []
 
@@ -591,7 +637,7 @@ async def analytics_inventory_summary(
     for row in inv or []:
         c = (row.get("country") or "Unknown").title()
         loc = row.get("location_name") or "Unknown"
-        pt = row.get("product_type") or "Other"
+        pt = row.get("product_type") or "Uncategorized"
         avail = float(row.get("available") or 0)
         is_wh = is_warehouse_location(loc)
 

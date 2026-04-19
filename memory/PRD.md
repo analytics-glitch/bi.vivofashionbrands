@@ -124,6 +124,18 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v6.4 (Apr 2026)**
+  - Fixed Locations drill-down (top styles at a channel): removed SKU/Size
+    columns (upstream `/top-skus` doesn't expose them); now shows Style,
+    Collection, Brand, Subcategory, Units, Sales, Avg Price.
+  - Inventory fan-out now **excludes non-inventory locations** (Shopping Bags,
+    Bundling, Buying and Merchandise, Defectss, Mockup Store, Holding,
+    Online Orders Location, Third-party App, Sale Stock, Vivo Wholesale,
+    A Vivo Warehouse Location).
+  - Dropped phantom upstream rows (null product_name AND null SKU).
+  - Renamed the "Other" subcategory → "Uncategorized" (these are real SKUs
+    that upstream didn't tag with a product_type).
+  - **Third Party Brands removed** from inventory analysis entirely.
 - **v6.3 (Apr 2026)**
   - Added "Warehouse Finished Goods" support. Location isn't in upstream
     `/locations` channel list, so it's injected as an extra known location.

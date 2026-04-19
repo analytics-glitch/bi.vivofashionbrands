@@ -303,7 +303,7 @@ const Locations = () => {
               <div className="card-white p-5">
                 <SectionTitle
                   title={selected}
-                  subtitle="Top 10 SKUs at this channel"
+                  subtitle="Top 10 styles at this channel"
                   action={
                     <button
                       onClick={() => setSelected(null)}
@@ -323,28 +323,30 @@ const Locations = () => {
                       <thead>
                         <tr>
                           <th>#</th>
-                          <th>SKU</th>
-                          <th>Product</th>
-                          <th>Size</th>
+                          <th>Style</th>
+                          <th>Collection</th>
                           <th>Brand</th>
+                          <th>Subcategory</th>
                           <th className="text-right">Units</th>
                           <th className="text-right">Total Sales</th>
+                          <th className="text-right">Avg Price</th>
                         </tr>
                       </thead>
                       <tbody>
                         {selectedSkus.map((s, i) => (
-                          <tr key={s.sku + i}>
+                          <tr key={(s.style_name || "") + i}>
                             <td className="text-muted num">{i + 1}</td>
-                            <td className="font-mono text-[11px] text-muted">{s.sku}</td>
-                            <td className="font-medium max-w-[340px] truncate" title={s.product_name}>
-                              {s.product_name}
+                            <td className="font-medium max-w-[280px] truncate" title={s.style_name}>
+                              {s.style_name || "—"}
                             </td>
-                            <td>{s.size || "—"}</td>
+                            <td className="text-muted">{s.collection || "—"}</td>
                             <td>
                               <span className="pill-neutral">{s.brand || "—"}</span>
                             </td>
+                            <td className="text-muted">{s.product_type || "—"}</td>
                             <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
                             <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
+                            <td className="text-right num">{fmtKES(s.avg_price)}</td>
                           </tr>
                         ))}
                       </tbody>
