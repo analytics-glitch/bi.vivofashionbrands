@@ -12,7 +12,9 @@ import httpx
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-VIVO_API_BASE = "https://vivo-bi-api-666430550422.europe-west1.run.app"
+VIVO_API_BASE = os.environ.get(
+    "VIVO_API_BASE", "https://vivo-bi-api-666430550422.europe-west1.run.app"
+)
 
 app = FastAPI(title="Vivo BI Dashboard API")
 api_router = APIRouter(prefix="/api")
