@@ -149,7 +149,7 @@ const TopNav = () => {
         </div>
       </div>
 
-      <div className="hidden lg:flex items-center gap-1 overflow-x-auto">
+      <div className="hidden lg:flex items-center gap-1 flex-1 justify-center min-w-0 overflow-x-auto">
         {tabs.map((t) => (
           <NavLink
             key={t.id}
@@ -157,7 +157,7 @@ const TopNav = () => {
             end={t.to === "/"}
             data-testid={`nav-${t.id}`}
             className={({ isActive }) =>
-              `flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap ${
+              `flex items-center gap-1.5 px-2.5 xl:px-3.5 py-2 rounded-lg text-[12px] xl:text-[13px] font-medium transition-colors whitespace-nowrap ${
                 isActive
                   ? "bg-brand text-white shadow-sm"
                   : "text-foreground/70 hover:bg-panel hover:text-foreground"
@@ -166,7 +166,7 @@ const TopNav = () => {
           >
             {({ isActive }) => (
               <>
-                <t.icon size={15} weight={isActive ? "fill" : "regular"} />
+                <t.icon size={14} weight={isActive ? "fill" : "regular"} />
                 <span>{t.label}</span>
               </>
             )}

@@ -254,7 +254,7 @@ const Products = () => {
 
           <div className="card-white p-5" data-testid="sor-table-card">
             <SectionTitle
-              title={`SOR by style · ${filtered.length} items`}
+              title={`SOR by style · TOP ${Math.min(filtered.length, 200)} items`}
               subtitle="Sortable on every column. Use search to narrow results."
               action={
                 <div className="flex items-center gap-2 input-pill min-w-[260px]">
@@ -284,7 +284,7 @@ const Products = () => {
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
                 { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
               ]}
-              rows={filtered}
+              rows={filtered.slice(0, 200)}
             />
           </div>
         </>

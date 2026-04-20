@@ -141,6 +141,27 @@ const Inventory = () => {
       .sort((a, b) => b.understock_pct - a.understock_pct);
   }, [subcatSS]);
 
+  // Inventory by Category — attach % of total stock for labels + tooltip.
+  const invByCategory = useMemo(() => {
+    const total = stsByCat.reduce((s, r) => s + (r.current_stock || 0), 0) || 1;
+    return [...stsByCat]
+      .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
+      .map((r) => {
+        const pct = ((r.current_stock || 0) / total) * 100;
+        return { ...r, pct, cat_label: `${fmtNum(r.current_stock)} · ${pct.toFixed(1)}%` };
+      });
+  }, [stsByCat]);
+
+  // Inventory by Subcategory (top 15) — attach % of total stock.
+  const invBySubcat = useMemo(() => {
+    const rows = summary?.by_product_type || [];
+    const total = rows.reduce((s, r) => s + (r.units || 0), 0) || 1;
+    return rows.slice(0, 15).map((r) => {
+      const pct = ((r.units || 0) / total) * 100;
+      return { ...r, pct, subcat_label: `${pct.toFixed(1)}%` };
+    });
+  }, [summary]);
+
   return (
     <div className="space-y-6" data-testid="inventory-page">
       <div>
@@ -246,31 +267,37 @@ const Inventory = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card-white p-5" data-testid="chart-inv-category">
-              <SectionTitle title="Inventory by category" subtitle="Grouped (Dresses, Tops, Bottoms, …)" />
-              <div style={{ width: "100%", height: 320 }}>
+              <SectionTitle title="Inventory by Category" subtitle="Grouped (Dresses, Tops, Bottoms, …) — % of total stock shown" />
+              <div style={{ width: "100%", height: 340 }}>
                 <ResponsiveContainer>
-                  <BarChart data={stsByCat} margin={{ bottom: 60 }}>
+                  <BarChart data={invByCategory} margin={{ top: 24, bottom: 60 }}>
                     <CartesianGrid vertical={false} />
                     <XAxis dataKey="category" interval={0} angle={-20} textAnchor="end" height={70} tick={{ fontSize: 10 }} />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <Tooltip content={<ChartTooltip formatters={{ current_stock: (v) => `${fmtNum(v)} units`, units_sold: (v) => `${fmtNum(v)} units` }} />} />
+                    <Tooltip content={<ChartTooltip formatters={{
+                      current_stock: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                    }} />} />
                     <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
-                      <LabelList dataKey="current_stock" position="top" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
             <div className="card-white p-5" data-testid="chart-inv-subcat">
-              <SectionTitle title="Inventory by subcategory" subtitle="Top 15 subcategories" />
-              <div style={{ width: "100%", height: 320 }}>
+              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 subcategories — % of total stock shown" />
+              <div style={{ width: "100%", height: 340 }}>
                 <ResponsiveContainer>
-                  <BarChart data={summary.by_product_type.slice(0, 15)} margin={{ bottom: 80 }}>
+                  <BarChart data={invBySubcat} margin={{ top: 24, bottom: 80 }}>
                     <CartesianGrid vertical={false} />
                     <XAxis dataKey="product_type" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 9 }} />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <Tooltip content={<ChartTooltip formatters={{ units: (v) => `${fmtNum(v)} units` }} />} />
-                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory" />
+                    <Tooltip content={<ChartTooltip formatters={{
+                      units: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                    }} />} />
+                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory">
+                      <LabelList dataKey="subcat_label" position="top" style={{ fontSize: 9, fill: "#4b5563", fontWeight: 600 }} />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>

@@ -346,11 +346,13 @@ const Overview = () => {
               delta={delta("total_units")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPICard small testId="kpi-basket" label="Avg Basket Size" value={fmtKES(kpis.avg_basket_size)} icon={Basket}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
               delta={delta("avg_basket_size")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-asp" label="Avg Selling Price" value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
+            <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
               delta={delta("avg_selling_price")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+            <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders" value={(kpis.total_orders ? kpis.total_units / kpis.total_orders : 0).toFixed(2)}
+              showDelta={false} />
             <KPICard small testId="kpi-rr" label="Return Rate" value={fmtPct(kpis.return_rate, 2)} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
@@ -492,6 +494,29 @@ const Overview = () => {
             )}
           </div>
 
+          <div className="card-white p-5" data-testid="category-chart">
+            <SectionTitle title="Sales by Category" subtitle="High-level category groupings (Dresses, Tops, Bottoms, …)" />
+            {salesByCategory.length === 0 ? <Empty /> : (
+              <div style={{ width: "100%", height: 320 }}>
+                <ResponsiveContainer>
+                  <BarChart data={salesByCategory} margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="category" tick={{ fontSize: 11 }} />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <Tooltip content={
+                      <ChartTooltip formatters={{
+                        total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
+                      }} />
+                    } />
+                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
+                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
           <div className="card-white p-5" data-testid="subcat-chart">
             <SectionTitle
               title="Sales by Subcategory"
@@ -515,29 +540,6 @@ const Overview = () => {
                         position="right"
                         style={{ fontSize: 10, fill: "#4b5563" }}
                       />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-          <div className="card-white p-5" data-testid="category-chart">
-            <SectionTitle title="Sales by Category" subtitle="High-level category groupings (Dresses, Tops, Bottoms, …)" />
-            {salesByCategory.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 320 }}>
-                <ResponsiveContainer>
-                  <BarChart data={salesByCategory} margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
-                    <CartesianGrid vertical={false} />
-                    <XAxis dataKey="category" tick={{ fontSize: 11 }} />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                    <Tooltip content={
-                      <ChartTooltip formatters={{
-                        total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
-                      }} />
-                    } />
-                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
-                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>

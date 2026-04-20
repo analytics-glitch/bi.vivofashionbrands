@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 12 frontend-only regression for orange theme extension, ABV/MSI KPIs, Overview category↔subcategory swap, Products SOR rename, Inventory invByCategory/invBySubcat pct labels. 6 of 7 review items PASS. 1 partial: Inventory bar labels do contain '%' but Tooltip-on-hover for chart-inv-category and chart-inv-subcat does NOT show '% of total' due to ChartTooltip formatter-key mismatch (Bar has name='Inventory' which takes precedence over dataKey in ChartHelpers lookup).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Inventory.jsx · chart-inv-category & chart-inv-subcat Tooltip",
+        "issue": "Tooltip hover does NOT contain '% of total'. Visible tooltip on Inventory-by-Category shows only 'Dresses / Inventory: 16447' (no % suffix). Root cause: /app/frontend/src/components/ChartHelpers.jsx line 21 looks up formatter via `formatters[p.name || p.dataKey]`. In Inventory.jsx the <Bar> has name='Inventory' (lines 280, 298), so the lookup uses 'Inventory' rather than dataKey ('current_stock' / 'units'). The formatter objects are keyed on dataKey, so they never match and the default `p.value` (raw number) is rendered.",
+        "selector": "[data-testid=chart-inv-category] .recharts-tooltip-wrapper",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_12.json"],
+  "action_items": [
+    "Fix Inventory tooltip '% of total' text. Two equivalent one-line fixes in /app/frontend/src/pages/Inventory.jsx: (a) remove name='Inventory' from the two <Bar> elements (lines 280, 298), OR (b) key the formatter map on 'Inventory' instead of 'current_stock'/'units'. Option (a) is cleaner because the legend/tooltip will then fall back to dataKey. Bar labels (LabelList) already work because they read the precomputed cat_label / subcat_label fields."
+  ],
+  "critical_code_review_comments": [
+    "ChartHelpers.jsx line 21: formatter lookup precedence (p.name || p.dataKey) is fragile — name usually wins. Consider merging: `formatters[p.name] ?? formatters[p.dataKey] ?? identity`.",
+    "Inventory.jsx lines 144-162: invByCategory / invBySubcat useMemo blocks precompute pct and pretty label strings cleanly — good separation.",
+    "Overview.jsx is now ~580+ lines; KPI row 2 (ABV/ASP/MSI/RR/Returns) is correctly rendered in one 5-col grid. No regression.",
+    "Products.jsx line 257 correctly interpolates `Math.min(filtered.length, 200)` into the title; line 287 caps rows via `filtered.slice(0, 200)` — verified live (50 rows rendered for 'This Month' because dataset currently has 50 styles; cap still safe)."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not retested (frontend-only review)",
+    "frontend": "6/7 review items pass (~86%); 1 partial (Inventory tooltip text missing '% of total')"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Default date preset is 'Today' (2026-04-20) and renders mostly empty (stuck on 'Aggregating group KPIs...'). Use 'This Month' preset before assertion — all KPI/chart widgets render fine with data then. Verified at 1280x900: body bg rgb(254,215,170), .App transparent (rgba(0,0,0,0)), .card-white rgb(255,237,213), table.data th rgb(254,215,170), all 5 new KPI cards (kpi-abv/asp/msi/rr/returns) present, DOM order category-chart→subcat-chart confirmed via compareDocumentPosition, SOR card first line 'SOR by style · TOP 200 items' with 50 tbody rows (<=200), Inventory invByCategory labels contain '%' (e.g. '16,447·37.8%'), invBySubcat labels contain '%' (e.g. '20.3%'), 7 nav tabs visible. The Inventory tooltip bug is the only deviation from the review checklist.",
+  "rca of the issue": "Inventory tooltip '% of total' missing — ChartTooltip formatter lookup `formatters[p.name || p.dataKey]` prefers `p.name` ('Inventory' on the <Bar>) over dataKey. Formatter keys are 'current_stock' and 'units' (dataKey-style) so they never match. Fix: drop name='Inventory' from the Bar (simplest) or rekey formatters to 'Inventory'. Verified by reading /app/frontend/src/components/ChartHelpers.jsx line 21 and /app/frontend/src/pages/Inventory.jsx lines 277-302. Reproduced live at https://bi-platform-2.preview.emergentagent.com/#/inventory with 'This Month' preset: hovered first bar, tooltip rendered 'Dresses / Inventory: 16447' with no '% of total'."
+}
