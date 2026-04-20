@@ -100,36 +100,49 @@ const Overview = () => {
         )
       : [];
 
+    const safe = (p) => p.then((r) => ({ ok: true, data: r?.data })).catch((e) => ({ ok: false, error: e }));
+
     Promise.all([
-      api.get("/kpis", { params: p }),
-      api.get("/country-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
-      api.get("/sales-summary", { params: p }),
-      api.get("/sor", { params: p }),
-      api.get("/subcategory-sales", { params: p }),
-      api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
+      safe(api.get("/kpis", { params: p })),
+      safe(api.get("/country-summary", { params: { date_from: dateFrom, date_to: dateTo } })),
+      safe(api.get("/sales-summary", { params: p })),
+      safe(api.get("/sor", { params: p })),
+      safe(api.get("/subcategory-sales", { params: p })),
+      safe(api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } })),
       prev
-        ? api.get("/kpis", { params: buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }) })
-        : Promise.resolve(null),
-      Promise.all(dailyCalls),
-      Promise.all(dailyPrevCalls),
+        ? safe(api.get("/kpis", { params: buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }) }))
+        : Promise.resolve({ ok: true, data: null }),
+      Promise.all(dailyCalls.map(safe)),
+      Promise.all(dailyPrevCalls.map(safe)),
       prev
-        ? api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } })
-        : Promise.resolve({ data: [] }),
-      api.get("/locations"),
+        ? safe(api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } }))
+        : Promise.resolve({ ok: true, data: [] }),
+      safe(api.get("/locations")),
     ])
       .then(([k, cs, s, sor, sc, ff, kp, daily, dailyP, ffp, locs]) => {
         if (cancelled) return;
+        // Fatal iff KPIs themselves fail — the rest can degrade.
+        if (!k.ok) {
+          const detail = k.error?.response?.data?.detail || k.error?.message || "Unknown upstream error";
+          setError(detail);
+          setLoading(false);
+          return;
+        }
         setKpis(k.data);
-        setCountrySummary(cs.data || []);
-        setSales(s.data || []);
-        setTopStyles((sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20));
-        setSubcats(sc.data || []);
-        setFootfall(ff.data || []);
-        setFootfallPrev(ffp?.data || []);
-        setLocations(locs?.data || []);
-        setKpisPrev(kp?.data || null);
-        setDailyByCountry(Object.fromEntries(daily));
-        setDailyByCountryPrev(Object.fromEntries(dailyP));
+        setCountrySummary(cs.ok ? cs.data || [] : []);
+        setSales(s.ok ? s.data || [] : []);
+        setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
+        setSubcats(sc.ok ? sc.data || [] : []);
+        setFootfall(ff.ok ? ff.data || [] : []);
+        setFootfallPrev(ffp?.ok ? ffp.data || [] : []);
+        setLocations(locs?.ok ? locs.data || [] : []);
+        setKpisPrev(kp?.ok ? kp.data || null : null);
+        const dailyOk = countriesToChart.map((c, i) => [c, daily[i]?.ok ? daily[i].data : []]);
+        const dailyPOk = dailyPrevCalls.length
+          ? countriesToChart.map((c, i) => [c, dailyP[i]?.ok ? dailyP[i].data : []])
+          : [];
+        setDailyByCountry(Object.fromEntries(dailyOk));
+        setDailyByCountryPrev(Object.fromEntries(dailyPOk));
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))

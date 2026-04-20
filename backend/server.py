@@ -36,18 +36,46 @@ async def get_client() -> httpx.AsyncClient:
 
 
 async def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    """Fetch with 2 retries on transient network / 5xx errors."""
     client = await get_client()
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
-    try:
-        resp = await client.get(path, params=clean)
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Upstream {path} failed: {e.response.status_code}")
-        raise HTTPException(status_code=e.response.status_code, detail=f"Upstream error: {e.response.text}")
-    except httpx.HTTPError as e:
-        logger.error(f"Upstream {path} connection error: {e}")
-        raise HTTPException(status_code=502, detail=f"Upstream unreachable: {str(e)}")
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            resp = await client.get(path, params=clean)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if 500 <= e.response.status_code < 600 and attempt < 2:
+                await asyncio.sleep(0.4 * (attempt + 1))
+                last_err = e
+                continue
+            logger.error(f"Upstream {path} failed: {e.response.status_code}")
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f"Upstream {path} returned {e.response.status_code}",
+            )
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(0.4 * (attempt + 1))
+                continue
+            logger.error(f"Upstream {path} timeout/connect: {type(e).__name__}: {e}")
+            raise HTTPException(
+                status_code=504,
+                detail=f"Upstream {path} {type(e).__name__}: timed out after 3 attempts",
+            )
+        except httpx.HTTPError as e:
+            logger.error(f"Upstream {path} connection error: {type(e).__name__}: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream {path} unreachable ({type(e).__name__}): {str(e) or 'no detail'}",
+            )
+    # Should never reach here, but be explicit.
+    raise HTTPException(
+        status_code=502,
+        detail=f"Upstream {path} failed after retries: {last_err}",
+    )
 
 
 def _split_csv(val: Optional[str]) -> List[str]:
