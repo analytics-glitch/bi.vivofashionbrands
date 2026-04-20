@@ -10,7 +10,13 @@ import Inventory from "@/pages/Inventory";
 import Customers from "@/pages/Customers";
 import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
+import Login from "@/pages/Login";
+import AuthCallback from "@/pages/AuthCallback";
+import Users from "@/pages/Users";
+import ActivityLogs from "@/pages/ActivityLogs";
 import { FiltersProvider } from "@/lib/filters";
+import { AuthProvider } from "@/lib/auth";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
 const Shell = ({ children }) => (
   <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
@@ -22,25 +28,35 @@ const Shell = ({ children }) => (
   </div>
 );
 
+const ProtectedShell = ({ children, adminOnly = false }) => (
+  <ProtectedRoute adminOnly={adminOnly}>
+    <Shell>{children}</Shell>
+  </ProtectedRoute>
+);
+
 function App() {
   return (
     <div className="App">
-      <FiltersProvider>
-        <BrowserRouter>
-          <Shell>
+      <BrowserRouter>
+        <AuthProvider>
+          <FiltersProvider>
             <Routes>
-              <Route path="/" element={<Overview />} />
-              <Route path="/locations" element={<Locations />} />
-              <Route path="/products" element={<Products />} />
-              <Route path="/inventory" element={<Inventory />} />
-              <Route path="/customers" element={<Customers />} />
-              <Route path="/footfall" element={<Footfall />} />
-              <Route path="/ceo-report" element={<CEOReport />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/auth/callback" element={<AuthCallback />} />
+              <Route path="/" element={<ProtectedShell><Overview /></ProtectedShell>} />
+              <Route path="/locations" element={<ProtectedShell><Locations /></ProtectedShell>} />
+              <Route path="/products" element={<ProtectedShell><Products /></ProtectedShell>} />
+              <Route path="/inventory" element={<ProtectedShell><Inventory /></ProtectedShell>} />
+              <Route path="/customers" element={<ProtectedShell><Customers /></ProtectedShell>} />
+              <Route path="/footfall" element={<ProtectedShell><Footfall /></ProtectedShell>} />
+              <Route path="/ceo-report" element={<ProtectedShell><CEOReport /></ProtectedShell>} />
+              <Route path="/admin/users" element={<ProtectedShell adminOnly><Users /></ProtectedShell>} />
+              <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly><ActivityLogs /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-          </Shell>
-        </BrowserRouter>
-      </FiltersProvider>
+          </FiltersProvider>
+        </AuthProvider>
+      </BrowserRouter>
     </div>
   );
 }

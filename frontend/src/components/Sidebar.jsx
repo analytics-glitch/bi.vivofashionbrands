@@ -1,5 +1,5 @@
 import React from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   ChartPieSlice,
   MapPin,
@@ -9,8 +9,13 @@ import {
   FileText,
   Footprints,
   ArrowClockwise,
+  SignOut,
+  CaretDown,
+  ShieldCheck,
+  ClockClockwise,
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
+import { useAuth } from "@/lib/auth";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
@@ -29,6 +34,80 @@ const relativeTime = (d) => {
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
+};
+
+const UserMenu = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    const onClick = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+  if (!user) return null;
+  const initials = (user.name || user.email).slice(0, 2).toUpperCase();
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg hover:bg-panel"
+        data-testid="user-menu-btn"
+      >
+        {user.picture ? (
+          <img src={user.picture} alt="" className="w-7 h-7 rounded-full border border-border" />
+        ) : (
+          <div className="w-7 h-7 rounded-full bg-brand text-white grid place-items-center font-bold text-[11px]">
+            {initials}
+          </div>
+        )}
+        <div className="hidden md:block text-left leading-tight">
+          <div className="text-[12px] font-semibold">{user.name || user.email.split("@")[0]}</div>
+          <div className="text-[10px] text-muted">{user.role}</div>
+        </div>
+        <CaretDown size={11} className="text-muted" />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 mt-2 w-56 rounded-xl border border-border bg-white shadow-lg py-1 z-50"
+          data-testid="user-menu"
+        >
+          <div className="px-3 py-2 border-b border-border">
+            <div className="text-[12px] font-semibold truncate">{user.name || "—"}</div>
+            <div className="text-[11px] text-muted truncate">{user.email}</div>
+          </div>
+          {user.role === "admin" && (
+            <>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/users"); }}
+                data-testid="menu-users"
+              >
+                <ShieldCheck size={13} /> Users
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/activity-logs"); }}
+                data-testid="menu-logs"
+              >
+                <ClockClockwise size={13} /> Activity Logs
+              </button>
+              <div className="h-px bg-border my-1" />
+            </>
+          )}
+          <button
+            className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2 text-danger"
+            onClick={async () => { setOpen(false); await logout(); navigate("/login", { replace: true }); }}
+            data-testid="menu-logout"
+          >
+            <SignOut size={13} /> Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
 };
 
 const TopNav = () => {
@@ -96,6 +175,7 @@ const TopNav = () => {
         >
           <ArrowClockwise size={15} weight="bold" />
         </button>
+        <UserMenu />
       </div>
     </nav>
   );

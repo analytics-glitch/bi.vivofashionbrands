@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 8 — Auth & RBAC testing. 17/17 backend pytest cases passed; all critical frontend auth flows verified via Playwright. Unauth /api/* returns 401, seed admin login works and returns role=admin, wrong password returns 401, bogus Google session_id returns 400, /api/auth/me gated correctly, activity logs record authed /api/kpis calls, admin CRUD on users works (create viewer -> login -> promote -> cannot demote self -> delete), viewer blocked from /api/admin/users (403), logout invalidates bearer token. Frontend: unauth visit redirects to /login, login-page + google-signin-btn visible with both whitelist domains listed, password login with seed admin works, user-menu-btn shows 'Vivo Admin / admin', user menu exposes Users + Activity Logs + Sign out which route to /admin/users (users-page), /admin/activity-logs (activity-logs-page), and /login respectively.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "testid_naming_drift": [
+      {
+        "component": "Sidebar/UserMenu dropdown",
+        "issue": "Review request spec names the dropdown links 'menu-users-link' and 'menu-activity-logs-link', but the actual implementation uses 'menu-users' and 'menu-logs'. Flow works end-to-end; only a naming convention / spec-vs-impl mismatch that future test scripts must be aware of.",
+        "selector": "[data-testid='menu-users'], [data-testid='menu-logs']",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_8_auth.py",
+    "/app/test_reports/pytest/pytest_results_v8.xml"
+  ],
+  "action_items": [
+    "Optional: rename Sidebar UserMenu dropdown testids from 'menu-users' -> 'menu-users-link' and 'menu-logs' -> 'menu-activity-logs-link' to match the review-request spec, OR update the spec. Either is fine; functionality is unaffected."
+  ],
+  "critical_code_review_comments": [
+    "auth.py cleanly separates auth_router (public-ish) and admin_router (require_admin), and the api_router on server.py applies Depends(get_current_user) at router level — correct pattern.",
+    "ActivityLogMiddleware correctly skips /api/auth/* and anonymous requests, and logs path/method/status_code/duration — verified via /api/admin/activity-logs query.",
+    "Bcrypt is used via passlib; seed admin upserts only when absent (idempotent). user_sessions has a TTL index (expireAfterSeconds) so expired sessions self-clean.",
+    "get_current_user accepts both httpOnly cookie and Authorization: Bearer (axios interceptor path) — verified.",
+    "Self-demotion and self-disable are blocked at PATCH /api/admin/users/{id} — verified.",
+    "Google callback enforces ALLOWED_EMAIL_DOMAINS and auto-provisions first-time users as viewers — logic is correct (E2E with real Google is out-of-scope for automation, as noted).",
+    "Logout deletes the session token from db AND clears cookie; subsequent calls with same bearer correctly return 401 — verified.",
+    "Code-review note: server.py is 1279 lines — consider splitting analytics endpoints into a dedicated router module for maintainability (carried over from iter 7).",
+    "Code-review note: /app/backend/auth.py hard-codes EMERGENT_SESSION_URL and SESSION_TTL_DAYS — fine for now but could live in a config section; DB name falls back to 'vivo_bi' while backend/.env uses DB_NAME='test_database' (works because env override wins, but the fallback mismatch is a minor footgun)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_8_auth.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17)",
+    "frontend": "100% of testable auth flows (Google E2E not automatable; button visibility + domains listed verified)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Each test run creates an ephemeral viewer user test_viewer_<uuid>@vivofashiongroup.com which is deleted by test_cleanup_delete_user.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth is fully functional. Dropdown testids in Sidebar UserMenu are 'menu-users' and 'menu-logs' (NOT '-link' suffix as the spec called for). /admin/users page has testid 'users-page' and /admin/activity-logs has 'activity-logs-page'. Seed admin is idempotent on startup. For bearer-token API tests, hit /api/auth/login with JSON {email,password}, read .token, then set Authorization: Bearer <token>. Activity logs middleware skips /api/auth/* so don't try to find login calls in /api/admin/activity-logs. The bogus Google callback returns 400 (not 401) because it's an upstream httpx.HTTPError wrap.",
+  "rca of the issue": "No bugs found in iteration 8 auth work."
+}
