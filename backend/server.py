@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
@@ -16,8 +16,14 @@ VIVO_API_BASE = os.environ.get(
     "VIVO_API_BASE", "https://vivo-bi-api-666430550422.europe-west1.run.app"
 )
 
+from auth import (  # noqa: E402
+    auth_router, admin_router, ActivityLogMiddleware,
+    get_current_user, seed_admin,
+)
+
 app = FastAPI(title="Vivo BI Dashboard API")
-api_router = APIRouter(prefix="/api")
+# NB: all business endpoints live under this router and require auth.
+api_router = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1237,7 +1243,16 @@ async def analytics_insights(
 
 
 # -------------------- App wiring --------------------
+# Auth + admin routers come first (they bypass the api_router auth dependency).
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(api_router)
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -1246,6 +1261,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Activity logging — runs after the request so it sees the final status_code.
+app.add_middleware(ActivityLogMiddleware)
+
+
+@app.on_event("startup")
+async def startup():
+    await seed_admin()
 
 
 @app.on_event("shutdown")
