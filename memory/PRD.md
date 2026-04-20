@@ -124,7 +124,32 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
-- **v7 (Apr 2026) — Comprehensive dashboard refresh**
+- **v7.1 (Apr 2026) — Authentication + Activity Logging**
+  - All `/api/*` business endpoints now require a valid session (401 when anonymous).
+  - **Google Sign-In (primary)** via Emergent OAuth. Domain whitelist enforced
+    server-side: `@vivofashiongroup.com` and `@shopzetu.com` (configurable
+    via `ALLOWED_EMAIL_DOMAINS` env). First login auto-provisions a `viewer`.
+  - **Email/password (fallback)**. Admin-created accounts only (no self-signup).
+    Bcrypt hashing via passlib. Seed admin on startup:
+    `admin@vivofashiongroup.com` / `VivoAdmin!2026`
+    (see `/app/memory/test_credentials.md`).
+  - **Roles**: `admin` and `viewer`. Admins get a Users management page and an
+    Activity Logs page in the user menu.
+  - **Sessions**: `session_token` stored in an httpOnly cookie AND returned to
+    the frontend; axios interceptor attaches `Authorization: Bearer` too.
+    TTL 7 days. MongoDB TTL index on `expires_at` auto-cleans.
+  - **Activity logging middleware** inserts one row per authed `/api/*`
+    request into `activity_logs` with `{ts, user_id, email, method, path,
+    query, status_code, duration_ms, ip, user_agent}`. Admin page lists +
+    paginates + CSV-exports them with email/path filters.
+  - **New endpoints**: `POST /api/auth/login`, `POST /api/auth/google/callback`,
+    `GET /api/auth/me`, `POST /api/auth/logout`, `GET /api/auth/allowed-domains`;
+    `GET|POST /api/admin/users`, `PATCH|DELETE /api/admin/users/{id}`,
+    `GET /api/admin/activity-logs`.
+  - **New frontend**: `AuthProvider`, `ProtectedRoute`, `/login`,
+    `/auth/callback`, `/admin/users`, `/admin/activity-logs`, user menu in
+    TopNav with avatar + sign-out.
+  - **v7 (Apr 2026) — Comprehensive dashboard refresh**
   - **Global**: Background changed to warm light grey `#f5f5f0`.
   - **Reusable primitives**: New `<SortableTable>` component (every column
     click-sortable, "Show first N / Show all" pagination, built-in CSV
