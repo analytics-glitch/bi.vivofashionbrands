@@ -124,6 +124,39 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v8 (Apr 2026) — AI Assistant + warm orange theme + UX polish**
+  - **Theme**: Page background switched from `#f5f5f0` (warm grey) to
+    `#fff4e6` (soft warm cream-orange); border color `#f3dcbf`.
+  - **Overview**:
+    - Sales by Subcategory label bug fixed (was showing `0.0%`) — now renders
+      `KES X · Y%` using a preformatted `subcat_label` field.
+    - New **Sales by Category** chart (Dresses/Tops/Bottoms/Outerwear/
+      Accessories/Footwear/Intimates & Swim/Other).
+    - Top locations chart now shows **ALL** POS (not just 15), bars labelled
+      with total sales, tooltip includes units sold.
+    - "Top 20 Styles" title cased consistently.
+  - **Footfall**: Footfall-by-location and Conversion-by-location charts are
+    now **side-by-side** in a 2-column grid (smaller width each).
+  - **Products**:
+    - Removed Top-25 and Bottom-15 tornado charts.
+    - Variance column now suffixed with `%` (was `pts`).
+    - **SOR-by-style** table is now a `SortableTable` (sort on every column,
+      CSV export) and positioned as the **last** table on the page.
+    - "Top 20 SKUs" → **Top 20 Styles** (SKU column removed, now sortable).
+    - **New styles performance** table is now sortable with CSV export.
+  - **Inventory**: Understocked Subcategories, Low-stock alerts,
+    Stock-to-Sales by Location, and the main Inventory table all converted to
+    `SortableTable` with CSV export.
+  - **Table styling**: `table.data` header/td padding unified, right-aligned
+    headers get `tabular-nums` so numeric columns line up properly.
+  - **New**: **AI Chat Assistant** — floating bottom-right bubble on every
+    authed page. Uses Emergent LLM key + Claude Sonnet 4.5 via
+    `emergentintegrations`. Multi-turn conversations persisted in Mongo
+    `chat_messages` collection + last 40 messages cached in localStorage.
+    Sends current filters (date range, countries, POS) as context per turn.
+    Endpoints: `POST /api/chat` and `GET /api/chat/history` (both auth-gated,
+    activity-logged).
+
 - **v7.1 (Apr 2026) — Authentication + Activity Logging**
   - All `/api/*` business endpoints now require a valid session (401 when anonymous).
   - **Google Sign-In (primary)** via Emergent OAuth. Domain whitelist enforced

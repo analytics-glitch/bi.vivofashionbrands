@@ -524,7 +524,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="top-styles-section">
-            <SectionTitle title="Top 20 styles" subtitle="Ranked by units sold. Click any column to re-sort." />
+            <SectionTitle title="Top 20 Styles" subtitle="Ranked by units sold. Click any column to re-sort." />
             <SortableTable
               testId="top-styles"
               exportName="top-20-styles.csv"
