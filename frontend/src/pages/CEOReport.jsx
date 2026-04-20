@@ -107,7 +107,7 @@ const CEOReport = () => {
       api.get("/country-summary", { params: lyP }),
       api.get("/sales-summary", { params: base }),
       api.get("/sales-summary", { params: lmP }),
-      api.get("/top-skus", { params: { ...base, limit: 10 } }),
+      api.get("/top-skus", { params: { ...base, limit: 20 } }),
       api.get("/sor", { params: base }),
       api.get("/analytics/insights", { params: base }),
       api.get("/subcategory-stock-sales", { params: base }),
@@ -444,35 +444,31 @@ const CEOReport = () => {
             </table>
           </div>
 
-          {/* Section 4 — Top 10 Best-Selling Styles */}
-          <SectionHeader n="4" title="Top 10 Best-Selling Styles" />
+          {/* Section 4 — Top 20 Best-Selling Styles */}
+          <SectionHeader n="4" title="Top 20 Best-Selling Styles" />
           <div className="overflow-x-auto">
             <table className="w-full data" data-testid="ceo-top-skus">
               <thead>
                 <tr>
-                  <th>#</th>
-                  <th>Product Name</th>
-                  <th>Brand</th>
-                  <th>Collection</th>
-                  <th>Subcategory</th>
-                  <th className="text-right">Units</th>
-                  <th className="text-right">Total Sales</th>
-                  <th className="text-right">Avg Price</th>
+                  <th className="text-left">Rank</th>
+                  <th className="text-left">Style Name</th>
+                  <th className="text-left">Subcategory</th>
+                  <th className="text-right">Units Sold</th>
+                  <th className="text-right">Total Sales KES</th>
+                  <th className="text-right">Avg Price KES</th>
                 </tr>
               </thead>
               <tbody>
-                {top.map((s, i) => (
+                {top.slice(0, 20).map((s, i) => (
                   <tr key={(s.style_name || "") + i}>
                     <td className="text-muted num">{i + 1}</td>
-                    <td className="font-medium max-w-[300px] truncate" title={s.style_name}>
+                    <td className="font-medium max-w-[340px] truncate" title={s.style_name}>
                       {s.style_name || "—"}
                     </td>
-                    <td>{s.brand || "—"}</td>
-                    <td className="text-muted">{s.collection || "—"}</td>
                     <td className="text-muted">{s.product_type || "—"}</td>
                     <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
                     <td className="text-right num font-bold">{fmtKES(s.total_sales)}</td>
-                    <td className="text-right num">{fmtKES(s.avg_price)}</td>
+                    <td className="text-right num">{fmtKES(s.avg_price || (s.units_sold ? (s.total_sales || 0) / s.units_sold : 0))}</td>
                   </tr>
                 ))}
               </tbody>

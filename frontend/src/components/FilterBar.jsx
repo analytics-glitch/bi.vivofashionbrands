@@ -11,8 +11,10 @@ const FilterBar = () => {
   const [locations, setLocations] = useState([]);
 
   useEffect(() => {
+    // Only active physical store POS locations — excludes online, warehouse,
+    // and any location with no sales in last 30 days.
     api
-      .get("/locations")
+      .get("/analytics/active-pos")
       .then((r) => setLocations(r.data || []))
       .catch(() => setLocations([]));
   }, []);
@@ -111,13 +113,13 @@ const FilterBar = () => {
 
         <MultiSelect
           testId="filter-channels"
-          label="Channel"
+          label="POS Locations"
           icon={Storefront}
           options={channelOptions}
           value={f.channels}
           onChange={f.setChannels}
-          placeholder="All channels"
-          width={240}
+          placeholder="All POS locations"
+          width={260}
         />
 
         <div className="flex items-center gap-1 ml-2">

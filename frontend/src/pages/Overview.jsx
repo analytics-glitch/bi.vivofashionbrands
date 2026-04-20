@@ -14,6 +14,8 @@ import {
 } from "@/lib/api";
 import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import SortableTable from "@/components/SortableTable";
+import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
   Coins,
@@ -40,9 +42,10 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
-  LineChart,
   Line,
+  LineChart,
+  Legend,
+  LabelList,
 } from "recharts";
 
 const DONUT_COLORS = ["#1a5c38", "#00c853", "#d97706", "#4b7bec"];
@@ -227,14 +230,49 @@ const Overview = () => {
 
   const countriesToChart = countries.length ? countries : ALL_COUNTRIES;
 
+  // Single-line Total Sales daily series: sum across all countries.
+  const dailyTotalSeries = useMemo(() => {
+    const byDay = {};
+    for (const c of countriesToChart) {
+      for (const r of dailyByCountry[c] || []) {
+        const day = r.day;
+        if (!byDay[day]) byDay[day] = { day, total: 0, total_prev: 0 };
+        byDay[day].total += r.total_sales ?? r.gross_sales ?? 0;
+      }
+      const prev = dailyByCountryPrev[c] || [];
+      (dailyByCountry[c] || []).forEach((r, i) => {
+        const day = r.day;
+        if (!byDay[day]) byDay[day] = { day, total: 0, total_prev: 0 };
+        if (prev[i]) byDay[day].total_prev += prev[i].total_sales ?? prev[i].gross_sales ?? 0;
+      });
+    }
+    return Object.values(byDay).sort((a, b) => a.day.localeCompare(b.day));
+  }, [dailyByCountry, dailyByCountryPrev, countriesToChart]);
+
   const sortedStyles = useMemo(
     () => [...topStyles].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0)),
     [topStyles, sortKey]
   );
 
-  const subcatTop = useMemo(
-    () => [...subcats].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0)).slice(0, 15),
+  // Top 15 subcategories with % of total sales (across ALL subcategories).
+  const subcatTotalSales = useMemo(
+    () => subcats.reduce((s, r) => s + (r.total_sales || 0), 0),
     [subcats]
+  );
+  const subcatTop = useMemo(
+    () =>
+      [...subcats]
+        .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
+        .slice(0, 15)
+        .map((r) => ({
+          ...r,
+          pct: subcatTotalSales ? ((r.total_sales || 0) / subcatTotalSales) * 100 : 0,
+        })),
+    [subcats, subcatTotalSales]
+  );
+  const subcatTopTotal = useMemo(
+    () => subcatTop.reduce((s, r) => s + (r.total_sales || 0), 0),
+    [subcatTop]
   );
 
   return (
@@ -353,23 +391,29 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="chart-daily-trend">
-            <SectionTitle title="Daily sales trend" subtitle={compareMode === "none" ? "Total Sales per day, one line per country" : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : "last year"}`} />
-            {dailyMerged.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 320 }}>
+            <SectionTitle title="Daily sales trend" subtitle={compareMode === "none" ? "Total Sales per day (all countries combined)" : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : "last year"}`} />
+            {dailyTotalSeries.length === 0 ? <Empty /> : (
+              <div style={{ width: "100%", height: 256 }}>
                 <ResponsiveContainer>
-                  <LineChart data={dailyMerged} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
+                  <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="day" tick={{ fontSize: 11 }}
                       tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={60} />
-                    <Tooltip formatter={(v) => fmtKES(v)} labelFormatter={(l) => fmtDate(l)} />
+                    <Tooltip content={
+                      <ChartTooltip
+                        labelFormat={(l) => fmtDate(l)}
+                        formatters={{
+                          "Total Sales": (v) => fmtKES(v),
+                          "Previous": (v) => fmtKES(v),
+                        }}
+                      />
+                    } />
                     <Legend />
-                    {countriesToChart.map((c) => (
-                      <Line key={c} type="monotone" dataKey={c} stroke={COUNTRY_LINE_COLORS[c] || "#4b5563"} strokeWidth={2.2} dot={false} name={c} />
-                    ))}
-                    {compareMode !== "none" && countriesToChart.map((c) => (
-                      <Line key={c + "_prev"} type="monotone" dataKey={c + "_prev"} stroke={COUNTRY_LINE_COLORS[c] || "#9ca3af"} strokeWidth={1.5} strokeDasharray="5 4" dot={false} name={`${c} (prev)`} />
-                    ))}
+                    <Line type="monotone" dataKey="total" stroke="#1a5c38" strokeWidth={2.5} dot={false} name="Total Sales" />
+                    {compareMode !== "none" && (
+                      <Line type="monotone" dataKey="total_prev" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="5 4" dot={false} name="Previous" />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -377,16 +421,33 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="subcat-chart">
-            <SectionTitle title="Sales by Subcategory" subtitle="Total Sales per subcategory (top 15)" />
+            <SectionTitle
+              title="Sales by Subcategory"
+              subtitle={`Total Sales per subcategory (top 15) · Total across top 15: ${fmtKES(subcatTopTotal)}`}
+            />
             {subcatTop.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 400 }}>
+              <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
-                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 20, right: 20 }}>
+                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 10, right: 100, top: 4 }}>
                     <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v) => fmtKES(v)} />
-                    <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} />
+                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                    <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 10 }} />
+                    <Tooltip content={
+                      <ChartTooltip formatters={{
+                        total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
+                      }} />
+                    } />
+                    <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]}>
+                      <LabelList
+                        dataKey="total_sales"
+                        position="right"
+                        style={{ fontSize: 10, fill: "#4b5563" }}
+                        formatter={(v, entry) => {
+                          const p = entry?.payload?.pct ?? 0;
+                          return `${fmtKES(v)} · ${p.toFixed(1)}%`;
+                        }}
+                      />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -394,46 +455,29 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="top-styles-section">
-            <SectionTitle title="Top 20 styles" subtitle="Ranked by units sold. Click a column to re-sort." />
-            <div className="overflow-x-auto">
-              <table className="w-full data" data-testid="top-styles-table">
-                <thead>
-                  <tr>
-                    <th>Rank</th>
-                    <th>Style Name</th>
-                    <th>Collection</th>
-                    <th>Brand</th>
-                    <th>Subcategory</th>
-                    {[["units_sold","Units"],["total_sales","Total Sales"]].map(([k,l]) => (
-                      <th key={k} className="text-right cursor-pointer" onClick={() => setSortKey(k)}>
-                        {l} {sortKey===k && "↓"}
-                      </th>
-                    ))}
-                    <th className="text-right">Avg Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedStyles.length === 0 && (
-                    <tr><td colSpan={8}><Empty /></td></tr>
-                  )}
-                  {sortedStyles.map((s, i) => {
-                    const avgPrice = s.units_sold ? (s.total_sales || 0) / s.units_sold : 0;
-                    return (
-                      <tr key={(s.style_name || "") + i}>
-                        <td className="text-muted num">{i + 1}</td>
-                        <td className="font-medium max-w-[280px] truncate" title={s.style_name}>{s.style_name}</td>
-                        <td className="text-muted">{s.collection || "—"}</td>
-                        <td><span className="pill-neutral">{s.brand || "—"}</span></td>
-                        <td className="text-muted">{s.product_type || "—"}</td>
-                        <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
-                        <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
-                        <td className="text-right num">{fmtKES(avgPrice)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <SectionTitle title="Top 20 styles" subtitle="Ranked by units sold. Click any column to re-sort." />
+            <SortableTable
+              testId="top-styles"
+              exportName="top-20-styles.csv"
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "rank", label: "Rank", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                { key: "style_name", label: "Style Name", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
+                { key: "product_type", label: "Subcategory", align: "left", render: (r) => r.product_type || "—" },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                {
+                  key: "current_stock",
+                  label: "Inventory",
+                  numeric: true,
+                  render: (r) => fmtNum(r.current_stock),
+                  sortValue: (r) => r.current_stock ?? -1,
+                  csv: (r) => r.current_stock ?? "",
+                },
+                { key: "avg_price", label: "Avg Price", numeric: true, render: (r) => fmtKES(r.avg_price || (r.units_sold ? (r.total_sales || 0) / r.units_sold : 0)), csv: (r) => r.avg_price },
+              ]}
+              rows={topStyles}
+            />
           </div>
         </>
       )}

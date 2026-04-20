@@ -76,10 +76,18 @@ const Locations = () => {
   const enriched = useMemo(() => {
     return rows.map((r) => {
       const prev = prevMap.get(r.channel);
-      const basket = r.total_orders ? r.total_sales / r.total_orders : (r.avg_basket_size || 0);
+      const sales = r.total_sales || 0;
+      const orders = r.total_orders || 0;
+      const units = r.total_units_sold || r.units_sold || 0;
+      const basket = orders ? sales / orders : (r.avg_basket_size || 0); // ABV
+      const asp = units ? sales / units : 0; // Avg Selling Price
+      const msi = orders ? units / orders : 0; // Multi-Sell Index = Units/Order
       return {
         ...r,
         avg_basket: basket,
+        abv: basket,
+        asp,
+        msi,
         delta: prev ? pctDelta(r.total_sales, prev.total_sales) : null,
       };
     });
@@ -92,9 +100,22 @@ const Locations = () => {
     );
   }, [enriched]);
 
+  const groupTotals = useMemo(() => {
+    const sales = enriched.reduce((s, r) => s + (r.total_sales || 0), 0);
+    const orders = enriched.reduce((s, r) => s + (r.total_orders || 0), 0);
+    const units = enriched.reduce((s, r) => s + (r.total_units_sold || r.units_sold || 0), 0);
+    return {
+      abv: orders ? sales / orders : 0,
+      asp: units ? sales / units : 0,
+      msi: orders ? units / orders : 0,
+    };
+  }, [enriched]);
+
   const sorted = useMemo(() => {
     return [...enriched].sort((a, b) => {
-      if (sortKey === "avg_basket") return (b.avg_basket || 0) - (a.avg_basket || 0);
+      if (sortKey === "avg_basket" || sortKey === "abv") return (b.abv || 0) - (a.abv || 0);
+      if (sortKey === "asp") return (b.asp || 0) - (a.asp || 0);
+      if (sortKey === "msi") return (b.msi || 0) - (a.msi || 0);
       return (b[sortKey] || 0) - (a[sortKey] || 0);
     });
   }, [enriched, sortKey]);
@@ -140,6 +161,11 @@ const Locations = () => {
               showDelta={false}
             />
           </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <KPICard small testId="loc-kpi-abv" label="ABV · Avg Basket Value" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)} showDelta={false} />
+            <KPICard small testId="loc-kpi-asp" label="ASP · Avg Selling Price" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)} showDelta={false} />
+            <KPICard small testId="loc-kpi-msi" label="MSI · Units per Order" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)} showDelta={false} />
+          </div>
 
           {!selected && (
             <>
@@ -150,7 +176,9 @@ const Locations = () => {
                   ["total_sales", "Total Sales"],
                   ["total_orders", "Orders"],
                   ["units_sold", "Units"],
-                  ["avg_basket", "Avg Basket"],
+                  ["abv", "ABV"],
+                  ["asp", "ASP"],
+                  ["msi", "MSI"],
                 ].map(([k, lbl]) => (
                   <button
                     key={k}

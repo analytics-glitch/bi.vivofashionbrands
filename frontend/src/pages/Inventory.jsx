@@ -3,6 +3,8 @@ import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import SortableTable from "@/components/SortableTable";
+import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   Package,
   Warning,
@@ -11,6 +13,7 @@ import {
   Buildings,
   TrendDown,
   Cube,
+  Timer,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -21,6 +24,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  LabelList,
 } from "recharts";
 
 const Inventory = () => {
@@ -31,6 +35,8 @@ const Inventory = () => {
   const [inv, setInv] = useState([]);
   const [sts, setSts] = useState([]);
   const [subcatSS, setSubcatSS] = useState([]);
+  const [stsByCat, setStsByCat] = useState([]);
+  const [weeksOfCover, setWeeksOfCover] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -46,18 +52,28 @@ const Inventory = () => {
     const params = { country, location, product: search || undefined };
     // On manual refresh, bust the 60s backend cache.
     const refreshParams = dataVersion > 0 ? { ...params, refresh: true } : params;
+    const dateParams = { date_from: dateFrom, date_to: dateTo,
+      country: countries.length ? countries.join(",") : undefined,
+      channel: channels.length ? channels.join(",") : undefined };
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
       api.get("/inventory", { params: refreshParams }),
       api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined } }),
-      api.get("/subcategory-stock-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined, channel: channels.length ? channels.join(",") : undefined } }),
+      api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
+      api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
+      api.get("/analytics/weeks-of-cover", { params: {
+        country: countries.length ? countries.join(",") : undefined,
+        channel: channels.length ? channels.join(",") : undefined,
+      } }),
     ])
-      .then(([s, i, st, sc]) => {
+      .then(([s, i, st, sc, cat, woc]) => {
         if (cancelled) return;
         setSummary(s.data);
         setInv(i.data || []);
         setSts(st.data || []);
         setSubcatSS(sc.data || []);
+        setStsByCat(cat.data || []);
+        setWeeksOfCover(woc.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -208,38 +224,53 @@ const Inventory = () => {
             </select>
           </div>
 
+          <div className="card-white p-5" data-testid="chart-inv-location">
+            <SectionTitle
+              title={`Stock by location · ${summary.by_location.length} locations`}
+              subtitle="All locations sorted by stock descending"
+            />
+            <div style={{ width: "100%", height: 24 + summary.by_location.length * 22 }}>
+              <ResponsiveContainer>
+                <BarChart data={summary.by_location} layout="vertical" margin={{ left: 10, right: 60, top: 4 }}>
+                  <CartesianGrid horizontal={false} />
+                  <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                  <YAxis type="category" dataKey="location" width={170} tick={{ fontSize: 10 }} />
+                  <Tooltip content={<ChartTooltip formatters={{ units: (v) => `${fmtNum(v)} units` }} />} />
+                  <Bar dataKey="units" fill="#1a5c38" radius={[0, 5, 5, 0]}>
+                    <LabelList dataKey="units" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="card-white p-5" data-testid="chart-inv-location">
-              <SectionTitle title="Stock by location" subtitle="Top 15 stores" />
-              <div style={{ width: "100%", height: 360 }}>
+            <div className="card-white p-5" data-testid="chart-inv-category">
+              <SectionTitle title="Inventory by category" subtitle="Grouped (Dresses, Tops, Bottoms, …)" />
+              <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
-                  <BarChart data={summary.by_location.slice(0, 15)} layout="vertical" margin={{ left: 10 }}>
-                    <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="location" width={140} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v) => fmtNum(v)} />
-                    <Bar dataKey="units" fill="#1a5c38" radius={[0, 5, 5, 0]} />
+                  <BarChart data={stsByCat} margin={{ bottom: 60 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="category" interval={0} angle={-20} textAnchor="end" height={70} tick={{ fontSize: 10 }} />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                    <Tooltip content={<ChartTooltip formatters={{ current_stock: (v) => `${fmtNum(v)} units`, units_sold: (v) => `${fmtNum(v)} units` }} />} />
+                    <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
+                      <LabelList dataKey="current_stock" position="top" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
-            <div className="card-white p-5" data-testid="chart-inv-type">
-              <SectionTitle title="Stock by product type" subtitle="Available units per category" />
-              <div style={{ width: "100%", height: 360 }}>
+            <div className="card-white p-5" data-testid="chart-inv-subcat">
+              <SectionTitle title="Inventory by subcategory" subtitle="Top 15 subcategories" />
+              <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
-                  <BarChart data={summary.by_product_type.slice(0, 12)} margin={{ bottom: 70 }}>
+                  <BarChart data={summary.by_product_type.slice(0, 15)} margin={{ bottom: 80 }}>
                     <CartesianGrid vertical={false} />
-                    <XAxis
-                      dataKey="product_type"
-                      interval={0}
-                      angle={-25}
-                      textAnchor="end"
-                      height={85}
-                      tick={{ fontSize: 10 }}
-                    />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v) => fmtNum(v)} />
-                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} />
+                    <XAxis dataKey="product_type" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 9 }} />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                    <Tooltip content={<ChartTooltip formatters={{ units: (v) => `${fmtNum(v)} units` }} />} />
+                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -318,6 +349,93 @@ const Inventory = () => {
               )}
             </div>
           )}
+
+          <div className="card-white p-5" data-testid="weeks-of-cover">
+            <SectionTitle
+              title={`Weeks of Cover · ${weeksOfCover.length} styles`}
+              subtitle="Weeks = current stock ÷ (units sold in last 4 weeks ÷ 4). Red <2w · Amber 2–4w · Green >4w."
+            />
+            <SortableTable
+              testId="woc"
+              exportName="weeks-of-cover.csv"
+              pageSize={25}
+              initialSort={{ key: "weeks_of_cover", dir: "asc" }}
+              columns={[
+                { key: "style_name", label: "Style Name", align: "left" },
+                { key: "subcategory", label: "Subcategory", align: "left" },
+                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "avg_weekly_sales", label: "Avg Weekly Sales", numeric: true, render: (r) => fmtNum(Math.round(r.avg_weekly_sales)), csv: (r) => r.avg_weekly_sales?.toFixed(2) },
+                {
+                  key: "weeks_of_cover",
+                  label: "Weeks of Cover",
+                  numeric: true,
+                  sortValue: (r) => r.weeks_of_cover == null ? 9999 : r.weeks_of_cover,
+                  render: (r) => {
+                    if (r.weeks_of_cover == null) return <span className="pill-neutral">— (no sales)</span>;
+                    if (r.avg_weekly_sales === 0) return <span className="pill-neutral">∞</span>;
+                    const w = r.weeks_of_cover;
+                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
+                    return <span className={cls}>{w.toFixed(1)}w</span>;
+                  },
+                  csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
+                },
+              ]}
+              rows={weeksOfCover}
+            />
+          </div>
+
+          <div className="card-white p-5" data-testid="sts-by-category-table">
+            <SectionTitle title="Stock-to-Sales · by Category" subtitle="Aggregated groups (Dresses, Tops, Bottoms, …)" />
+            <SortableTable
+              testId="inv-sts-cat"
+              exportName="inventory-sts-by-category.csv"
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "category", label: "Category", align: "left" },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
+                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
+                {
+                  key: "variance", label: "Variance", numeric: true,
+                  render: (r) => (
+                    <span className={r.variance >= 2 ? "pill-green" : r.variance >= -2 ? "pill-neutral" : "pill-red"}>
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                    </span>
+                  ),
+                  csv: (r) => r.variance?.toFixed(2),
+                },
+              ]}
+              rows={stsByCat}
+            />
+          </div>
+
+          <div className="card-white p-5" data-testid="sts-by-subcategory-table">
+            <SectionTitle title="Stock-to-Sales · by Subcategory" subtitle="Granular view — one row per subcategory" />
+            <SortableTable
+              testId="inv-sts-subcat"
+              exportName="inventory-sts-by-subcategory.csv"
+              pageSize={15}
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "subcategory", label: "Subcategory", align: "left" },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
+                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
+                {
+                  key: "variance", label: "Variance", numeric: true,
+                  render: (r) => (
+                    <span className={r.variance >= 2 ? "pill-green" : r.variance >= -2 ? "pill-neutral" : "pill-red"}>
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                    </span>
+                  ),
+                  csv: (r) => r.variance?.toFixed(2),
+                },
+              ]}
+              rows={subcatSS}
+            />
+          </div>
 
           {understockedSubcats.length > 0 && (
             <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">

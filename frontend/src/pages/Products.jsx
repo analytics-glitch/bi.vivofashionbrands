@@ -4,6 +4,8 @@ import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
+import SortableTable from "@/components/SortableTable";
+import { ChartTooltip, Delta } from "@/components/ChartHelpers";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
 } from "@phosphor-icons/react";
@@ -20,6 +22,38 @@ const sorPillClass = (p) => {
 
 const BRAND_OPTIONS = ["Vivo", "Safari", "Zoya", "Sowairina", "Third Party Brands"];
 
+const TornadoChart = ({ data, title, subtitle, testId }) => (
+  <div className="card-white p-5" data-testid={testId}>
+    <SectionTitle title={title} subtitle={subtitle} />
+    {data.length === 0 ? <Empty /> : (
+      <div style={{ width: "100%", height: 24 + data.length * 22 }}>
+        <ResponsiveContainer>
+          <BarChart data={data} layout="vertical" stackOffset="sign" margin={{ left: 10, right: 50, top: 4 }}>
+            <CartesianGrid horizontal={false} />
+            <XAxis type="number" tickFormatter={(v) => `${Math.abs(v).toFixed(0)}%`} tick={{ fontSize: 10 }} domain={[-25, 25]} />
+            <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 10 }} />
+            <Tooltip content={
+              <ChartTooltip
+                formatters={{
+                  stock_neg: (v) => `${Math.abs(v).toFixed(2)}%`,
+                  sold: (v) => `${Number(v).toFixed(2)}%`,
+                  units_sold: (v) => fmtNum(v),
+                }}
+              />
+            } />
+            <Bar dataKey="stock_neg" fill="#4b7bec" stackId="a" name="Stock %" />
+            <Bar dataKey="sold" fill="#00c853" stackId="b" name="Sold %" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    )}
+    <div className="flex gap-5 mt-3 text-[11px] text-muted">
+      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: "#4b7bec" }} /> % of total stock</span>
+      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-brand-strong" /> % units sold</span>
+    </div>
+  </div>
+);
+
 const Products = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
@@ -28,6 +62,7 @@ const Products = () => {
 
   const [sor, setSor] = useState([]);
   const [stockSales, setStockSales] = useState([]);
+  const [stsByCat, setStsByCat] = useState([]);
   const [kpis, setKpis] = useState(null);
   const [top, setTop] = useState([]);
   const [newStyles, setNewStyles] = useState([]);
@@ -44,15 +79,17 @@ const Products = () => {
     // on product_name, not brand, so server-side filtering is unreliable).
     Promise.all([
       api.get("/sor", { params: p }),
-      api.get("/subcategory-stock-sales", { params: p }),
+      api.get("/analytics/stock-to-sales-by-subcat", { params: p }),
+      api.get("/analytics/stock-to-sales-by-category", { params: p }),
       api.get("/kpis", { params: p }),
       api.get("/top-skus", { params: { ...p, limit: 200 } }),
       api.get("/analytics/new-styles", { params: p }),
     ])
-      .then(([s, ss, k, t, ns]) => {
+      .then(([s, ss, cat, k, t, ns]) => {
         if (cancelled) return;
         setSor(s.data || []);
         setStockSales(ss.data || []);
+        setStsByCat(cat.data || []);
         setKpis(k.data);
         setTop(t.data || []);
         setNewStyles(ns.data || []);
@@ -91,18 +128,21 @@ const Products = () => {
     // eslint-disable-next-line
   }, [sor, search, brands]);
 
-  // Tornado chart data — stock % (left negative) vs sales % (right positive) per subcategory
-  const tornado = useMemo(() => {
+  // Tornado split: Top 25 + Bottom 15 by units sold.
+  const tornadoSorted = useMemo(() => {
     return [...stockSales]
-      .sort((a, b) => (b.pct_of_total_sold || 0) - (a.pct_of_total_sold || 0))
+      .sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0))
       .map((r) => ({
         subcategory: r.subcategory,
+        units_sold: r.units_sold || 0,
         stock_neg: -(r.pct_of_total_stock || 0),
         stock: r.pct_of_total_stock || 0,
         sold: r.pct_of_total_sold || 0,
         sor: r.sor_percent || 0,
       }));
   }, [stockSales]);
+  const tornadoTop25 = useMemo(() => tornadoSorted.slice(0, 25), [tornadoSorted]);
+  const tornadoBottom15 = useMemo(() => tornadoSorted.slice(-15).reverse(), [tornadoSorted]);
 
   const topFiltered = useMemo(() => filterByBrand(top).slice(0, 20), [top, brands]); // eslint-disable-line
   const newStylesFiltered = useMemo(() => filterByBrand(newStyles), [newStyles, brands]); // eslint-disable-line
@@ -140,32 +180,86 @@ const Products = () => {
             <KPICard testId="pr-kpi-asp" label="Avg Selling Price" value={fmtKES(kpis.avg_selling_price)} showDelta={false} />
           </div>
 
-          <div className="card-white p-5" data-testid="tornado-chart">
-            <SectionTitle title="Subcategory: Stock vs Sales" subtitle="% of total stock (blue, left) vs % of total units sold (green, right)" />
-            {tornado.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 28 + tornado.length * 28 }}>
-                <ResponsiveContainer>
-                  <BarChart data={tornado} layout="vertical" stackOffset="sign" margin={{ left: 20, right: 60 }}>
-                    <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => `${Math.abs(v).toFixed(0)}%`} tick={{ fontSize: 11 }} domain={[-30, 30]} />
-                    <YAxis type="category" dataKey="subcategory" width={180} tick={{ fontSize: 11 }} />
-                    <Tooltip
-                      formatter={(v, name) => {
-                        if (name === "stock_neg") return [`${Math.abs(v).toFixed(2)}%`, "Stock %"];
-                        if (name === "sold") return [`${Number(v).toFixed(2)}%`, "Sold %"];
-                        return v;
-                      }}
-                    />
-                    <Bar dataKey="stock_neg" fill="#4b7bec" stackId="a" />
-                    <Bar dataKey="sold" fill="#00c853" stackId="b" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-            <div className="flex gap-5 mt-3 text-[12px] text-muted">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: "#4b7bec" }} /> % of total stock</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-brand-strong" /> % units sold</span>
-            </div>
+          <TornadoChart
+            data={tornadoTop25}
+            title="Subcategory: Stock vs Sales · Top 25"
+            subtitle="% of total stock (blue, left) vs % of total units sold (green, right) — ranked by units sold"
+            testId="tornado-chart-top"
+          />
+
+          <TornadoChart
+            data={tornadoBottom15}
+            title="Subcategory: Stock vs Sales · Bottom 15"
+            subtitle="Slowest-moving subcategories — candidates for markdowns or reassortment"
+            testId="tornado-chart-bottom"
+          />
+
+          <div className="card-white p-5" data-testid="sts-category-table">
+            <SectionTitle
+              title="Stock-to-Sales · by Category"
+              subtitle="Variance = % of total units sold − % of total stock. Positive variance = outpacing stock."
+            />
+            <SortableTable
+              testId="sts-category"
+              exportName="stock-to-sales-by-category.csv"
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "category", label: "Category", align: "left" },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
+                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock), csv: (r) => r.current_stock },
+                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
+                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
+                {
+                  key: "variance",
+                  label: "Variance",
+                  numeric: true,
+                  render: (r) => (
+                    <span className={
+                      r.variance >= 2 ? "pill-green" :
+                      r.variance >= -2 ? "pill-neutral" : "pill-red"
+                    }>
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                    </span>
+                  ),
+                  csv: (r) => r.variance?.toFixed(2),
+                },
+              ]}
+              rows={stsByCat}
+            />
+          </div>
+
+          <div className="card-white p-5" data-testid="sts-subcat-table">
+            <SectionTitle
+              title="Stock-to-Sales · by Subcategory"
+              subtitle="Granular view. Sort by Variance to surface biggest stock/sales gaps."
+            />
+            <SortableTable
+              testId="sts-subcat"
+              exportName="stock-to-sales-by-subcategory.csv"
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "subcategory", label: "Subcategory", align: "left" },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
+                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock), csv: (r) => r.current_stock },
+                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
+                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
+                {
+                  key: "variance",
+                  label: "Variance",
+                  numeric: true,
+                  render: (r) => (
+                    <span className={
+                      r.variance >= 2 ? "pill-green" :
+                      r.variance >= -2 ? "pill-neutral" : "pill-red"
+                    }>
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                    </span>
+                  ),
+                  csv: (r) => r.variance?.toFixed(2),
+                },
+              ]}
+              rows={stockSales}
+            />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

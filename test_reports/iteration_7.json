@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 7 full-stack testing of Vivo BI Dashboard v7 redesign. Backend: 10/10 pytest cases passed (active-pos, sts-by-subcat, sts-by-category, weeks-of-cover, subcategory-sales + regression). Frontend: verified warm-grey bg (#f5f5f0), POS Locations label, refresh-data-btn/last-updated, all target data-testids across Overview/Footfall/Products/Inventory/Locations/CEO. Found ONE bug: Locations page loc-kpi-abv and loc-kpi-msi both render 0 (should be ~KES 8,758 and ~2.03); loc-kpi-asp is correct.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Locations page KPI row", "issue": "loc-kpi-abv shows 'KES 0' and loc-kpi-msi shows '0.00'. Totals cards correctly show 6,766 orders and 13,733 units, and loc-kpi-asp correctly shows KES 4,315, so the aggregation for ABV (Sales/Orders) and MSI (Units/Orders) on the page-level KPIs is broken (likely groupTotals.abv / groupTotals.msi divisor = 0 or field mis-keyed). Expected ABV ~KES 8,758, MSI ~2.03 (matches Overview's AVG BASKET SIZE = KES 8,759).", "selector": "[data-testid='loc-kpi-abv'], [data-testid='loc-kpi-msi']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_7.py",
+    "/app/test_reports/pytest/pytest_results_v7.xml"
+  ],
+  "action_items": [
+    "Fix Locations.jsx groupTotals.abv and groupTotals.msi computation — currently returns 0. Ensure it uses sum(total_sales)/sum(orders) and sum(total_units)/sum(orders) over the filtered location set (same math that works for KES 4,315 ASP)."
+  ],
+  "critical_code_review_comments": [
+    "GET /api/analytics/active-pos correctly excludes warehouse/online/third-party and only returns channels with sales in last 30 days — verified in test.",
+    "GET /api/analytics/stock-to-sales-by-subcat returns variance = pct_sold - pct_stock with full schema — verified.",
+    "GET /api/analytics/stock-to-sales-by-category rolls subcategories to Dresses/Tops/Bottoms/Outerwear/Sets&Bodysuits/Accessories via prefix matching — verified on UI (Dresses 37.30%, Tops 26.53%, Bottoms 20.57%, Outerwear 12.33%).",
+    "GET /api/analytics/weeks-of-cover returns per-style weeks = stock / (units_28d / 4) — verified (25+ rows).",
+    "Body background is rgb(245,245,240) = #f5f5f0 — verified via getComputedStyle.",
+    "TopNav: refresh-data-btn and last-updated selectors present; POS Locations label (not Channel) used in FilterBar.",
+    "Overview: subcat-chart renders with data labels ('KES 14,115,173 · 0.0%' style), top-20-styles sortable table with Inventory column present (headers: RANK/STYLE NAME/SUBCATEGORY/UNITS SOLD/TOTAL SALES/INVENTORY/AVG PRICE).",
+    "Footfall: ABV KPI (ff-kpi-abv) rendered KES 8,921, SPV KPI absent (correct), no Country column in breakdown, all 28 locations in horizontal bars, Last-period (Footfall LM) + Δ Footfall columns appear when compareMode=last_month with green/red delta arrows.",
+    "Products: brand multi-select, tornado-chart-top has 25 subcats × 2 bars = 50, tornado-chart-bottom has 15 × 2 = 30; STS Category and Subcategory tables with Export CSV buttons. Blue stock on left, green sales on right.",
+    "Inventory: chart-inv-category + chart-inv-subcat + chart-inv-location + weeks-of-cover (25+ rows) + sts-by-category-table + sts-by-subcategory-table all rendered.",
+    "Locations: loc-kpi-abv/asp/msi cards and loc-sort-abv/asp/msi sort buttons all present; BUG — ABV and MSI values display 0 (see frontend_issues).",
+    "CEO Report: ceo-top-skus table has exactly 6 columns (RANK, STYLE NAME, SUBCATEGORY, UNITS SOLD, TOTAL SALES KES, AVG PRICE KES) — NO Brand, NO Collection as required. 20 rows.",
+    "Code-review note: /app/frontend/src/pages/CEOReport.jsx is 777 lines — consider splitting into section components (>700-line threshold).",
+    "Code-review note: /app/backend/server.py is 1228 lines — consider modularising analytics endpoints into a separate router/file."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_7.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10)",
+    "frontend": "95% (1 KPI-calc bug on Locations page; all testids and core flows verified)"
+  },
+  "test_credentials": "None required (read-only proxy to upstream Vivo API)",
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All iteration-7 backend analytics endpoints (active-pos, sts-by-subcat, sts-by-category, weeks-of-cover) working. Most frontend testids verified. ONE outstanding bug: Locations page groupTotals.abv/msi computes to 0 — see Locations.jsx lines 165-167. Note: /ceo redirects to /overview — CEO route is /ceo-report. Inventory page's weeks-of-cover color-coded cells used inline styles (class-based detection returned 0) — visual inspection confirms colors in the UI; so not a bug. Refresh button & last-updated timestamp work (timestamp changes). Compare mode toggles Footfall (LM) + Δ columns correctly.",
+  "rca of the issue": "Locations.jsx groupTotals.abv/msi bug RCA: groupTotals is computed over an aggregated list of location rows. Likely divisor (orders) is falsy on one code branch OR the source field names mismatch (e.g., using order_count vs orders). Check Locations.jsx around the groupTotals memo — compare against the working ASP formula (sum(total_sales)/sum(total_units)). Reproduction: navigate to /locations with any preset — ABV card renders 'KES 0', MSI card renders '0.00'. Mitigation: replicate ASP's working formula pattern for ABV = sumSales/sumOrders and MSI = sumUnits/sumOrders, guarding against divide-by-zero."
+}

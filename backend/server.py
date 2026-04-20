@@ -641,6 +641,188 @@ async def _fetch_warehouse_chunked(
 
 
 # -------------------- Aggregation helpers --------------------
+@api_router.get("/analytics/active-pos")
+async def analytics_active_pos(
+    days: int = 30,
+):
+    """Return list of active physical store locations — channels that:
+    - aren't warehouse/holding/online/third-party etc.
+    - had at least 1 sale in the last `days` days."""
+    from datetime import datetime, timedelta
+    dt = datetime.utcnow().date()
+    df = dt - timedelta(days=days)
+    sales = await fetch("/sales-summary", {"date_from": df.isoformat(), "date_to": dt.isoformat()}) or []
+    active_channels = {r.get("channel") for r in sales if (r.get("total_sales") or 0) > 0}
+    locs = await fetch("/locations") or []
+    out = []
+    for loc in locs:
+        ch = loc.get("channel")
+        if not ch:
+            continue
+        if is_excluded_location(ch):
+            continue
+        low = ch.lower()
+        if "online" in low or "third-party" in low:
+            continue
+        if ch in active_channels:
+            out.append(loc)
+    return out
+
+
+@api_router.get("/analytics/stock-to-sales-by-subcat")
+async def analytics_sts_by_subcat(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Derived view of /subcategory-stock-sales with a variance column
+    (% of sales − % of stock). One clean row per subcategory."""
+    rows = await get_subcategory_stock_sales(
+        date_from=date_from, date_to=date_to, country=country, channel=channel,
+    )
+    out = []
+    for r in rows or []:
+        pct_sold = r.get("pct_of_total_sold") or 0
+        pct_stock = r.get("pct_of_total_stock") or 0
+        out.append({
+            "subcategory": r.get("subcategory"),
+            "units_sold": r.get("units_sold") or 0,
+            "current_stock": r.get("current_stock") or 0,
+            "pct_of_total_sold": pct_sold,
+            "pct_of_total_stock": pct_stock,
+            "variance": pct_sold - pct_stock,
+            "sor_percent": r.get("sor_percent") or 0,
+            "total_sales": r.get("total_sales") or 0,
+        })
+    out.sort(key=lambda x: x["units_sold"], reverse=True)
+    return out
+
+
+@api_router.get("/analytics/stock-to-sales-by-category")
+async def analytics_sts_by_category(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Roll subcategory-stock-sales up to CATEGORY level using subcategory
+    name prefixes. "Category" is approximated as the first word of the
+    subcategory (e.g. "Knee Length Dresses" → "Dresses"). Falls back to
+    the full subcategory if no mapping exists."""
+    rows = await get_subcategory_stock_sales(
+        date_from=date_from, date_to=date_to, country=country, channel=channel,
+    )
+
+    def category_of(sub: str) -> str:
+        if not sub:
+            return "—"
+        s = sub.lower()
+        if "dress" in s:
+            return "Dresses"
+        if "top" in s:
+            return "Tops"
+        if "pant" in s or "legging" in s or "shorts" in s or "skorts" in s or "skirt" in s:
+            return "Bottoms"
+        if "coat" in s or "jacket" in s or "poncho" in s or "sweater" in s or "kimono" in s or "waterfall" in s:
+            return "Outerwear"
+        if "jumpsuit" in s or "playsuit" in s or "bodysuit" in s:
+            return "Sets & Bodysuits"
+        if "accessory" in s or "bag" in s or "scarf" in s or "jewel" in s:
+            return "Accessories"
+        return sub
+
+    total_sold = sum(r.get("units_sold") or 0 for r in rows)
+    total_stock = sum(r.get("current_stock") or 0 for r in rows)
+    total_sales = sum(r.get("total_sales") or 0 for r in rows)
+
+    agg: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        cat = category_of(r.get("subcategory"))
+        if cat not in agg:
+            agg[cat] = {
+                "category": cat, "units_sold": 0, "current_stock": 0,
+                "total_sales": 0, "subcategories": 0,
+            }
+        agg[cat]["units_sold"] += r.get("units_sold") or 0
+        agg[cat]["current_stock"] += r.get("current_stock") or 0
+        agg[cat]["total_sales"] += r.get("total_sales") or 0
+        agg[cat]["subcategories"] += 1
+
+    for v in agg.values():
+        v["pct_of_total_sold"] = (v["units_sold"] / total_sold * 100) if total_sold else 0
+        v["pct_of_total_stock"] = (v["current_stock"] / total_stock * 100) if total_stock else 0
+        v["pct_of_total_sales"] = (v["total_sales"] / total_sales * 100) if total_sales else 0
+        v["variance"] = v["pct_of_total_sold"] - v["pct_of_total_stock"]
+        v["sor_percent"] = (
+            (v["units_sold"] / (v["units_sold"] + v["current_stock"]) * 100)
+            if (v["units_sold"] + v["current_stock"]) else 0
+        )
+
+    return sorted(agg.values(), key=lambda x: x["units_sold"], reverse=True)
+
+
+@api_router.get("/analytics/weeks-of-cover")
+async def analytics_weeks_of_cover(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Weeks of Cover per style:
+       weeks = current_stock / (units_sold_last_28_days / 4)
+    SOR data gives 28-day sell rate when we query the last 28 days."""
+    from datetime import datetime, timedelta
+    dt = datetime.utcnow().date()
+    df = dt - timedelta(days=28)
+
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    base = {"date_from": df.isoformat(), "date_to": dt.isoformat()}
+
+    if len(cs) <= 1 and len(chs) <= 1:
+        data = await fetch("/sor", {
+            **base,
+            "country": cs[0] if cs else None,
+            "channel": chs[0] if chs else None,
+        })
+        rows = data or []
+    else:
+        results = await multi_fetch("/sor", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in g:
+                s = r.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "current_stock"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+        rows = list(merged.values())
+
+    out = []
+    for r in rows:
+        units = r.get("units_sold") or 0
+        stock = r.get("current_stock") or 0
+        weekly = units / 4 if units else 0
+        weeks = (stock / weekly) if weekly else None
+        out.append({
+            "style_name": r.get("style_name"),
+            "brand": r.get("brand"),
+            "collection": r.get("collection"),
+            "subcategory": r.get("product_type"),
+            "current_stock": stock,
+            "units_sold_28d": units,
+            "avg_weekly_sales": weekly,
+            "weeks_of_cover": weeks,
+            "sor_percent": r.get("sor_percent") or 0,
+        })
+    return out
+
+
+# ----- End analytics extensions -----
+
+
 @api_router.get("/analytics/inventory-summary")
 async def analytics_inventory_summary(
     country: Optional[str] = None,
@@ -660,6 +842,7 @@ async def analytics_inventory_summary(
     by_subcat: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         "subcategory": "", "store_units": 0.0, "warehouse_units": 0.0, "total_units": 0.0,
     })
+    by_brand: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"brand": "", "units": 0.0, "skus": 0})
 
     total_units = 0.0
     total_skus = 0
@@ -707,6 +890,11 @@ async def analytics_inventory_summary(
         if avail <= 2 and row.get("sku"):
             low_stock += 1
 
+        brand = row.get("brand") or "Unknown"
+        by_brand[brand]["brand"] = brand
+        by_brand[brand]["units"] += avail
+        by_brand[brand]["skus"] += 1
+
     country_list = [{
         "country": c["country"], "units": c["units"],
         "skus": c["skus"], "locations": len(c["locations"]),
@@ -726,6 +914,7 @@ async def analytics_inventory_summary(
         "by_location": sorted(by_location.values(), key=lambda x: x["units"], reverse=True),
         "by_product_type": sorted(by_type.values(), key=lambda x: x["units"], reverse=True),
         "by_subcategory_split": subcat_list,
+        "by_brand": sorted(by_brand.values(), key=lambda x: x["units"], reverse=True),
     }
 
 
