@@ -275,6 +275,7 @@ const Inventory = () => {
                     <XAxis dataKey="category" interval={0} angle={-20} textAnchor="end" height={70} tick={{ fontSize: 10 }} />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
                     <Tooltip content={<ChartTooltip formatters={{
+                      Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                       current_stock: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                     }} />} />
                     <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
@@ -293,6 +294,7 @@ const Inventory = () => {
                     <XAxis dataKey="product_type" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 9 }} />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
                     <Tooltip content={<ChartTooltip formatters={{
+                      Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                       units: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                     }} />} />
                     <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory">
