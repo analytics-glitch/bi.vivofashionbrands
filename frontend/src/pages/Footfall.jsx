@@ -219,25 +219,26 @@ const Footfall = () => {
             />
           </div>
 
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card-white p-5" data-testid="ff-chart-footfall">
             <SectionTitle
-              title={`Footfall by location · ${byFootfall.length} locations`}
+              title={`Footfall by location · ${byFootfall.length}`}
               subtitle="All locations sorted by footfall descending"
             />
             {byFootfall.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 24 + byFootfall.length * 22 }}>
+              <div style={{ width: "100%", height: Math.max(320, 24 + byFootfall.length * 20) }}>
                 <ResponsiveContainer>
-                  <BarChart data={byFootfall} layout="vertical" margin={{ left: 10, right: 80, top: 4 }}>
+                  <BarChart data={byFootfall} layout="vertical" margin={{ left: 6, right: 56, top: 4 }}>
                     <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <YAxis type="category" dataKey="location" width={170} tick={{ fontSize: 10 }} />
+                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 9 }} />
+                    <YAxis type="category" dataKey="location" width={120} tick={{ fontSize: 9 }} />
                     <Tooltip content={
                       <ChartTooltip formatters={{
                         total_footfall: (v, p) => `${fmtNum(v)} visits · ${fmtNum(p?.orders || 0)} orders`,
                       }} />
                     } />
                     <Bar dataKey="total_footfall" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Footfall">
-                      <LabelList dataKey="total_footfall" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                      <LabelList dataKey="total_footfall" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 9, fill: "#4b5563" }} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -247,21 +248,21 @@ const Footfall = () => {
 
           <div className="card-white p-5" data-testid="ff-chart-conversion">
             <SectionTitle
-              title={`Conversion rate by location · ${byConversion.length} locations`}
-              subtitle="Red = below group average · Green = at or above. All locations sorted descending."
+              title={`Conversion rate by location · ${byConversion.length}`}
+              subtitle="Red = below group avg · Green = at/above"
               action={
-                <span className="text-[11.5px] text-muted">
-                  Group avg: <span className="font-bold text-brand">{fmtPct(groupAvgConv, 2)}</span>
+                <span className="text-[11px] text-muted">
+                  Avg: <span className="font-bold text-brand">{fmtPct(groupAvgConv, 2)}</span>
                 </span>
               }
             />
             {byConversion.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 24 + byConversion.length * 22 }}>
+              <div style={{ width: "100%", height: Math.max(320, 24 + byConversion.length * 20) }}>
                 <ResponsiveContainer>
-                  <BarChart data={byConversion} layout="vertical" margin={{ left: 10, right: 80, top: 4 }}>
+                  <BarChart data={byConversion} layout="vertical" margin={{ left: 6, right: 46, top: 4 }}>
                     <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fontSize: 10 }} />
-                    <YAxis type="category" dataKey="location" width={170} tick={{ fontSize: 10 }} />
+                    <XAxis type="number" tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fontSize: 9 }} />
+                    <YAxis type="category" dataKey="location" width={120} tick={{ fontSize: 9 }} />
                     <Tooltip content={
                       <ChartTooltip formatters={{
                         conversion_rate: (v, p) => `${Number(v).toFixed(2)}% · ${fmtNum(p?.orders || 0)} orders ÷ ${fmtNum(p?.total_footfall || 0)} visits`,
@@ -272,12 +273,13 @@ const Footfall = () => {
                       {byConversion.map((r, i) => (
                         <Cell key={i} fill={(r.conversion_rate || 0) >= groupAvgConv ? "#00c853" : "#ef4444"} />
                       ))}
-                      <LabelList dataKey="conversion_rate" position="right" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fontSize: 10, fill: "#4b5563" }} />
+                      <LabelList dataKey="conversion_rate" position="right" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fontSize: 9, fill: "#4b5563" }} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             )}
+          </div>
           </div>
 
           <div className="card-white p-5" data-testid="ff-chart-abv">

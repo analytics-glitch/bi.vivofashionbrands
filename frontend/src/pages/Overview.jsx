@@ -157,10 +157,9 @@ const Overview = () => {
   const top15 = useMemo(() => {
     return [...sales]
       .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
-      .slice(0, 15)
       .map((r) => ({
         ...r,
-        label: (r.channel || "").length > 20 ? (r.channel || "").slice(0, 19) + "…" : r.channel,
+        label: (r.channel || "").length > 24 ? (r.channel || "").slice(0, 23) + "…" : r.channel,
       }));
   }, [sales]);
 
@@ -277,16 +276,48 @@ const Overview = () => {
       [...subcats]
         .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
         .slice(0, 15)
-        .map((r) => ({
-          ...r,
-          pct: subcatTotalSales ? ((r.total_sales || 0) / subcatTotalSales) * 100 : 0,
-        })),
+        .map((r) => {
+          const pct = subcatTotalSales ? ((r.total_sales || 0) / subcatTotalSales) * 100 : 0;
+          return {
+            ...r,
+            pct,
+            subcat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%`,
+          };
+        }),
     [subcats, subcatTotalSales]
   );
   const subcatTopTotal = useMemo(
     () => subcatTop.reduce((s, r) => s + (r.total_sales || 0), 0),
     [subcatTop]
   );
+
+  // Sales by Category — map subcategory → high-level category.
+  const categoryFor = (subcat) => {
+    const s = (subcat || "").toLowerCase();
+    if (/dress|jumpsuit|gown|kaftan/.test(s)) return "Dresses";
+    if (/top|blouse|shirt|tee|tunic|cami/.test(s)) return "Tops";
+    if (/trouser|pant|short|skirt|jean|legging/.test(s)) return "Bottoms";
+    if (/jacket|blazer|coat|cardigan|sweater|hoodie|outerwear/.test(s)) return "Outerwear";
+    if (/bag|wallet|purse|clutch|belt|scarf|accessor|jewel/.test(s)) return "Accessories";
+    if (/shoe|sandal|heel|sneaker|boot|footwear/.test(s)) return "Footwear";
+    if (/swim|beach|lingerie|nightwear|underwear/.test(s)) return "Intimates & Swim";
+    return "Other";
+  };
+  const salesByCategory = useMemo(() => {
+    const byCat = {};
+    for (const r of subcats) {
+      const cat = categoryFor(r.subcategory);
+      if (!byCat[cat]) byCat[cat] = { category: cat, total_sales: 0, units_sold: 0 };
+      byCat[cat].total_sales += r.total_sales || 0;
+      byCat[cat].units_sold += r.units_sold || 0;
+    }
+    const arr = Object.values(byCat).sort((a, b) => b.total_sales - a.total_sales);
+    const total = arr.reduce((s, r) => s + r.total_sales, 0) || 1;
+    return arr.map((r) => {
+      const pct = (r.total_sales / total) * 100;
+      return { ...r, pct, cat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%` };
+    });
+  }, [subcats]);
 
   return (
     <div className="space-y-6" data-testid="overview-page">
@@ -353,16 +384,22 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title="Top 15 locations by Total Sales" subtitle="Ranked across the current scope" />
+              <SectionTitle title={`Top locations by Total Sales · ${top15.length}`} subtitle="All POS locations in scope, ranked by sales" />
               {top15.length === 0 ? <Empty /> : (
-                <div style={{ width: "100%", height: 380 }}>
+                <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
-                    <BarChart data={top15} layout="vertical" margin={{ left: 20, right: 20 }}>
+                    <BarChart data={top15} layout="vertical" margin={{ left: 20, right: 110, top: 4 }}>
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
                       <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => fmtKES(v)} />
-                      <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} />
+                      <Tooltip content={
+                        <ChartTooltip formatters={{
+                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
+                        }} />
+                      } />
+                      <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
+                        <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -439,9 +476,9 @@ const Overview = () => {
               subtitle={`Total Sales per subcategory (top 15) · Total across top 15: ${fmtKES(subcatTopTotal)}`}
             />
             {subcatTop.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 320 }}>
+              <div style={{ width: "100%", height: 360 }}>
                 <ResponsiveContainer>
-                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 10, right: 100, top: 4 }}>
+                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 10, right: 140, top: 4 }}>
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
                     <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 10 }} />
@@ -450,16 +487,35 @@ const Overview = () => {
                         total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
                       }} />
                     } />
-                    <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]}>
+                    <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} name="Total Sales">
                       <LabelList
-                        dataKey="total_sales"
+                        dataKey="subcat_label"
                         position="right"
                         style={{ fontSize: 10, fill: "#4b5563" }}
-                        formatter={(v, entry) => {
-                          const p = entry?.payload?.pct ?? 0;
-                          return `${fmtKES(v)} · ${p.toFixed(1)}%`;
-                        }}
                       />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          <div className="card-white p-5" data-testid="category-chart">
+            <SectionTitle title="Sales by Category" subtitle="High-level category groupings (Dresses, Tops, Bottoms, …)" />
+            {salesByCategory.length === 0 ? <Empty /> : (
+              <div style={{ width: "100%", height: 320 }}>
+                <ResponsiveContainer>
+                  <BarChart data={salesByCategory} margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="category" tick={{ fontSize: 11 }} />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <Tooltip content={
+                      <ChartTooltip formatters={{
+                        total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
+                      }} />
+                    } />
+                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
+                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>

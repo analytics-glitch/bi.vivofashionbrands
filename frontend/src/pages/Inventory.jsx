@@ -443,40 +443,26 @@ const Inventory = () => {
                 title={`Understocked subcategories · ${understockedSubcats.length}`}
                 subtitle="Selling more than their share of inventory. Understock % = % of Units Sold − % of Total Stock."
               />
-              <div className="overflow-x-auto">
-                <table className="w-full data" data-testid="understocked-table">
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Subcategory</th>
-                      <th className="text-right">% of Sales</th>
-                      <th className="text-right">% of Stock</th>
-                      <th className="text-right">Understock</th>
-                      <th className="text-right">Units Sold</th>
-                      <th className="text-right">Current Stock</th>
-                      <th className="text-right">SOR</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {understockedSubcats.map((r, i) => (
-                      <tr key={(r.subcategory || "") + i}>
-                        <td className="text-muted num">{i + 1}</td>
-                        <td className="font-medium">{r.subcategory}</td>
-                        <td className="text-right num">{fmtPct(r.pct_of_total_sold, 2)}</td>
-                        <td className="text-right num">{fmtPct(r.pct_of_total_stock, 2)}</td>
-                        <td className="text-right">
-                          <span className={r.understock_pct >= 3 ? "pill-red" : r.understock_pct >= 1 ? "pill-amber" : "pill-neutral"}>
-                            −{r.understock_pct.toFixed(2)} pts
-                          </span>
-                        </td>
-                        <td className="text-right num">{fmtNum(r.units_sold)}</td>
-                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
-                        <td className="text-right num">{fmtPct(r.sor_percent)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <SortableTable
+                testId="understocked"
+                exportName="understocked-subcategories.csv"
+                initialSort={{ key: "understock_pct", dir: "desc" }}
+                columns={[
+                  { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="font-medium">{r.subcategory}</span> },
+                  { key: "pct_of_total_sold", label: "% of Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
+                  { key: "pct_of_total_stock", label: "% of Stock", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
+                  {
+                    key: "understock_pct", label: "Understock %", numeric: true,
+                    render: (r) => <span className={r.understock_pct >= 3 ? "pill-red" : r.understock_pct >= 1 ? "pill-amber" : "pill-neutral"}>{r.understock_pct.toFixed(2)}%</span>,
+                    csv: (r) => r.understock_pct?.toFixed(2),
+                  },
+                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                  { key: "sor_percent", label: "SOR", numeric: true, render: (r) => fmtPct(r.sor_percent), csv: (r) => r.sor_percent?.toFixed(2) },
+                ]}
+                rows={understockedSubcats}
+              />
             </div>
           )}
 
@@ -486,123 +472,82 @@ const Inventory = () => {
                 title={`Low-stock alerts · ${lowStockByStyle.length} styles`}
                 subtitle="Styles with ≤10 total available units across all SKUs in the current scope"
               />
-              <div className="overflow-x-auto">
-                <table className="w-full data" data-testid="low-stock-table">
-                  <thead>
-                    <tr>
-                      <th>Style</th>
-                      <th>Brand</th>
-                      <th>Subcategory</th>
-                      <th className="text-right">SKUs</th>
-                      <th className="text-right">Locations</th>
-                      <th className="text-right">Total Available</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lowStockByStyle.slice(0, 80).map((r, i) => (
-                      <tr key={(r.style_name || "") + i}>
-                        <td className="font-medium max-w-[300px] truncate" title={r.style_name}>{r.style_name || "—"}</td>
-                        <td><span className="pill-neutral">{r.brand || "—"}</span></td>
-                        <td className="text-muted">{r.product_type || "—"}</td>
-                        <td className="text-right num">{fmtNum(r.sku_count)}</td>
-                        <td className="text-right num">{fmtNum(r.locations)}</td>
-                        <td className="text-right">
-                          <span className={r.available <= 3 ? "pill-red" : r.available <= 6 ? "pill-amber" : "pill-neutral"}>{fmtNum(r.available)}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <SortableTable
+                testId="low-stock"
+                exportName="low-stock-alerts.csv"
+                pageSize={80}
+                initialSort={{ key: "available", dir: "asc" }}
+                columns={[
+                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium max-w-[300px] truncate inline-block" title={r.style_name}>{r.style_name || "—"}</span> },
+                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
+                  { key: "sku_count", label: "SKUs", numeric: true, render: (r) => fmtNum(r.sku_count) },
+                  { key: "locations", label: "Locations", numeric: true, render: (r) => fmtNum(r.locations) },
+                  {
+                    key: "available", label: "Total Available", numeric: true,
+                    render: (r) => <span className={r.available <= 3 ? "pill-red" : r.available <= 6 ? "pill-amber" : "pill-neutral"}>{fmtNum(r.available)}</span>,
+                    csv: (r) => r.available,
+                  },
+                ]}
+                rows={lowStockByStyle}
+              />
             </div>
           )}
 
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
-              title="Stock-to-Sales ratio"
-              subtitle="Weeks of cover proxy — red >10x (overstocked), amber 3–10x, green 1–3x, blue <1x (understocked)"
+              title="Stock-to-Sales ratio by location"
+              subtitle="Weeks of cover proxy — red >10× (overstocked), amber 3–10×, green 1–3×, blue <1× (understocked)"
             />
-            <div className="overflow-x-auto">
-              <table className="w-full data" data-testid="sts-table">
-                <thead>
-                  <tr>
-                    <th>Location</th><th>Country</th>
-                    <th className="text-right">Units Sold</th>
-                    <th className="text-right">Current Stock</th>
-                    <th className="text-right">Total Sales</th>
-                    <th className="text-right">Ratio</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sts.length === 0 && <tr><td colSpan={6}><Empty /></td></tr>}
-                  {sts.sort((a, b) => (b.stock_to_sales_ratio || 0) - (a.stock_to_sales_ratio || 0)).map((r, i) => {
+            <SortableTable
+              testId="sts-location"
+              exportName="stock-to-sales-by-location.csv"
+              initialSort={{ key: "stock_to_sales_ratio", dir: "desc" }}
+              columns={[
+                { key: "location", label: "Location", align: "left", render: (r) => <span className="font-medium">{r.location}</span> },
+                { key: "country", label: "Country", align: "left", render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country}</span>, csv: (r) => r.country },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                {
+                  key: "stock_to_sales_ratio", label: "Ratio", numeric: true,
+                  render: (r) => {
                     const v = r.stock_to_sales_ratio || 0;
                     const pill = v > 10 ? "pill-red" : v >= 3 ? "pill-amber" : v >= 1 ? "pill-green" : "pill-neutral";
-                    return (
-                      <tr key={r.location + i}>
-                        <td className="font-medium">{r.location}</td>
-                        <td>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country}</td>
-                        <td className="text-right num">{fmtNum(r.units_sold)}</td>
-                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
-                        <td className="text-right num font-semibold">{fmtKES(r.total_sales)}</td>
-                        <td className="text-right"><span className={pill}>{fmtDec(v, 2)}×</span></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                    return <span className={pill}>{fmtDec(v, 2)}×</span>;
+                  },
+                  csv: (r) => r.stock_to_sales_ratio?.toFixed(2),
+                },
+              ]}
+              rows={sts}
+            />
           </div>
 
           <div className="card-white p-5" data-testid="inventory-table">
             <SectionTitle
               title="Inventory"
-              subtitle={`${fmtNum(filteredInv.length)} rows`}
+              subtitle={`${fmtNum(filteredInv.length)} rows · sortable, exportable`}
             />
-            <div className="overflow-x-auto">
-              <table className="w-full data">
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>Size</th>
-                    <th>SKU</th>
-                    <th>Barcode</th>
-                    <th>Location</th>
-                    <th>Country</th>
-                    <th className="text-right">Available</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredInv.length === 0 && (
-                    <tr>
-                      <td colSpan={7}>
-                        <Empty />
-                      </td>
-                    </tr>
-                  )}
-                  {filteredInv.slice(0, 300).map((r, i) => (
-                    <tr key={i}>
-                      <td className="font-medium max-w-[280px] truncate" title={r.product_name}>
-                        {r.product_name || "—"}
-                      </td>
-                      <td>{r.size || "—"}</td>
-                      <td className="font-mono text-[11px] text-muted">{r.sku || "—"}</td>
-                      <td className="font-mono text-[11px] text-muted">{r.barcode || "—"}</td>
-                      <td className="text-muted">{r.location_name || "—"}</td>
-                      <td className="capitalize">{r.country || "—"}</td>
-                      <td className={`text-right num font-semibold ${(r.available || 0) <= 2 ? "text-danger" : ""}`}>
-                        {fmtNum(r.available)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {filteredInv.length > 300 && (
-                <div className="text-[11.5px] text-muted mt-3">
-                  Showing first 300 of {fmtNum(filteredInv.length)} rows. Narrow via filters.
-                </div>
-              )}
-            </div>
+            <SortableTable
+              testId="inventory-rows"
+              exportName="inventory.csv"
+              pageSize={300}
+              initialSort={{ key: "available", dir: "desc" }}
+              columns={[
+                { key: "product_name", label: "Product", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.product_name}>{r.product_name || "—"}</span> },
+                { key: "size", label: "Size", align: "left", render: (r) => r.size || "—" },
+                { key: "sku", label: "SKU", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.sku || "—"}</span>, csv: (r) => r.sku },
+                { key: "barcode", label: "Barcode", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.barcode || "—"}</span>, csv: (r) => r.barcode },
+                { key: "location_name", label: "Location", align: "left", render: (r) => <span className="text-muted">{r.location_name || "—"}</span>, csv: (r) => r.location_name },
+                { key: "country", label: "Country", align: "left", render: (r) => <span className="capitalize">{r.country || "—"}</span>, csv: (r) => r.country },
+                {
+                  key: "available", label: "Available", numeric: true,
+                  render: (r) => <span className={`font-semibold ${(r.available || 0) <= 2 ? "text-danger" : ""}`}>{fmtNum(r.available)}</span>,
+                  csv: (r) => r.available,
+                },
+              ]}
+              rows={filteredInv}
+            />
           </div>
         </>
       )}

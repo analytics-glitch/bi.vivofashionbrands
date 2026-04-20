@@ -20,6 +20,7 @@ from auth import (  # noqa: E402
     auth_router, admin_router, ActivityLogMiddleware,
     get_current_user, seed_admin,
 )
+from chat import chat_router  # noqa: E402
 
 app = FastAPI(title="Vivo BI Dashboard API")
 # NB: all business endpoints live under this router and require auth.
@@ -1246,6 +1247,7 @@ async def analytics_insights(
 # Auth + admin routers come first (they bypass the api_router auth dependency).
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(chat_router)
 app.include_router(api_router)
 
 

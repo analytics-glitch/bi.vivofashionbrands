@@ -17,6 +17,7 @@ import ActivityLogs from "@/pages/ActivityLogs";
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import ChatWidget from "@/components/ChatWidget";
 
 const Shell = ({ children }) => (
   <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
@@ -25,6 +26,7 @@ const Shell = ({ children }) => (
     <main className="px-6 lg:px-10 py-6 max-w-[1600px] mx-auto w-full">
       {children}
     </main>
+    <ChatWidget />
   </div>
 );
 

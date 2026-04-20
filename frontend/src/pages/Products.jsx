@@ -5,13 +5,9 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
-import { ChartTooltip, Delta } from "@/components/ChartHelpers";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
 } from "@phosphor-icons/react";
-import {
-  BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, Cell,
-} from "recharts";
 
 const sorPillClass = (p) => {
   if (p == null) return "pill-neutral";
@@ -21,38 +17,6 @@ const sorPillClass = (p) => {
 };
 
 const BRAND_OPTIONS = ["Vivo", "Safari", "Zoya", "Sowairina", "Third Party Brands"];
-
-const TornadoChart = ({ data, title, subtitle, testId }) => (
-  <div className="card-white p-5" data-testid={testId}>
-    <SectionTitle title={title} subtitle={subtitle} />
-    {data.length === 0 ? <Empty /> : (
-      <div style={{ width: "100%", height: 24 + data.length * 22 }}>
-        <ResponsiveContainer>
-          <BarChart data={data} layout="vertical" stackOffset="sign" margin={{ left: 10, right: 50, top: 4 }}>
-            <CartesianGrid horizontal={false} />
-            <XAxis type="number" tickFormatter={(v) => `${Math.abs(v).toFixed(0)}%`} tick={{ fontSize: 10 }} domain={[-25, 25]} />
-            <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 10 }} />
-            <Tooltip content={
-              <ChartTooltip
-                formatters={{
-                  stock_neg: (v) => `${Math.abs(v).toFixed(2)}%`,
-                  sold: (v) => `${Number(v).toFixed(2)}%`,
-                  units_sold: (v) => fmtNum(v),
-                }}
-              />
-            } />
-            <Bar dataKey="stock_neg" fill="#4b7bec" stackId="a" name="Stock %" />
-            <Bar dataKey="sold" fill="#00c853" stackId="b" name="Sold %" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    )}
-    <div className="flex gap-5 mt-3 text-[11px] text-muted">
-      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: "#4b7bec" }} /> % of total stock</span>
-      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-brand-strong" /> % units sold</span>
-    </div>
-  </div>
-);
 
 const Products = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -128,22 +92,7 @@ const Products = () => {
     // eslint-disable-next-line
   }, [sor, search, brands]);
 
-  // Tornado split: Top 25 + Bottom 15 by units sold.
-  const tornadoSorted = useMemo(() => {
-    return [...stockSales]
-      .sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0))
-      .map((r) => ({
-        subcategory: r.subcategory,
-        units_sold: r.units_sold || 0,
-        stock_neg: -(r.pct_of_total_stock || 0),
-        stock: r.pct_of_total_stock || 0,
-        sold: r.pct_of_total_sold || 0,
-        sor: r.sor_percent || 0,
-      }));
-  }, [stockSales]);
-  const tornadoTop25 = useMemo(() => tornadoSorted.slice(0, 25), [tornadoSorted]);
-  const tornadoBottom15 = useMemo(() => tornadoSorted.slice(-15).reverse(), [tornadoSorted]);
-
+  // Tornado data removed — charts replaced by sortable tables.
   const topFiltered = useMemo(() => filterByBrand(top).slice(0, 20), [top, brands]); // eslint-disable-line
   const newStylesFiltered = useMemo(() => filterByBrand(newStyles), [newStyles, brands]); // eslint-disable-line
 
@@ -180,20 +129,6 @@ const Products = () => {
             <KPICard testId="pr-kpi-asp" label="Avg Selling Price" value={fmtKES(kpis.avg_selling_price)} showDelta={false} />
           </div>
 
-          <TornadoChart
-            data={tornadoTop25}
-            title="Subcategory: Stock vs Sales · Top 25"
-            subtitle="% of total stock (blue, left) vs % of total units sold (green, right) — ranked by units sold"
-            testId="tornado-chart-top"
-          />
-
-          <TornadoChart
-            data={tornadoBottom15}
-            title="Subcategory: Stock vs Sales · Bottom 15"
-            subtitle="Slowest-moving subcategories — candidates for markdowns or reassortment"
-            testId="tornado-chart-bottom"
-          />
-
           <div className="card-white p-5" data-testid="sts-category-table">
             <SectionTitle
               title="Stock-to-Sales · by Category"
@@ -211,14 +146,14 @@ const Products = () => {
                 { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
                 {
                   key: "variance",
-                  label: "Variance",
+                  label: "Variance %",
                   numeric: true,
                   render: (r) => (
                     <span className={
                       r.variance >= 2 ? "pill-green" :
                       r.variance >= -2 ? "pill-neutral" : "pill-red"
                     }>
-                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)}%
                     </span>
                   ),
                   csv: (r) => r.variance?.toFixed(2),
@@ -245,14 +180,14 @@ const Products = () => {
                 { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
                 {
                   key: "variance",
-                  label: "Variance",
+                  label: "Variance %",
                   numeric: true,
                   render: (r) => (
                     <span className={
                       r.variance >= 2 ? "pill-green" :
                       r.variance >= -2 ? "pill-neutral" : "pill-red"
                     }>
-                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)} pts
+                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)}%
                     </span>
                   ),
                   csv: (r) => r.variance?.toFixed(2),
@@ -269,10 +204,58 @@ const Products = () => {
             <KPICard testId="sor-k-lo" label="Styles < 30%" value={fmtNum(lo)} icon={TrendDown} showDelta={false} higherIsBetter={false} />
           </div>
 
+          <div className="card-white p-5" data-testid="products-top-skus">
+            <SectionTitle title="Top 20 Styles" subtitle="Best-selling styles across the scope" />
+            <SortableTable
+              testId="top20-styles"
+              exportName="top-20-styles.csv"
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                { key: "style_name", label: "Product Name", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
+                { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
+                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                { key: "avg_price", label: "Avg Price", numeric: true, render: (r) => fmtKES(r.avg_price), csv: (r) => r.avg_price },
+              ]}
+              rows={topFiltered}
+            />
+          </div>
+
+          <div className="card-white p-5" data-testid="new-styles-section">
+            <SectionTitle
+              title={`New styles performance · ${newStylesFiltered.length} styles`}
+              subtitle="Styles whose first ever sale is within the last 3 months. Click column headers to sort."
+            />
+            {newStylesFiltered.length === 0 ? <Empty label="No new styles launched in the last 90 days." /> : (
+              <SortableTable
+                testId="new-styles"
+                exportName="new-styles.csv"
+                pageSize={50}
+                initialSort={{ key: "total_sales_period", dir: "desc" }}
+                columns={[
+                  { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "style_name", label: "Product Name", align: "left", render: (r) => <span className="font-medium max-w-[260px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
+                  { key: "collection", label: "Collection", align: "left", render: (r) => <span className="text-muted">{r.collection || "—"}</span> },
+                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
+                  { key: "units_sold_period", label: "Units (Period)", numeric: true, render: (r) => fmtNum(r.units_sold_period) },
+                  { key: "total_sales_period", label: "Sales (Period)", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales_period)}</span>, csv: (r) => r.total_sales_period },
+                  { key: "units_sold_launch", label: "Units (Since Launch)", numeric: true, render: (r) => fmtNum(r.units_sold_launch) },
+                  { key: "total_sales_launch", label: "Sales (Since Launch)", numeric: true, render: (r) => fmtKES(r.total_sales_launch), csv: (r) => r.total_sales_launch },
+                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                  { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
+                ]}
+                rows={newStylesFiltered}
+              />
+            )}
+          </div>
+
           <div className="card-white p-5" data-testid="sor-table-card">
             <SectionTitle
               title={`SOR by style · ${filtered.length} items`}
-              subtitle="Sorted by units sold descending"
+              subtitle="Sortable on every column. Use search to narrow results."
               action={
                 <div className="flex items-center gap-2 input-pill min-w-[260px]">
                   <MagnifyingGlass size={14} className="text-muted" />
@@ -286,105 +269,23 @@ const Products = () => {
                 </div>
               }
             />
-            <div className="overflow-x-auto">
-              <table className="w-full data" data-testid="sor-table">
-                <thead>
-                  <tr>
-                    <th>Style</th><th>Collection</th><th>Brand</th><th>Subcategory</th>
-                    <th className="text-right">Units</th><th className="text-right">Current Stock</th>
-                    <th className="text-right">Total Sales</th><th className="text-right">SOR</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.length === 0 && <tr><td colSpan={8}><Empty /></td></tr>}
-                  {filtered.slice(0, 200).map((r, i) => (
-                    <tr key={(r.style_name || "") + i}>
-                      <td className="font-medium max-w-[280px] truncate" title={r.style_name}>{r.style_name}</td>
-                      <td className="text-muted">{r.collection || "—"}</td>
-                      <td><span className="pill-neutral">{r.brand || "—"}</span></td>
-                      <td className="text-muted">{r.product_type || "—"}</td>
-                      <td className="text-right num font-semibold">{fmtNum(r.units_sold)}</td>
-                      <td className="text-right num">{fmtNum(r.current_stock)}</td>
-                      <td className="text-right num font-bold text-brand">{fmtKES(r.total_sales)}</td>
-                      <td className="text-right"><span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="card-white p-5" data-testid="products-top-skus">
-            <SectionTitle title="Top 20 SKUs" subtitle="Best-selling products across the scope — Product Name & SKU (style key)" />
-            <div className="overflow-x-auto">
-              <table className="w-full data">
-                <thead>
-                  <tr>
-                    <th>#</th><th>Product Name</th><th>SKU</th><th>Brand</th><th>Subcategory</th>
-                    <th className="text-right">Units</th><th className="text-right">Total Sales</th><th className="text-right">Avg Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topFiltered.map((s, i) => (
-                    <tr key={(s.style_name || "") + i}>
-                      <td className="text-muted num">{i + 1}</td>
-                      <td className="font-medium max-w-[280px] truncate" title={s.style_name}>{s.style_name}</td>
-                      <td className="font-mono text-[11px] text-muted">{s.collection || "—"}</td>
-                      <td><span className="pill-neutral">{s.brand || "—"}</span></td>
-                      <td className="text-muted">{s.product_type || "—"}</td>
-                      <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
-                      <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
-                      <td className="text-right num">{fmtKES(s.avg_price)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="card-white p-5" data-testid="new-styles-section">
-            <SectionTitle
-              title={`New styles performance · ${newStylesFiltered.length} styles`}
-              subtitle="Styles whose first ever sale is within the last 3 months. Performance shown for the selected period."
+            <SortableTable
+              testId="sor-table"
+              exportName="sor-by-style.csv"
+              pageSize={50}
+              initialSort={{ key: "units_sold", dir: "desc" }}
+              columns={[
+                { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
+                { key: "collection", label: "Collection", align: "left", render: (r) => <span className="text-muted">{r.collection || "—"}</span> },
+                { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
+                { key: "units_sold", label: "Units", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
+              ]}
+              rows={filtered}
             />
-            {newStylesFiltered.length === 0 ? <Empty label="No new styles launched in the last 90 days." /> : (
-              <div className="overflow-x-auto">
-                <table className="w-full data" data-testid="new-styles-table">
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Product Name</th>
-                      <th>Collection</th>
-                      <th>Brand</th>
-                      <th>Subcategory</th>
-                      <th className="text-right">Units (Period)</th>
-                      <th className="text-right">Sales (Period)</th>
-                      <th className="text-right">Units (Since Launch)</th>
-                      <th className="text-right">Sales (Since Launch)</th>
-                      <th className="text-right">Current Stock</th>
-                      <th className="text-right">SOR</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {newStylesFiltered.slice(0, 100).map((r, i) => (
-                      <tr key={(r.style_name || "") + i}>
-                        <td className="text-muted num">{i + 1}</td>
-                        <td className="font-medium max-w-[260px] truncate" title={r.style_name}>{r.style_name}</td>
-                        <td className="text-muted">{r.collection || "—"}</td>
-                        <td><span className="pill-neutral">{r.brand || "—"}</span></td>
-                        <td className="text-muted">{r.product_type || "—"}</td>
-                        <td className="text-right num font-semibold">{fmtNum(r.units_sold_period)}</td>
-                        <td className="text-right num font-bold text-brand">{fmtKES(r.total_sales_period)}</td>
-                        <td className="text-right num">{fmtNum(r.units_sold_launch)}</td>
-                        <td className="text-right num">{fmtKES(r.total_sales_launch)}</td>
-                        <td className="text-right num">{fmtNum(r.current_stock)}</td>
-                        <td className="text-right"><span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </div>
         </>
       )}
