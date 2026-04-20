@@ -124,6 +124,23 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v8.1 (Apr 2026) — bugfix + polish**
+  - **Orange background bumped**: body bg is now `#fed7aa` (Tailwind orange-200,
+    clearly visible), border `#fdba74`.
+  - **Locations top row**: ABV, ASP, MSI are now part of the main 7-card KPI
+    grid (no separate second row). Responsive: `grid-cols-2 sm:grid-cols-3
+    lg:grid-cols-7`.
+  - **Daily Sales Trend fix** — the chart was always showing the Empty
+    placeholder because `dailyCalls` returned a tuple `[country, data]` which
+    was then wrapped by `safe()` and `r?.data` returned undefined. Removed the
+    inline `.then` — consumer already pairs country → data after the fetch.
+    Also: strokeWidth 3, visible dots, previous-period line in amber dashed.
+  - **Mobile-friendly**: TopNav collapses to a hamburger below lg breakpoint
+    with a dropdown `[data-testid=mobile-menu]`; FilterBar pills wrap and use
+    smaller text on mobile; page H1s scale `text-[22px] sm:text-[28px]`; Shell
+    padding reduces on mobile; ChatWidget expands to nearly full-screen on
+    small devices and FAB z-index bumped to 60.
+
 - **v8 (Apr 2026) — AI Assistant + warm orange theme + UX polish**
   - **Theme**: Page background switched from `#f5f5f0` (warm grey) to
     `#fff4e6` (soft warm cream-orange); border color `#f3dcbf`.
