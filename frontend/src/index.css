@@ -246,7 +246,7 @@ body {
         position: sticky;
         top: 0;
         z-index: 40;
-        background: #ffffff;
+        background: #fed7aa;
         border-bottom: 1px solid var(--border);
     }
 }
