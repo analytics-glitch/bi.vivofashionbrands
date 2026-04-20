@@ -238,7 +238,7 @@ const Locations = () => {
                       <div className="mt-4 font-bold text-[18px] text-brand-deep num">
                         {fmtKES(l.total_sales)}
                       </div>
-                      <div className="grid grid-cols-2 gap-2 mt-3">
+                      <div className="grid grid-cols-3 gap-2 mt-3">
                         <div>
                           <div className="eyebrow">Orders</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
@@ -252,12 +252,6 @@ const Locations = () => {
                           </div>
                         </div>
                         <div>
-                          <div className="eyebrow">Avg Basket</div>
-                          <div className="font-semibold text-[13px] num mt-0.5">
-                            {fmtKES(l.avg_basket)}
-                          </div>
-                        </div>
-                        <div>
                           <div className="eyebrow">Returns</div>
                           <div
                             className={`font-semibold text-[13px] num mt-0.5 ${
@@ -265,6 +259,24 @@ const Locations = () => {
                             }`}
                           >
                             {fmtKES(l.returns || 0)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="eyebrow">ABV</div>
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {fmtKES(l.abv)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="eyebrow">ASP</div>
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {fmtKES(l.asp)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="eyebrow">MSI</div>
+                          <div className="font-semibold text-[13px] num mt-0.5">
+                            {(l.msi || 0).toFixed(2)}
                           </div>
                         </div>
                       </div>
