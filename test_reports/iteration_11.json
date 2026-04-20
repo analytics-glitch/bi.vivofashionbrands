@@ -1,0 +1,34 @@
+{
+  "summary": "Targeted regression for the Daily Sales Trend fix from iter 10. All three review items pass functionally. (1) chart-daily-trend now renders 2 path.recharts-curve elements with non-empty `d` (845 / 867 chars), 19 line dots, X-axis ticks 01 Apr → 19 Apr → confirmed dailyTotalSeries length ≈ 19 for default 'This Month' period (2026-04-01..2026-04-19). The `Empty` placeholder is gone. (2) Compare 'vs Last Month' second dashed path renders with stroke='#d97706' and stroke-dasharray='5 4'. (3) ChatWidget FAB now uses class `z-[60]` and computed zIndex='60' (was z-40). Network: 16 /api/daily-trend XHRs all 200 OK (4 countries x 2 periods x 2? — 16 calls observed: countries × {current, last_month}). Note: preview-environment Emergent badge has zIndex=9999 so it still visually overlaps the bottom-right FAB on the 390x844 iframe; this is preview-only and outside app code. The fix from z-40 to z-[60] is applied correctly and is the right defensive bump.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "ChatWidget on mobile (preview iframe only)",
+        "issues": [
+          "Emergent preview badge (#emergent-badge, z-index 9999) still visually covers chat-open-btn at 390x844. App-side fix (z-[60]) is applied; raising further would not help unless above 9999. Real production builds do not include the badge — no action recommended unless the team wants z-[10000] purely so Playwright .click() works in preview."
+        ]
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_11.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Overview.jsx lines 90-97: dailyCalls/dailyPrevCalls now correctly return raw axios Promise<Response>; consumer at lines 136-138 does `daily[i]?.ok ? daily[i].data : []` — clean pairing. Bug from iter 10 fully resolved.",
+    "Overview.jsx is still ~580 lines; the prior recommendation to split daily-series and subcat reducers into a `hooks/useOverviewDerived.js` still stands but is non-blocking.",
+    "ChatWidget.jsx:110 uses Tailwind arbitrary value `z-[60]`. If raising further for preview parity, prefer `z-[9999]` to beat the Emergent badge — but optional/cosmetic for preview only."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not retested (frontend-only review)",
+    "frontend": "3/3 review items pass (100%)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Daily-trend bug from iter 10 is resolved. When verifying compare-mode rendering, default period is 'This Month' (2026-04-01..2026-04-19) and compareMode defaults to 'last_month' → expect exactly 2 path.recharts-curve, the dashed one with stroke-dasharray='5 4'. /api/daily-trend is called per country (4) × {current, prev} = 8 expected, but 16 observed (likely double-mount in dev/StrictMode); all 200 OK. Preview-only: #emergent-badge has z-index 9999 and intercepts clicks on chat-open-btn at 390x844 — use page.evaluate(() => document.querySelector('[data-testid=chat-open-btn]').click()) instead of page.click().",
+  "rca of the issue": "Iteration 10 RCA was correct. Fix in /app/frontend/src/pages/Overview.jsx is minimal and clean: dailyCalls and dailyPrevCalls now build raw `api.get(...)` Promises (lines 90-97); consumer lines 136-138 pair country names by index after `safe()` resolution. Verified live: 2 curves with non-empty d-paths render, 19 dots match 19 days, X-axis labels confirm 01 Apr–19 Apr."
+}

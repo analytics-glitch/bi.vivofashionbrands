@@ -107,7 +107,7 @@ const ChatWidget = () => {
           type="button"
           onClick={() => setOpen(true)}
           data-testid="chat-open-btn"
-          className="fixed bottom-5 right-5 z-40 shadow-lg rounded-full bg-brand text-white w-14 h-14 grid place-items-center hover:bg-brand-deep transition-transform hover:scale-105"
+          className="fixed bottom-5 right-5 z-[60] shadow-lg rounded-full bg-brand text-white w-14 h-14 grid place-items-center hover:bg-brand-deep transition-transform hover:scale-105"
           aria-label="Open assistant"
         >
           <ChatCircleDots size={26} weight="fill" />

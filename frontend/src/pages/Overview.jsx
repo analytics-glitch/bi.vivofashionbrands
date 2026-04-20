@@ -88,15 +88,11 @@ const Overview = () => {
     const countriesToChart = countries.length ? countries : ALL_COUNTRIES;
 
     const dailyCalls = countriesToChart.map((c) =>
-      api
-        .get("/daily-trend", { params: { date_from: dateFrom, date_to: dateTo, country: c } })
-        .then((r) => [c, r.data || []])
+      api.get("/daily-trend", { params: { date_from: dateFrom, date_to: dateTo, country: c } })
     );
     const dailyPrevCalls = prev
       ? countriesToChart.map((c) =>
-          api
-            .get("/daily-trend", { params: { date_from: prev.date_from, date_to: prev.date_to, country: c } })
-            .then((r) => [c, r.data || []])
+          api.get("/daily-trend", { params: { date_from: prev.date_from, date_to: prev.date_to, country: c } })
         )
       : [];
 
