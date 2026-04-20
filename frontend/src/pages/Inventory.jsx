@@ -145,7 +145,7 @@ const Inventory = () => {
     <div className="space-y-6" data-testid="inventory-page">
       <div>
         <div className="eyebrow">Dashboard · Inventory</div>
-        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
           Inventory
         </h1>
       </div>

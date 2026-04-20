@@ -323,7 +323,7 @@ const Overview = () => {
     <div className="space-y-6" data-testid="overview-page">
       <div>
         <div className="eyebrow">Dashboard · Overview</div>
-        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">Overview</h1>
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Overview</h1>
         <p className="text-muted text-[13px] mt-0.5">
           {fmtDate(dateFrom)} → {fmtDate(dateTo)}
           {compareMode !== "none" && (
@@ -441,15 +441,23 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="chart-daily-trend">
-            <SectionTitle title="Daily sales trend" subtitle={compareMode === "none" ? "Total Sales per day (all countries combined)" : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : "last year"}`} />
-            {dailyTotalSeries.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 256 }}>
+            <SectionTitle
+              title="Daily Sales Trend"
+              subtitle={compareMode === "none" ? `Total Sales per day · ${dailyTotalSeries.length} days` : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : "last year"}`}
+            />
+            {dailyTotalSeries.length === 0 ? (
+              <Empty label="No daily trend data for this date range." />
+            ) : (
+              <div style={{ width: "100%", height: 300 }}>
                 <ResponsiveContainer>
-                  <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
+                  <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="day" tick={{ fontSize: 11 }}
-                      tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={60} />
+                    <XAxis
+                      dataKey="day"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                    />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
                     <Tooltip content={
                       <ChartTooltip
                         labelFormat={(l) => fmtDate(l)}
@@ -459,10 +467,28 @@ const Overview = () => {
                         }}
                       />
                     } />
-                    <Legend />
-                    <Line type="monotone" dataKey="total" stroke="#1a5c38" strokeWidth={2.5} dot={false} name="Total Sales" />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line
+                      type="monotone"
+                      dataKey="total"
+                      stroke="#1a5c38"
+                      strokeWidth={3}
+                      dot={{ r: 3, fill: "#1a5c38" }}
+                      activeDot={{ r: 5 }}
+                      name="Total Sales"
+                      isAnimationActive={false}
+                    />
                     {compareMode !== "none" && (
-                      <Line type="monotone" dataKey="total_prev" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="5 4" dot={false} name="Previous" />
+                      <Line
+                        type="monotone"
+                        dataKey="total_prev"
+                        stroke="#d97706"
+                        strokeWidth={2}
+                        strokeDasharray="5 4"
+                        dot={false}
+                        name="Previous"
+                        isAnimationActive={false}
+                      />
                     )}
                   </LineChart>
                 </ResponsiveContainer>

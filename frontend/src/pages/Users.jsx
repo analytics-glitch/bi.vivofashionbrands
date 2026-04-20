@@ -64,7 +64,7 @@ const Users = () => {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="eyebrow">Admin · Users</div>
-          <h1 className="font-extrabold text-[28px] tracking-tight mt-1">Users</h1>
+          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Users</h1>
           <p className="text-muted text-[13px] mt-0.5">
             Manage who can access the dashboard. Google sign-in auto-creates viewer accounts for whitelisted domains.
           </p>

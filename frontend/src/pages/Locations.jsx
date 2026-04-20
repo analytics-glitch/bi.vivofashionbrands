@@ -124,7 +124,7 @@ const Locations = () => {
     <div className="space-y-6" data-testid="locations-page">
       <div>
         <div className="eyebrow">Dashboard · Locations</div>
-        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
           Locations
         </h1>
       </div>
@@ -134,7 +134,7 @@ const Locations = () => {
 
       {!loading && !error && kpis && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
             <KPICard
               testId="loc-kpi-count"
               accent
@@ -160,11 +160,9 @@ const Locations = () => {
               value={fmtNum(kpis.total_units)}
               showDelta={false}
             />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <KPICard small testId="loc-kpi-abv" label="ABV · Avg Basket Value" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)} showDelta={false} />
-            <KPICard small testId="loc-kpi-asp" label="ASP · Avg Selling Price" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)} showDelta={false} />
-            <KPICard small testId="loc-kpi-msi" label="MSI · Units per Order" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)} showDelta={false} />
+            <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)} showDelta={false} />
+            <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)} showDelta={false} />
+            <KPICard small testId="loc-kpi-msi" label="MSI" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)} showDelta={false} />
           </div>
 
           {!selected && (

@@ -48,7 +48,7 @@ const ActivityLogs = () => {
     <div className="space-y-6" data-testid="activity-logs-page">
       <div>
         <div className="eyebrow">Admin · Activity Logs</div>
-        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">Activity Logs</h1>
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Activity Logs</h1>
         <p className="text-muted text-[13px] mt-0.5">Every authenticated API request is logged. Useful for auditing access.</p>
       </div>
 

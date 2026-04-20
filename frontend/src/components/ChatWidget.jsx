@@ -15,7 +15,7 @@ const ChatBubble = ({ msg }) => {
         className={`max-w-[82%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words ${
           mine
             ? "bg-brand text-white rounded-br-sm"
-            : "bg-[#fff4e6] border border-[#f3dcbf] text-foreground rounded-bl-sm"
+            : "bg-[#fff7ed] border border-[#fdba74] text-foreground rounded-bl-sm"
         }`}
       >
         {msg.content}
@@ -116,9 +116,9 @@ const ChatWidget = () => {
 
       {open && (
         <div
-          className="fixed bottom-5 right-5 z-50 w-[min(380px,calc(100vw-2.5rem))] h-[min(560px,calc(100vh-2.5rem))] card-white shadow-xl flex flex-col overflow-hidden"
+          className="fixed inset-x-2 bottom-2 top-14 sm:inset-auto sm:bottom-5 sm:right-5 sm:top-auto z-50 sm:w-[min(380px,calc(100vw-2.5rem))] sm:h-[min(560px,calc(100vh-2.5rem))] card-white shadow-xl flex flex-col overflow-hidden"
           data-testid="chat-panel"
-          style={{ borderColor: "#f3dcbf" }}
+          style={{ borderColor: "#fdba74" }}
         >
           <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-gradient-to-br from-brand to-brand-deep text-white">
             <div className="w-8 h-8 rounded-full bg-white/15 grid place-items-center">
@@ -161,7 +161,7 @@ const ChatWidget = () => {
                       type="button"
                       onClick={() => send(s)}
                       data-testid="chat-suggestion"
-                      className="text-left text-[12px] bg-[#fff4e6] hover:bg-[#ffe4bf] border border-[#f3dcbf] rounded-lg px-3 py-2 transition-colors"
+                      className="text-left text-[12px] bg-[#fff7ed] hover:bg-[#ffedd5] border border-[#fdba74] rounded-lg px-3 py-2 transition-colors"
                     >
                       {s}
                     </button>
@@ -172,7 +172,7 @@ const ChatWidget = () => {
             {messages.map((m, i) => <ChatBubble key={i} msg={m} />)}
             {sending && (
               <div className="flex justify-start" data-testid="chat-typing">
-                <div className="bg-[#fff4e6] border border-[#f3dcbf] rounded-2xl rounded-bl-sm px-3 py-2">
+                <div className="bg-[#fff7ed] border border-[#fdba74] rounded-2xl rounded-bl-sm px-3 py-2">
                   <div className="flex gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-brand/60 animate-pulse" />
                     <span className="w-1.5 h-1.5 rounded-full bg-brand/60 animate-pulse" style={{ animationDelay: "0.15s" }} />
@@ -200,7 +200,7 @@ const ChatWidget = () => {
               }}
               placeholder="Ask about sales, inventory, KPIs…"
               data-testid="chat-input"
-              className="flex-1 resize-none bg-[#fff4e6] border border-[#f3dcbf] rounded-xl px-3 py-2 text-[13px] outline-none focus:border-brand"
+              className="flex-1 resize-none bg-[#fff7ed] border border-[#fdba74] rounded-xl px-3 py-2 text-[13px] outline-none focus:border-brand"
               style={{ maxHeight: 100 }}
             />
             <button

@@ -13,6 +13,8 @@ import {
   CaretDown,
   ShieldCheck,
   ClockClockwise,
+  List as MenuIcon,
+  X as CloseIcon,
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
@@ -112,6 +114,7 @@ const UserMenu = () => {
 
 const TopNav = () => {
   const { lastUpdated, refresh } = useFilters();
+  const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
   const [, setTick] = React.useState(0);
   React.useEffect(() => {
@@ -120,24 +123,33 @@ const TopNav = () => {
   }, []);
   return (
     <nav
-      className="sticky-nav px-6 lg:px-10 py-3 flex items-center justify-between gap-6 no-print"
+      className="sticky-nav relative px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print"
       data-testid="top-nav"
     >
-      <div className="flex items-center gap-3 shrink-0">
-        <div className="w-9 h-9 rounded-xl bg-brand text-white grid place-items-center font-extrabold text-[15px] shadow-sm">
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
+        <button
+          type="button"
+          className="lg:hidden p-1.5 -ml-1 rounded-lg hover:bg-panel"
+          onClick={() => setMobileOpen((v) => !v)}
+          data-testid="mobile-menu-btn"
+          aria-label="Toggle navigation"
+        >
+          {mobileOpen ? <CloseIcon size={20} /> : <MenuIcon size={20} />}
+        </button>
+        <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-brand text-white grid place-items-center font-extrabold text-[14px] sm:text-[15px] shadow-sm">
           V
         </div>
-        <div className="leading-tight">
-          <div className="text-[14px] font-bold tracking-tight text-foreground">
+        <div className="leading-tight min-w-0">
+          <div className="text-[13px] sm:text-[14px] font-bold tracking-tight text-foreground truncate">
             Vivo Fashion Group
           </div>
-          <div className="text-[10.5px] text-muted uppercase tracking-wider">
+          <div className="hidden sm:block text-[10.5px] text-muted uppercase tracking-wider">
             BI · East Africa
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-1 overflow-x-auto">
+      <div className="hidden lg:flex items-center gap-1 overflow-x-auto">
         {tabs.map((t) => (
           <NavLink
             key={t.id}
@@ -162,8 +174,8 @@ const TopNav = () => {
         ))}
       </div>
 
-      <div className="flex items-center gap-2 text-[11.5px] text-muted">
-        <span className="hidden md:inline" data-testid="last-updated">
+      <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted">
+        <span className="hidden xl:inline" data-testid="last-updated">
           Updated {relativeTime(lastUpdated)}
         </span>
         <button
@@ -177,6 +189,37 @@ const TopNav = () => {
         </button>
         <UserMenu />
       </div>
+
+      {mobileOpen && (
+        <div
+          className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
+          data-testid="mobile-menu"
+        >
+          {tabs.map((t) => (
+            <NavLink
+              key={t.id}
+              to={t.to}
+              end={t.to === "/"}
+              onClick={() => setMobileOpen(false)}
+              data-testid={`nav-mobile-${t.id}`}
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[14px] font-medium ${
+                  isActive
+                    ? "bg-brand text-white"
+                    : "text-foreground/80 hover:bg-panel"
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <t.icon size={17} weight={isActive ? "fill" : "regular"} />
+                  <span>{t.label}</span>
+                </>
+              )}
+            </NavLink>
+          ))}
+        </div>
+      )}
     </nav>
   );
 };

@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 10 (frontend-only pass). Verified 5 of 6 review items. 1 real bug found: the Daily Sales Trend chart on Overview is EMPTY for every period / every country/POS filter, even though the underlying /api/daily-trend endpoint returns 200 with valid data (verified via curl and captured 16 successful daily-trend XHRs in the browser). Root cause is a data-plumbing bug in /app/frontend/src/pages/Overview.jsx — see rca below. All other deltas pass: body bg is rgb(254,215,170) #fed7aa, Locations top-row shows all 7 KPI cards (count, sales, orders, units, abv, asp, msi) on the same y=273 at 1440 viewport, mobile (390x844) collapses TopNav into [data-testid=mobile-menu-btn] with nav-overview inline hidden, hamburger reveals [data-testid=mobile-menu] with all 7 nav-mobile-{id} tabs visible, and the ChatWidget panel fills 96% x 92% of the viewport on mobile.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Overview.jsx / chart-daily-trend",
+        "issue": "Daily Sales Trend always renders the Empty placeholder ('No daily trend data for this date range.') even though /api/daily-trend returns rows (200 OK, e.g. 19 rows for Kenya 2026-04-01..2026-04-19). Subtitle confirms compareMode='last_month' variant ('Solid = current · Dotted = last month'). path.recharts-curve count = 0; chart innerHTML length = 1240 (placeholder only).",
+        "selector": "[data-testid=chart-daily-trend] path.recharts-curve",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "ChatWidget on mobile",
+        "issues": [
+          "chat-open-btn (fixed bottom-5 right-5 z-40) is covered by the Emergent preview 'Made with Emergent' badge on the 390x844 viewport — Playwright .click() failed; page.evaluate(() => btn.click()) succeeded. Real-device tap likely still works because the badge does not intercept pointer events in production, but worth bumping the FAB's z-index above 40 defensively."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_10.json"
+  ],
+  "action_items": [
+    "FIX Overview.jsx daily-trend bug. In the useEffect around lines 90-144: `dailyCalls` promises resolve to the tuple `[c, r.data || []]` because of the inline `.then((r) => [c, r.data || []])`. These tuples are then passed through `safe()` which does `r?.data` on the tuple (arrays don't have `.data`), so `daily[i].data === undefined`. Consequently `setDailyByCountry(Object.fromEntries([[c, undefined], ...]))`, and `dailyTotalSeries` reduces to an empty array. Recommended fix: drop the inline `.then` transform and let axios response pass through `safe()` normally, then pair country names on the consumer side: `const dailyCalls = countriesToChart.map((c) => safe(api.get('/daily-trend', {params: {...}}))); ... setDailyByCountry(Object.fromEntries(countriesToChart.map((c, i) => [c, daily[i]?.ok ? (daily[i].data || []) : []])));`. Same treatment for dailyPrevCalls. After the fix, dailyTotalSeries.length should be ~19 for default period and the `path.recharts-curve` should have a non-empty `d`.",
+    "Optional z-index tweak: raise chat-open-btn above the Emergent preview badge so Playwright / real users can tap the bubble without going through the overlay."
+  ],
+  "critical_code_review_comments": [
+    "Overview.jsx:92 — `.then((r) => [c, r.data || []])` couples the transform to the promise, making the safe() wrapper drop the payload. A cleaner pattern is `safe(api.get(...))` → `[c, result.ok ? result.data : []]` in a map over the indexed countries; it also removes the need for two Promise.all layers (lines 115-116).",
+    "Overview.jsx file is now ~584 lines with many in-component useMemo reductions. Consider moving the daily-series reducers, subcat reducers and top-style sort into a `hooks/useOverviewDerived.js` so the component stays readable.",
+    "Sidebar.jsx mobile menu items correctly use nav-mobile-{id} (lines 196-204) — distinct from desktop nav-{id}, good for targeting. Consider documenting this in test_credentials.md or a testing README so future agents don't reuse the wrong testid.",
+    "ChatWidget chat-panel uses `fixed inset-x-2 bottom-2 top-14 sm:inset-auto ...` — works well (measured 96% x 92% of 390x844). The `top-14` value does leave the top-nav visible, which is intentional UX and matches the spec's 'fills most of the screen'.",
+    "index.css body background correctly pinned to #fed7aa with --border #fdba74 and --border-strong #fb923c. Computed bg verified as rgb(254, 215, 170)."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not retested this iteration (per review spec, chat/auth/kpis were covered in iter 9)",
+    "frontend": "5/6 review items pass (83%). Failing: daily-trend chart renders no line."
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "When re-verifying the daily-trend fix: default period is 'This Month' (2026-04-01..2026-04-19 at the moment), compareMode defaults to 'last_month'. Expect dailyTotalSeries.length ~19 and 2 path.recharts-curve elements (one solid for `total`, one dashed for `total_prev`). /api/daily-trend with country=Kenya returns 19 rows, no-country returns 76 rows (4 countries x 19 days). Mobile nav items use data-testid nav-mobile-{id} (NOT nav-{id}). ChatWidget open-btn can be blocked by the Emergent preview overlay — prefer `page.evaluate(() => document.querySelector('[data-testid=chat-open-btn]').click())` when testing on 390x844.",
+  "rca of the issue": "Daily Sales Trend empty bug — File: /app/frontend/src/pages/Overview.jsx, lines 90-94 and 115-145. `dailyCalls` is built as `countriesToChart.map((c) => api.get('/daily-trend', {...}).then((r) => [c, r.data || []]))` so each promise resolves to a 2-element tuple. Those promises are then wrapped in `safe()` (line 115), which does `p.then((r) => ({ok: true, data: r?.data}))`. Because the resolved value is an array (tuple), `r?.data` is `undefined`. At line 140 the consumer reads `daily[i].data`, gets `undefined`, sets `dailyByCountry[c] = undefined`. The dailyTotalSeries useMemo then iterates `dailyByCountry[c] || []` → empty, so the chart renders the Empty placeholder. Reproduction: log in, stay on Overview default period, scroll to 'Daily Sales Trend' section → shows 'No daily trend data for this date range.' Mitigation: detach the country-pairing from the promise body (see action item 1). The bug is pure FE data-plumbing; the API and the chart itself are fine."
+}

@@ -38,18 +38,18 @@ const FilterBar = () => {
 
   return (
     <div
-      className="sticky top-[64px] z-30 bg-white border-b border-border px-6 lg:px-10 py-3 no-print"
+      className="sticky top-[52px] sm:top-[60px] z-30 bg-white border-b border-border px-3 sm:px-5 lg:px-10 py-2 sm:py-3 no-print"
       data-testid="filter-bar"
     >
-      <div className="flex flex-wrap items-center gap-2.5">
-        <div className="flex items-center gap-1 mr-1">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5">
+        <div className="flex items-center gap-1 flex-wrap">
           {presetKeys.map((k) => (
             <button
               key={k}
               type="button"
               data-testid={`preset-${k}`}
               onClick={() => f.setPreset(k)}
-              className={`px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
+              className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[11px] sm:text-[12px] font-medium transition-colors ${
                 f.preset === k
                   ? "bg-brand text-white"
                   : "text-foreground/70 hover:bg-panel"
@@ -62,7 +62,7 @@ const FilterBar = () => {
             type="button"
             data-testid="preset-custom"
             onClick={() => f.setPresetKey("custom")}
-            className={`px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
+            className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[11px] sm:text-[12px] font-medium transition-colors ${
               f.preset === "custom"
                 ? "bg-brand text-white"
                 : "text-foreground/70 hover:bg-panel"
@@ -72,7 +72,7 @@ const FilterBar = () => {
           </button>
         </div>
 
-        <div className="flex items-center gap-1.5 input-pill">
+        <div className="flex items-center gap-1 input-pill">
           <CalendarBlank size={14} className="text-muted" />
           <input
             type="date"
@@ -82,7 +82,7 @@ const FilterBar = () => {
               f.setPresetKey("custom");
             }}
             data-testid="filter-date-from"
-            className="bg-transparent text-[13px] font-medium outline-none"
+            className="bg-transparent text-[12px] sm:text-[13px] font-medium outline-none"
           />
           <span className="text-muted text-[12px]">→</span>
           <input
@@ -93,7 +93,7 @@ const FilterBar = () => {
               f.setPresetKey("custom");
             }}
             data-testid="filter-date-to"
-            className="bg-transparent text-[13px] font-medium outline-none"
+            className="bg-transparent text-[12px] sm:text-[13px] font-medium outline-none"
           />
         </div>
 
@@ -108,35 +108,35 @@ const FilterBar = () => {
             f.setChannels([]);
           }}
           placeholder="All countries"
-          width={195}
+          width={180}
         />
 
         <MultiSelect
           testId="filter-channels"
-          label="POS Locations"
+          label="POS"
           icon={Storefront}
           options={channelOptions}
           value={f.channels}
           onChange={f.setChannels}
-          placeholder="All POS locations"
-          width={260}
+          placeholder="All POS"
+          width={220}
         />
 
-        <div className="flex items-center gap-1 ml-2">
-          <span className="text-[11px] text-muted uppercase tracking-wider mr-1">
+        <div className="flex items-center gap-1">
+          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-wider mr-1">
             Compare:
           </span>
           {[
             ["none", "None"],
-            ["last_month", "vs Last Month"],
-            ["last_year", "vs Last Year"],
+            ["last_month", "vs LM"],
+            ["last_year", "vs LY"],
           ].map(([k, lbl]) => (
             <button
               key={k}
               type="button"
               data-testid={`compare-${k}`}
               onClick={() => f.setCompareMode(k)}
-              className={`px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
+              className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[11px] sm:text-[12px] font-medium transition-colors ${
                 f.compareMode === k
                   ? "bg-brand-soft text-brand-deep border border-brand/30"
                   : "text-foreground/70 border border-transparent hover:bg-panel"

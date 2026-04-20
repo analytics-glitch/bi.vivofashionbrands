@@ -23,7 +23,7 @@ const Shell = ({ children }) => (
   <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
     <TopNav />
     <FilterBar />
-    <main className="px-6 lg:px-10 py-6 max-w-[1600px] mx-auto w-full">
+    <main className="px-3 sm:px-5 lg:px-10 py-4 sm:py-6 max-w-[1600px] mx-auto w-full">
       {children}
     </main>
     <ChatWidget />

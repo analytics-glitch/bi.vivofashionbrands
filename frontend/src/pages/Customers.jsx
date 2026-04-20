@@ -99,7 +99,7 @@ const Customers = () => {
     <div className="space-y-6" data-testid="customers-page">
       <div>
         <div className="eyebrow">Dashboard · Customers</div>
-        <h1 className="font-extrabold text-[28px] tracking-tight mt-1">Customers</h1>
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Customers</h1>
         <p className="text-muted text-[13px] mt-0.5">Customer health & retention analytics</p>
       </div>
 
