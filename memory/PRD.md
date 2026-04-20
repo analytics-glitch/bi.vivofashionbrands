@@ -124,6 +124,62 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v7 (Apr 2026) — Comprehensive dashboard refresh**
+  - **Global**: Background changed to warm light grey `#f5f5f0`.
+  - **Reusable primitives**: New `<SortableTable>` component (every column
+    click-sortable, "Show first N / Show all" pagination, built-in CSV
+    export button); `<ChartTooltip>` (all chart tooltips now show units
+    alongside monetary values); `<Delta>` (green ▲ / red ▼ pill for %
+    changes).
+  - **Top nav** now has "Updated … ago" + manual refresh button globally.
+  - **Filter bar**: `Channel` → `POS Locations`. Backed by new
+    `/api/analytics/active-pos` endpoint which only returns physical store
+    locations with at least one sale in the last 30 days (warehouse, online
+    and third-party locations excluded).
+  - **Overview**:
+    - Daily trend collapsed to a single Total Sales line (with dotted
+      compare line when vs-LM / vs-LY active).
+    - Sales by Subcategory chart shows top 15 with KES + %-of-total labels.
+    - Top 20 styles table is now sortable with CSV export; Brand & Collection
+      columns removed; Inventory (current_stock) column added.
+  - **Locations**: three new KPI cards — ABV · ASP · MSI; three new sort
+    buttons (ABV / ASP / MSI).
+  - **Footfall**:
+    - KPI replaced: Sales per Visitor → **Avg Basket Value** (Sales ÷ Orders).
+    - Country column removed from breakdown; table is now sortable with CSV
+      export and shows **Last-period footfall + Δ Footfall** (green ▲ / red ▼)
+      when a compare mode is selected.
+    - Footfall-by-Location and Conversion-by-Location charts are now full
+      horizontal bar charts with value labels for every location.
+  - **Products**:
+    - Added Brand multi-select (Vivo, Safari, Zoya, Sowairina, Third Party
+      Brands) — client-side filter on SOR, Top 20, New Styles.
+    - Subcategory tornado chart split into **Top 25** and **Bottom 15** by
+      units sold.
+    - Two new sortable + CSV-exportable tables: Stock-to-Sales **by Category**
+      (Dresses / Tops / Bottoms / Outerwear / …) and **by Subcategory** with
+      Variance column (% sold − % stock).
+  - **Inventory**:
+    - Stock-by-Location chart is now horizontal, shows ALL locations, with
+      value labels.
+    - New Inventory-by-Category and Inventory-by-Subcategory (top 15) bar
+      charts.
+    - New **Weeks of Cover** table: `current_stock ÷ (units_sold_last_28d ÷ 4)`
+      per style, pageSize 25 with Show-all toggle, color-coded pills
+      (red <2w · amber 2-4w · green >4w), CSV export.
+    - Added Stock-to-Sales by Category + Subcategory tables (same shape as
+      Products page).
+  - **CEO Report**: Top 20 styles table (was Top 10) shows Rank · Style ·
+    Subcategory · Units · Sales · Avg Price — Brand and Collection removed.
+  - **Backend**: new endpoints `/api/analytics/active-pos`,
+    `/api/analytics/stock-to-sales-by-subcat`,
+    `/api/analytics/stock-to-sales-by-category`, `/api/analytics/weeks-of-cover`.
+  - **Known gap**: Upstream `/customers` is aggregate-only (no individual
+    customer IDs, names, phones, last-purchase dates), so the following
+    items from the spec are **not implemented**: Top-20 Customers table,
+    Churn list with customer IDs/names, Customers-by-POS breakdown, New
+    Customer Products. These require a new upstream endpoint exposing
+    per-customer records.
 - **v6.5 (Apr 2026)**
   - Picked up upstream data cleanup: `/subcategory-sales` now returns one
     clean row per subcategory (no brand duplication). Backend merge key

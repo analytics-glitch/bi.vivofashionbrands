@@ -77,8 +77,8 @@ const Locations = () => {
     return rows.map((r) => {
       const prev = prevMap.get(r.channel);
       const sales = r.total_sales || 0;
-      const orders = r.total_orders || 0;
-      const units = r.total_units_sold || r.units_sold || 0;
+      const orders = r.orders || r.total_orders || 0;
+      const units = r.units_sold || r.total_units_sold || 0;
       const basket = orders ? sales / orders : (r.avg_basket_size || 0); // ABV
       const asp = units ? sales / units : 0; // Avg Selling Price
       const msi = orders ? units / orders : 0; // Multi-Sell Index = Units/Order
@@ -102,8 +102,8 @@ const Locations = () => {
 
   const groupTotals = useMemo(() => {
     const sales = enriched.reduce((s, r) => s + (r.total_sales || 0), 0);
-    const orders = enriched.reduce((s, r) => s + (r.total_orders || 0), 0);
-    const units = enriched.reduce((s, r) => s + (r.total_units_sold || r.units_sold || 0), 0);
+    const orders = enriched.reduce((s, r) => s + (r.orders || r.total_orders || 0), 0);
+    const units = enriched.reduce((s, r) => s + (r.units_sold || r.total_units_sold || 0), 0);
     return {
       abv: orders ? sales / orders : 0,
       asp: units ? sales / units : 0,
