@@ -5,9 +5,9 @@ const FiltersContext = createContext(null);
 
 export const FiltersProvider = ({ children }) => {
   const presets = datePresets();
-  const [dateFrom, setDateFrom] = useState(presets.this_month.date_from);
-  const [dateTo, setDateTo] = useState(presets.this_month.date_to);
-  const [preset, setPresetKey] = useState("this_month");
+  const [dateFrom, setDateFrom] = useState(presets.today.date_from);
+  const [dateTo, setDateTo] = useState(presets.today.date_to);
+  const [preset, setPresetKey] = useState("today");
   const [countries, setCountries] = useState([]); // [] = all
   const [channels, setChannels] = useState([]); // [] = all
   const [compareMode, setCompareMode] = useState("last_month");

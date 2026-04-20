@@ -71,20 +71,19 @@ export const datePresets = () => {
   const today = new Date(y, m, d);
   const yesterday = new Date(y, m, d - 1);
 
-  // This week (Mon-Sun), but end at yesterday (not live data)
+  // This week (Mon-Sun), ending today (live data)
   const weekDay = today.getDay() || 7;
   const weekStart = new Date(y, m, d - (weekDay - 1));
-  // If today is Monday, "this week" collapses — fall back to last 7 days ending yesterday
-  const weekEnd = yesterday < weekStart ? yesterday : yesterday;
+  const weekEnd = today;
 
   const monthStart = new Date(y, m, 1);
-  // Month-to-date, ending yesterday (data isn't live)
-  const monthEnd = yesterday < monthStart ? monthStart : yesterday;
+  // Month-to-date, ending today (live data)
+  const monthEnd = today;
 
   const lastMonthStart = new Date(y, m - 1, 1);
   const lastMonthEnd = new Date(y, m, 0); // day 0 of this month = last day of previous month
   const yearStart = new Date(y, 0, 1);
-  const yearEnd = yesterday < yearStart ? yearStart : yesterday;
+  const yearEnd = today;
 
   return {
     yesterday: { date_from: toISO(yesterday), date_to: toISO(yesterday), label: "Yesterday" },

@@ -49,7 +49,7 @@ export const KPICard = ({
 }) => {
   return (
     <div
-      className={`${accent ? "card-accent" : "card-white"} ${small ? "p-4" : "p-5"} hover-lift fade-in`}
+      className={`${accent ? "card-accent" : "card-white"} ${small ? "p-3 sm:p-4" : "p-3.5 sm:p-5"} hover-lift fade-in`}
       data-testid={testId}
     >
       <div className="flex items-start justify-between gap-3">
@@ -63,7 +63,7 @@ export const KPICard = ({
         )}
       </div>
       <div
-        className={`mt-3 kpi-value num ${small ? "text-[20px]" : "text-[24px] md:text-[28px]"} truncate`}
+        className={`mt-3 kpi-value num ${small ? "text-[16px] sm:text-[20px]" : "text-[18px] sm:text-[22px] md:text-[28px]"} break-words leading-tight`}
         title={typeof value === "string" ? value : undefined}
         data-testid={`${testId}-value`}
       >
