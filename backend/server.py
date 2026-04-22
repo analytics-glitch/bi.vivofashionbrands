@@ -553,6 +553,262 @@ async def data_freshness():
     }
 
 
+
+# -------------------- Sales projection --------------------
+@api_router.get("/analytics/sales-projection")
+async def analytics_sales_projection(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Project total sales for the selected window based on current run-rate.
+    Uses daily run-rate × total days in the window."""
+    import datetime as _dt
+    try:
+        df = _dt.date.fromisoformat(date_from)
+        dt = _dt.date.fromisoformat(date_to)
+    except Exception:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    total_days = (dt - df).days + 1
+    if total_days <= 0:
+        return {"projected_sales": 0, "actual_sales": 0, "days_elapsed": 0, "total_days": 0, "daily_run_rate": 0}
+
+    today = _dt.date.today()
+    end_observed = min(dt, today)
+    days_elapsed = max(0, (end_observed - df).days + 1)
+    if days_elapsed <= 0:
+        return {"projected_sales": 0, "actual_sales": 0, "days_elapsed": 0, "total_days": total_days, "daily_run_rate": 0}
+
+    kpis = await get_kpis(
+        date_from=df.isoformat(), date_to=end_observed.isoformat(),
+        country=country, channel=channel,
+    )
+    actual = (kpis or {}).get("total_sales") or 0
+    daily_run_rate = actual / days_elapsed if days_elapsed else 0
+    projected = daily_run_rate * total_days
+    return {
+        "actual_sales": actual,
+        "days_elapsed": days_elapsed,
+        "total_days": total_days,
+        "daily_run_rate": daily_run_rate,
+        "projected_sales": projected,
+        "completion_pct": (days_elapsed / total_days * 100) if total_days else 0,
+    }
+
+
+# -------------------- Inter-Branch Transfer (IBT) suggestions --------------------
+WAREHOUSE_NAMES = {
+    "Warehouse Finished Goods", "Warehouse",
+    "Vivo Warehouse", "Shop Zetu Warehouse",
+}
+
+
+@api_router.get("/analytics/ibt-suggestions")
+async def analytics_ibt_suggestions(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    min_move: int = 2,
+    limit: int = 100,
+):
+    """Inter-Branch Transfer recommendations.
+
+    Algorithm (simplified, practical):
+      1. Fetch full inventory (all stores).
+      2. For each physical store (excluding warehouses), fetch top-skus for
+         the selected window.
+      3. For every style that appears in at least TWO stores' inventory:
+          • Compute velocity per store = (units sold in window / days).
+          • If store A has stock ≥ min_move AND velocity ≤ 20% of group-avg,
+            AND store B has velocity ≥ 150% of group-avg AND stock < 5,
+            suggest moving min(A.stock - buffer, B.gap_to_cover) units.
+      4. Sort by estimated uplift desc, return top N.
+    """
+    import datetime as _dt
+    if not date_from or not date_to:
+        dt = _dt.date.today()
+        df = dt - _dt.timedelta(days=28)
+        date_from, date_to = df.isoformat(), dt.isoformat()
+
+    try:
+        total_days = max(1, (_dt.date.fromisoformat(date_to) - _dt.date.fromisoformat(date_from)).days + 1)
+    except Exception:
+        total_days = 28
+
+    # 1) All inventory (cached 60s)
+    inv = await fetch_all_inventory(country=country)
+    if not inv:
+        return []
+
+    # physical stores only
+    all_locations = sorted({
+        r.get("location_name") for r in inv
+        if r.get("location_name") and r.get("location_name") not in WAREHOUSE_NAMES
+    })
+
+    # 2) Sales per store (top-skus per channel)
+    async def _per_store_top(ch: str):
+        try:
+            rows = await _safe_fetch("/top-skus", {
+                "date_from": date_from, "date_to": date_to,
+                "channel": ch, "limit": 200,
+            })
+            return ch, rows or []
+        except Exception:
+            return ch, []
+
+    store_sales_results = await asyncio.gather(*[_per_store_top(ch) for ch in all_locations])
+
+    # Build a map: (style_name, store) -> units_sold, avg_price
+    sales_map: Dict[tuple, Dict[str, float]] = {}
+    for store, rows in store_sales_results:
+        for r in rows:
+            style = r.get("style_name")
+            if not style:
+                continue
+            sales_map[(style, store)] = {
+                "units_sold": r.get("units_sold") or 0,
+                "avg_price": r.get("avg_price") or 0,
+            }
+
+    # Build per-style -> per-store stock (from inventory at style level)
+    stock_map: Dict[tuple, Dict[str, Any]] = {}
+    for r in inv:
+        style = r.get("style_name") or r.get("product_name")
+        loc = r.get("location_name")
+        if not style or not loc or loc in WAREHOUSE_NAMES:
+            continue
+        key = (style, loc)
+        if key not in stock_map:
+            stock_map[key] = {
+                "available": 0, "brand": r.get("brand"),
+                "product_type": r.get("product_type"),
+            }
+        stock_map[key]["available"] += float(r.get("available") or 0)
+
+    # Index by style
+    style_locs: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for (style, loc), v in stock_map.items():
+        style_locs[style][loc] = {
+            "available": v["available"],
+            "brand": v["brand"],
+            "product_type": v["product_type"],
+            "units_sold": (sales_map.get((style, loc)) or {}).get("units_sold", 0),
+            "avg_price": (sales_map.get((style, loc)) or {}).get("avg_price", 0),
+        }
+
+    suggestions: List[Dict[str, Any]] = []
+    for style, per_store in style_locs.items():
+        if len(per_store) < 2:
+            continue
+        total_units = sum(s["units_sold"] for s in per_store.values())
+        avg_units = total_units / len(per_store)
+        if avg_units <= 0:
+            continue
+
+        # Low-velocity candidates (FROM)
+        lows = [(loc, s) for loc, s in per_store.items()
+                if s["available"] >= min_move and s["units_sold"] <= avg_units * 0.2]
+        # High-demand candidates (TO)
+        highs = [(loc, s) for loc, s in per_store.items()
+                 if s["units_sold"] >= avg_units * 1.5 and s["available"] < 5]
+
+        for from_loc, from_s in lows:
+            for to_loc, to_s in highs:
+                if from_loc == to_loc:
+                    continue
+                # Estimate target cover: ~2 weeks at current velocity.
+                daily = to_s["units_sold"] / total_days
+                target = max(min_move, int(daily * 14))
+                gap = max(0, target - int(to_s["available"]))
+                movable = int(min(from_s["available"] - 2, gap))
+                if movable < min_move:
+                    continue
+                avg_price = to_s["avg_price"] or from_s["avg_price"] or 0
+                uplift = movable * avg_price
+                suggestions.append({
+                    "style_name": style,
+                    "brand": from_s["brand"],
+                    "subcategory": from_s["product_type"],
+                    "from_store": from_loc,
+                    "to_store": to_loc,
+                    "from_available": int(from_s["available"]),
+                    "from_units_sold": int(from_s["units_sold"]),
+                    "to_available": int(to_s["available"]),
+                    "to_units_sold": int(to_s["units_sold"]),
+                    "units_to_move": movable,
+                    "estimated_uplift": round(uplift),
+                    "avg_price": avg_price,
+                    "reason": (
+                        f"Low sell-through at {from_loc} "
+                        f"({int(from_s['units_sold'])} units sold · {int(from_s['available'])} in stock) · "
+                        f"strong demand at {to_loc} "
+                        f"({int(to_s['units_sold'])} sold · {int(to_s['available'])} in stock)"
+                    ),
+                })
+
+    suggestions.sort(key=lambda x: x["estimated_uplift"], reverse=True)
+    return suggestions[: int(limit)]
+
+
+# -------------------- Customer cross-shop (which stores share customers) --------------------
+@api_router.get("/analytics/customer-crosswalk")
+async def analytics_customer_crosswalk(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    top: int = 15,
+):
+    """Rough approximation of store cross-shop. Upstream does not expose
+    per-customer purchase location, so we approximate by overlap in each
+    store's top-20 customer list.
+
+    Returns: [{store_a, store_b, shared_customers, pct_overlap}]
+    """
+    rows = await _safe_fetch("/customers-by-location", {
+        "date_from": date_from, "date_to": date_to,
+    })
+    if not rows:
+        return []
+
+    stores = [r.get("pos_location") for r in rows if r.get("pos_location")]
+    stores = [s for s in stores if s and s not in WAREHOUSE_NAMES][:20]
+
+    async def _top_for(store: str):
+        try:
+            data = await _safe_fetch("/top-customers", {
+                "date_from": date_from, "date_to": date_to,
+                "channel": store, "limit": 50,
+            })
+            ids = {c.get("customer_id") for c in (data or []) if c.get("customer_id")}
+            return store, ids
+        except Exception:
+            return store, set()
+
+    results = await asyncio.gather(*[_top_for(s) for s in stores])
+    by_store: Dict[str, set] = {s: ids for s, ids in results}
+
+    out: List[Dict[str, Any]] = []
+    names = list(by_store.keys())
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            sa, sb = by_store[a], by_store[b]
+            if not sa or not sb:
+                continue
+            shared = sa & sb
+            if not shared:
+                continue
+            denom = min(len(sa), len(sb)) or 1
+            out.append({
+                "store_a": a, "store_b": b,
+                "shared_customers": len(shared),
+                "pct_overlap": round(len(shared) / denom * 100, 2),
+            })
+    out.sort(key=lambda x: x["shared_customers"], reverse=True)
+    return out[: int(top)]
+
+
+@api_router.get("/footfall")
 @api_router.get("/footfall")
 async def get_footfall(
     date_from: Optional[str] = None,

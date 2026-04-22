@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   ClockClockwise,
   ArrowsClockwise,
+  Truck,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -27,6 +28,7 @@ const tabs = [
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
+  { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
 ];

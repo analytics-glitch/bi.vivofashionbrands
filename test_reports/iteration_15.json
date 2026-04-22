@@ -1,0 +1,70 @@
+{
+  "summary": "Iteration 15 (IBT + Customers rewrite + 3 new analytics endpoints). Backend: all 5 new pytest cases passed (sales-projection, ibt-suggestions with warehouse exclusion, customer-crosswalk, churn sanitisation). Frontend: /customers renders all 6 KPI testids (kpi-total/new/returning/repeat/avg-spend/churn), sales-projection card, customer-crosswalk section, top-20 table with City column — all verified. Compare mode 'vs LM' produces delta pills on Total/New/Returning as required. /ibt renders h1, 4 KPI cards (281 moves, 1,528 units, KES 7.01M uplift, 27 stores), ibt-table with 50 rows, search & brand filter. Sidebar IBT tab with Truck icon visually present. Two real issues: (a) IBT first cold-load sometimes exceeds axios 60 s timeout (endpoint itself fans out 30+ parallel upstream calls → 60-90s); (b) Churn Rate still displays ~95-99% because upstream churned count is all-time cumulative while period-active denominator is small — sanitiser keeps it ≤100 but value is still not meaningful.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/customers", "issue": "churn_rate stays pinned ~95-99% because upstream 'churned_customers' is all-time cumulative while (active+churned) uses period-active. Sanitiser caps at 100 but KPI is still misleading. Consider computing churn from a consistent period-aligned dataset or labelling it 'cumulative churn'."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "IBT page axios timeout", "issue": "Shared api client in /app/frontend/src/lib/api.js uses timeout:60000. IBT endpoint first-cold call can take 60-90s (per review note). UI shows 'timeout of 60000ms exceeded' on first load if cache is cold. Fix: raise per-request timeout on IBT call (e.g. api.get('/analytics/ibt-suggestions', { timeout: 180000 })) OR add retry, OR pre-warm cache on app mount.", "selector": "[data-testid=ibt-page] ErrorBox", "priority": "HIGH"},
+      {"component": "Recharts ResponsiveContainer warnings", "issue": "Console repeatedly prints 'The width(-1) and height(-1) of chart should be greater than 0' from ResponsiveContainer (customer-frequency-chart) — minor; add explicit minWidth/aspect.", "selector": "[data-testid=customer-frequency-chart]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_results_detail": {
+    "backend_pytest": "5/5 passed in 59.37s (/app/backend/tests/test_iteration_15_ibt.py)",
+    "sales_projection": "200 OK, 30-day window returns completion_pct 70%, daily_run_rate & projected math consistent",
+    "ibt_suggestions": "200 OK, 5 suggestions returned; all from_store/to_store in physical stores only (no warehouses); units_to_move≥1",
+    "customer_crosswalk": "200 OK, 5 pairs with pct_overlap ∈ [0,100]",
+    "customers_churn_sanitised": "200 OK, churn_rate=95.18% (Last Month) / 99.94% (Today) — within 0-100 range per sanitiser",
+    "customers_page_ui": {
+      "testids_present": ["customers-page","customer-search-input","kpi-total","kpi-new","kpi-returning","kpi-repeat","kpi-avg-spend","kpi-churn","sales-projection","customer-crosswalk-section","top-customers-section","customer-frequency-chart","customers-by-location-section","churned-customers-section","new-customer-products-section"],
+      "compare_mode_vs_lm": "Delta pills ▲/▼ visible on kpi-total (▼7.0%), kpi-new (▼2.3%), kpi-returning (▼4.4%)",
+      "sales_projection_text": "Day 31 of 31 (100%) · Actual KES 94,178,829 · Daily RR KES 3,038,027 · Projected KES 94,178,829",
+      "top_customers_headers": ["#","Name","Phone","City","Orders","Units","Total Sales","Avg Basket","Last Purchase"],
+      "crosswalk_rows_last_month": 12
+    },
+    "ibt_page_ui": {
+      "h1": "Inter-Branch Transfer Recommendations",
+      "kpi_testids": ["ibt-kpi-moves","ibt-kpi-units","ibt-kpi-uplift","ibt-kpi-stores"],
+      "kpi_values_last_month": "281 moves · 1,528 units · KES 7,010,273 uplift · 27 stores",
+      "table_rows": 50,
+      "search_and_brand_filter_present": true,
+      "cold_load_timeout_observed_on_today_range": true
+    },
+    "sidebar": {
+      "ibt_tab_visible_in_nav": true,
+      "truck_icon_present": true,
+      "note": "query_selector('a[href=/ibt]') returned false due to NavLink render timing in test snapshot but IBT tab is visually confirmed in screenshots and nav array (Sidebar.jsx line 31)"
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_15_ibt.py",
+    "/app/test_reports/pytest/pytest_results_v11.xml"
+  ],
+  "action_items": [
+    "Raise axios timeout for IBT page request to >=120s OR pre-warm the /analytics/ibt-suggestions cache at app mount — first-load UX currently shows 'timeout of 60000ms exceeded'.",
+    "Re-evaluate churn_rate formula: upstream 'churned' appears to be all-time cumulative; churn_rate stays 95-100% for any short window. Either re-compute churn from period-aligned data or rename the KPI to 'Cumulative Churn'.",
+    "(Minor) Fix recharts ResponsiveContainer width/height warning on customer-frequency-chart by adding explicit minWidth/minHeight or aspect ratio."
+  ],
+  "critical_code_review_comments": [
+    "IBT endpoint (server.py ~line 607) fans out up to 30 parallel top-skus calls with limit=200 — measured ~35s in pytest but easily 60-90s in worst case. Frontend's 60s timeout is now the bottleneck. Either enable server-side caching (already has fetch_all_inventory cached 60s — extend similar cache for top-skus-per-store), or bump frontend timeout for this one call.",
+    "churn_rate sanitisation at server.py ~line 412 clamps output ≤100 but does not fix the underlying mismatch (all-time churned / period-active). Confusing for stakeholders.",
+    "customer-crosswalk (server.py ~line 756) pulls top-50 customers per store; that is a reasonable proxy but 'pct_overlap' uses min(|A|,|B|) as denominator — if one store has only 3 customers and all overlap, overlap shows 100% which is cosmetically misleading. Consider min_store_size filter.",
+    "IBT.jsx passes limit=300 to backend (line 25) — backend default limit is 100; verify backend accepts limit>100 (it does via int(limit) but no upper bound — consider capping to 500 to avoid memory blow-ups).",
+    "Sidebar.jsx nav array hard-codes tab order; tabs array now has 9 items — at <=1280px viewports some items may overflow; verify responsive behaviour."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_15_ibt.py (new, 5 tests)"
+  ],
+  "success_rate": {"backend": "100% (5/5 pytest passed)", "frontend": "~85% (all review-requested testids present and compare-mode delta pills work; 1 HIGH bug: IBT axios timeout on cold load; 1 minor chart warning)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "IBT endpoint is slow on cold-load (60-90s); always use a wider date window (Last Month works) so backend top-skus per-store is warm, OR bump request timeout in IBT.jsx. Customers churn_rate is clamped ≤100 server-side now (no more 165,836%) but still shows 95-99% because it's cumulative-vs-period mismatch. Backend pytest suite at /app/backend/tests/test_iteration_15_ibt.py covers the 3 new analytics endpoints + churn sanity.",
+  "rca_of_the_issue": "1) IBT cold-load timeout: shared axios client has timeout:60000 but endpoint iterates top-skus per physical store (~30) in parallel; upstream throttling makes this 60-90s. Fix at the per-call level, not globally. 2) Churn KPI value: backend clamps via churned/(active+churned)*100; if 'churned' field from upstream is cumulative all-time while 'active' is period-bound, ratio is structurally biased towards 100%. Needs upstream dataset alignment, not a client-side clamp."
+}
