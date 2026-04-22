@@ -525,12 +525,21 @@ const Overview = () => {
               subtitle={`Total Sales per subcategory (top 15) · Total across top 15: ${fmtKES(subcatTopTotal)}`}
             />
             {subcatTop.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 360 }}>
+              <div style={{ width: "100%", height: 400 }}>
                 <ResponsiveContainer>
-                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 10, right: 140, top: 4 }}>
+                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 4, right: 100, top: 4 }}>
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 10 }} />
+                    <YAxis
+                      type="category"
+                      dataKey="subcategory"
+                      width={typeof window !== "undefined" && window.innerWidth < 640 ? 100 : 170}
+                      tick={{ fontSize: typeof window !== "undefined" && window.innerWidth < 640 ? 9 : 10 }}
+                      tickFormatter={(v) => {
+                        const maxLen = typeof window !== "undefined" && window.innerWidth < 640 ? 14 : 30;
+                        return v && v.length > maxLen ? v.slice(0, maxLen - 1) + "…" : v;
+                      }}
+                    />
                     <Tooltip content={
                       <ChartTooltip formatters={{
                         total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
@@ -540,7 +549,7 @@ const Overview = () => {
                       <LabelList
                         dataKey="subcat_label"
                         position="right"
-                        style={{ fontSize: 10, fill: "#4b5563" }}
+                        style={{ fontSize: typeof window !== "undefined" && window.innerWidth < 640 ? 9 : 10, fill: "#4b5563" }}
                       />
                     </Bar>
                   </BarChart>

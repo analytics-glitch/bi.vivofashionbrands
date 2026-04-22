@@ -86,34 +86,34 @@ const Customers = () => {
     const channel = channels.length ? channels.join(",") : undefined;
     const dateP = { date_from: dateFrom, date_to: dateTo, country, channel };
 
-    const calls = [
-      api.get("/customers", { params: dateP }).catch(() => ({ data: null })),
-      api.get("/top-customers", { params: { ...dateP, limit: 20 } }).catch(() => ({ data: [] })),
-      api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] })),
-      api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] })),
-      api.get("/churned-customers", { params: { days: 90, limit: 20 } }).catch(() => ({ data: [] })),
-      api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] })),
-      api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] })),
-      api.get("/analytics/sales-projection", { params: dateP }).catch(() => ({ data: null })),
-      prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null }),
-    ];
-
-    Promise.all(calls)
-      .then(([c, t, f, bl, ch, np, cw, sp, cPrev]) => {
+    // Load the primary /customers payload FIRST so KPIs render immediately,
+    // then fan out the rest of the slower calls without blocking each other.
+    api.get("/customers", { params: dateP })
+      .then((c) => {
         if (cancelled) return;
         setCust(c.data);
-        setTop(t.data || []);
-        setFreq(f.data || []);
-        setByLoc(bl.data || []);
-        setChurned(ch.data || []);
-        setNewProducts(np.data || []);
-        setCrosswalk(cw.data || []);
-        setProjection(sp.data);
-        setCustPrev(cPrev.data);
+        setLoading(false);
         touchLastUpdated();
       })
-      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message));
+
+    const rest = [
+      ["top", api.get("/top-customers", { params: { ...dateP, limit: 20 } }).catch(() => ({ data: [] }))],
+      ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] }))],
+      ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
+      ["churned", api.get("/churned-customers", { params: { days: 90, limit: 20 } }).catch(() => ({ data: [] }))],
+      ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
+      ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
+      ["proj", api.get("/analytics/sales-projection", { params: dateP }).catch(() => ({ data: null }))],
+      ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
+    ];
+    const setters = {
+      top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
+      np: setNewProducts, cw: setCrosswalk, proj: setProjection, prev: setCustPrev,
+    };
+    for (const [key, p] of rest) {
+      p.then((r) => { if (!cancelled) setters[key](r.data || (key === "proj" || key === "prev" ? null : [])); });
+    }
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
@@ -280,7 +280,7 @@ const Customers = () => {
           )}
 
           {/* ---- KPIs with vs LM / vs LY deltas ---- */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <div className="card-accent p-3.5 sm:p-5" data-testid="kpi-total">
               <div className="flex items-center gap-2"><Users size={16} /><div className="eyebrow text-white/80">Total Customers</div></div>
               <div className="mt-2 text-[22px] sm:text-[28px] font-extrabold num leading-tight">{fmtNum(cust.total_customers)}</div>
@@ -291,15 +291,67 @@ const Customers = () => {
               <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">{fmtNum(cust.new_customers)}</div>
               {compareLbl && <div className="mt-1 flex items-center gap-1"><Delta curr={cust.new_customers} prev={custPrev?.new_customers} /><span className="text-[10px] text-muted">{compareLbl}</span></div>}
             </div>
-            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-returning">
-              <div className="flex items-center gap-2"><ArrowsCounterClockwise size={16} className="text-brand" /><div className="eyebrow">Returning</div></div>
-              <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">{fmtNum(cust.returning_customers)}</div>
+            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-returning-repeat">
+              <div className="flex items-center gap-2"><ArrowsCounterClockwise size={16} className="text-brand" /><div className="eyebrow">Returning / Repeat</div></div>
+              <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                {fmtNum(cust.returning_customers)} <span className="text-muted text-[13px] font-normal">/ {fmtNum(cust.repeat_customers)}</span>
+              </div>
+              <div className="text-[10.5px] text-muted mt-0.5">returning / ≥2 orders</div>
               {compareLbl && <div className="mt-1 flex items-center gap-1"><Delta curr={cust.returning_customers} prev={custPrev?.returning_customers} /><span className="text-[10px] text-muted">{compareLbl}</span></div>}
             </div>
-            <KPICard testId="kpi-repeat" label="Repeat" sub="≥2 orders" value={fmtNum(cust.repeat_customers)} showDelta={false} />
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
             <KPICard testId="kpi-churn" label="Churn Rate" sub={cust.churned_last_90d > 0 ? "last 90 days" : "all-time cumulative"} value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
           </div>
+
+          {/* ---- Period comparison table ---- */}
+          {compareLbl && custPrev && (
+            <div className="card-white p-5" data-testid="period-comparison">
+              <SectionTitle
+                title={`Period comparison · current ${compareLbl}`}
+                subtitle="Raw customer counts for the current window next to the comparison window"
+              />
+              <div className="overflow-x-auto">
+                <table className="w-full data">
+                  <thead>
+                    <tr>
+                      <th>Metric</th>
+                      <th className="text-right">Current</th>
+                      <th className="text-right">Previous</th>
+                      <th className="text-right">Δ abs</th>
+                      <th className="text-right">Δ %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      ["Total Customers", cust.total_customers, custPrev.total_customers],
+                      ["New Customers", cust.new_customers, custPrev.new_customers],
+                      ["Returning Customers", cust.returning_customers, custPrev.returning_customers],
+                      ["Repeat Customers (≥2 orders)", cust.repeat_customers, custPrev.repeat_customers],
+                      ["Avg Spend per Customer (KES)", cust.avg_customer_spend, custPrev.avg_customer_spend, "kes"],
+                      ["Avg Orders per Customer", cust.avg_orders_per_customer, custPrev.avg_orders_per_customer, "dec"],
+                    ].map(([label, c, p, fmt]) => {
+                      const diff = (c || 0) - (p || 0);
+                      const pct = p ? (diff / p) * 100 : 0;
+                      const fmtV = fmt === "kes" ? fmtKES : fmt === "dec" ? (v) => (v || 0).toFixed(2) : fmtNum;
+                      return (
+                        <tr key={label}>
+                          <td className="font-medium">{label}</td>
+                          <td className="text-right num font-semibold">{fmtV(c)}</td>
+                          <td className="text-right num text-muted">{fmtV(p)}</td>
+                          <td className={`text-right num font-semibold ${diff >= 0 ? "text-brand" : "text-danger"}`}>
+                            {diff >= 0 ? "+" : ""}{fmt === "kes" ? fmtKES(diff) : fmt === "dec" ? diff.toFixed(2) : fmtNum(diff)}
+                          </td>
+                          <td className={`text-right num font-semibold ${diff >= 0 ? "text-brand" : "text-danger"}`}>
+                            {diff >= 0 ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* ---- Projection card ---- */}
           {projection && projection.total_days > 0 && (
