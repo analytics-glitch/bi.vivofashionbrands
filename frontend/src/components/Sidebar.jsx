@@ -123,7 +123,7 @@ const TopNav = () => {
   }, []);
   return (
     <nav
-      className="sticky-nav relative px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print"
+      className="sticky-nav px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print"
       data-testid="top-nav"
     >
       <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
@@ -192,7 +192,7 @@ const TopNav = () => {
 
       {mobileOpen && (
         <div
-          className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
+          className="lg:hidden fixed left-0 right-0 top-[48px] sm:top-[56px] bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
           data-testid="mobile-menu"
         >
           {tabs.map((t) => (
