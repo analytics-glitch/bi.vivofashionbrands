@@ -318,17 +318,23 @@ async def get_daily_trend(
 @api_router.get("/inventory")
 async def get_inventory(
     location: Optional[str] = None,
+    locations: Optional[str] = None,
     product: Optional[str] = None,
     country: Optional[str] = None,
     refresh: Optional[bool] = False,
 ):
     """Fans out per-location because upstream /inventory is hard-capped at
     2000 rows. When `location` is given, still go through the helper so
-    that Warehouse Finished Goods gets chunked & country is lowercased."""
+    that Warehouse Finished Goods gets chunked & country is lowercased.
+    `locations` (CSV) scopes the fan-out to a subset of POS locations."""
     if refresh:
         _inv_cache["ts"] = 0
         _inv_cache["key"] = None
-    return await fetch_all_inventory(country=country, location=location, product=product)
+    locs = _split_csv(locations)
+    return await fetch_all_inventory(
+        country=country, location=location, product=product,
+        locations=locs if locs else None,
+    )
 
 
 @api_router.get("/stock-to-sales")
@@ -336,23 +342,29 @@ async def get_stock_to_sales(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     country: Optional[str] = None,
+    locations: Optional[str] = None,
 ):
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     if len(cs) <= 1:
-        return await fetch("/stock-to-sales", {**base, "country": cs[0] if cs else None})
-    tasks = [fetch("/stock-to-sales", {**base, "country": c}) for c in cs]
-    results = await asyncio.gather(*tasks)
-    out = []
-    seen = set()
-    for g in results:
-        for r in g:
-            k = (r.get("location"), r.get("country"))
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(r)
-    return out
+        rows = await fetch("/stock-to-sales", {**base, "country": cs[0] if cs else None})
+    else:
+        tasks = [fetch("/stock-to-sales", {**base, "country": c}) for c in cs]
+        results = await asyncio.gather(*tasks)
+        rows = []
+        seen = set()
+        for g in results:
+            for r in g:
+                k = (r.get("location"), r.get("country"))
+                if k in seen:
+                    continue
+                seen.add(k)
+                rows.append(r)
+    locs = _split_csv(locations)
+    if locs:
+        loc_set = {x.strip() for x in locs}
+        rows = [r for r in rows if r.get("location") in loc_set]
+    return rows
 
 
 @api_router.get("/customers")
@@ -568,11 +580,16 @@ async def fetch_all_inventory(
     country: Optional[str] = None,
     location: Optional[str] = None,
     product: Optional[str] = None,
+    locations: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Upstream /inventory hard-caps at 2000 rows. To get the full picture
     across all 51 locations we fan-out per-location and merge. For the
     Warehouse Finished Goods location (8k+ SKUs) we additionally chunk by
-    product-prefix letter and dedupe. Cached 60s."""
+    product-prefix letter and dedupe. Cached 60s.
+
+    When `locations` (list) is given we fan-out only across those. `location`
+    (singular) is kept for backward compat and takes precedence when set.
+    """
     if location:
         if location == "Warehouse Finished Goods":
             rows = await _fetch_warehouse_chunked(country=country, product=product)
@@ -588,6 +605,31 @@ async def fetch_all_inventory(
             and not is_excluded_brand(r.get("brand"))
             and not is_excluded_product(r)
         ]
+
+    # Scoped fan-out across a subset of locations.
+    if locations:
+        async def _one_loc(ch: str):
+            try:
+                if ch == "Warehouse Finished Goods":
+                    rows = await _fetch_warehouse_chunked(country=country, product=product)
+                else:
+                    rows = await fetch("/inventory", {
+                        "country": (country or "").lower() or None,
+                        "location": ch, "product": product,
+                    }) or []
+                return [
+                    r for r in rows
+                    if (r.get("product_name") or r.get("sku"))
+                    and not is_excluded_brand(r.get("brand"))
+                    and not is_excluded_product(r)
+                ]
+            except HTTPException:
+                return []
+        results = await asyncio.gather(*[_one_loc(ch) for ch in locations])
+        merged: List[Dict[str, Any]] = []
+        for r in results:
+            merged.extend(r or [])
+        return merged
 
     cache_key = f"{country or ''}|{product or ''}"
     if _inv_cache.get("key") == cache_key and (time.time() - _inv_cache.get("ts", 0)) < _INV_TTL:
@@ -710,20 +752,43 @@ async def analytics_sts_by_subcat(
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    locations: Optional[str] = None,
 ):
     """Derived view of /subcategory-stock-sales with a variance column
-    (% of sales − % of stock). One clean row per subcategory."""
+    (% of sales − % of stock). One clean row per subcategory.
+
+    When `locations` (CSV) is given, current_stock is recomputed locally
+    from the location-scoped inventory so the stock side matches the
+    POS selection (upstream's `channel` param only filters the sales side)."""
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=channel,
     )
+    locs = _split_csv(locations)
+    stock_by_subcat: Optional[Dict[str, float]] = None
+    if locs:
+        inv = await fetch_all_inventory(country=country, locations=locs)
+        stock_by_subcat = defaultdict(float)
+        for r in inv or []:
+            pt = r.get("product_type")
+            if not pt:
+                continue
+            stock_by_subcat[pt] += float(r.get("available") or 0)
+        total_stock_local = sum(stock_by_subcat.values()) or 0
+
     out = []
     for r in rows or []:
         pct_sold = r.get("pct_of_total_sold") or 0
-        pct_stock = r.get("pct_of_total_stock") or 0
+        if stock_by_subcat is not None:
+            cs = stock_by_subcat.get(r.get("subcategory"), 0)
+            pct_stock = (cs / total_stock_local * 100) if total_stock_local else 0
+            current_stock = cs
+        else:
+            pct_stock = r.get("pct_of_total_stock") or 0
+            current_stock = r.get("current_stock") or 0
         out.append({
             "subcategory": r.get("subcategory"),
             "units_sold": r.get("units_sold") or 0,
-            "current_stock": r.get("current_stock") or 0,
+            "current_stock": current_stock,
             "pct_of_total_sold": pct_sold,
             "pct_of_total_stock": pct_stock,
             "variance": pct_sold - pct_stock,
@@ -740,14 +805,20 @@ async def analytics_sts_by_category(
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    locations: Optional[str] = None,
 ):
     """Roll subcategory-stock-sales up to CATEGORY level using subcategory
     name prefixes. "Category" is approximated as the first word of the
     subcategory (e.g. "Knee Length Dresses" → "Dresses"). Falls back to
-    the full subcategory if no mapping exists."""
+    the full subcategory if no mapping exists. When `locations` is given,
+    stock is recomputed from location-scoped inventory."""
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=channel,
     )
+    locs = _split_csv(locations)
+    inv_rows: List[Dict[str, Any]] = []
+    if locs:
+        inv_rows = await fetch_all_inventory(country=country, locations=locs) or []
 
     def category_of(sub: str) -> str:
         if not sub:
@@ -766,6 +837,20 @@ async def analytics_sts_by_category(
         if "accessory" in s or "bag" in s or "scarf" in s or "jewel" in s:
             return "Accessories"
         return sub
+
+    # If locations filter is provided, rebuild current_stock per row
+    # from local inventory (upstream's channel param only filters sales).
+    if locs:
+        stock_by_subcat: Dict[str, float] = defaultdict(float)
+        for r in inv_rows:
+            pt = r.get("product_type")
+            if not pt:
+                continue
+            stock_by_subcat[pt] += float(r.get("available") or 0)
+        rows = [
+            {**r, "current_stock": stock_by_subcat.get(r.get("subcategory"), 0)}
+            for r in rows
+        ]
 
     total_sold = sum(r.get("units_sold") or 0 for r in rows)
     total_stock = sum(r.get("current_stock") or 0 for r in rows)
@@ -801,16 +886,19 @@ async def analytics_sts_by_category(
 async def analytics_weeks_of_cover(
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    locations: Optional[str] = None,
 ):
     """Weeks of Cover per style:
        weeks = current_stock / (units_sold_last_28_days / 4)
-    SOR data gives 28-day sell rate when we query the last 28 days."""
+    SOR data gives 28-day sell rate when we query the last 28 days.
+    When `locations` is provided, current_stock is recomputed from
+    location-scoped inventory."""
     from datetime import datetime, timedelta
     dt = datetime.utcnow().date()
     df = dt - timedelta(days=28)
 
     cs = _split_csv(country)
-    chs = _split_csv(channel)
+    chs = _split_csv(channel) or _split_csv(locations)
     base = {"date_from": df.isoformat(), "date_to": dt.isoformat()}
 
     if len(cs) <= 1 and len(chs) <= 1:
@@ -836,9 +924,25 @@ async def analytics_weeks_of_cover(
         rows = list(merged.values())
 
     out = []
+    # If locations is provided, recompute current_stock per style from
+    # location-scoped inventory.
+    local_stock_by_style: Optional[Dict[str, float]] = None
+    locs = _split_csv(locations)
+    if locs:
+        inv = await fetch_all_inventory(country=country, locations=locs) or []
+        local_stock_by_style = defaultdict(float)
+        for r in inv:
+            s = r.get("style_name") or r.get("product_name")
+            if s:
+                local_stock_by_style[s] += float(r.get("available") or 0)
+
     for r in rows:
         units = r.get("units_sold") or 0
-        stock = r.get("current_stock") or 0
+        style = r.get("style_name")
+        if local_stock_by_style is not None:
+            stock = local_stock_by_style.get(style, 0)
+        else:
+            stock = r.get("current_stock") or 0
         weekly = units / 4 if units else 0
         weeks = (stock / weekly) if weekly else None
         out.append({
@@ -862,13 +966,18 @@ async def analytics_weeks_of_cover(
 async def analytics_inventory_summary(
     country: Optional[str] = None,
     location: Optional[str] = None,
+    locations: Optional[str] = None,
     product: Optional[str] = None,
     refresh: Optional[bool] = False,
 ):
     if refresh:
         _inv_cache["ts"] = 0
         _inv_cache["key"] = None
-    inv = await fetch_all_inventory(country=country, location=location, product=product)
+    locs = _split_csv(locations)
+    inv = await fetch_all_inventory(
+        country=country, location=location, product=product,
+        locations=locs if locs else None,
+    )
 
     by_country: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"country": "", "units": 0.0, "skus": 0, "locations": set()})
     by_location: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"location": "", "country": "", "units": 0.0, "skus": 0, "is_warehouse": False})

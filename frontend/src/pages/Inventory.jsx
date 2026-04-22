@@ -47,24 +47,22 @@ const Inventory = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const country = countries.length === 1 ? countries[0].toLowerCase() : undefined;
-    const location = channels.length === 1 ? channels[0] : undefined;
-    const params = { country, location, product: search || undefined };
+    const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
+    const locationsCsv = channels.length ? channels.join(",") : undefined;
+    const invParams = { country: countryCsv, locations: locationsCsv, product: search || undefined };
     // On manual refresh, bust the 60s backend cache.
-    const refreshParams = dataVersion > 0 ? { ...params, refresh: true } : params;
-    const dateParams = { date_from: dateFrom, date_to: dateTo,
-      country: countries.length ? countries.join(",") : undefined,
-      channel: channels.length ? channels.join(",") : undefined };
+    const refreshParams = dataVersion > 0 ? { ...invParams, refresh: true } : invParams;
+    const dateParams = {
+      date_from: dateFrom, date_to: dateTo,
+      country: countryCsv, locations: locationsCsv,
+    };
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
       api.get("/inventory", { params: refreshParams }),
-      api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length ? countries.join(",") : undefined } }),
+      api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, locations: locationsCsv } }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
-      api.get("/analytics/weeks-of-cover", { params: {
-        country: countries.length ? countries.join(",") : undefined,
-        channel: channels.length ? channels.join(",") : undefined,
-      } }),
+      api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv } }),
     ])
       .then(([s, i, st, sc, cat, woc]) => {
         if (cancelled) return;
