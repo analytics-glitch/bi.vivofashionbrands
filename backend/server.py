@@ -380,30 +380,37 @@ async def get_customers(
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
-        return await fetch("/customers", {
+        data = await fetch("/customers", {
             **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
         })
-    results = await multi_fetch("/customers", base, cs, chs)
-    total = {
-        "total_customers": 0, "new_customers": 0, "repeat_customers": 0,
-        "returning_customers": 0, "churned_customers": 0,
-        "_sum_spend": 0.0, "_sum_orders": 0.0, "_n": 0,
-    }
-    for r in results:
-        for k in ("total_customers", "new_customers", "repeat_customers", "returning_customers", "churned_customers"):
-            total[k] += r.get(k) or 0
-        total["_sum_spend"] += (r.get("avg_customer_spend") or 0) * (r.get("total_customers") or 0)
-        total["_sum_orders"] += (r.get("avg_orders_per_customer") or 0) * (r.get("total_customers") or 0)
-        total["_n"] += r.get("total_customers") or 0
-    total["avg_customer_spend"] = (total["_sum_spend"] / total["_n"]) if total["_n"] else 0
-    total["avg_orders_per_customer"] = (total["_sum_orders"] / total["_n"]) if total["_n"] else 0
-    # churn_rate as ratio of churned / active-in-period (same definition upstream uses)
-    total["churn_rate"] = (
-        (total["churned_customers"] / total["total_customers"] * 100) if total["total_customers"] else 0
-    )
-    for k in ("_sum_spend", "_sum_orders", "_n"):
-        total.pop(k)
-    return total
+    else:
+        results = await multi_fetch("/customers", base, cs, chs)
+        total = {
+            "total_customers": 0, "new_customers": 0, "repeat_customers": 0,
+            "returning_customers": 0, "churned_customers": 0,
+            "_sum_spend": 0.0, "_sum_orders": 0.0, "_n": 0,
+        }
+        for r in results:
+            for k in ("total_customers", "new_customers", "repeat_customers", "returning_customers", "churned_customers"):
+                total[k] += r.get(k) or 0
+            total["_sum_spend"] += (r.get("avg_customer_spend") or 0) * (r.get("total_customers") or 0)
+            total["_sum_orders"] += (r.get("avg_orders_per_customer") or 0) * (r.get("total_customers") or 0)
+            total["_n"] += r.get("total_customers") or 0
+        total["avg_customer_spend"] = (total["_sum_spend"] / total["_n"]) if total["_n"] else 0
+        total["avg_orders_per_customer"] = (total["_sum_orders"] / total["_n"]) if total["_n"] else 0
+        for k in ("_sum_spend", "_sum_orders", "_n"):
+            total.pop(k)
+        data = total
+
+    # Sanitise churn_rate: upstream returns all-time churned count but period
+    # total_customers, so the raw ratio blows up (e.g. 165836%). Recompute as
+    # churn / (active + churn) and cap at 100% so the KPI is meaningful.
+    if data:
+        active = data.get("total_customers") or 0
+        churned = data.get("churned_customers") or 0
+        denom = active + churned
+        data["churn_rate"] = round((churned / denom * 100), 2) if denom else 0
+    return data
 
 
 @api_router.get("/customer-trend")

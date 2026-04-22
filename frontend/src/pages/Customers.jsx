@@ -249,12 +249,12 @@ const Customers = () => {
 
           {/* ---- KPI Cards ---- */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KPICard testId="cust-kpi-total" accent label="Total Customers" value={fmtNum(cust.total_customers)} icon={Users} showDelta={false} />
-            <KPICard testId="cust-kpi-new" label="New Customers" value={fmtNum(cust.new_customers)} icon={UserPlus} showDelta={false} />
-            <KPICard testId="cust-kpi-returning" label="Returning" value={fmtNum(cust.returning_customers)} icon={ArrowsCounterClockwise} showDelta={false} />
-            <KPICard testId="cust-kpi-repeat" label="Repeat" sub="≥2 orders" value={fmtNum(cust.repeat_customers)} showDelta={false} />
-            <KPICard testId="cust-kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
-            <KPICard testId="cust-kpi-churn" label="Churn Rate" value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
+            <KPICard testId="kpi-total" accent label="Total Customers" value={fmtNum(cust.total_customers)} icon={Users} showDelta={false} />
+            <KPICard testId="kpi-new" label="New Customers" value={fmtNum(cust.new_customers)} icon={UserPlus} showDelta={false} />
+            <KPICard testId="kpi-returning" label="Returning" value={fmtNum(cust.returning_customers)} icon={ArrowsCounterClockwise} showDelta={false} />
+            <KPICard testId="kpi-repeat" label="Repeat" sub="≥2 orders" value={fmtNum(cust.repeat_customers)} showDelta={false} />
+            <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
+            <KPICard testId="kpi-churn" label="Lifetime Churned" sub="Cumulative (all time)" value={fmtNum(cust.churned_customers)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
           </div>
 
           {/* ---- Frequency chart ---- */}
