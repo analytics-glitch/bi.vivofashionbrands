@@ -1,106 +1,125 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import {
-  api, fmtKES, fmtNum, fmtDec, fmtDate, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS,
-} from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import SortableTable from "@/components/SortableTable";
+import { ChartTooltip } from "@/components/ChartHelpers";
 import {
-  Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins, ShoppingCart, UserList, UserCircle,
+  Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
+  MagnifyingGlass, X, UserCircle, Receipt,
 } from "@phosphor-icons/react";
 import {
-  LineChart, Line, PieChart, Pie, Cell, BarChart, Bar,
-  XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
 } from "recharts";
 
-const DONUT_COLORS = ["#1a5c38", "#00c853", "#4b7bec"];
-const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
+const UpstreamNotReady = ({ label }) => (
+  <div className="rounded-lg border border-dashed border-border bg-panel/60 p-4 text-[12.5px] text-muted">
+    {label || "Upstream endpoint is currently unavailable — data will appear once the Vivo BI team enables it."}
+  </div>
+);
 
 const Customers = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
-  const filters = { dateFrom, dateTo, countries, channels };
+  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
 
   const [cust, setCust] = useState(null);
-  const [custPrev, setCustPrev] = useState(null);
-  const [trend, setTrend] = useState([]);
-  const [byCountry, setByCountry] = useState([]);
-  const [churn, setChurn] = useState(null);
+  const [top, setTop] = useState([]);
+  const [freq, setFreq] = useState([]);
+  const [byLoc, setByLoc] = useState([]);
+  const [churned, setChurned] = useState([]);
+  const [newProducts, setNewProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Customer search
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [customerProducts, setCustomerProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const p = buildParams(filters);
-    const prev = comparePeriod(dateFrom, dateTo, compareMode);
-
-    const cToFetch = countries.length ? countries : ALL_COUNTRIES;
-    const byCountryCalls = cToFetch.map((c) =>
-      api.get("/customers", { params: { date_from: dateFrom, date_to: dateTo, country: c } })
-        .then((r) => ({ country: c, ...r.data }))
-    );
+    const country = countries.length === 1 ? countries[0] : undefined;
+    const channel = channels.length ? channels.join(",") : undefined;
+    const dateP = { date_from: dateFrom, date_to: dateTo, country, channel };
 
     Promise.all([
-      api.get("/customers", { params: p }),
-      api.get("/customer-trend", { params: { date_from: dateFrom, date_to: dateTo, country: countries.length === 1 ? countries[0] : undefined } }),
-      prev ? api.get("/customers", { params: buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }) }) : Promise.resolve(null),
-      Promise.all(byCountryCalls),
-      api.get("/analytics/churn", { params: p }),
+      api.get("/customers", { params: dateP }),
+      api.get("/top-customers", { params: { ...dateP, limit: 20 } }),
+      api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }),
+      api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }),
+      api.get("/churned-customers", { params: { days: 90, limit: 20 } }),
+      api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }),
     ])
-      .then(([c, t, cp, bc, ch]) => {
+      .then(([c, t, f, bl, ch, np]) => {
         if (cancelled) return;
         setCust(c.data);
-        setTrend(t.data || []);
-        setCustPrev(cp?.data || null);
-        setByCountry(bc);
-        setChurn(ch?.data || null);
+        setTop(t.data || []);
+        setFreq(f.data || []);
+        setByLoc(bl.data || []);
+        setChurned(ch.data || []);
+        setNewProducts(np.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
-  const delta = (k, inv = false) =>
-    cust && custPrev ? pctDelta(cust[k], custPrev[k]) : null;
-  const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  // Debounced search
+  useEffect(() => {
+    if (!searchQ.trim()) { setSearchResults([]); return; }
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const { data } = await api.get("/customer-search", { params: { q: searchQ.trim() } });
+        setSearchResults(data || []);
+      } catch (e) {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchQ]);
 
-  // Period length in days → churn is only meaningful when selected period ≥ 90 days
-  const periodDays = useMemo(() => {
-    if (!dateFrom || !dateTo) return 0;
-    const a = new Date(dateFrom);
-    const b = new Date(dateTo);
-    return Math.max(1, Math.round((b - a) / (1000 * 60 * 60 * 24)) + 1);
-  }, [dateFrom, dateTo]);
-  const showChurn = periodDays >= 90 && churn && churn.applicable;
-  const churnedCount = showChurn ? (churn.churned_customers || 0) : 0;
-  const churnRate = showChurn ? (churn.churn_rate || 0) : 0;
-
-  const donut = useMemo(() => {
-    if (!cust) return [];
-    if (!showChurn) {
-      // < 3 months: only New vs Repeat
-      return [
-        { name: "New", value: cust.new_customers || 0 },
-        { name: "Repeat", value: (cust.repeat_customers || 0) + (cust.returning_customers || 0) },
-      ];
+  const openCustomer = async (c) => {
+    setSelectedCustomer(c);
+    setLoadingProducts(true);
+    setCustomerProducts([]);
+    try {
+      const { data } = await api.get("/customer-products", {
+        params: { customer_id: c.customer_id },
+      });
+      setCustomerProducts(data || []);
+    } catch {
+      setCustomerProducts([]);
+    } finally {
+      setLoadingProducts(false);
     }
-    return [
-      { name: "New", value: cust.new_customers || 0 },
-      { name: "Repeat", value: cust.repeat_customers || 0 },
-      { name: "Returning", value: cust.returning_customers || 0 },
-    ];
-  }, [cust, showChurn]);
+  };
+
+  const byLocWithPct = useMemo(() => {
+    const total = byLoc.reduce((s, r) => s + (r.total_customers || 0), 0) || 1;
+    return byLoc.map((r) => ({
+      ...r,
+      pct_of_total: r.pct_of_total != null ? r.pct_of_total : (r.total_customers / total) * 100,
+    }));
+  }, [byLoc]);
 
   return (
     <div className="space-y-6" data-testid="customers-page">
       <div>
         <div className="eyebrow">Dashboard · Customers</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Customers</h1>
-        <p className="text-muted text-[13px] mt-0.5">Customer health & retention analytics</p>
+        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+          Customers
+        </h1>
       </div>
 
       {loading && <Loading />}
@@ -108,123 +127,257 @@ const Customers = () => {
 
       {!loading && !error && cust && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPICard testId="cu-kpi-total" accent label="Total Customers" value={fmtNum(cust.total_customers)} icon={Users}
-              delta={delta("total_customers")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard testId="cu-kpi-new" label="New Customers" sub="First ever purchase this period" value={fmtNum(cust.new_customers)} icon={UserPlus}
-              delta={delta("new_customers")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard testId="cu-kpi-repeat" label="Repeat Customers" sub="More than one order in period" value={fmtNum(cust.repeat_customers)} icon={ArrowsCounterClockwise}
-              delta={delta("repeat_customers")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard testId="cu-kpi-returning" label="Returning Customers" sub="Bought before, one order in period" value={fmtNum(cust.returning_customers)} icon={UserCircle}
-              delta={delta("returning_customers")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-            {showChurn && (
-              <KPICard testId="cu-kpi-churn" small label="Churned Customers" sub="Bought in period, not in last 3 months" value={fmtNum(churnedCount)} icon={UserMinus}
-                higherIsBetter={false} showDelta={false} />
-            )}
-            <KPICard testId="cu-kpi-spend" small label="Avg Spend / Customer" value={fmtKES(cust.avg_customer_spend)} icon={Coins}
-              delta={delta("avg_customer_spend")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard testId="cu-kpi-opc" small label="Avg Orders / Customer" value={fmtDec(cust.avg_orders_per_customer, 2)} icon={ShoppingCart}
-              delta={delta("avg_orders_per_customer")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="card-white p-5" data-testid="customer-mix">
-              <SectionTitle title="Customer mix" subtitle="New vs Repeat vs Returning" />
-              <div style={{ width: "100%", height: 260 }}>
-                <ResponsiveContainer>
-                  <PieChart>
-                    <Pie data={donut} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={3}>
-                      {donut.map((_, i) => <Cell key={i} fill={DONUT_COLORS[i]} />)}
-                    </Pie>
-                    <Tooltip formatter={(v) => fmtNum(v)} />
-                    <Legend />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="card-white p-5 lg:col-span-2" data-testid="customer-trend-chart">
-              <SectionTitle title="Daily: new vs returning" subtitle="Customer activity over the selected period" />
-              {trend.length === 0 ? <Empty /> : (
-                <div style={{ width: "100%", height: 260 }}>
-                  <ResponsiveContainer>
-                    <LineChart data={trend} margin={{ top: 10, right: 12, left: 0, bottom: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="day" tick={{ fontSize: 11 }}
-                        tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => fmtNum(v)} labelFormatter={(l) => new Date(l).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} />
-                      <Legend />
-                      <Line type="monotone" dataKey="new_customers" stroke="#00c853" strokeWidth={2.5} dot={false} name="New" />
-                      <Line type="monotone" dataKey="returning_customers" stroke="#1a5c38" strokeWidth={2.5} dot={false} name="Returning" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+          {/* ---- Search bar ---- */}
+          <div className="card-white p-4" data-testid="customer-search-card">
+            <SectionTitle
+              title="Customer lookup"
+              subtitle="Search by name or phone number. Click a result to see their purchase history."
+            />
+            <div className="flex items-center gap-2 input-pill">
+              <MagnifyingGlass size={16} className="text-muted" />
+              <input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Type a name or phone number…"
+                data-testid="customer-search-input"
+                className="bg-transparent outline-none text-[13.5px] w-full"
+              />
+              {searchQ && (
+                <button
+                  type="button"
+                  onClick={() => { setSearchQ(""); setSearchResults([]); }}
+                  className="p-1 rounded hover:bg-panel"
+                  data-testid="customer-search-clear"
+                >
+                  <X size={13} />
+                </button>
               )}
             </div>
-          </div>
-
-          <div className="card-white p-5" data-testid="customer-by-country">
-            <SectionTitle title="Customers by country" subtitle="Total customer count by market" />
-            <div style={{ width: "100%", height: 260 }}>
-              <ResponsiveContainer>
-                <BarChart data={byCountry} margin={{ left: 10 }}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="country" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v) => fmtNum(v)} />
-                  <Legend />
-                  <Bar dataKey="new_customers" fill="#00c853" name="New" />
-                  <Bar dataKey="returning_customers" fill="#1a5c38" name="Returning" />
-                  <Bar dataKey="repeat_customers" fill="#4b7bec" name="Repeat" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {showChurn ? (
-            <div className="card-white p-5 border-l-4 border-amber" data-testid="churn-box">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-amber/15 grid place-items-center">
-                  <UserMinus size={22} className="text-amber" weight="duotone" />
-                </div>
-                <div>
-                  <div className="eyebrow">Churn analysis</div>
-                  <div className="mt-1 font-bold text-[22px] num">
-                    {fmtNum(churnedCount)} churned of {fmtNum(churn.total_customers)}
-                    <span className="ml-2 text-[14px] text-muted font-medium">
-                      ({churnRate.toFixed(1)}% churn rate)
-                    </span>
-                  </div>
-                  <p className="text-muted text-[13px] mt-1 max-w-2xl">
-                    Of the <span className="font-semibold text-foreground">{fmtNum(churn.total_customers)}</span> customers who
-                    shopped during this {Math.round(periodDays / 30)}-month period, <span className="font-semibold text-foreground">{fmtNum(churnedCount)}</span>{" "}
-                    have <span className="font-semibold text-foreground">not returned</span> in the last 3 months of the period
-                    ({fmtDate(churn.recent_from)} → {fmtDate(churn.recent_to)}). Consider a targeted win-back campaign.
-                  </p>
-                </div>
+            {searching && <div className="mt-2 text-[12px] text-muted">Searching…</div>}
+            {searchQ && !searching && searchResults.length === 0 && (
+              <div className="mt-2 text-[12px] text-muted">No customers found.</div>
+            )}
+            {searchResults.length > 0 && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {searchResults.slice(0, 24).map((r) => (
+                  <button
+                    key={r.customer_id || r.phone}
+                    type="button"
+                    onClick={() => openCustomer(r)}
+                    data-testid="customer-result-card"
+                    className="text-left card-white p-3 hover:border-brand transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <UserCircle size={20} className="text-brand" weight="fill" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-[13px] truncate">{r.customer_name || "—"}</div>
+                        <div className="text-[11.5px] text-muted truncate">{r.phone || r.email || "—"}</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-1 text-[11px]">
+                      <div>
+                        <div className="eyebrow">Orders</div>
+                        <div className="num font-semibold">{fmtNum(r.total_orders)}</div>
+                      </div>
+                      <div>
+                        <div className="eyebrow">Spend</div>
+                        <div className="num font-semibold">{fmtKES(r.total_sales)}</div>
+                      </div>
+                      <div>
+                        <div className="eyebrow">ABV</div>
+                        <div className="num font-semibold">{fmtKES(r.avg_basket)}</div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
               </div>
-            </div>
-          ) : (
-            <div className="card-white p-5 border-l-4 border-brand/50" data-testid="churn-disabled-note">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-brand-soft grid place-items-center">
-                  <UserMinus size={22} className="text-brand" weight="duotone" />
-                </div>
+            )}
+          </div>
+
+          {/* ---- Selected customer drawer ---- */}
+          {selectedCustomer && (
+            <div className="card-white p-5 border-l-4 border-brand" data-testid="customer-detail">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="eyebrow">Churn analysis unavailable</div>
-                  <p className="text-muted text-[13px] mt-1 max-w-2xl">
-                    Selected period is {periodDays} day{periodDays === 1 ? "" : "s"} (less than 3 months), so churn cannot be
-                    calculated meaningfully. Showing <span className="font-semibold text-foreground">new vs repeat</span> customers
-                    only — extend the date range to 3+ months to surface churn.
-                  </p>
+                  <div className="eyebrow">Customer detail</div>
+                  <div className="font-bold text-[16px] mt-0.5">{selectedCustomer.customer_name || "—"}</div>
+                  <div className="text-[12px] text-muted">
+                    {selectedCustomer.phone || "—"}{selectedCustomer.email ? ` · ${selectedCustomer.email}` : ""}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedCustomer(null); setCustomerProducts([]); }}
+                  className="p-1.5 rounded hover:bg-panel"
+                  data-testid="customer-detail-close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+                <div><div className="eyebrow">Total Orders</div><div className="font-semibold num">{fmtNum(selectedCustomer.total_orders)}</div></div>
+                <div><div className="eyebrow">Units</div><div className="font-semibold num">{fmtNum(selectedCustomer.total_units)}</div></div>
+                <div><div className="eyebrow">Lifetime Spend</div><div className="font-semibold num text-brand">{fmtKES(selectedCustomer.total_sales)}</div></div>
+                <div><div className="eyebrow">Avg Basket</div><div className="font-semibold num">{fmtKES(selectedCustomer.avg_basket)}</div></div>
+                <div><div className="eyebrow">First Purchase</div><div className="text-[13px]">{fmtDate(selectedCustomer.first_purchase_date) || "—"}</div></div>
+                <div><div className="eyebrow">Last Purchase</div><div className="text-[13px]">{fmtDate(selectedCustomer.last_purchase_date) || "—"}</div></div>
+              </div>
+
+              <div className="mt-5">
+                <SectionTitle title="Top products bought" subtitle="Ranked by units purchased" />
+                {loadingProducts ? <Loading /> : customerProducts.length === 0 ? (
+                  <Empty label="No product history available for this customer." />
+                ) : (
+                  <SortableTable
+                    testId="customer-products-table"
+                    exportName={`customer-${selectedCustomer.customer_id}-products.csv`}
+                    initialSort={{ key: "units_bought", dir: "desc" }}
+                    columns={[
+                      { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block" title={r.style_name}>{r.style_name}</span> },
+                      { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                      { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                      { key: "units_bought", label: "Units", numeric: true, render: (r) => fmtNum(r.units_bought) },
+                      { key: "total_spend", label: "Spend", numeric: true, render: (r) => <span className="text-brand font-semibold">{fmtKES(r.total_spend)}</span>, csv: (r) => r.total_spend },
+                      { key: "last_bought", label: "Last Bought", render: (r) => fmtDate(r.last_bought) || "—" },
+                    ]}
+                    rows={customerProducts}
+                  />
+                )}
               </div>
             </div>
           )}
+
+          {/* ---- KPI Cards ---- */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <KPICard testId="cust-kpi-total" accent label="Total Customers" value={fmtNum(cust.total_customers)} icon={Users} showDelta={false} />
+            <KPICard testId="cust-kpi-new" label="New Customers" value={fmtNum(cust.new_customers)} icon={UserPlus} showDelta={false} />
+            <KPICard testId="cust-kpi-returning" label="Returning" value={fmtNum(cust.returning_customers)} icon={ArrowsCounterClockwise} showDelta={false} />
+            <KPICard testId="cust-kpi-repeat" label="Repeat" sub="≥2 orders" value={fmtNum(cust.repeat_customers)} showDelta={false} />
+            <KPICard testId="cust-kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
+            <KPICard testId="cust-kpi-churn" label="Churn Rate" value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
+          </div>
+
+          {/* ---- Frequency chart ---- */}
+          <div className="card-white p-5" data-testid="customer-frequency-chart">
+            <SectionTitle
+              title="Customer purchase frequency"
+              subtitle="How many times customers have ordered in the selected window"
+            />
+            {freq.length === 0 ? <UpstreamNotReady /> : (
+              <div style={{ width: "100%", height: 300 }}>
+                <ResponsiveContainer>
+                  <BarChart data={freq} margin={{ top: 24, right: 20, left: 10, bottom: 10 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="frequency_bucket" tick={{ fontSize: 12 }} />
+                    <YAxis tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
+                    <Tooltip content={<ChartTooltip formatters={{
+                      customer_count: (v) => `${fmtNum(v)} customers`,
+                      Customers: (v) => `${fmtNum(v)} customers`,
+                    }} />} />
+                    <Bar dataKey="customer_count" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Customers">
+                      <LabelList dataKey="customer_count" position="top" formatter={(v) => fmtNum(v)} style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          {/* ---- Top 20 customers ---- */}
+          <div className="card-white p-5" data-testid="top-customers-section">
+            <SectionTitle title="Top 20 Customers" subtitle="Ranked by total sales in the selected window" />
+            {top.length === 0 ? (
+              <UpstreamNotReady label="Upstream /top-customers endpoint is currently returning 500 errors — will populate once the BI team resolves it." />
+            ) : (
+              <SortableTable
+                testId="top-customers"
+                exportName="top-20-customers.csv"
+                initialSort={{ key: "total_sales", dir: "desc" }}
+                columns={[
+                  { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
+                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{r.phone || "—"}</span>, csv: (r) => r.phone },
+                  { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
+                  { key: "total_units", label: "Units", numeric: true, render: (r) => fmtNum(r.total_units) },
+                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                  { key: "avg_basket", label: "Avg Basket", numeric: true, render: (r) => fmtKES(r.avg_basket), csv: (r) => r.avg_basket },
+                  { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
+                ]}
+                rows={top}
+              />
+            )}
+          </div>
+
+          {/* ---- Customers by POS ---- */}
+          <div className="card-white p-5" data-testid="customers-by-location-section">
+            <SectionTitle title="Customers by POS" subtitle="New vs returning breakdown per location" />
+            {byLocWithPct.length === 0 ? <UpstreamNotReady /> : (
+              <SortableTable
+                testId="customers-by-location"
+                exportName="customers-by-location.csv"
+                initialSort={{ key: "total_customers", dir: "desc" }}
+                columns={[
+                  { key: "pos_location", label: "POS Location", align: "left", render: (r) => <span className="font-medium">{r.pos_location}</span> },
+                  { key: "country", label: "Country", align: "left" },
+                  { key: "new_customers", label: "New", numeric: true, render: (r) => fmtNum(r.new_customers) },
+                  { key: "returning_customers", label: "Returning", numeric: true, render: (r) => fmtNum(r.returning_customers) },
+                  { key: "total_customers", label: "Total", numeric: true, render: (r) => <span className="font-semibold">{fmtNum(r.total_customers)}</span> },
+                  { key: "pct_of_total", label: "% of Total", numeric: true, render: (r) => fmtPct(r.pct_of_total, 1), csv: (r) => r.pct_of_total?.toFixed(2) },
+                ]}
+                rows={byLocWithPct}
+              />
+            )}
+          </div>
+
+          {/* ---- Churned customers ---- */}
+          <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
+            <SectionTitle
+              title={`Churned customers · top ${churned.length}`}
+              subtitle="No purchase in the last 90 days. Sorted by most recently churned first."
+            />
+            {churned.length === 0 ? (
+              <UpstreamNotReady label="Upstream /churned-customers endpoint is currently returning 500 errors — will populate once the BI team resolves it." />
+            ) : (
+              <SortableTable
+                testId="churned-customers"
+                exportName="churned-customers.csv"
+                initialSort={{ key: "days_since_last_purchase", dir: "asc" }}
+                columns={[
+                  { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
+                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{r.phone || "—"}</span>, csv: (r) => r.phone },
+                  { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
+                  { key: "days_since_last_purchase", label: "Days Since", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
+                  { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
+                  { key: "lifetime_spend", label: "Lifetime Spend", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>, csv: (r) => r.lifetime_spend },
+                ]}
+                rows={churned}
+              />
+            )}
+          </div>
+
+          {/* ---- New customer products ---- */}
+          <div className="card-white p-5" data-testid="new-customer-products-section">
+            <SectionTitle
+              title="New customer products"
+              subtitle="What new customers bought first. Use this to spot acquisition-driving styles."
+            />
+            {newProducts.length === 0 ? <UpstreamNotReady /> : (
+              <SortableTable
+                testId="new-customer-products"
+                exportName="new-customer-products.csv"
+                initialSort={{ key: "total_sales", dir: "desc" }}
+                columns={[
+                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block" title={r.style_name}>{r.style_name}</span> },
+                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                  { key: "pct_of_new_customer_sales", label: "% of New-Cust Sales", numeric: true, render: (r) => fmtPct(r.pct_of_new_customer_sales, 2), csv: (r) => r.pct_of_new_customer_sales?.toFixed(2) },
+                ]}
+                rows={newProducts}
+              />
+            )}
+          </div>
         </>
       )}
     </div>

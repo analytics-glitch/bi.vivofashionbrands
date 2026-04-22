@@ -335,3 +335,11 @@ body {
         margin: 12mm;
     }
 }
+
+/* Hide the "Made with Emergent" preview badge */
+#emergent-badge,
+a[href*="emergent.sh"],
+a[aria-label*="Made with Emergent" i] {
+    display: none !important;
+}
+

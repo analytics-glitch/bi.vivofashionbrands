@@ -13,6 +13,7 @@ import {
   CaretDown,
   ShieldCheck,
   ClockClockwise,
+  ArrowsClockwise,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -25,6 +26,7 @@ const tabs = [
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
+  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
 ];

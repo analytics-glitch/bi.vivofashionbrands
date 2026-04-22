@@ -15,6 +15,7 @@ import {
 import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import DataFreshness from "@/components/DataFreshness";
 import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
@@ -335,6 +336,7 @@ const Overview = () => {
 
       {!loading && !error && kpis && (
         <>
+          <DataFreshness />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               delta={delta("total_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />

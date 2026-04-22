@@ -40,6 +40,7 @@ const Inventory = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
 
@@ -89,15 +90,41 @@ const Inventory = () => {
     [inv]
   );
 
+  // Dedupe styles mapped to multiple subcategories — each style name gets
+  // one canonical subcategory (the one with the most SKUs / units).
+  const styleCanonicalType = useMemo(() => {
+    const counts = new Map(); // style → { [product_type]: count }
+    for (const r of inv) {
+      const style = r.style_name || r.product_name;
+      const pt = r.product_type;
+      if (!style || !pt) continue;
+      if (!counts.has(style)) counts.set(style, {});
+      const m = counts.get(style);
+      m[pt] = (m[pt] || 0) + (r.available || 1);
+    }
+    const out = new Map();
+    for (const [style, m] of counts) {
+      const best = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+      if (best) out.set(style, best[0]);
+    }
+    return out;
+  }, [inv]);
+
   const filteredInv = useMemo(() => {
-    return inv.filter((r) => {
-      if (countries.length > 1 && !countries.map((c) => c.toLowerCase()).includes((r.country || "").toLowerCase())) return false;
-      if (channels.length && !channels.includes(r.location_name)) return false;
-      if (brandFilter && r.brand !== brandFilter) return false;
-      if (typeFilter && r.product_type !== typeFilter) return false;
-      return true;
-    });
-  }, [inv, countries, channels, brandFilter, typeFilter]);
+    return inv
+      .map((r) => {
+        const style = r.style_name || r.product_name;
+        const canonicalType = styleCanonicalType.get(style);
+        return canonicalType ? { ...r, product_type: canonicalType } : r;
+      })
+      .filter((r) => {
+        if (countries.length > 1 && !countries.map((c) => c.toLowerCase()).includes((r.country || "").toLowerCase())) return false;
+        if (channels.length && !channels.includes(r.location_name)) return false;
+        if (brandFilter && r.brand !== brandFilter) return false;
+        if (typeFilter && r.product_type !== typeFilter) return false;
+        return true;
+      });
+  }, [inv, countries, channels, brandFilter, typeFilter, styleCanonicalType]);
 
   const lowStockByStyle = useMemo(() => {
     const m = new Map();
@@ -212,13 +239,32 @@ const Inventory = () => {
             <div className="flex items-center gap-2 input-pill flex-1 min-w-[200px]">
               <MagnifyingGlass size={14} className="text-muted" />
               <input
-                placeholder="Search product name…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search product name… press Enter or click Search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") setSearch(searchInput); }}
                 data-testid="inv-search"
                 className="bg-transparent outline-none text-[13px] w-full"
               />
             </div>
+            <button
+              type="button"
+              onClick={() => setSearch(searchInput)}
+              data-testid="inv-search-btn"
+              className="px-3 py-1.5 rounded-lg bg-brand text-white text-[12px] font-semibold hover:bg-brand-deep transition-colors"
+            >
+              Search
+            </button>
+            {search && (
+              <button
+                type="button"
+                onClick={() => { setSearchInput(""); setSearch(""); }}
+                data-testid="inv-search-clear"
+                className="px-2.5 py-1.5 rounded-lg text-[12px] text-muted hover:bg-panel"
+              >
+                Clear
+              </button>
+            )}
             <select
               className="input-pill"
               value={brandFilter}
@@ -304,78 +350,7 @@ const Inventory = () => {
             </div>
           </div>
 
-          {summary.by_subcategory_split && summary.by_subcategory_split.length > 0 && (
-            <div className="card-white p-5" data-testid="stores-vs-warehouse">
-              <SectionTitle
-                title="Stock per subcategory · Stores vs Warehouse"
-                subtitle={`Stores = ${fmtNum(summary.store_units)} units · Warehouse = ${fmtNum(summary.warehouse_units)} units`}
-              />
-              <div style={{ width: "100%", height: 32 + summary.by_subcategory_split.length * 28 }}>
-                <ResponsiveContainer>
-                  <BarChart
-                    data={summary.by_subcategory_split}
-                    layout="vertical"
-                    margin={{ left: 20, right: 20 }}
-                  >
-                    <CartesianGrid horizontal={false} />
-                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="subcategory" width={170} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v) => fmtNum(v)} />
-                    <Legend />
-                    <Bar dataKey="store_units" stackId="a" fill="#1a5c38" name="Stores" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="warehouse_units" stackId="a" fill="#4b7bec" name="Warehouse" radius={[0, 5, 5, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full data" data-testid="stores-vs-warehouse-table">
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Subcategory</th>
-                      <th className="text-right">Stores</th>
-                      <th className="text-right">Warehouse</th>
-                      <th className="text-right">Total</th>
-                      <th className="text-right">Store Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.by_subcategory_split.map((r, i) => {
-                      const share = r.total_units ? (r.store_units / r.total_units) * 100 : 0;
-                      return (
-                        <tr key={(r.subcategory || "") + i}>
-                          <td className="text-muted num">{i + 1}</td>
-                          <td className="font-medium">{r.subcategory}</td>
-                          <td className="text-right num font-semibold">{fmtNum(r.store_units)}</td>
-                          <td className="text-right num">{fmtNum(r.warehouse_units)}</td>
-                          <td className="text-right num font-bold text-brand">{fmtNum(r.total_units)}</td>
-                          <td className="text-right num">{share.toFixed(1)}%</td>
-                        </tr>
-                      );
-                    })}
-                    <tr className="bg-panel font-bold">
-                      <td></td>
-                      <td>TOTAL</td>
-                      <td className="text-right num">{fmtNum(summary.store_units)}</td>
-                      <td className="text-right num">{fmtNum(summary.warehouse_units)}</td>
-                      <td className="text-right num">{fmtNum(summary.total_units)}</td>
-                      <td className="text-right num">
-                        {summary.total_units
-                          ? ((summary.store_units / summary.total_units) * 100).toFixed(1)
-                          : 0}%
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              {summary.warehouse_units === 0 && (
-                <p className="mt-3 text-[12px] text-muted italic">
-                  Note: Upstream inventory API currently returns 0 units from warehouse / wholesale / holding locations.
-                  All stock is live in stores.
-                </p>
-              )}
-            </div>
-          )}
+          {/* Stores-vs-Warehouse chart removed per user request (illegible at scale). */}
 
           <div className="card-white p-5" data-testid="weeks-of-cover">
             <SectionTitle

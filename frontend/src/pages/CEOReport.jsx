@@ -486,12 +486,15 @@ const CEOReport = () => {
                   <th className="text-right">% of Sold</th>
                   <th className="text-right">Current Stock</th>
                   <th className="text-right">% of Stock</th>
+                  <th className="text-right">Variance</th>
                   <th className="text-right">SOR</th>
                 </tr>
               </thead>
               <tbody>
                 {subcats.slice(0, 15).map((r, i) => {
                   const pill = (r.sor_percent || 0) < 30 ? "pill-red" : (r.sor_percent || 0) < 60 ? "pill-amber" : "pill-green";
+                  const variance = (r.pct_of_total_stock || 0) - (r.pct_of_total_sold || 0);
+                  const vPill = variance >= 2 ? "pill-red" : variance <= -2 ? "pill-green" : "pill-neutral";
                   return (
                     <tr key={r.subcategory + i}>
                       <td className="font-medium">{r.subcategory}</td>
@@ -499,12 +502,18 @@ const CEOReport = () => {
                       <td className="text-right num">{fmtPct(r.pct_of_total_sold)}</td>
                       <td className="text-right num">{fmtNum(r.current_stock)}</td>
                       <td className="text-right num">{fmtPct(r.pct_of_total_stock)}</td>
+                      <td className="text-right">
+                        <span className={vPill}>{variance >= 0 ? "+" : ""}{variance.toFixed(2)}%</span>
+                      </td>
                       <td className="text-right"><span className={pill}>{fmtPct(r.sor_percent)}</span></td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+            <div className="text-[11.5px] text-muted mt-2 italic">
+              Variance = % of Stock − % of Units Sold. Positive = overstocked vs sales share; negative = outpacing stock.
+            </div>
           </div>
 
           {/* Section 6 — SOR */}
@@ -517,13 +526,12 @@ const CEOReport = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
+            <div className="card-white p-4 border-2 border-brand-strong/40">
               <h3 className="font-bold text-[13px] mb-2 text-brand-deep">Top 10 Best SOR</h3>
               <table className="w-full data">
                 <thead>
                   <tr>
                     <th>Style</th>
-                    <th>Collection</th>
                     <th className="text-right">Units</th>
                     <th className="text-right">Stock</th>
                     <th className="text-right">SOR</th>
@@ -532,10 +540,9 @@ const CEOReport = () => {
                 <tbody>
                   {bestSor.map((r, i) => (
                     <tr key={(r.style_name || "") + i}>
-                      <td className="font-medium max-w-[180px] truncate" title={r.style_name}>
+                      <td className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.style_name}>
                         {r.style_name}
                       </td>
-                      <td className="text-muted text-[11.5px]">{r.collection}</td>
                       <td className="text-right num">{fmtNum(r.units_sold)}</td>
                       <td className="text-right num">{fmtNum(r.current_stock)}</td>
                       <td className="text-right"><span className="pill-green">{fmtPct(r.sor_percent)}</span></td>
@@ -544,7 +551,7 @@ const CEOReport = () => {
                 </tbody>
               </table>
             </div>
-            <div>
+            <div className="card-white p-4 border-2 border-danger/40">
               <h3 className="font-bold text-[13px] mb-2 text-danger">Bottom 10 Worst SOR</h3>
               <table className="w-full data">
                 <thead>
@@ -559,7 +566,7 @@ const CEOReport = () => {
                 <tbody>
                   {worstSor.map((r, i) => (
                     <tr key={(r.style_name || "") + i} style={{ background: "rgba(220,38,38,0.04)" }}>
-                      <td className="font-medium max-w-[180px] truncate" title={r.style_name}>
+                      <td className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.style_name}>
                         {r.style_name}
                       </td>
                       <td className="text-muted text-[11.5px]">{r.collection}</td>

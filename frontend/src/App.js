@@ -10,6 +10,7 @@ import Inventory from "@/pages/Inventory";
 import Customers from "@/pages/Customers";
 import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
+import ReOrder from "@/pages/ReOrder";
 import Login from "@/pages/Login";
 import AuthCallback from "@/pages/AuthCallback";
 import Users from "@/pages/Users";
@@ -23,7 +24,7 @@ const Shell = ({ children }) => (
   <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
     <TopNav />
     <FilterBar />
-    <main className="px-3 sm:px-5 lg:px-10 pt-[116px] sm:pt-[128px] pb-6 max-w-[1600px] mx-auto w-full">
+    <main className="px-3 sm:px-5 lg:px-10 pt-[160px] sm:pt-[140px] pb-6 max-w-[1600px] mx-auto w-full">
       {children}
     </main>
     <ChatWidget />
@@ -52,6 +53,7 @@ function App() {
               <Route path="/customers" element={<ProtectedShell><Customers /></ProtectedShell>} />
               <Route path="/footfall" element={<ProtectedShell><Footfall /></ProtectedShell>} />
               <Route path="/ceo-report" element={<ProtectedShell><CEOReport /></ProtectedShell>} />
+              <Route path="/re-order" element={<ProtectedShell><ReOrder /></ProtectedShell>} />
               <Route path="/admin/users" element={<ProtectedShell adminOnly><Users /></ProtectedShell>} />
               <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly><ActivityLogs /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />

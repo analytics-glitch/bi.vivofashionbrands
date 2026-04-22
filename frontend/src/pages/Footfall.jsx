@@ -78,18 +78,17 @@ const Footfall = () => {
     return m;
   }, [locations]);
 
-  // Filter by country + channel selection, exclude >50% conversion (data-quality rule)
+  // Filter by country + channel selection only. Conversion-rate outliers are
+  // included (data-quality filter removed per user request).
   const scoped = useMemo(() => {
-    return rows
-      .filter((r) => (r.conversion_rate || 0) <= 50)
-      .filter((r) => {
-        if (countries.length) {
-          const c = channelCountry[r.location];
-          if (!c || !countries.includes(c)) return false;
-        }
-        if (channels.length && !channels.includes(r.location)) return false;
-        return true;
-      });
+    return rows.filter((r) => {
+      if (countries.length) {
+        const c = channelCountry[r.location];
+        if (!c || !countries.includes(c)) return false;
+      }
+      if (channels.length && !channels.includes(r.location)) return false;
+      return true;
+    });
   }, [rows, countries, channels, channelCountry]);
 
   const prevMap = useMemo(() => {
@@ -108,16 +107,14 @@ const Footfall = () => {
   }, [scoped]);
 
   const prevTotals = useMemo(() => {
-    const scopedPrev = prev
-      .filter((r) => (r.conversion_rate || 0) <= 50)
-      .filter((r) => {
-        if (countries.length) {
-          const c = channelCountry[r.location];
-          if (!c || !countries.includes(c)) return false;
-        }
-        if (channels.length && !channels.includes(r.location)) return false;
-        return true;
-      });
+    const scopedPrev = prev.filter((r) => {
+      if (countries.length) {
+        const c = channelCountry[r.location];
+        if (!c || !countries.includes(c)) return false;
+      }
+      if (channels.length && !channels.includes(r.location)) return false;
+      return true;
+    });
     const footfall = scopedPrev.reduce((s, r) => s + (r.total_footfall || 0), 0);
     const orders = scopedPrev.reduce((s, r) => s + (r.orders || 0), 0);
     const sales = scopedPrev.reduce((s, r) => s + (r.total_sales || 0), 0);
@@ -157,11 +154,8 @@ const Footfall = () => {
     [scopedEnriched]
   );
 
-  // Excluded locations (data-quality) — always Vivo Junction + anyone >50% conversion
-  const excluded = useMemo(
-    () => rows.filter((r) => (r.conversion_rate || 0) > 50),
-    [rows]
-  );
+  // No excluded list — user requested we include all locations.
+  const excluded = useMemo(() => [], []);
 
   return (
     <div className="space-y-6" data-testid="footfall-page">
@@ -169,7 +163,7 @@ const Footfall = () => {
         <div className="eyebrow">Dashboard · Footfall Analysis</div>
         <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Footfall Analysis</h1>
         <p className="text-muted text-[13px] mt-0.5">
-          {fmtDate(dateFrom)} → {fmtDate(dateTo)} · locations with conversion rate &gt;50% excluded (data-quality)
+          {fmtDate(dateFrom)} → {fmtDate(dateTo)} · all locations included
         </p>
       </div>
 

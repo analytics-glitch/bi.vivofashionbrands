@@ -23,10 +23,20 @@ const FilterBar = () => {
   const presetKeys = ["yesterday", "today", "this_week", "this_month", "last_month", "this_year"];
 
   const channelOptions = useMemo(() => {
+    // Always append the online channels since /analytics/active-pos only
+    // returns physical stores.
+    const ONLINE_CHANNELS = [
+      { channel: "Online - Shop Zetu", country: "Online" },
+      { channel: "Online - Vivo", country: "Online" },
+    ];
+    const merged = [...locations];
+    for (const oc of ONLINE_CHANNELS) {
+      if (!merged.some((l) => l.channel === oc.channel)) merged.push(oc);
+    }
     const filtered =
       f.countries.length === 0
-        ? locations
-        : locations.filter((l) => f.countries.includes(l.country));
+        ? merged
+        : merged.filter((l) => f.countries.includes(l.country));
     return filtered.map((l) => ({
       value: l.channel,
       label: l.channel,

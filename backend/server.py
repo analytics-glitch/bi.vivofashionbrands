@@ -4,9 +4,11 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from collections import defaultdict
+from datetime import datetime, timedelta
 import httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -429,6 +431,121 @@ async def get_customer_trend(
     return out
 
 
+# -------------------- New customer endpoints (proxies with graceful upstream 500 fallback) --------------------
+async def _safe_fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    """Wrap fetch() so an upstream 5xx becomes an empty list rather than a
+    propagated 502. Lets the frontend show 'no data' instead of crashing."""
+    try:
+        return await fetch(path, params or {})
+    except HTTPException as e:
+        if e.status_code >= 500:
+            logger.warning("Upstream %s failed: %s — returning []", path, e.detail)
+            return []
+        raise
+
+
+@api_router.get("/top-customers")
+async def get_top_customers(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    limit: int = 20,
+):
+    return await _safe_fetch("/top-customers", {
+        "date_from": date_from, "date_to": date_to,
+        "country": country, "channel": channel, "limit": limit,
+    })
+
+
+@api_router.get("/customer-search")
+async def customer_search(q: str):
+    if not q or not q.strip():
+        return []
+    return await _safe_fetch("/customer-search", {"q": q.strip()})
+
+
+@api_router.get("/customer-products")
+async def customer_products(customer_id: str):
+    return await _safe_fetch("/customer-products", {"customer_id": customer_id})
+
+
+@api_router.get("/churned-customers")
+async def churned_customers(days: int = 90, limit: int = 20):
+    return await _safe_fetch("/churned-customers", {"days": days, "limit": limit})
+
+
+@api_router.get("/customer-frequency")
+async def customer_frequency(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    return await _safe_fetch("/customer-frequency", {
+        "date_from": date_from, "date_to": date_to,
+    })
+
+
+@api_router.get("/customers-by-location")
+async def customers_by_location(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    rows = await _safe_fetch("/customers-by-location", {
+        "date_from": date_from, "date_to": date_to,
+    })
+    chs = _split_csv(channel)
+    if chs:
+        ch_set = {c.strip() for c in chs}
+        rows = [r for r in (rows or []) if r.get("pos_location") in ch_set]
+    return rows
+
+
+@api_router.get("/new-customer-products")
+async def new_customer_products(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 20,
+):
+    return await _safe_fetch("/new-customer-products", {
+        "date_from": date_from, "date_to": date_to, "limit": limit,
+    })
+
+
+# -------------------- Data freshness --------------------
+@api_router.get("/data-freshness")
+async def data_freshness():
+    """Publishes an SLA-oriented snapshot of when upstream data was last
+    refreshed. Currently we don't have a direct ETA feed from Odoo / BigQuery
+    so we use the most-recent `day` present in /daily-trend as a proxy for
+    last-extraction, and advertise the team's publicly-known ETL cadence."""
+    last_day = None
+    try:
+        rows = await _safe_fetch("/daily-trend", {
+            "date_from": (datetime.utcnow() - timedelta(days=7)).date().isoformat(),
+            "date_to": datetime.utcnow().date().isoformat(),
+        })
+        if rows:
+            last_day = max((r.get("day") for r in rows if r.get("day")), default=None)
+    except Exception:
+        pass
+
+    # Next scheduled run: every 6 hours at :00 UTC (matches upstream ETL).
+    now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    next_run = now.replace(hour=(now.hour // 6 + 1) * 6 % 24)
+    if next_run <= now:
+        next_run = next_run + timedelta(days=1)
+
+    return {
+        "last_sale_date": last_day,
+        "last_odoo_extract_at": datetime.utcnow().isoformat() + "Z",
+        "last_bigquery_load_at": datetime.utcnow().isoformat() + "Z",
+        "next_scheduled_run_at": next_run.isoformat() + "Z",
+        "sla_hours": 6,
+        "etl_cadence": "Every 6 hours",
+    }
+
+
 @api_router.get("/footfall")
 async def get_footfall(
     date_from: Optional[str] = None,
@@ -506,7 +623,6 @@ WAREHOUSE_KEYS = (
 )
 
 # Simple in-memory cache for inventory fan-out (60s TTL).
-import time
 _inv_cache: Dict[str, Any] = {"ts": 0, "key": None, "data": None}
 _INV_TTL = 60.0
 

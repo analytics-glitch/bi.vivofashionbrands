@@ -288,7 +288,7 @@ const Locations = () => {
               <div className="card-white p-5" data-testid="footfall-section">
                 <SectionTitle
                   title="Footfall & Conversion"
-                  subtitle="Traffic, orders, conversion rate, and revenue per visitor. Locations with conversion >50% are excluded (data quality)."
+                  subtitle="Traffic, orders, conversion rate, and revenue per visitor — all locations included."
                 />
                 <div className="overflow-x-auto">
                   <table className="w-full data" data-testid="footfall-table">
@@ -303,11 +303,10 @@ const Locations = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {footfall.filter((r) => (r.conversion_rate || 0) <= 50).length === 0 && (
+                      {footfall.length === 0 && (
                         <tr><td colSpan={6}><Empty label="No footfall data in this period." /></td></tr>
                       )}
-                      {footfall
-                        .filter((r) => (r.conversion_rate || 0) <= 50)
+                      {[...footfall]
                         .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
                         .map((r, i) => {
                           const cr = r.conversion_rate || 0;

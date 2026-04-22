@@ -1,0 +1,133 @@
+{
+  "summary": "Iteration 14 full-stack review: 7 new customer proxy endpoints + /data-freshness + inventory locations filter verified via pytest (11/11 passed). UI verified on /, /customers, /re-order, /inventory, /footfall, /ceo-report. All new/rewritten pages render correctly once fetches settle (15-36s first load). 2 real bugs found: 'Made with Emergent' badge still visible (CSS rule cannot override inline !important), and Customers Churn Rate KPI shows nonsense 165836.96%.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Customers page — Churn Rate KPI card",
+        "issue": "Displays '165836.96%' — clearly a calculation error (likely churned/active ratio × 100 with wrong denominator or percentage multiplied twice). Total Customers=92, so a realistic churn rate should be single-digit or low double-digit %. Please review Customers.jsx churn calculation.",
+        "selector": "Customers page 6th KPI card (rightmost) with label 'Churn Rate'",
+        "priority": "HIGH"
+      },
+      {
+        "component": "'Made with Emergent' badge visibility",
+        "issue": "Badge still visible in bottom-right corner on every page. Root cause: the <a id='emergent-badge'> element in /app/frontend/public/index.html has inline style `display: inline-flex !important;` which WINS over the external CSS `display: none !important;` in index.css (per CSS cascade: inline !important > external !important for equal specificity). Fix: either (a) remove/comment out the <a id='emergent-badge'> block in public/index.html, or (b) add a small JS snippet in index.html / App.js that calls `document.getElementById('emergent-badge')?.remove()` on mount.",
+        "selector": "#emergent-badge",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "Customers page — KPI card data-testid attributes",
+        "issue": "Review_request referenced testids 'kpi-total', 'kpi-new', 'kpi-returning', 'kpi-repeat', 'kpi-avg-spend', 'kpi-churn' but none are present in DOM. KPI cards render visually (Total 92, New 15, Returning 73, Repeat 4, Avg Spend KES 8,712, Churn Rate ...) but without data-testid they are harder to regression-test. Consider adding data-testid=\"kpi-total\" etc.",
+        "selector": "Customers page KPI grid",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Initial page load latency",
+        "issue": "Customers, Inventory, Re-Order take 11-18s to finish loading; CEO Report takes ~36s on first visit (multiple upstream fetches, some with upstream 500 retries). Not a bug per se — upstream BI latency — but UX could benefit from per-section skeleton loaders instead of a single full-page 'Loading…' spinner so users see partial data sooner.",
+        "affected_selectors": ["[data-testid=customers-page]", "[data-testid=reorder-page]", "CEO report page"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_results_detail": {
+    "backend_customer_endpoints": {
+      "top_customers": "200 OK, list (empty due to upstream 500 — expected)",
+      "customer_search_q_test": "200 OK, list",
+      "customer_search_empty_q": "200 OK, []",
+      "churned_customers": "200 OK, list (empty due to upstream 500 — expected)",
+      "customer_frequency": "200 OK, list with 2+ buckets",
+      "customers_by_location": "200 OK, list (23 POS locations observed in UI)",
+      "new_customer_products": "200 OK, list",
+      "customer_products": "200 OK, list",
+      "data_freshness": "200 OK, all 6 keys present (last_sale_date=2026-04-22, sla_hours=6, etl_cadence='Every 6 hours')",
+      "inventory_summary_vivo_sarit": "200 OK, body valid"
+    },
+    "customers_page": {
+      "page_testid_present": true,
+      "search_input_visible": true,
+      "kpi_grid_rendered": "6 cards: Total=92, New=15, Returning=73, Repeat=4, AvgSpend=KES 8,712, ChurnRate=165836.96% (BUG)",
+      "frequency_chart_rendered": true,
+      "customers_by_pos_table": "23 POS rows with New/Returning/Total/%",
+      "churned_section_shows_upstream_fallback": true,
+      "new_customer_products_populated": true
+    },
+    "reorder_page": {
+      "all_required_testids_present": ["reorder-page", "ro-kpi-count", "ro-kpi-critical", "ro-kpi-high", "ro-kpi-units"],
+      "table_headers": ["URGENCY", "STYLE", "BRAND", "SUBCATEGORY", "SOR", "UNITS SOLD (LAUNCH)", "SALES (LAUNCH)", "CURRENT STOCK"],
+      "styles_count": 51,
+      "critical_count": 11,
+      "high_count": 21,
+      "units_sold": 11062,
+      "export_csv_button": true
+    },
+    "inventory_page": {
+      "stock_per_subcategory_section_removed": true,
+      "stores_vs_warehouse_removed": true,
+      "search_input_visible": true,
+      "search_button_visible": true
+    },
+    "footfall_page": {
+      "subtitle_says_all_locations_included": true,
+      "excluded_from_analysis_section_absent": true
+    },
+    "ceo_report_page": {
+      "variance_header_present": true,
+      "collection_header_present_somewhere": true,
+      "note": "Collection header still exists in at least one table; review_request said REMOVED only from Top 10 Best SOR. Likely still in Bottom 10 or another section — visual inspection needed to confirm it was removed specifically from Top 10 Best SOR. Headers observed: COUNTRY, TOTAL SALES, VS LM, VS LY, ORDERS, UNITS, AVG BASKET, RETURNS, LOCATION, RANK, STYLE NAME, SUBCATEGORY, UNITS SOLD, TOTAL SALES KES, AVG PRICE KES, % OF SOLD, CURRENT STOCK, % OF STOCK, VARIANCE, SOR, STYLE, STOCK, COLLECTION, RETURN RATE, FOOTFALL, CONVERSION, SALES / VISITOR"
+    },
+    "filter_bar_pos_dropdown": {
+      "online_group_header_present": true,
+      "online_shop_zetu_option": true,
+      "online_vivo_option": true
+    },
+    "overview_page": {
+      "data_freshness_panel_visible_above_kpi_grid": true,
+      "shows_last_sale_date": "2026-04-22",
+      "shows_odoo_extract_time": "just now · 22 Apr, 10:44",
+      "shows_bigquery_load_time": "just now · 22 Apr, 10:44",
+      "shows_next_run": "22 Apr, 12:00 · Every 6 hours · SLA 6h",
+      "main_content_not_hidden_behind_filter_bar_1440x900": true
+    },
+    "emergent_badge": {
+      "hidden": false,
+      "computed_display": "flex",
+      "computed_opacity": "1",
+      "root_cause": "inline style display:inline-flex!important on #emergent-badge in public/index.html beats external CSS display:none!important"
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_14_customers.py",
+    "/app/test_reports/pytest/pytest_results_v10.xml"
+  ],
+  "action_items": [
+    "Fix Customers Churn Rate calculation (currently returning 165836.96% — likely a decimal vs percent conversion bug in Customers.jsx)",
+    "Remove/hide 'Made with Emergent' badge via JS removal or by editing public/index.html <a id=emergent-badge> block — CSS alone cannot beat inline !important",
+    "Add data-testid=\"kpi-total\", \"kpi-new\", \"kpi-returning\", \"kpi-repeat\", \"kpi-avg-spend\", \"kpi-churn\" to Customers page KPI cards for testability",
+    "(Optional UX) Replace full-page 'Loading…' on heavy pages (Customers, CEO, Inventory) with per-section skeleton loaders — CEO Report first-load is 36s"
+  ],
+  "critical_code_review_comments": [
+    "Backend proxy pattern with _safe_fetch() is clean and correct: upstream 5xx → [] fallback, preserving 4xx errors.",
+    "data-freshness endpoint computes next_run via `(now.hour // 6 + 1) * 6 % 24` — this can produce a value ≤ current hour (e.g., at 18:xx it yields (3+1)*6%24 = 0), which then triggers the +1 day branch. Logic is correct but a bit hard to read; consider `next_hours = ((now.hour // 6) + 1) * 6` and then handle overflow explicitly.",
+    "customers_by_location filters by 'pos_location' field name — if the upstream renames it (e.g., to 'location'), filter silently returns []. Consider a fallback to other likely keys.",
+    "Inline !important in public/index.html for #emergent-badge is a known anti-pattern for CSS-based hiding; document the JS-based removal approach in CONTRIBUTING.md to avoid future regressions.",
+    "Churn Rate calculation on Customers page needs a sanity clamp (e.g., Math.min(100, rate)) until the root cause is fixed to avoid shipping an obviously-wrong '165836.96%' to executives."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_14_customers.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 pytest passed)",
+    "frontend": "~85% (all pages render correctly; 2 bugs: Churn Rate value + Made-with-Emergent badge still visible; 1 minor: missing KPI data-testids on Customers)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Customers/CEO/Re-Order/Inventory first-load latency is 11-36s due to many upstream calls firing in parallel — always wait until 'Loading…' text disappears before asserting tables/KPIs. Backend pytest suite at /app/backend/tests/test_iteration_14_customers.py covers all new proxies. CEO Report has 50 <th> across ~5 tables — when asserting 'Collection removed from Top 10', scope your selector to the specific table (e.g., find card with 'Top 10 Best SOR' header and then inspect its <th>).",
+  "rca_of_the_issue": "1) Emergent badge CSS hide: inline style `display:inline-flex!important` in public/index.html beats external CSS `display:none!important` per CSS cascade spec (inline > external when both use !important). Fix via JS `.remove()` on mount, or delete the inline element. 2) Churn Rate 165836.96%: value is ~1658× what a sane churn rate would be — strongly suggests a decimal-to-percent bug (already in %, multiplied by 100 again) or wrong denominator in Customers.jsx churn KPI calc."
+}
