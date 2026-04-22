@@ -77,12 +77,14 @@ const Overview = () => {
   const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [degraded, setDegraded] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setDegraded(null);
     const p = buildParams(filters);
     const prev = comparePeriod(dateFrom, dateTo, compareMode);
 
@@ -118,14 +120,38 @@ const Overview = () => {
     ])
       .then(([k, cs, s, sor, sc, ff, kp, daily, dailyP, ffp, locs]) => {
         if (cancelled) return;
-        // Fatal iff KPIs themselves fail — the rest can degrade.
-        if (!k.ok) {
-          const detail = k.error?.response?.data?.detail || k.error?.message || "Unknown upstream error";
-          setError(detail);
-          setLoading(false);
-          return;
+        // If upstream /kpis is down, derive the KPI block from /sales-summary
+        // so the rest of the page still renders (all the other endpoints still
+        // work independently). Set a non-blocking banner via setDegraded().
+        let kpiData = k.ok ? k.data : null;
+        if (!kpiData && s.ok && Array.isArray(s.data) && s.data.length) {
+          const sum = s.data.reduce((acc, r) => {
+            acc.total_sales += r.total_sales || 0;
+            acc.total_orders += r.orders || r.total_orders || 0;
+            acc.total_units += r.units_sold || 0;
+            acc.total_returns += r.returns || 0;
+            return acc;
+          }, { total_sales: 0, total_orders: 0, total_units: 0, total_returns: 0, gross_sales: 0 });
+          sum.avg_basket_size = sum.total_orders ? sum.total_sales / sum.total_orders : 0;
+          sum.avg_selling_price = sum.total_units ? sum.total_sales / sum.total_units : 0;
+          sum.return_rate = sum.total_sales ? (sum.total_returns / sum.total_sales * 100) : 0;
+          sum.gross_sales = sum.total_sales + sum.total_returns;
+          kpiData = sum;
         }
-        setKpis(k.data);
+        if (!kpiData) {
+          // Final fallback: minimal shape so rendering doesn't crash.
+          kpiData = {
+            total_sales: 0, gross_sales: 0, total_orders: 0, total_units: 0,
+            total_returns: 0, avg_basket_size: 0, avg_selling_price: 0, return_rate: 0,
+          };
+        }
+        setKpis(kpiData);
+        if (!k.ok) {
+          const detail = k.error?.response?.data?.detail || k.error?.message || "Upstream error";
+          setDegraded(`Upstream KPIs unavailable (${detail}). Showing values derived from sales-summary instead.`);
+        } else {
+          setDegraded(null);
+        }
         setCountrySummary(cs.ok ? cs.data || [] : []);
         setSales(s.ok ? s.data || [] : []);
         setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
@@ -333,6 +359,14 @@ const Overview = () => {
 
       {loading && <Loading label="Aggregating group KPIs…" />}
       {error && <ErrorBox message={error} />}
+      {degraded && (
+        <div
+          className="rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900"
+          data-testid="degraded-banner"
+        >
+          ⚠️ {degraded}
+        </div>
+      )}
 
       {!loading && !error && kpis && (
         <>
