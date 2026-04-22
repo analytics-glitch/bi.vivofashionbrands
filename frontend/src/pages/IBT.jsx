@@ -23,6 +23,7 @@ const IBT = () => {
     api
       .get("/analytics/ibt-suggestions", {
         params: { date_from: dateFrom, date_to: dateTo, country, limit: 300 },
+        timeout: 180000,
       })
       .then(({ data }) => {
         if (cancelled) return;

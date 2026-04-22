@@ -402,14 +402,39 @@ async def get_customers(
             total.pop(k)
         data = total
 
-    # Sanitise churn_rate: upstream returns all-time churned count but period
-    # total_customers, so the raw ratio blows up (e.g. 165836%). Recompute as
-    # churn / (active + churn) and cap at 100% so the KPI is meaningful.
+    # Sanitise churn_rate. Upstream returns all-time cumulative
+    # `churned_customers` but period-scoped `total_customers`, so the raw
+    # ratio is meaningless (hundreds of thousands of %). We expose TWO
+    # numbers:
+    #   churn_rate_cumulative = churned / (active + churned) (capped)
+    #   churn_rate_period = churned_last_90_days / total_active_90_days
+    # The latter requires /churned-customers + /customers (active) to
+    # agree on a window; fall back to cumulative when upstream is down.
     if data:
         active = data.get("total_customers") or 0
         churned = data.get("churned_customers") or 0
         denom = active + churned
-        data["churn_rate"] = round((churned / denom * 100), 2) if denom else 0
+        cumulative_rate = round((churned / denom * 100), 2) if denom else 0
+        data["churn_rate_cumulative"] = cumulative_rate
+
+        try:
+            ch90 = await _safe_fetch("/churned-customers", {"days": 90, "limit": 1})
+            # Upstream sometimes returns a wrapper dict with count; handle list too
+            if isinstance(ch90, dict):
+                churned_90 = ch90.get("total") or ch90.get("count") or 0
+            elif isinstance(ch90, list):
+                churned_90 = len(ch90)
+            else:
+                churned_90 = 0
+            data["churned_last_90d"] = churned_90
+            if churned_90 > 0:
+                data["churn_rate"] = round((churned_90 / (active + churned_90) * 100), 2) if (active + churned_90) else 0
+            else:
+                # Upstream /churned-customers is unavailable — fall back to cumulative.
+                data["churn_rate"] = cumulative_rate
+        except Exception:
+            data["churned_last_90d"] = 0
+            data["churn_rate"] = cumulative_rate
     return data
 
 

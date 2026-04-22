@@ -298,7 +298,7 @@ const Customers = () => {
             </div>
             <KPICard testId="kpi-repeat" label="Repeat" sub="≥2 orders" value={fmtNum(cust.repeat_customers)} showDelta={false} />
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
-            <KPICard testId="kpi-churn" label="Churn Rate" value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
+            <KPICard testId="kpi-churn" label="Churn Rate" sub={cust.churned_last_90d > 0 ? "last 90 days" : "all-time cumulative"} value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
           </div>
 
           {/* ---- Projection card ---- */}
