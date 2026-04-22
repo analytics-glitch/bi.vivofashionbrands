@@ -7,7 +7,7 @@ import SortableTable from "@/components/SortableTable";
 import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
-  MagnifyingGlass, X, UserCircle, TrendUp, Crosshair,
+  MagnifyingGlass, X, UserCircle,
 } from "@phosphor-icons/react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
@@ -46,7 +46,6 @@ const Customers = () => {
   const [churned, setChurned] = useState([]);
   const [newProducts, setNewProducts] = useState([]);
   const [crosswalk, setCrosswalk] = useState([]);
-  const [projection, setProjection] = useState(null);
 
   // comparison period
   const [custPrev, setCustPrev] = useState(null);
@@ -104,15 +103,14 @@ const Customers = () => {
       ["churned", api.get("/churned-customers", { params: { days: 90, limit: 20 } }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
-      ["proj", api.get("/analytics/sales-projection", { params: dateP }).catch(() => ({ data: null }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
-      np: setNewProducts, cw: setCrosswalk, proj: setProjection, prev: setCustPrev,
+      np: setNewProducts, cw: setCrosswalk, prev: setCustPrev,
     };
     for (const [key, p] of rest) {
-      p.then((r) => { if (!cancelled) setters[key](r.data || (key === "proj" || key === "prev" ? null : [])); });
+      p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
@@ -291,13 +289,21 @@ const Customers = () => {
               <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">{fmtNum(cust.new_customers)}</div>
               {compareLbl && <div className="mt-1 flex items-center gap-1"><Delta curr={cust.new_customers} prev={custPrev?.new_customers} /><span className="text-[10px] text-muted">{compareLbl}</span></div>}
             </div>
-            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-returning-repeat">
-              <div className="flex items-center gap-2"><ArrowsCounterClockwise size={16} className="text-brand" /><div className="eyebrow">Returning / Repeat</div></div>
+            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-return">
+              <div className="flex items-center gap-2"><ArrowsCounterClockwise size={16} className="text-brand" /><div className="eyebrow">Return</div></div>
               <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
-                {fmtNum(cust.returning_customers)} <span className="text-muted text-[13px] font-normal">/ {fmtNum(cust.repeat_customers)}</span>
+                {fmtNum((cust.returning_customers || 0) + (cust.repeat_customers || 0))}
               </div>
-              <div className="text-[10.5px] text-muted mt-0.5">returning / ≥2 orders</div>
-              {compareLbl && <div className="mt-1 flex items-center gap-1"><Delta curr={cust.returning_customers} prev={custPrev?.returning_customers} /><span className="text-[10px] text-muted">{compareLbl}</span></div>}
+              <div className="text-[10.5px] text-muted mt-0.5">returning + repeat (≥2 orders)</div>
+              {compareLbl && (
+                <div className="mt-1 flex items-center gap-1">
+                  <Delta
+                    curr={(cust.returning_customers || 0) + (cust.repeat_customers || 0)}
+                    prev={(custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0)}
+                  />
+                  <span className="text-[10px] text-muted">{compareLbl}</span>
+                </div>
+              )}
             </div>
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
             <KPICard testId="kpi-churn" label="Churn Rate" sub={cust.churned_last_90d > 0 ? "last 90 days" : "all-time cumulative"} value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
@@ -325,8 +331,7 @@ const Customers = () => {
                     {[
                       ["Total Customers", cust.total_customers, custPrev.total_customers],
                       ["New Customers", cust.new_customers, custPrev.new_customers],
-                      ["Returning Customers", cust.returning_customers, custPrev.returning_customers],
-                      ["Repeat Customers (≥2 orders)", cust.repeat_customers, custPrev.repeat_customers],
+                      ["Return (Returning + Repeat)", (cust.returning_customers || 0) + (cust.repeat_customers || 0), (custPrev.returning_customers || 0) + (custPrev.repeat_customers || 0)],
                       ["Avg Spend per Customer (KES)", cust.avg_customer_spend, custPrev.avg_customer_spend, "kes"],
                       ["Avg Orders per Customer", cust.avg_orders_per_customer, custPrev.avg_orders_per_customer, "dec"],
                     ].map(([label, c, p, fmt]) => {
@@ -353,38 +358,7 @@ const Customers = () => {
             </div>
           )}
 
-          {/* ---- Projection card ---- */}
-          {projection && projection.total_days > 0 && (
-            <div className="card-white p-5" data-testid="sales-projection">
-              <SectionTitle
-                title="Projected period sales · run-rate view"
-                subtitle={`Day ${projection.days_elapsed} of ${projection.total_days} (${projection.completion_pct.toFixed(0)}% through the window)`}
-              />
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <div className="eyebrow">Actual so far</div>
-                  <div className="text-[20px] sm:text-[24px] font-bold text-brand num">{fmtKES(projection.actual_sales)}</div>
-                </div>
-                <div>
-                  <div className="eyebrow">Daily run-rate</div>
-                  <div className="text-[18px] sm:text-[22px] font-bold num">{fmtKES(projection.daily_run_rate)}</div>
-                </div>
-                <div>
-                  <div className="eyebrow">Projected end-of-period</div>
-                  <div className="text-[20px] sm:text-[24px] font-extrabold text-brand-deep num">
-                    <TrendUp size={18} className="inline mr-1" weight="bold" />
-                    {fmtKES(projection.projected_sales)}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 h-2 rounded-full bg-panel overflow-hidden">
-                <div
-                  className="h-full bg-brand-strong transition-all"
-                  style={{ width: `${Math.min(100, projection.completion_pct)}%` }}
-                />
-              </div>
-            </div>
-          )}
+          {/* Projection card moved to Overview page */}
 
           {/* ---- Frequency chart ---- */}
           <div className="card-white p-5" data-testid="customer-frequency-chart">

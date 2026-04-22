@@ -153,7 +153,7 @@ const TopNav = () => {
         </div>
       </div>
 
-      <div className="hidden lg:flex items-center gap-1 flex-1 justify-center min-w-0 overflow-x-auto">
+      <div className="hidden lg:flex items-center gap-1 flex-1 justify-center min-w-0 flex-wrap">
         {tabs.map((t) => (
           <NavLink
             key={t.id}
@@ -161,7 +161,7 @@ const TopNav = () => {
             end={t.to === "/"}
             data-testid={`nav-${t.id}`}
             className={({ isActive }) =>
-              `flex items-center gap-1.5 px-2.5 xl:px-3.5 py-2 rounded-lg text-[12px] xl:text-[13px] font-medium transition-colors whitespace-nowrap ${
+              `flex items-center gap-1.5 px-2 xl:px-3 py-1.5 rounded-lg text-[11.5px] xl:text-[12.5px] font-medium transition-colors whitespace-nowrap ${
                 isActive
                   ? "bg-brand text-white shadow-sm"
                   : "text-foreground/70 hover:bg-panel hover:text-foreground"
@@ -170,7 +170,7 @@ const TopNav = () => {
           >
             {({ isActive }) => (
               <>
-                <t.icon size={14} weight={isActive ? "fill" : "regular"} />
+                <t.icon size={13} weight={isActive ? "fill" : "regular"} />
                 <span>{t.label}</span>
               </>
             )}
@@ -196,7 +196,7 @@ const TopNav = () => {
 
       {mobileOpen && (
         <div
-          className="lg:hidden fixed left-0 right-0 top-[48px] sm:top-[56px] bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
+          className="lg:hidden fixed left-0 right-0 top-[56px] sm:top-[64px] bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
           data-testid="mobile-menu"
         >
           {tabs.map((t) => (

@@ -16,6 +16,7 @@ import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
+import SalesProjection from "@/components/SalesProjection";
 import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
@@ -371,6 +372,13 @@ const Overview = () => {
       {!loading && !error && kpis && (
         <>
           <DataFreshness />
+          <SalesProjection
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            country={countries.length === 1 ? countries[0] : undefined}
+            channel={channels.length ? channels.join(",") : undefined}
+            dataVersion={dataVersion}
+          />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               delta={delta("total_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
