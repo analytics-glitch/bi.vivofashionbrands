@@ -333,8 +333,52 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.3 — Cross-page KPI consistency (Feb 2026)
+Critical data-consistency mandate: the API is the single source of truth; no
+page may compute headline totals by summing per-location data.
+- **New hook `/app/frontend/src/lib/useKpis.js`** — shared in-memory cache
+  keyed on `(date_from, date_to, country, channel, dataVersion)`. Exposes
+  `useKpis({ compare })` and `useKpisLMLY()` (for CEO Report).
+- **Cache-busting**: axios request interceptor in `/app/frontend/src/lib/api.js`
+  appends `_t=<timestamp>` to every GET, preventing stale CDN / browser cache.
+- **Refresh button**: `filters.refresh()` now clears `kpiCache` in addition to
+  bumping `dataVersion`.
+- Pages wired: **Overview**, **Locations**, **Products**, **Footfall**,
+  **CEO Report**. Removed:
+  - Overview's fallback "derive KPIs from sales-summary sum".
+  - Locations's `groupTotals` reduce over `enriched` rows.
+  - CEO Report's `totalsRow` reduce over `countries` rows.
+- **Verified (iteration 16)**: for both Today (2026-04-23) and MTD
+  (2026-04-01 → 2026-04-23) ranges, `{total_sales, net_sales, total_orders,
+  total_units}` agree byte-for-byte on Overview + Locations + Products +
+  Footfall + CEO scorecard + CEO country TOTAL row.
+
+### Vivo Junction 2026-04-22 — data discrepancy note
+User validation target: "KES 462,793 / 33 orders".
+Upstream `/kpis` returns for `channel=Vivo Junction, date=2026-04-22`:
+```
+total_sales   : 477,275   (gross)
+gross_sales   : 411,444   (internal upstream name — actually = net)
+net_sales     : 411,444
+total_orders  : 33        ✅ matches
+total_units   : 102
+avg_basket    : 14,463
+```
+`/sales-summary` filtered to Vivo Junction on the same date returns the exact
+same figures. 33 orders matches. Neither 477,275 (gross) nor 411,444 (net)
+matches 462,793 — this figure does not appear in any upstream field. Possible
+explanations for user to clarify: (a) different calc period/timezone
+boundary, (b) a Vivo-internal adjusted number not exposed via the public BI
+API, (c) figure from a different source system. Pending user confirmation.
+
 ## Backlog / P1
 - CEO-report narrative: tune wording for new-styles + understock callouts.
 - Pagination / virtualization for inventory & SOR tables when row count > 500.
 - Persist filter state in URL query string (shareable links).
 - Optional CSV export for the footfall & new-styles tables.
+- **Persist filter state to localStorage/URL** so cross-page KPI consistency
+  survives a full page reload (currently only survives SPA navigation).
+- **Refactor `/app/backend/server.py`** (1800 lines) into modular routers:
+  `routers/sales.py`, `routers/inventory.py`, `routers/customers.py`,
+  `routers/analytics.py`.
+- Fix remaining Recharts `width(-1)` ResponsiveContainer warnings.
