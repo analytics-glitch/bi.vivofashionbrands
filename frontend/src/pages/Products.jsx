@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpis } from "@/lib/useKpis";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -27,12 +28,14 @@ const Products = () => {
   const [sor, setSor] = useState([]);
   const [stockSales, setStockSales] = useState([]);
   const [stsByCat, setStsByCat] = useState([]);
-  const [kpis, setKpis] = useState(null);
   const [top, setTop] = useState([]);
   const [newStyles, setNewStyles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+
+  // Shared KPI state — identical to Overview / Locations / CEO Report.
+  const { kpis, loading: kpisLoading, error: kpisError } = useKpis();
 
   useEffect(() => {
     let cancelled = false;
@@ -45,16 +48,14 @@ const Products = () => {
       api.get("/sor", { params: p }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: p }),
       api.get("/analytics/stock-to-sales-by-category", { params: p }),
-      api.get("/kpis", { params: p }),
       api.get("/top-skus", { params: { ...p, limit: 200 } }),
       api.get("/analytics/new-styles", { params: p }),
     ])
-      .then(([s, ss, cat, k, t, ns]) => {
+      .then(([s, ss, cat, t, ns]) => {
         if (cancelled) return;
         setSor(s.data || []);
         setStockSales(ss.data || []);
         setStsByCat(cat.data || []);
-        setKpis(k.data);
         setTop(t.data || []);
         setNewStyles(ns.data || []);
         touchLastUpdated();
@@ -117,10 +118,10 @@ const Products = () => {
         </div>
       </div>
 
-      {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
+      {(loading || kpisLoading) && <Loading />}
+      {(error || kpisError) && <ErrorBox message={error || kpisError} />}
 
-      {!loading && !error && kpis && (
+      {!loading && !kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="pr-kpi-styles" accent label="Styles Tracked" value={fmtNum(sor.length)} icon={Tag} showDelta={false} />

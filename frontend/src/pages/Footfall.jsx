@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpis } from "@/lib/useKpis";
 import {
   api,
   fmtKES,
@@ -44,38 +45,29 @@ const Footfall = () => {
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
   const [locations, setLocations] = useState([]);
-  const [authoritativeKpis, setAuthoritativeKpis] = useState(null); // for headline Orders / Sales
-  const [authoritativePrevKpis, setAuthoritativePrevKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Shared authoritative KPIs — identical across all pages.
+  const { kpis: authoritativeKpis, prevKpis: authoritativePrevKpis, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     const prevP = comparePeriod(dateFrom, dateTo, compareMode);
-    const country = countries.length === 1 ? countries[0] : undefined;
-    const channel = channels.length ? channels.join(",") : undefined;
     Promise.all([
       api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
       prevP
         ? api.get("/footfall", { params: { date_from: prevP.date_from, date_to: prevP.date_to } })
         : Promise.resolve({ data: [] }),
       api.get("/locations"),
-      api.get("/kpis", { params: { date_from: dateFrom, date_to: dateTo, country, channel } })
-        .catch(() => ({ data: null })),
-      prevP
-        ? api.get("/kpis", { params: { date_from: prevP.date_from, date_to: prevP.date_to, country, channel } })
-            .catch(() => ({ data: null }))
-        : Promise.resolve({ data: null }),
     ])
-      .then(([f, p, l, k, kp]) => {
+      .then(([f, p, l]) => {
         if (cancelled) return;
         setRows(f.data || []);
         setPrev(p.data || []);
         setLocations(l.data || []);
-        setAuthoritativeKpis(k.data);
-        setAuthoritativePrevKpis(kp.data);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -190,10 +182,10 @@ const Footfall = () => {
         )}
       </div>
 
-      {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
+      {(loading || kpisLoading) && <Loading />}
+      {(error || kpisError) && <ErrorBox message={error || kpisError} />}
 
-      {!loading && !error && (
+      {!loading && !kpisLoading && !error && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard

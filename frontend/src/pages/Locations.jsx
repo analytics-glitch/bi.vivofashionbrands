@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpis } from "@/lib/useKpis";
 import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -10,9 +11,11 @@ const Locations = () => {
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
+  // Shared KPI state — guarantees Total Sales/Orders/Units match Overview & CEO Report.
+  const { kpis, loading: kpisLoading, error: kpisError } = useKpis();
+
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
-  const [kpis, setKpis] = useState(null);
   const [footfall, setFootfall] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -33,16 +36,14 @@ const Locations = () => {
 
     Promise.all([
       api.get("/sales-summary", { params: p }),
-      api.get("/kpis", { params: p }),
       prevP
         ? api.get("/sales-summary", { params: prevP })
         : Promise.resolve({ data: [] }),
       api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
     ])
-      .then(([s, k, ps, ff]) => {
+      .then(([s, ps, ff]) => {
         if (cancelled) return;
         setRows(s.data || []);
-        setKpis(k.data);
         setPrevRows(ps.data || []);
         setFootfall(ff.data || []);
         touchLastUpdated();
@@ -101,15 +102,16 @@ const Locations = () => {
   }, [enriched]);
 
   const groupTotals = useMemo(() => {
-    const sales = enriched.reduce((s, r) => s + (r.total_sales || 0), 0);
-    const orders = enriched.reduce((s, r) => s + (r.orders || r.total_orders || 0), 0);
-    const units = enriched.reduce((s, r) => s + (r.units_sold || r.total_units_sold || 0), 0);
+    // Use authoritative API KPIs — never sum per-location rows locally.
+    const sales = kpis?.total_sales || 0;
+    const orders = kpis?.total_orders || 0;
+    const units = kpis?.total_units || 0;
     return {
-      abv: orders ? sales / orders : 0,
-      asp: units ? sales / units : 0,
+      abv: orders ? sales / orders : (kpis?.avg_basket_size || 0),
+      asp: units ? sales / units : (kpis?.avg_selling_price || 0),
       msi: orders ? units / orders : 0,
     };
-  }, [enriched]);
+  }, [kpis]);
 
   const sorted = useMemo(() => {
     return [...enriched].sort((a, b) => {
@@ -129,10 +131,10 @@ const Locations = () => {
         </h1>
       </div>
 
-      {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
+      {(loading || kpisLoading) && <Loading />}
+      {(error || kpisError) && <ErrorBox message={error || kpisError} />}
 
-      {!loading && !error && kpis && (
+      {!loading && !kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
             <KPICard

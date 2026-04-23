@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpisLMLY } from "@/lib/useKpis";
 import {
   api,
   fmtKES,
@@ -71,9 +72,10 @@ const CEOReport = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, dataVersion } = applied;
 
-  const [kpi, setKpi] = useState(null);
-  const [kpiLM, setKpiLM] = useState(null);
-  const [kpiLY, setKpiLY] = useState(null);
+  // Shared KPI state — THIS is the guarantee that CEO Report's Total Sales /
+  // Net Sales / Orders / Units are byte-identical to Overview.
+  const { kpis: kpi, kpisLM: kpiLM, kpisLY: kpiLY, loading: kpisLoading, error: kpisError } = useKpisLMLY();
+
   const [countries, setCountries] = useState([]);
   const [countriesLM, setCountriesLM] = useState([]);
   const [countriesLY, setCountriesLY] = useState([]);
@@ -99,9 +101,6 @@ const CEOReport = () => {
     const lyP = { date_from: ly.date_from, date_to: ly.date_to };
 
     Promise.all([
-      api.get("/kpis", { params: base }),
-      api.get("/kpis", { params: lmP }),
-      api.get("/kpis", { params: lyP }),
       api.get("/country-summary", { params: base }),
       api.get("/country-summary", { params: lmP }),
       api.get("/country-summary", { params: lyP }),
@@ -114,11 +113,8 @@ const CEOReport = () => {
       api.get("/footfall", { params: base }),
       api.get("/analytics/new-styles", { params: base }),
     ])
-      .then(([k, klm, kly, cs, cslm, csly, s, slm, t, r, ins, sc, ff, ns]) => {
+      .then(([cs, cslm, csly, s, slm, t, r, ins, sc, ff, ns]) => {
         if (cancelled) return;
-        setKpi(k.data);
-        setKpiLM(klm.data);
-        setKpiLY(kly.data);
         setCountries(cs.data || []);
         setCountriesLM(cslm.data || []);
         setCountriesLY(csly.data || []);
@@ -165,23 +161,22 @@ const CEOReport = () => {
   }, [sales]);
 
   const totalsRow = useMemo(() => {
-    const acc = { country: "TOTAL", total_sales: 0, orders: 0, units_sold: 0, total_returns: 0 };
-    const acc_prev_lm = { total_sales: 0 };
-    const acc_prev_ly = { total_sales: 0 };
-    for (const c of countries) {
-      acc.total_sales += c.total_sales || 0;
-      acc.orders += c.orders || 0;
-      acc.units_sold += c.units_sold || 0;
-      acc.total_returns += c.returns || 0;
-    }
-    for (const c of countriesLM) acc_prev_lm.total_sales += c.total_sales || 0;
-    for (const c of countriesLY) acc_prev_ly.total_sales += c.total_sales || 0;
-    acc.avg_basket = acc.orders ? acc.total_sales / acc.orders : 0;
-    acc.return_rate = kpi?.return_rate ?? 0;
-    acc.lm = acc_prev_lm.total_sales ? pctDelta(acc.total_sales, acc_prev_lm.total_sales) : null;
-    acc.ly = acc_prev_ly.total_sales ? pctDelta(acc.total_sales, acc_prev_ly.total_sales) : null;
+    // Authoritative totals — read directly from shared /kpis response.
+    // Per-country sums are displayed in the rows above; the TOTAL line MUST
+    // match the Overview and Locations headline cards exactly.
+    const acc = {
+      country: "TOTAL",
+      total_sales: kpi?.total_sales || 0,
+      orders: kpi?.total_orders || 0,
+      units_sold: kpi?.total_units || 0,
+      total_returns: kpi?.total_returns || 0,
+      avg_basket: kpi?.avg_basket_size || 0,
+      return_rate: kpi?.return_rate || 0,
+      lm: kpi && kpiLM ? pctDelta(kpi.total_sales, kpiLM.total_sales) : null,
+      ly: kpi && kpiLY ? pctDelta(kpi.total_sales, kpiLY.total_sales) : null,
+    };
     return acc;
-  }, [countries, countriesLM, countriesLY, kpi]);
+  }, [kpi, kpiLM, kpiLY]);
 
   const sortedSor = useMemo(
     () => [...sor].sort((a, b) => (b.sor_percent || 0) - (a.sor_percent || 0)),
@@ -251,10 +246,10 @@ const CEOReport = () => {
         </button>
       </div>
 
-      {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
+      {(loading || kpisLoading) && <Loading />}
+      {(error || kpisError) && <ErrorBox message={error || kpisError} />}
 
-      {!loading && !error && kpi && (
+      {!loading && !kpisLoading && !error && kpi && (
         <div
           className="print-page bg-white border border-border rounded-2xl p-8 md:p-10 max-w-[1000px] mx-auto"
           data-testid="ceo-report-content"

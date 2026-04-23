@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 16 — Cross-page KPI equality verification (Vivo BI dashboard). Tested Overview, Locations, Products, Footfall and CEO Report against the shared useKpis / useKpisLMLY hook. PRIMARY ASK (numeric equality across pages) PASSES for both the default 'Today' range and a custom MTD range (2026-04-01 → 2026-04-23). Cache-busting `_t` query param is appended to 100% of /api/kpis GET requests. CEO Report scorecard AND the Country table TOTAL row agree byte-for-byte with Overview's Total Sales / Net Sales / Orders / Units. No P0/P1 functional issues found; one usability nit around preset-click → other-page propagation when the tester uses hard navigation.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All pages", "issues": ["Recharts ResponsiveContainer still emits `The width(-1) and height(-1) of chart should be greater than 0` warnings — pre-existing from iteration 15, low priority."]}
+    ]
+  },
+  "test_results_detail": {
+    "today_range_2026_04_23": {
+      "overview": {"total_sales": "KES 700,459", "net_sales": "KES 571,213", "orders": 90, "units": 164},
+      "locations": {"sales": "KES 700,459", "orders": 90, "units": 164},
+      "products": {"sales": "KES 700,459", "units": 164},
+      "footfall": {"orders": 90},
+      "ceo_scorecard": {"total": "KES 700,459", "net": "KES 571,213", "orders": 90, "units": 164},
+      "ceo_country_total_row": {"total_sales": "KES 700,459", "orders": 90, "units": 164, "avg_basket": "KES 7,783", "returns": "KES 43,425"},
+      "all_match": true
+    },
+    "mtd_range_2026_04_01_to_2026_04_23": {
+      "overview": {"total_sales": "KES 69,143,710", "net_sales": "KES 59,360,831", "orders": 7909, "units": 16095},
+      "locations": {"sales": "KES 69,143,710", "orders": 7909, "units": 16095},
+      "products": {"sales": "KES 69,143,710", "units": 16095},
+      "footfall": {"orders": 7909},
+      "ceo_scorecard": {"total": "KES 69,143,710", "net": "KES 59,360,831", "orders": 7909, "units": 16095},
+      "ceo_country_total_row": {"total_sales": "KES 69,143,710", "orders": 7909, "units": 16095, "avg_basket": "KES 8,742", "returns": "KES 1,785,104"},
+      "all_match": true
+    },
+    "cache_busting": {"total_kpis_requests_observed": 16, "with_t_param": 16, "ratio": "100%"},
+    "console_errors": "None — only pre-existing Recharts width/height warnings (iteration 15 already flagged).",
+    "spa_nav_vs_hard_nav": "Filter context (date range etc.) is preserved only across SPA (React Router <Link>) navigation. Using `page.goto(/locations)` triggers a fresh SPA boot and resets applied filters to the default preset (Today). This is expected React Context behaviour and matches real user interaction (they click nav links)."
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(Optional / LOW) In Filters context, persist the date range + compareMode to localStorage or URL search params so the filter survives page refresh and direct URL hits (currently it resets to 'Today' on reload).",
+    "(LOW) Fix Recharts ResponsiveContainer width(-1) warnings on customer-frequency-chart and any other charts lacking explicit min dimensions — still pending from iteration 15."
+  ],
+  "critical_code_review_comments": [
+    "useKpis caches by (date_from, date_to, country, channel, dataVersion) — good. But `fetchKpis` sends _v as `params._v` via axios.get, AND the global interceptor adds `_t`. Backend ignores _v and _t, so it is effectively just a cache-key. Works, but slightly confusing; consider renaming the interceptor-level param to `cb` and stripping `_v` from the URL.",
+    "filters.jsx defaults to preset 'today' on every mount; since FiltersProvider lives at app root it survives SPA nav, but a full reload wipes it. Persisting to localStorage/sessionStorage would make the 'same numbers everywhere' story also hold across browser refreshes.",
+    "When the user clicks the 'This Month' preset chip, setPreset calls setPresetKey then setDateFrom/setDateTo synchronously — two renders, two downstream useEffect runs, two /kpis calls in quick succession. Not a bug (cache deduplicates), but worth batching via useReducer for tidier React profiler traces.",
+    "useKpis.js line 54 mutates `kpiCache.get(key).data = r.data` directly (works but bypasses Map.set contract). Prefer `kpiCache.set(key, { ...entry, data: r.data })` for clarity and immutability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% on the primary ask — cross-page KPI equality verified for two different date ranges; cache-busting verified 100%."},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Cross-page KPI equality works end-to-end when the user navigates via SPA links. Always use `await page.click('a:has-text(\"Locations\")')` style, NOT `page.goto(...)`, when validating shared-filter behaviour — `page.goto` triggers a full SPA reboot and resets the in-memory filter context, producing false P0s. Cache-bust `_t` is applied globally by the axios request interceptor in /app/frontend/src/lib/api.js, so every GET (not just /kpis) gets it — verified 16/16 requests carry _t=.",
+  "rca_of_the_issue": "No live bug. Initial test run used `page.goto(/locations)` after changing the date on Overview; this full-page reload resets the FiltersProvider context to its default 'today' preset, causing Locations/Products/Footfall/CEO to show the Today numbers while Overview still had MTD numbers in-memory. Retested with SPA click navigation — all five pages then show identical KPIs for the same filter state (both Today and 1–23 Apr ranges). Root cause of the initial false-positive: React Context state is not persisted. Mitigation (nice-to-have): persist `dateFrom/dateTo/compareMode/countries/channels` to localStorage or URL params in filters.jsx so even full reloads keep the numbers in sync."
+}

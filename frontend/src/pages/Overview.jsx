@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpis } from "@/lib/useKpis";
 import {
   api,
   fmtKES,
@@ -65,8 +66,9 @@ const Overview = () => {
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
-  const [kpis, setKpis] = useState(null);
-  const [kpisPrev, setKpisPrev] = useState(null);
+  // Shared KPI state — identical values on every page for the same filters.
+  const { kpis, prevKpis: kpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
+
   const [countrySummary, setCountrySummary] = useState([]);
   const [sales, setSales] = useState([]);
   const [dailyByCountry, setDailyByCountry] = useState({});
@@ -78,14 +80,12 @@ const Overview = () => {
   const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [degraded, setDegraded] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setDegraded(null);
     const p = buildParams(filters);
     const prev = comparePeriod(dateFrom, dateTo, compareMode);
 
@@ -100,18 +100,14 @@ const Overview = () => {
         )
       : [];
 
-    const safe = (p) => p.then((r) => ({ ok: true, data: r?.data })).catch((e) => ({ ok: false, error: e }));
+    const safe = (pr) => pr.then((r) => ({ ok: true, data: r?.data })).catch((e) => ({ ok: false, error: e }));
 
     Promise.all([
-      safe(api.get("/kpis", { params: p })),
       safe(api.get("/country-summary", { params: { date_from: dateFrom, date_to: dateTo } })),
       safe(api.get("/sales-summary", { params: p })),
       safe(api.get("/sor", { params: p })),
       safe(api.get("/subcategory-sales", { params: p })),
       safe(api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } })),
-      prev
-        ? safe(api.get("/kpis", { params: buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to }) }))
-        : Promise.resolve({ ok: true, data: null }),
       Promise.all(dailyCalls.map(safe)),
       Promise.all(dailyPrevCalls.map(safe)),
       prev
@@ -119,40 +115,8 @@ const Overview = () => {
         : Promise.resolve({ ok: true, data: [] }),
       safe(api.get("/locations")),
     ])
-      .then(([k, cs, s, sor, sc, ff, kp, daily, dailyP, ffp, locs]) => {
+      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs]) => {
         if (cancelled) return;
-        // If upstream /kpis is down, derive the KPI block from /sales-summary
-        // so the rest of the page still renders (all the other endpoints still
-        // work independently). Set a non-blocking banner via setDegraded().
-        let kpiData = k.ok ? k.data : null;
-        if (!kpiData && s.ok && Array.isArray(s.data) && s.data.length) {
-          const sum = s.data.reduce((acc, r) => {
-            acc.total_sales += r.total_sales || 0;
-            acc.total_orders += r.orders || r.total_orders || 0;
-            acc.total_units += r.units_sold || 0;
-            acc.total_returns += r.returns || 0;
-            return acc;
-          }, { total_sales: 0, total_orders: 0, total_units: 0, total_returns: 0, gross_sales: 0 });
-          sum.avg_basket_size = sum.total_orders ? sum.total_sales / sum.total_orders : 0;
-          sum.avg_selling_price = sum.total_units ? sum.total_sales / sum.total_units : 0;
-          sum.return_rate = sum.total_sales ? (sum.total_returns / sum.total_sales * 100) : 0;
-          sum.gross_sales = sum.total_sales + sum.total_returns;
-          kpiData = sum;
-        }
-        if (!kpiData) {
-          // Final fallback: minimal shape so rendering doesn't crash.
-          kpiData = {
-            total_sales: 0, gross_sales: 0, total_orders: 0, total_units: 0,
-            total_returns: 0, avg_basket_size: 0, avg_selling_price: 0, return_rate: 0,
-          };
-        }
-        setKpis(kpiData);
-        if (!k.ok) {
-          const detail = k.error?.response?.data?.detail || k.error?.message || "Upstream error";
-          setDegraded(`Upstream KPIs unavailable (${detail}). Showing values derived from sales-summary instead.`);
-        } else {
-          setDegraded(null);
-        }
         setCountrySummary(cs.ok ? cs.data || [] : []);
         setSales(s.ok ? s.data || [] : []);
         setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
@@ -160,7 +124,6 @@ const Overview = () => {
         setFootfall(ff.ok ? ff.data || [] : []);
         setFootfallPrev(ffp?.ok ? ffp.data || [] : []);
         setLocations(locs?.ok ? locs.data || [] : []);
-        setKpisPrev(kp?.ok ? kp.data || null : null);
         const dailyOk = countriesToChart.map((c, i) => [c, daily[i]?.ok ? daily[i].data : []]);
         const dailyPOk = dailyPrevCalls.length
           ? countriesToChart.map((c, i) => [c, dailyP[i]?.ok ? dailyP[i].data : []])
@@ -177,6 +140,7 @@ const Overview = () => {
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  const degraded = kpisError ? `Upstream KPIs unavailable (${kpisError}). Other sections still rendered below.` : null;
 
   const top15 = useMemo(() => {
     return [...sales]
@@ -358,7 +322,7 @@ const Overview = () => {
         </p>
       </div>
 
-      {loading && <Loading label="Aggregating group KPIs…" />}
+      {(loading || kpisLoading) && <Loading label="Aggregating group KPIs…" />}
       {error && <ErrorBox message={error} />}
       {degraded && (
         <div
@@ -369,7 +333,7 @@ const Overview = () => {
         </div>
       )}
 
-      {!loading && !error && kpis && (
+      {!loading && !kpisLoading && !error && kpis && (
         <>
           <DataFreshness />
           <SalesProjection

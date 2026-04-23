@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from "react";
 import { datePresets } from "@/lib/api";
 import { api } from "@/lib/api";
+import { invalidateKpis } from "@/lib/useKpis";
 
 const FiltersContext = createContext(null);
 
@@ -28,13 +29,15 @@ export const FiltersProvider = ({ children }) => {
   };
 
   const refresh = useCallback(async () => {
-    // Bust server-side caches (inventory fan-out etc.) then bump the
-    // client-side dataVersion to force every page to re-fetch.
+    // Bust server-side caches (inventory fan-out etc.), clear the shared
+    // in-memory KPI cache, then bump the client-side dataVersion to force
+    // every page to re-fetch.
     try {
       await api.post("/admin/cache-clear");
     } catch {
       /* non-fatal — still bump dataVersion */
     }
+    invalidateKpis();
     setDataVersion((v) => v + 1);
   }, []);
   const touchLastUpdated = useCallback(() => setLastUpdated(new Date()), []);
