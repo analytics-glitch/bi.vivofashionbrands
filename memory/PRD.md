@@ -124,6 +124,23 @@ country, top store, return rate vs LM, avg basket delta.
 ```
 
 ## Changelog
+- **v8.2 (Feb 2026) — VAT logic removed + churn relabel**
+  - **VAT toggle & suffixes removed globally.** The `excl./incl. VAT` filter
+    bar control (previously `v=e|i` URL param), the per-country rate helpers
+    (`/app/frontend/src/lib/vat.js` — deleted), the "excl./incl. VAT"
+    suffixes under money tiles and all VAT-specific tooltip formulas have
+    been removed. All monetary values are displayed as-is from upstream
+    (excl. VAT). Affected: `FilterBar.jsx`, `filters.jsx` (no more vatMode),
+    `Overview.jsx`, `Locations.jsx`, `KPICard.jsx` (`suffix` prop kept for
+    future use but unused). Customers/Products/Inventory/CEOReport carried
+    no VAT references.
+  - **Churn wording aligned to "3 months from today".** Same 90-day rolling
+    logic underneath; relabelled across Customers page: KPI subtitles now
+    read "3-month rolling · as of today", churned section subtitle says
+    "no purchase in the last 3 months", fallback-source label says
+    "cumulative (upstream 3-month endpoint down)". Formula tooltip updated
+    to "last purchase more than 3 months (90 days) ago".
+
 - **v8.1 (Apr 2026) — bugfix + polish**
   - **Orange background bumped**: body bg is now `#fed7aa` (Tailwind orange-200,
     clearly visible), border `#fdba74`.

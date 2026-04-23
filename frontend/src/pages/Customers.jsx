@@ -317,8 +317,8 @@ const Customers = () => {
             <KPICard
               testId="kpi-churned-count"
               label="Churned Customers"
-              sub={cust.churn_source === "cumulative_fallback" ? "cumulative (upstream 90-day endpoint down)" : "90-day rolling count"}
-              formula="Count of customers whose LAST purchase was more than 90 days ago (as of today). Source: /churned-customers?days=90 — falls back to the cumulative count from /customers when the 90-day endpoint is unavailable upstream."
+              sub={cust.churn_source === "cumulative_fallback" ? "cumulative (upstream 3-month endpoint down)" : "3-month rolling count"}
+              formula="Count of customers whose LAST purchase was more than 3 months (90 days) ago, as of today. Source: /churned-customers?days=90 — falls back to the cumulative count from /customers when the upstream endpoint is unavailable."
               value={fmtNum(cust.churned_last_90d || 0)}
               icon={UserMinus}
               higherIsBetter={false}
@@ -327,12 +327,12 @@ const Customers = () => {
             <KPICard
               testId="kpi-churn"
               label="Churn Rate"
-              sub="90-day rolling · as of today"
+              sub="3-month rolling · as of today"
               formula={
-                "Churn Rate = churned_90d ÷ (active_in_period + churned_90d).\n\n" +
-                "A customer is considered CHURNED if their LAST purchase was more than 90 days ago, " +
+                "Churn Rate = churned_3m ÷ (active_in_period + churned_3m).\n\n" +
+                "A customer is considered CHURNED if their LAST purchase was more than 3 months (90 days) ago, " +
                 "measured from TODAY (not from the selected date-range end). This number is therefore " +
-                "independent of the date filter — it is a rolling 90-day health metric."
+                "independent of the date filter — it is a rolling 3-month health metric."
               }
               value={fmtPct(cust.churn_rate, 2)}
               icon={UserMinus}
@@ -486,7 +486,7 @@ const Customers = () => {
           <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
             <SectionTitle
               title={`Churned customers · ${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""}`}
-              subtitle="Customers with no purchase in the last 90 days. Sorted by most recent churn first. Paginated · 25 rows per page."
+              subtitle="Customers with no purchase in the last 3 months. Sorted by most recent churn first. Paginated · 25 rows per page."
             />
             {churned.length === 0 ? (
               <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">

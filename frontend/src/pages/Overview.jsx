@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCategory";
-import { applyVat, vatSuffix, effectiveVatRate } from "@/lib/vat";
 import {
   api,
   fmtKES,
@@ -63,7 +62,7 @@ const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, vatMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   // Shared KPI state — identical values on every page for the same filters.
@@ -83,15 +82,10 @@ const Overview = () => {
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
 
-  // --- VAT adjustment — defined early because many useMemo() blocks below
-  // reference `adj` / `vatRate` (temporal-dead-zone guarantees).
-  // Every monetary KPI arrives excl. VAT from upstream. When the user
-  // toggles "incl. VAT" we apply per-country rates using the active
-  // country mix (country_summary) for group-level values.
-  const vatRate = useMemo(() => effectiveVatRate(countrySummary), [countrySummary]);
-  const adj = (v) => applyVat(v, vatMode, { singleRate: vatRate });
-  const vatTip = (base) => `${base}\n\nVAT: ${vatMode === "incl" ? `included (${(vatRate * 100).toFixed(1)}% effective group rate — weighted by country mix)` : "excluded (net of VAT — CFO default)"}`;
-  const suffix = vatSuffix(vatMode);
+  // VAT logic has been removed per product decision — all monetary values
+  // rendered as-is from upstream (excl. VAT). `adj` is a no-op identity to
+  // minimise diff in downstream aggregations / useMemo blocks.
+  const adj = (v) => Number(v || 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,7 +187,7 @@ const Overview = () => {
       delta_pct: r.key === "today" || !t ? null : ((adj(r.total_sales) - adj(t)) / adj(t)) * 100,
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairedDays, vatMode, vatRate, compareMode]);
+  }, [pairedDays, compareMode]);
 
   // Country sales — sorted descending bar chart. ALWAYS include Kenya, Uganda
   // and Rwanda (even with zero sales) so users can eyeball markets equally.
@@ -230,7 +224,7 @@ const Overview = () => {
       .map((r) => ({ ...r, pct: (r.total_sales / total) * 100 }))
       .sort((a, b) => b.total_sales - a.total_sales);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countrySummary, vatMode, vatRate]);
+  }, [countrySummary]);
 
   // Channel split — derives Retail / Online / Wholesale buckets from the
   // per-POS /sales-summary rows. Mapping rule is kept simple & explicit.
@@ -259,7 +253,7 @@ const Overview = () => {
       }))
       .sort((a, b2) => b2.total_sales - a.total_sales);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sales, vatMode, vatRate]);
+  }, [sales]);
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const compareLbl = compareMode === "yesterday" ? "vs Yd" : compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
@@ -277,7 +271,7 @@ const Overview = () => {
       gross_sales: adj(rawKpis.gross_sales),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawKpis, vatMode, vatRate]);
+  }, [rawKpis]);
 
   const kpisPrev = useMemo(() => {
     if (!rawKpisPrev) return null;
@@ -290,7 +284,7 @@ const Overview = () => {
       avg_selling_price: adj(rawKpisPrev.avg_selling_price),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawKpisPrev, vatMode, vatRate]);
+  }, [rawKpisPrev]);
 
   // --- Range-length driven chart type for Daily Sales Trend ---
   // ≤1 day → paired bars (Today / SDLW / SDLM / SDLY-if-LY).
@@ -407,7 +401,7 @@ const Overview = () => {
   const dailyTotalSeries = useMemo(
     () => dailyTotalSeriesRaw.map((r) => ({ ...r, total: adj(r.total), total_prev: adj(r.total_prev) })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dailyTotalSeriesRaw, vatMode, vatRate]
+    [dailyTotalSeriesRaw]
   );
 
   const sortedStyles = useMemo(
@@ -501,12 +495,10 @@ const Overview = () => {
           />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
-              suffix={suffix}
-              formula={vatTip("Total Sales = Invoiced · gross of returns · excl. VAT by default.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope.")}
+              formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
               delta={delta("total_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={fmtKES(kpis.net_sales)} icon={Coins}
-              suffix={suffix}
-              formula={vatTip("Net Sales = Total Sales − Returns − VAT.\n= SUM(invoice_line_value) − SUM(return_value) − VAT, with VAT applied per-country (KE 16% · UG 18% · RW 18%).")}
+              formula="Net Sales = Total Sales − Returns."
               delta={delta("net_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-orders" label="Total Orders" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="Total Orders = COUNT(DISTINCT invoice_id) in scope."
@@ -518,13 +510,11 @@ const Overview = () => {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders"
-              suffix={suffix}
-              formula={vatTip("Average Basket Value = Total Sales ÷ Total Orders.")}
+              formula="Average Basket Value = Total Sales ÷ Total Orders."
               value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
               delta={delta("avg_basket_size")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units"
-              suffix={suffix}
-              formula={vatTip("Average Selling Price = Total Sales ÷ Units Sold.")}
+              formula="Average Selling Price = Total Sales ÷ Units Sold."
               value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
               delta={delta("avg_selling_price")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders"
@@ -536,8 +526,7 @@ const Overview = () => {
               value={fmtPct(kpis.return_rate, 2)} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
-              suffix={suffix}
-              formula={vatTip("Returns = Refunds, attributed to the original sale date (not the refund date).")}
+              formula="Returns = Refunds, attributed to the original sale date (not the refund date)."
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
           </div>
 
@@ -615,7 +604,6 @@ const Overview = () => {
                   </ResponsiveContainer>
                 </div>
               )}
-              <div className="mt-2 text-[10.5px] text-muted/70">{suffix}</div>
 
               <div className="mt-6" data-testid="chart-channel-split">
                 <SectionTitle title="Channel split" subtitle="Retail · Online · Wholesale" />
@@ -741,7 +729,6 @@ const Overview = () => {
                 </div>
               )
             )}
-            <div className="mt-1 text-[10.5px] text-muted/70">{suffix}</div>
           </div>
 
           <div className="card-white p-5" data-testid="category-chart">
