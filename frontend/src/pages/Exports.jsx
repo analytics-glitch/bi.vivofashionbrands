@@ -27,12 +27,12 @@ const Exports = () => {
   const [includeNonMerch, setIncludeNonMerch] = useState(false);
   const [page, setPage] = useState(0);
 
-  // Debounce search 250ms
+  // Debounce search 120ms
   useEffect(() => {
     const t = setTimeout(() => {
       setSearch(searchInput.trim().toLowerCase());
       setPage(0);
-    }, 250);
+    }, 120);
     return () => clearTimeout(t);
   }, [searchInput]);
 
@@ -57,9 +57,19 @@ const Exports = () => {
     // eslint-disable-next-line
   }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
-  // Attach computed category on every row so it can be filtered & exported.
+  // Attach computed category AND a pre-computed lowercase search blob to
+  // every row so search filtering costs ONE includes() per row per
+  // keystroke (instead of concat+lowercase+3x-includes on 30k rows).
   const enriched = useMemo(
-    () => raw.map((r) => ({ ...r, category: categoryFor(r.product_type) })),
+    () => raw.map((r) => ({
+      ...r,
+      category: categoryFor(r.product_type),
+      _search: (
+        (r.sku || "") + "\t" +
+        (r.product_name || "") + "\t" +
+        (r.style_name || "")
+      ).toLowerCase(),
+    })),
     [raw]
   );
 
@@ -93,16 +103,18 @@ const Exports = () => {
 
   const filtered = useMemo(() => {
     const q = search;
+    const locSet = locSel.length ? new Set(locSel) : null;
+    const countrySet = countrySel.length ? new Set(countrySel) : null;
+    const brandSet = brandSel.length ? new Set(brandSel) : null;
+    const catSet = catSel.length ? new Set(catSel) : null;
+    const subcatSet = subcatSel.length ? new Set(subcatSel) : null;
     return scope.filter((r) => {
-      if (locSel.length && !locSel.includes(r.location_name)) return false;
-      if (countrySel.length && !countrySel.includes(r.country)) return false;
-      if (brandSel.length && !brandSel.includes(r.brand)) return false;
-      if (catSel.length && !catSel.includes(r.category)) return false;
-      if (subcatSel.length && !subcatSel.includes(r.product_type)) return false;
-      if (q) {
-        const hay = `${r.sku || ""} ${r.product_name || ""} ${r.style_name || ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
+      if (locSet && !locSet.has(r.location_name)) return false;
+      if (countrySet && !countrySet.has(r.country)) return false;
+      if (brandSet && !brandSet.has(r.brand)) return false;
+      if (catSet && !catSet.has(r.category)) return false;
+      if (subcatSet && !subcatSet.has(r.product_type)) return false;
+      if (q && !r._search.includes(q)) return false;
       return true;
     });
   }, [scope, locSel, countrySel, brandSel, catSel, subcatSel, search]);

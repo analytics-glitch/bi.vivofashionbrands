@@ -46,7 +46,7 @@ const Inventory = () => {
   const [typeFilter, setTypeFilter] = useState("");
 
   useEffect(() => {
-    const t = setTimeout(() => setSearch(searchInput.trim()), 250);
+    const t = setTimeout(() => setSearch(searchInput.trim()), 120);
     return () => clearTimeout(t);
   }, [searchInput]);
 
@@ -123,30 +123,38 @@ const Inventory = () => {
     return out;
   }, [merchInv]);
 
+  // Pre-enriched rows with a pre-computed lowercase `_search` blob so every
+  // keystroke costs ONE String.includes call per row instead of four.
+  const enrichedInv = useMemo(() => {
+    return merchInv.map((r) => {
+      const style = r.style_name || r.product_name;
+      const canonicalType = styleCanonicalType.get(style);
+      const _search = (
+        (r.product_name || "") + "\t" +
+        (r.style_name || "") + "\t" +
+        (r.sku || "") + "\t" +
+        (r.barcode || "")
+      ).toLowerCase();
+      return canonicalType ? { ...r, product_type: canonicalType, _search } : { ...r, _search };
+    });
+  }, [merchInv, styleCanonicalType]);
+
   // Apply country, location, brand, product-type AND search (product / sku /
   // style / barcode) filters. This drives every downstream aggregate.
   const filteredInv = useMemo(() => {
     const q = search.toLowerCase();
-    return merchInv
-      .map((r) => {
-        const style = r.style_name || r.product_name;
-        const canonicalType = styleCanonicalType.get(style);
-        return canonicalType ? { ...r, product_type: canonicalType } : r;
-      })
-      .filter((r) => {
-        if (countries.length > 1 && !countries.map((c) => c.toLowerCase()).includes((r.country || "").toLowerCase())) return false;
-        if (channels.length && !channels.includes(r.location_name)) return false;
-        if (brandFilter && r.brand !== brandFilter) return false;
-        if (typeFilter && r.product_type !== typeFilter) return false;
-        if (!q) return true;
-        return (
-          (r.product_name || "").toLowerCase().includes(q) ||
-          (r.style_name || "").toLowerCase().includes(q) ||
-          (r.sku || "").toLowerCase().includes(q) ||
-          (r.barcode || "").toLowerCase().includes(q)
-        );
-      });
-  }, [merchInv, countries, channels, brandFilter, typeFilter, styleCanonicalType, search]);
+    const hasCountryFilter = countries.length > 1;
+    const countriesLC = hasCountryFilter ? countries.map((c) => c.toLowerCase()) : null;
+    const channelsSet = channels.length ? new Set(channels) : null;
+    return enrichedInv.filter((r) => {
+      if (countriesLC && !countriesLC.includes((r.country || "").toLowerCase())) return false;
+      if (channelsSet && !channelsSet.has(r.location_name)) return false;
+      if (brandFilter && r.brand !== brandFilter) return false;
+      if (typeFilter && r.product_type !== typeFilter) return false;
+      if (!q) return true;
+      return r._search.includes(q);
+    });
+  }, [enrichedInv, countries, channels, brandFilter, typeFilter, search]);
 
   // When any filter (search/brand/type) is active, derive the visible
   // location & subcategory set and restrict the aggregated charts/tables to

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { GoogleLogo, Envelope, Lock, SignIn, Warning } from "@phosphor-icons/react";
@@ -14,6 +14,8 @@ const Login = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [domains, setDomains] = useState([]);
+  const emailRef = useRef(null);
+  const passwordRef = useRef(null);
 
   useEffect(() => {
     api.get("/auth/allowed-domains").then((r) => setDomains(r.data.domains || [])).catch(() => {});
@@ -26,10 +28,24 @@ const Login = () => {
     setSubmitting(true);
     setError(null);
     try {
-      await loginWithPassword(email.trim(), password);
+      // iOS Safari password-manager autofill often sets input.value WITHOUT
+      // firing React's onChange, so state is stale/empty. Read the live DOM
+      // value as a fallback before submitting.
+      const em = (email.trim() || emailRef.current?.value?.trim() || "").trim();
+      const pw = password || passwordRef.current?.value || "";
+      if (!em || !pw) {
+        setError("Please enter both email and password.");
+        return;
+      }
+      await loginWithPassword(em, pw);
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err?.response?.data?.detail || "Login failed");
+      // Detect Safari Private-mode storage failure so we can explain it.
+      const msg = err?.response?.data?.detail ||
+        (err?.name === "QuotaExceededError"
+          ? "Your browser is blocking session storage (iOS Safari Private mode). Turn off Private Browsing and try again."
+          : "Login failed");
+      setError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -79,34 +95,49 @@ const Login = () => {
 
         <form onSubmit={onSubmit} className="space-y-3" data-testid="login-form">
           <div>
-            <label className="text-[11px] font-semibold text-muted uppercase tracking-wider">Email</label>
+            <label htmlFor="login-email" className="text-[11px] font-semibold text-muted uppercase tracking-wider">Email</label>
             <div className="mt-1 relative">
               <Envelope size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input
+                id="login-email"
+                name="email"
+                ref={emailRef}
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                onBlur={(e) => setEmail(e.target.value)}
                 required
                 placeholder="you@company.com"
                 data-testid="login-email"
-                className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border focus:border-brand outline-none text-[14px]"
-                autoComplete="email"
+                // font-size 16px prevents iOS auto-zoom on focus.
+                className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border focus:border-brand outline-none text-[16px]"
+                autoComplete="username email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="email"
+                enterKeyHint="next"
               />
             </div>
           </div>
           <div>
-            <label className="text-[11px] font-semibold text-muted uppercase tracking-wider">Password</label>
+            <label htmlFor="login-password" className="text-[11px] font-semibold text-muted uppercase tracking-wider">Password</label>
             <div className="mt-1 relative">
               <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input
+                id="login-password"
+                name="password"
+                ref={passwordRef}
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                onBlur={(e) => setPassword(e.target.value)}
                 required
                 placeholder="••••••••"
                 data-testid="login-password"
-                className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border focus:border-brand outline-none text-[14px]"
+                className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border focus:border-brand outline-none text-[16px]"
                 autoComplete="current-password"
+                enterKeyHint="go"
               />
             </div>
           </div>

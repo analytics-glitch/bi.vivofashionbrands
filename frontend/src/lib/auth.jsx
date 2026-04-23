@@ -3,7 +3,16 @@ import { api } from "@/lib/api";
 
 /**
  * Auth context — session_token stored in httpOnly cookie (set by backend)
- * AND in localStorage for axios Authorization: Bearer fallback (email/pwd flow).
+ * AND in a resilient storage fallback for the Authorization: Bearer flow.
+ *
+ * iOS Safari notes:
+ *   • Safari on iOS Private mode throws on `localStorage.setItem` (quota).
+ *   • Safari ITP blocks third-party `SameSite=None` cookies aggressively,
+ *     so the Bearer fallback is the REAL auth path on iOS. Losing the
+ *     token to a silent storage error breaks login entirely.
+ *
+ * Strategy: localStorage → sessionStorage → in-memory. Always wrapped
+ * in try/catch. `getStoredToken` reads from all three.
  *
  * REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
  */
@@ -11,8 +20,40 @@ const AuthContext = createContext(null);
 
 const TOKEN_KEY = "vivo_bi_token";
 
-export const getStoredToken = () => localStorage.getItem(TOKEN_KEY);
-export const setStoredToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+// In-memory fallback for Safari Private mode where both localStorage AND
+// sessionStorage setItem throw a QuotaExceededError.
+let _memoryToken = null;
+
+const safeSet = (store, key, value) => {
+  try {
+    if (value == null) store.removeItem(key);
+    else store.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const safeGet = (store, key) => {
+  try {
+    return store.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+export const getStoredToken = () =>
+  safeGet(window.localStorage, TOKEN_KEY) ||
+  safeGet(window.sessionStorage, TOKEN_KEY) ||
+  _memoryToken ||
+  null;
+
+export const setStoredToken = (t) => {
+  _memoryToken = t || null;
+  // Try persistent storage first, then session, then rely on in-memory.
+  const ok = safeSet(window.localStorage, TOKEN_KEY, t);
+  if (!ok) safeSet(window.sessionStorage, TOKEN_KEY, t);
+};
 
 // axios interceptor: attach Bearer header on every request.
 api.interceptors.request.use((config) => {
