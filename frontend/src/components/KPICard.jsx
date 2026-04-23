@@ -1,4 +1,5 @@
 import React from "react";
+import { Info } from "@phosphor-icons/react";
 import { fmtDelta } from "@/lib/api";
 
 const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => {
@@ -46,14 +47,32 @@ export const KPICard = ({
   deltaLabel = null,
   higherIsBetter = true,
   showDelta = true,
+  // NEW — docs/formula tooltips on top right (ⓘ icon). Hover shows the
+  // formula verbatim; the whole card also carries the formula as a native
+  // tooltip (`title`) so users can read it anywhere.
+  formula = null,
+  // NEW — small muted suffix UNDER the value, e.g. "excl. VAT".
+  suffix = null,
 }) => {
+  const titleTip = formula || (typeof value === "string" ? value : undefined);
   return (
     <div
       className={`${accent ? "card-accent" : "card-white"} ${small ? "p-3 sm:p-4" : "p-3.5 sm:p-5"} hover-lift fade-in`}
       data-testid={testId}
+      title={titleTip}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="eyebrow">{label}</div>
+        <div className="eyebrow flex items-center gap-1">
+          <span>{label}</span>
+          {formula && (
+            <Info
+              size={11}
+              weight="bold"
+              className={`${accent ? "text-white/60" : "text-muted"} cursor-help`}
+              data-testid={`${testId}-info`}
+            />
+          )}
+        </div>
         {Icon && (
           <Icon
             size={15}
@@ -64,11 +83,18 @@ export const KPICard = ({
       </div>
       <div
         className={`mt-3 kpi-value num ${small ? "text-[16px] sm:text-[20px]" : "text-[18px] sm:text-[22px] md:text-[28px]"} break-words leading-tight`}
-        title={typeof value === "string" ? value : undefined}
         data-testid={`${testId}-value`}
       >
         {value}
       </div>
+      {suffix && (
+        <div
+          className={`mt-0.5 text-[10.5px] font-medium tracking-wide ${accent ? "text-white/55" : "text-muted/70"}`}
+          data-testid={`${testId}-suffix`}
+        >
+          {suffix}
+        </div>
+      )}
       {sub && (
         <div
           className={`mt-1 text-[11px] ${accent ? "text-white/60" : "text-muted"}`}

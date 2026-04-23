@@ -279,8 +279,16 @@ const Customers = () => {
 
           {/* ---- KPIs with vs LM / vs LY deltas ---- */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="card-accent p-3.5 sm:p-5" data-testid="kpi-total">
-              <div className="flex items-center gap-2"><Users size={16} /><div className="eyebrow text-white/80">Total Customers</div></div>
+            <div
+              className="card-accent p-3.5 sm:p-5"
+              data-testid="kpi-total"
+              title="Active customers in period = customers with at least one transaction in the selected date range. Changes day-to-day with the filter."
+            >
+              <div className="flex items-center gap-2">
+                <Users size={16} />
+                <div className="eyebrow text-white/80">Active customers (in period)</div>
+                <span title="Customers with at least one transaction in the selected period. Differs from 'customers on file' (stock count — not yet wired upstream)." className="text-white/60 text-[10px] cursor-help">ⓘ</span>
+              </div>
               <div className="mt-2 text-[22px] sm:text-[28px] font-extrabold num leading-tight">{fmtNum(cust.total_customers)}</div>
               {compareLbl && <div className="mt-1"><Delta curr={cust.total_customers} prev={custPrev?.total_customers} /></div>}
             </div>
@@ -306,7 +314,19 @@ const Customers = () => {
               )}
             </div>
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
-            <KPICard testId="kpi-churn" label="Churn Rate" sub={cust.churned_last_90d > 0 ? "last 90 days" : "all-time cumulative"} value={fmtPct(cust.churn_rate, 2)} icon={UserMinus} higherIsBetter={false} showDelta={false} />
+            <KPICard
+              testId="kpi-churn"
+              label="Churn Rate"
+              sub={cust.period_length_days ? `last ${cust.period_length_days} days${cust.period_ends_today ? "" : " (approx.)"}` : "all-time cumulative"}
+              formula={"Churn Rate (period) = churned_in_period ÷ (active_in_period + churned_in_period). " +
+                "Churned in period = customers whose last purchase was more than N days ago where N = length of the selected window. " +
+                "When the selected range does not end today, the figure is approximate because the upstream /churned-customers " +
+                "endpoint is always computed as-of now."}
+              value={fmtPct(cust.churn_rate, 2)}
+              icon={UserMinus}
+              higherIsBetter={false}
+              showDelta={false}
+            />
           </div>
 
           {/* ---- Period comparison table ---- */}

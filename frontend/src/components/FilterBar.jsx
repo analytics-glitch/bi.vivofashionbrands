@@ -138,6 +138,7 @@ const FilterBar = () => {
           </span>
           {[
             ["none", "None"],
+            ["yesterday", "vs Yd"],
             ["last_month", "vs LM"],
             ["last_year", "vs LY"],
           ].map(([k, lbl]) => (
@@ -153,6 +154,35 @@ const FilterBar = () => {
               }`}
             >
               {lbl}
+            </button>
+          ))}
+        </div>
+
+        {/* VAT toggle — all monetary KPIs / charts / tables switch atomically */}
+        <div
+          className="flex items-center gap-1 ml-auto"
+          title="VAT stance — default Net of VAT. Per-country rates: KE 16%, UG 18%, RW 18%."
+          data-testid="vat-toggle"
+        >
+          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-wider mr-1">
+            VAT:
+          </span>
+          {[
+            ["excl", "excl."],
+            ["incl", "incl."],
+          ].map(([k, lbl]) => (
+            <button
+              key={k}
+              type="button"
+              data-testid={`vat-${k}`}
+              onClick={() => f.setVatMode(k)}
+              className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[11px] sm:text-[12px] font-medium transition-colors ${
+                f.vatMode === k
+                  ? "bg-brand text-white"
+                  : "text-foreground/70 border border-transparent hover:bg-panel"
+              }`}
+            >
+              {lbl} VAT
             </button>
           ))}
         </div>

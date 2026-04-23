@@ -3,6 +3,7 @@ import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { isMerchandise } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
+import SORHeader from "@/components/SORHeader";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
@@ -248,7 +249,7 @@ const Products = () => {
                   { key: "units_sold_launch", label: "Units (Since Launch)", numeric: true, render: (r) => fmtNum(r.units_sold_launch) },
                   { key: "total_sales_launch", label: "Sales (Since Launch)", numeric: true, render: (r) => fmtKES(r.total_sales_launch), csv: (r) => r.total_sales_launch },
                   { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                  { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
+                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
                 ]}
                 rows={newStylesFiltered}
               />
@@ -285,7 +286,7 @@ const Products = () => {
                 { key: "units_sold", label: "Units", numeric: true, render: (r) => fmtNum(r.units_sold) },
                 { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
-                { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
+                { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => <span className={sorPillClass(r.sor_percent)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent },
               ]}
               rows={filtered.slice(0, 200)}
             />

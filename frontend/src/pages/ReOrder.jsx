@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtPct } from "@/lib/api";
+import SORHeader from "@/components/SORHeader";
 import { isMerchandise, categoryFor } from "@/lib/productCategory";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -106,7 +107,7 @@ const ReOrder = () => {
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
                   { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
                   { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
-                  { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={pillFor(r.urgency)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent?.toFixed(2) },
+                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => <span className={pillFor(r.urgency)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent?.toFixed(2) },
                   { key: "units_sold_launch", label: "Units Sold (Launch)", numeric: true, render: (r) => fmtNum(r.units_sold_launch) },
                   { key: "total_sales_launch", label: "Sales (Launch)", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales_launch)}</span>, csv: (r) => r.total_sales_launch },
                   { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => <span className={(r.current_stock || 0) < 10 ? "pill-red" : "pill-neutral"}>{fmtNum(r.current_stock)}</span>, csv: (r) => r.current_stock },

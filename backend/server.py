@@ -377,6 +377,33 @@ async def get_stock_to_sales(
     if locs:
         loc_set = {x.strip() for x in locs}
         rows = [r for r in rows if r.get("location") in loc_set]
+
+    # Enrich each row with a per-location Weeks-of-Cover calculated from the
+    # last-4-week sell-through (not the user-selected period).
+    #   weeks_of_cover = current_stock ÷ (units_sold_last_28d ÷ 4)
+    try:
+        from datetime import datetime, timedelta
+        woc_to = datetime.utcnow().date()
+        woc_from = woc_to - timedelta(days=28)
+        sor_base = {"date_from": woc_from.isoformat(), "date_to": woc_to.isoformat()}
+        woc_cs = cs or [None]
+        sor_results = await asyncio.gather(*[fetch("/stock-to-sales", {**sor_base, "country": c}) for c in woc_cs])
+        units_28_by_loc: Dict[str, float] = defaultdict(float)
+        for g in sor_results:
+            for r in g or []:
+                loc = r.get("location")
+                if loc:
+                    units_28_by_loc[loc] += float(r.get("units_sold") or 0)
+        for r in rows:
+            u28 = units_28_by_loc.get(r.get("location"), 0)
+            weekly = u28 / 4 if u28 else 0
+            stock = r.get("current_stock") or 0
+            r["weeks_of_cover"] = (stock / weekly) if weekly else None
+            r["units_sold_28d"] = u28
+    except Exception:
+        for r in rows:
+            r.setdefault("weeks_of_cover", None)
+
     return rows
 
 
@@ -413,39 +440,51 @@ async def get_customers(
             total.pop(k)
         data = total
 
-    # Sanitise churn_rate. Upstream returns all-time cumulative
-    # `churned_customers` but period-scoped `total_customers`, so the raw
-    # ratio is meaningless (hundreds of thousands of %). We expose TWO
-    # numbers:
-    #   churn_rate_cumulative = churned / (active + churned) (capped)
-    #   churn_rate_period = churned_last_90_days / total_active_90_days
-    # The latter requires /churned-customers + /customers (active) to
-    # agree on a window; fall back to cumulative when upstream is down.
+    # Period-scoped churn rate.
+    #   customers_active_in_period = data.total_customers (from upstream)
+    #   customers_churned_in_period = count from /churned-customers?days=<period_length>
+    #     (upstream semantic: customers whose last purchase was more than
+    #      N days ago as of NOW — which is exactly "has not purchased in
+    #      the last N days" i.e. churned within a period of length N).
+    #   churn_rate = churned / (active + churned)
+    # When date_to is not today, this is an approximation — we log a caveat.
     if data:
         active = data.get("total_customers") or 0
-        churned = data.get("churned_customers") or 0
-        denom = active + churned
-        cumulative_rate = round((churned / denom * 100), 2) if denom else 0
-        data["churn_rate_cumulative"] = cumulative_rate
-
+        # Period length in days (inclusive).
         try:
-            ch90 = await _safe_fetch("/churned-customers", {"days": 90, "limit": 1})
-            # Upstream sometimes returns a wrapper dict with count; handle list too
-            if isinstance(ch90, dict):
-                churned_90 = ch90.get("total") or ch90.get("count") or 0
-            elif isinstance(ch90, list):
-                churned_90 = len(ch90)
-            else:
-                churned_90 = 0
-            data["churned_last_90d"] = churned_90
-            if churned_90 > 0:
-                data["churn_rate"] = round((churned_90 / (active + churned_90) * 100), 2) if (active + churned_90) else 0
-            else:
-                # Upstream /churned-customers is unavailable — fall back to cumulative.
-                data["churn_rate"] = cumulative_rate
+            from datetime import date as _d
+            _f = _d.fromisoformat(date_from) if date_from else _d.today()
+            _t = _d.fromisoformat(date_to) if date_to else _d.today()
+            period_days = max(1, (_t - _f).days + 1)
+            today_d = _d.today()
+            period_ends_today = (_t >= today_d)
         except Exception:
-            data["churned_last_90d"] = 0
-            data["churn_rate"] = cumulative_rate
+            period_days = 30
+            period_ends_today = True
+
+        # All-time cumulative kept for reference (never displayed as primary).
+        churned_all = data.get("churned_customers") or 0
+        denom_all = active + churned_all
+        data["churn_rate_cumulative"] = round((churned_all / denom_all * 100), 2) if denom_all else 0
+
+        # Period-scoped churned count via upstream /churned-customers?days=N.
+        churned_in_period = 0
+        try:
+            ch = await _safe_fetch("/churned-customers", {"days": period_days, "limit": 1})
+            if isinstance(ch, dict):
+                churned_in_period = ch.get("total") or ch.get("count") or 0
+            elif isinstance(ch, list):
+                churned_in_period = len(ch)
+        except Exception:
+            churned_in_period = 0
+
+        data["churned_in_period"] = churned_in_period
+        data["period_length_days"] = period_days
+        data["period_ends_today"] = period_ends_today
+        denom = active + churned_in_period
+        data["churn_rate"] = round((churned_in_period / denom * 100), 2) if denom else 0
+        # Keep legacy key for any caller still reading it.
+        data["churned_last_90d"] = churned_in_period if period_days == 90 else data.get("churned_last_90d")
     return data
 
 

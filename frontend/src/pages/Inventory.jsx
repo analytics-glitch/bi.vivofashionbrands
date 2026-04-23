@@ -6,6 +6,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { ChartTooltip } from "@/components/ChartHelpers";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
+import SORHeader from "@/components/SORHeader";
 import {
   Package,
   Warning,
@@ -600,7 +601,7 @@ const Inventory = () => {
                   },
                   { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                   { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                  { key: "sor_percent", label: "SOR", numeric: true, render: (r) => fmtPct(r.sor_percent), csv: (r) => r.sor_percent?.toFixed(2) },
+                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => fmtPct(r.sor_percent), csv: (r) => r.sor_percent?.toFixed(2) },
                 ]}
                 rows={understockedSubcats}
               />
@@ -638,12 +639,12 @@ const Inventory = () => {
 
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
-              title="Stock-to-Sales ratio by location"
-              subtitle="Weeks of cover proxy — red >10× (overstocked), amber 3–10×, green 1–3×, blue <1× (understocked)"
+              title="Stock cover (units-sold multiplier) by location"
+              subtitle="multiplier = current_stock ÷ units_sold_period — a HIGH value means low velocity, not necessarily overstock. Weeks of Cover uses the last-4-week weekly velocity and is more actionable."
             />
             <SortableTable
               testId="sts-location"
-              exportName="stock-to-sales-by-location.csv"
+              exportName="stock-cover-by-location.csv"
               initialSort={{ key: "stock_to_sales_ratio", dir: "desc" }}
               columns={[
                 { key: "location", label: "Location", align: "left", render: (r) => <span className="font-medium">{r.location}</span> },
@@ -652,13 +653,40 @@ const Inventory = () => {
                 { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
                 {
-                  key: "stock_to_sales_ratio", label: "Ratio", numeric: true,
+                  key: "stock_to_sales_ratio",
+                  label: (
+                    <span title="Stock cover (units-sold multiplier) = current_stock ÷ units_sold_in_period.  High multiplier = low velocity, not necessarily overstocking.">
+                      Cover multiplier ⓘ
+                    </span>
+                  ),
+                  numeric: true,
+                  sortValue: (r) => r.stock_to_sales_ratio || 0,
                   render: (r) => {
                     const v = r.stock_to_sales_ratio || 0;
                     const pill = v > 10 ? "pill-red" : v >= 3 ? "pill-amber" : v >= 1 ? "pill-green" : "pill-neutral";
                     return <span className={pill}>{fmtDec(v, 2)}×</span>;
                   },
                   csv: (r) => r.stock_to_sales_ratio?.toFixed(2),
+                },
+                {
+                  key: "weeks_of_cover",
+                  label: (
+                    <span title="Weeks of Cover = current_stock ÷ (units sold in last 4 weeks ÷ 4). Lower is faster turnover.">
+                      Weeks of Cover ⓘ
+                    </span>
+                  ),
+                  numeric: true,
+                  sortValue: (r) => {
+                    const v = r.weeks_of_cover;
+                    return v == null ? 9999 : v;
+                  },
+                  render: (r) => {
+                    if (r.weeks_of_cover == null) return <span className="pill-neutral">—</span>;
+                    const w = r.weeks_of_cover;
+                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
+                    return <span className={cls}>{w.toFixed(1)}w</span>;
+                  },
+                  csv: (r) => (r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2)),
                 },
               ]}
               rows={filteredSts}

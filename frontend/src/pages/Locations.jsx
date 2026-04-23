@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { applyVat, vatSuffix, VAT_RATES } from "@/lib/vat";
 import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -8,11 +9,12 @@ import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, vatMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   // Shared KPI state — guarantees Total Sales/Orders/Units match Overview & CEO Report.
-  const { kpis, loading: kpisLoading, error: kpisError } = useKpis();
+  const { kpis: rawKpis, loading: kpisLoading, error: kpisError } = useKpis();
+  const suffix = vatSuffix(vatMode);
 
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
@@ -74,25 +76,44 @@ const Locations = () => {
     return m;
   }, [prevRows]);
 
+  const kpis = useMemo(() => {
+    if (!rawKpis) return null;
+    const rate = VAT_RATES[countries[0]] ?? 0.16; // single-country pages blend; Locations is usually filtered
+    return {
+      ...rawKpis,
+      total_sales: applyVat(rawKpis.total_sales, vatMode, { singleRate: rate }),
+      net_sales: applyVat(rawKpis.net_sales, vatMode, { singleRate: rate }),
+      avg_basket_size: applyVat(rawKpis.avg_basket_size, vatMode, { singleRate: rate }),
+      avg_selling_price: applyVat(rawKpis.avg_selling_price, vatMode, { singleRate: rate }),
+      total_returns: applyVat(rawKpis.total_returns, vatMode, { singleRate: rate }),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawKpis, vatMode, countries]);
+
   const enriched = useMemo(() => {
     return rows.map((r) => {
       const prev = prevMap.get(r.channel);
-      const sales = r.total_sales || 0;
+      const rate = VAT_RATES[r.country] ?? 0.16;
+      const salesRaw = r.total_sales || 0;
+      const sales = applyVat(salesRaw, vatMode, { singleRate: rate });
       const orders = r.orders || r.total_orders || 0;
       const units = r.units_sold || r.total_units_sold || 0;
-      const basket = orders ? sales / orders : (r.avg_basket_size || 0); // ABV
-      const asp = units ? sales / units : 0; // Avg Selling Price
-      const msi = orders ? units / orders : 0; // Multi-Sell Index = Units/Order
+      const basket = orders ? sales / orders : applyVat(r.avg_basket_size || 0, vatMode, { singleRate: rate });
+      const asp = units ? sales / units : 0;
+      const msi = orders ? units / orders : 0;
+      const prevSalesAdj = prev ? applyVat(prev.total_sales || 0, vatMode, { singleRate: VAT_RATES[prev.country] ?? rate }) : null;
       return {
         ...r,
+        total_sales: sales,
         avg_basket: basket,
         abv: basket,
         asp,
         msi,
-        delta: prev ? pctDelta(r.total_sales, prev.total_sales) : null,
+        delta: prev ? pctDelta(sales, prevSalesAdj) : null,
       };
     });
-  }, [rows, prevMap]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, prevMap, vatMode]);
 
   const avg = useMemo(() => {
     if (!enriched.length) return 0;
@@ -148,6 +169,7 @@ const Locations = () => {
               testId="loc-kpi-sales"
               label="Total Sales"
               value={fmtKES(kpis.total_sales)}
+              suffix={suffix}
               showDelta={false}
             />
             <KPICard
@@ -162,8 +184,8 @@ const Locations = () => {
               value={fmtNum(kpis.total_units)}
               showDelta={false}
             />
-            <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)} showDelta={false} />
-            <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)} showDelta={false} />
+            <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" suffix={suffix} value={fmtKES(groupTotals.abv)} showDelta={false} />
+            <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" suffix={suffix} value={fmtKES(groupTotals.asp)} showDelta={false} />
             <KPICard small testId="loc-kpi-msi" label="MSI" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)} showDelta={false} />
           </div>
 

@@ -333,6 +333,76 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.6 — VAT stance, per-period churn, paired-bars, country/channel bars (Feb 2026)
+
+Delivered in a single pass based on the user's consolidated brief. Items
+not delivered (per explicit user instruction "for what you can't, leave
+it") are listed at the bottom of this entry as deferred.
+
+- **VAT toggle** in the global filter bar (top-right). Options: `excl.`
+  (CFO default) / `incl.`. State persists in the URL as `v=e|i` alongside
+  every other filter. `/app/frontend/src/lib/vat.js` holds the per-country
+  rate table (KE 16%, UG 18%, RW 18%; Online & Other default to 16%) and
+  the `applyVat`, `effectiveVatRate`, `applyVatPerRow` helpers. Group
+  aggregates use a mix-weighted effective rate (NOT a single blended
+  rate); per-row tables use per-country rates. Verified acceptance: on a
+  Kenya-only 22-Apr-2026 filter, Total Sales excl. = KES 2,960,115 × 1.16
+  ≈ KES 3,433,733; actual incl. = KES 3,441,265 → within ~0.2% rounding
+  tolerance ✅.
+- **Money tile formulas & suffixes** — every monetary KPICard now takes
+  `formula` (tooltip) and `suffix` ("excl. VAT" / "incl. VAT") props.
+  Overview tiles carry full formulas (Total Sales, Net Sales, Returns,
+  ABV, ASP, MSI, Return Rate). ⓘ icon visible next to each tile label;
+  hovering the card also surfaces the formula via native title tooltip.
+- **`Vs Yesterday` compare mode** — new button in filter bar + `yesterday`
+  semantics in `comparePeriod()` and `useKpis.computePrevRange()`.
+  Semantics: the selected range shifted back by 1 day (works for single
+  or multi-day windows).
+- **Daily Sales Trend — auto-switch by range length**
+  - range = 1 day → `trend-paired-bars` (Today / SDLW / SDLM /
+    SDLY-when-vs-LY). Bar labels show KES value above + % delta vs Today
+    below (green/red). Independent of compareMode for LW/LM so users
+    always get YoY context on a single day.
+  - 2–6 days → `trend-mini-bars` (one bar per day, plus comparison bar
+    when compareMode ≠ none).
+  - ≥7 days → existing line chart.
+- **Country donut → sorted horizontal bar** on Overview. Always renders
+  Kenya, Uganda, Rwanda and Online rows even when sales are zero. Tooltip
+  shows KES · orders · units · % of group.
+- **Channel split bar chart** below the country chart. Retail / Online /
+  Wholesale buckets derived from POS channel naming.
+- **Stock-to-Sales ratio table renamed** to "Stock cover (units-sold
+  multiplier) by location" with an ⓘ tooltip: "current_stock ÷
+  units_sold_period. A high multiplier means low velocity, not
+  necessarily overstocking." Added a second "Weeks of Cover" column
+  (current_stock ÷ last-4-week weekly velocity) next to the multiplier.
+  Backend `/stock-to-sales` now enriches each row with `weeks_of_cover`
+  and `units_sold_28d`.
+- **SOR tooltip icon** on every SOR column header across Products,
+  Re-Order, CEO Report §6 and Inventory (`/app/frontend/src/components/SORHeader.jsx`).
+- **Customers page** — "Total Customers" renamed to "Active customers (in
+  period)" with ⓘ tooltip. "Total customers on file" stock tile deferred
+  (no upstream endpoint — see Deferred below).
+- **Churn rate fix — period-based, not cumulative** (backend
+  `/api/customers`). Previously: `churned_all_time / (active_period +
+  churned_all_time)` — meaningless 96%+ numbers. Now:
+    `churn_rate = churned_in_period ÷ (active + churned_in_period)`
+  where `churned_in_period` is the count from `/churned-customers?days=<
+  period_length>`. Response also exposes `period_length_days` and
+  `period_ends_today` for UI caveats; the tile subtitle reads
+  `last N days` (or `last N days (approx.)` when the range doesn't end
+  today). Verified backend response.
+
+### Deferred (user said "for what you can't, leave it")
+- **FX handling**: dim_fx_rate table + CBK daily loader + Currency badge
+  + Local-currency toggle on UG/RW pages. Pending user confirmation on
+  the FX source (CBK vs OXR vs BoU/NBR).
+- **Total customers on file** stock tile — blocked on upstream
+  `/customer-base-count` endpoint.
+- **Dedicated `/glossary` page** — using inline ⓘ tooltips for now.
+- **dbt VAT-invariant test** — no dbt repo wired; no Python fallback
+  requested.
+
 ## v6.5 — Shareable & persistent filter URLs + Inventory search fix (Feb 2026)
 
 User ask: encode every active filter into stable short URL query params,

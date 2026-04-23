@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCategory";
+import { applyVat, vatSuffix, effectiveVatRate } from "@/lib/vat";
 import {
   api,
   fmtKES,
@@ -43,8 +44,6 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   Tooltip,
-  PieChart,
-  Pie,
   Cell,
   Line,
   LineChart,
@@ -64,11 +63,11 @@ const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, vatMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   // Shared KPI state — identical values on every page for the same filters.
-  const { kpis, prevKpis: kpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
+  const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
 
   const [countrySummary, setCountrySummary] = useState([]);
   const [sales, setSales] = useState([]);
@@ -79,9 +78,20 @@ const Overview = () => {
   const [footfall, setFootfall] = useState([]);
   const [footfallPrev, setFootfallPrev] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [pairedDays, setPairedDays] = useState(null); // for single-day trend chart
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
+
+  // --- VAT adjustment — defined early because many useMemo() blocks below
+  // reference `adj` / `vatRate` (temporal-dead-zone guarantees).
+  // Every monetary KPI arrives excl. VAT from upstream. When the user
+  // toggles "incl. VAT" we apply per-country rates using the active
+  // country mix (country_summary) for group-level values.
+  const vatRate = useMemo(() => effectiveVatRate(countrySummary), [countrySummary]);
+  const adj = (v) => applyVat(v, vatMode, { singleRate: vatRate });
+  const vatTip = (base) => `${base}\n\nVAT: ${vatMode === "incl" ? `included (${(vatRate * 100).toFixed(1)}% effective group rate — weighted by country mix)` : "excluded (net of VAT — CFO default)"}`;
+  const suffix = vatSuffix(vatMode);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,9 +149,159 @@ const Overview = () => {
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
 
+  // --- Paired-bars data for single-day range ---
+  // Fetches KPIs for:  Today, Same Day Last Week, Same Day Last Month,
+  // Same Day Last Year. Independent of compareMode so users always see
+  // YoY context when the range is a single day.
+  useEffect(() => {
+    if (dateFrom !== dateTo) { setPairedDays(null); return; }
+    let cancelled = false;
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const base = new Date(dateFrom);
+    const sdlw = new Date(base); sdlw.setDate(base.getDate() - 7);
+    const sdlm = new Date(base); sdlm.setMonth(base.getMonth() - 1);
+    const sdly = new Date(base); sdly.setFullYear(base.getFullYear() - 1);
+    const fetchOne = (d) => {
+      const i = iso(d);
+      return api
+        .get("/kpis", { params: { date_from: i, date_to: i, country: countries.length ? countries.join(",") : undefined, channel: channels.length ? channels.join(",") : undefined } })
+        .then((r) => ({ day: i, label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }), total_sales: r.data?.total_sales || 0, orders: r.data?.total_orders || 0 }))
+        .catch(() => ({ day: i, label: d.toLocaleDateString("en-GB"), total_sales: 0, orders: 0 }));
+    };
+    Promise.all([fetchOne(base), fetchOne(sdlw), fetchOne(sdlm), fetchOne(sdly)])
+      .then(([td, w, m, y]) => {
+        if (cancelled) return;
+        setPairedDays({ today: td, sdlw: w, sdlm: m, sdly: y });
+      });
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  const pairedBars = useMemo(() => {
+    if (!pairedDays) return [];
+    const rows = [
+      { key: "today", subtitle: "Today",           ...pairedDays.today },
+      { key: "sdlw",  subtitle: "Same Day Last Week",  ...pairedDays.sdlw },
+      { key: "sdlm",  subtitle: "Same Day Last Month", ...pairedDays.sdlm },
+    ];
+    if (compareMode === "last_year") {
+      rows.push({ key: "sdly", subtitle: "Same Day Last Year", ...pairedDays.sdly });
+    }
+    const t = pairedDays.today.total_sales || 0;
+    return rows.map((r) => ({
+      ...r,
+      total_sales: adj(r.total_sales),
+      delta_pct: r.key === "today" || !t ? null : ((adj(r.total_sales) - adj(t)) / adj(t)) * 100,
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairedDays, vatMode, vatRate, compareMode]);
+
+  // Country sales — sorted descending bar chart. ALWAYS include Kenya, Uganda
+  // and Rwanda (even with zero sales) so users can eyeball markets equally.
+  const countryBars = useMemo(() => {
+    const byCountry = new Map();
+    for (const r of countrySummary) {
+      byCountry.set(r.country, r);
+    }
+    const wanted = ["Kenya", "Uganda", "Rwanda", "Online"];
+    const rows = wanted.map((c) => {
+      const r = byCountry.get(c) || {};
+      return {
+        country: c,
+        flag: COUNTRY_FLAGS[c] || "🌍",
+        total_sales: adj(r.total_sales || 0),
+        orders: r.orders || r.total_orders || 0,
+        units_sold: r.units_sold || r.total_units || 0,
+      };
+    });
+    // Add any unexpected country we might have (e.g. legacy "Other").
+    for (const r of countrySummary) {
+      if (!wanted.includes(r.country) && r.country) {
+        rows.push({
+          country: r.country,
+          flag: COUNTRY_FLAGS[r.country] || "🌍",
+          total_sales: adj(r.total_sales || 0),
+          orders: r.orders || r.total_orders || 0,
+          units_sold: r.units_sold || r.total_units || 0,
+        });
+      }
+    }
+    const total = rows.reduce((s, r) => s + r.total_sales, 0) || 1;
+    return rows
+      .map((r) => ({ ...r, pct: (r.total_sales / total) * 100 }))
+      .sort((a, b) => b.total_sales - a.total_sales);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countrySummary, vatMode, vatRate]);
+
+  // Channel split — derives Retail / Online / Wholesale buckets from the
+  // per-POS /sales-summary rows. Mapping rule is kept simple & explicit.
+  const channelBars = useMemo(() => {
+    const bucket = (ch) => {
+      const s = (ch || "").toLowerCase();
+      if (s.startsWith("online")) return "Online";
+      if (s.includes("wholesale")) return "Wholesale";
+      return "Retail";
+    };
+    const b = { Retail: { total_sales: 0, orders: 0, units_sold: 0 }, Online: { total_sales: 0, orders: 0, units_sold: 0 }, Wholesale: { total_sales: 0, orders: 0, units_sold: 0 } };
+    for (const r of sales) {
+      const k = bucket(r.channel);
+      b[k].total_sales += r.total_sales || 0;
+      b[k].orders += r.orders || r.total_orders || 0;
+      b[k].units_sold += r.units_sold || r.total_units || 0;
+    }
+    const total = Object.values(b).reduce((s, x) => s + x.total_sales, 0) || 1;
+    return Object.entries(b)
+      .map(([name, v]) => ({
+        channel: name,
+        total_sales: adj(v.total_sales),
+        orders: v.orders,
+        units_sold: v.units_sold,
+        pct: (v.total_sales / total) * 100,
+      }))
+      .sort((a, b2) => b2.total_sales - a.total_sales);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, vatMode, vatRate]);
+
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
-  const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  const compareLbl = compareMode === "yesterday" ? "vs Yd" : compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
   const degraded = kpisError ? `Upstream KPIs unavailable (${kpisError}). Other sections still rendered below.` : null;
+
+  const kpis = useMemo(() => {
+    if (!rawKpis) return null;
+    return {
+      ...rawKpis,
+      total_sales: adj(rawKpis.total_sales),
+      net_sales: adj(rawKpis.net_sales),
+      total_returns: adj(rawKpis.total_returns),
+      avg_basket_size: adj(rawKpis.avg_basket_size),
+      avg_selling_price: adj(rawKpis.avg_selling_price),
+      gross_sales: adj(rawKpis.gross_sales),
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawKpis, vatMode, vatRate]);
+
+  const kpisPrev = useMemo(() => {
+    if (!rawKpisPrev) return null;
+    return {
+      ...rawKpisPrev,
+      total_sales: adj(rawKpisPrev.total_sales),
+      net_sales: adj(rawKpisPrev.net_sales),
+      total_returns: adj(rawKpisPrev.total_returns),
+      avg_basket_size: adj(rawKpisPrev.avg_basket_size),
+      avg_selling_price: adj(rawKpisPrev.avg_selling_price),
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawKpisPrev, vatMode, vatRate]);
+
+  // --- Range-length driven chart type for Daily Sales Trend ---
+  // ≤1 day → paired bars (Today / SDLW / SDLM / SDLY-if-LY).
+  //  2–6 day → mini bar per day.
+  // ≥7 day → existing multi-line chart.
+  const rangeDays = useMemo(() => {
+    if (!dateFrom || !dateTo) return 1;
+    const f = new Date(dateFrom);
+    const t = new Date(dateTo);
+    return Math.max(1, Math.round((t - f) / 86400000) + 1);
+  }, [dateFrom, dateTo]);
 
   const top15 = useMemo(() => {
     return [...sales]
@@ -152,16 +312,10 @@ const Overview = () => {
       }));
   }, [sales]);
 
-  const donutCountries = useMemo(() => {
-    let src = countrySummary;
-    if (countries.length) src = src.filter((c) => countries.includes(c.country));
-    return src;
-  }, [countrySummary, countries]);
-
   const topCountry = useMemo(() => {
-    if (!donutCountries.length) return null;
-    return [...donutCountries].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))[0];
-  }, [donutCountries]);
+    if (!countrySummary.length) return null;
+    return [...countrySummary].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))[0];
+  }, [countrySummary]);
 
   const topChannel = useMemo(() => {
     if (!sales.length) return null;
@@ -232,7 +386,7 @@ const Overview = () => {
   const countriesToChart = countries.length ? countries : ALL_COUNTRIES;
 
   // Single-line Total Sales daily series: sum across all countries.
-  const dailyTotalSeries = useMemo(() => {
+  const dailyTotalSeriesRaw = useMemo(() => {
     const byDay = {};
     for (const c of countriesToChart) {
       for (const r of dailyByCountry[c] || []) {
@@ -249,6 +403,12 @@ const Overview = () => {
     }
     return Object.values(byDay).sort((a, b) => a.day.localeCompare(b.day));
   }, [dailyByCountry, dailyByCountryPrev, countriesToChart]);
+
+  const dailyTotalSeries = useMemo(
+    () => dailyTotalSeriesRaw.map((r) => ({ ...r, total: adj(r.total), total_prev: adj(r.total_prev) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dailyTotalSeriesRaw, vatMode, vatRate]
+  );
 
   const sortedStyles = useMemo(
     () => [...topStyles].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0)),
@@ -341,25 +501,43 @@ const Overview = () => {
           />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
+              suffix={suffix}
+              formula={vatTip("Total Sales = Invoiced · gross of returns · excl. VAT by default.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope.")}
               delta={delta("total_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={fmtKES(kpis.net_sales)} icon={Coins}
+              suffix={suffix}
+              formula={vatTip("Net Sales = Total Sales − Returns − VAT.\n= SUM(invoice_line_value) − SUM(return_value) − VAT, with VAT applied per-country (KE 16% · UG 18% · RW 18%).")}
               delta={delta("net_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-orders" label="Total Orders" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
+              formula="Total Orders = COUNT(DISTINCT invoice_id) in scope."
               delta={delta("total_orders")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
+              formula="Total Units Sold = SUM(invoice_line_units) in scope."
               delta={delta("total_units")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
+            <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders"
+              suffix={suffix}
+              formula={vatTip("Average Basket Value = Total Sales ÷ Total Orders.")}
+              value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
               delta={delta("avg_basket_size")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
+            <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units"
+              suffix={suffix}
+              formula={vatTip("Average Selling Price = Total Sales ÷ Units Sold.")}
+              value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
               delta={delta("avg_selling_price")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders" value={(kpis.total_orders ? kpis.total_units / kpis.total_orders : 0).toFixed(2)}
+            <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders"
+              formula="Mean Shopping Index = Units Sold ÷ Total Orders. Proxy for basket depth."
+              value={(kpis.total_orders ? kpis.total_units / kpis.total_orders : 0).toFixed(2)}
               showDelta={false} />
-            <KPICard small testId="kpi-rr" label="Return Rate" value={fmtPct(kpis.return_rate, 2)} icon={Percent}
+            <KPICard small testId="kpi-rr" label="Return Rate"
+              formula="Return Rate = Returns Value ÷ Gross Sales (currency) for the period."
+              value={fmtPct(kpis.return_rate, 2)} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
+              suffix={suffix}
+              formula={vatTip("Returns = Refunds, attributed to the original sale date (not the refund date).")}
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
           </div>
 
@@ -409,93 +587,161 @@ const Overview = () => {
             </div>
 
             <div className="card-white p-5" data-testid="chart-country-split">
-              <SectionTitle title="Country split" subtitle="Total Sales by market" />
-              {donutCountries.length === 0 ? <Empty /> : (
-                <>
-                  <div style={{ width: "100%", height: 200 }}>
+              <SectionTitle title="Country split" subtitle="Total Sales by market · sorted descending" />
+              {countryBars.length === 0 ? <Empty /> : (
+                <div style={{ width: "100%", height: 24 + countryBars.length * 56 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={countryBars} layout="vertical" margin={{ left: 10, right: 110, top: 4 }}>
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                      <YAxis type="category" dataKey="country" width={110}
+                        tick={({ x, y, payload }) => {
+                          const row = countryBars.find((r) => r.country === payload.value);
+                          return (
+                            <text x={x - 6} y={y + 4} fontSize={11} textAnchor="end">
+                              {row?.flag} {payload.value}
+                            </text>
+                          );
+                        }} />
+                      <Tooltip content={
+                        <ChartTooltip formatters={{
+                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
+                        }} />
+                      } />
+                      <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
+                        <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <div className="mt-2 text-[10.5px] text-muted/70">{suffix}</div>
+
+              <div className="mt-6" data-testid="chart-channel-split">
+                <SectionTitle title="Channel split" subtitle="Retail · Online · Wholesale" />
+                {channelBars.length === 0 ? <Empty /> : (
+                  <div style={{ width: "100%", height: 24 + channelBars.length * 48 }}>
                     <ResponsiveContainer>
-                      <PieChart>
-                        <Pie data={donutCountries} dataKey="total_sales" nameKey="country" innerRadius={48} outerRadius={80} paddingAngle={3}>
-                          {donutCountries.map((_, i) => <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />)}
-                        </Pie>
-                        <Tooltip formatter={(v) => fmtKES(v)} />
-                      </PieChart>
+                      <BarChart data={channelBars} layout="vertical" margin={{ left: 10, right: 110, top: 4 }}>
+                        <CartesianGrid horizontal={false} />
+                        <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                        <YAxis type="category" dataKey="channel" width={110} tick={{ fontSize: 11 }} />
+                        <Tooltip content={
+                          <ChartTooltip formatters={{
+                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
+                          }} />
+                        } />
+                        <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} name="Total Sales">
+                          <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
-                  <ul className="mt-1 divide-y divide-border text-[12px]">
-                    {donutCountries.map((c, i) => {
-                      const total = donutCountries.reduce((s, x) => s + (x.total_sales || 0), 0) || 1;
-                      const pct = ((c.total_sales || 0) / total) * 100;
-                      return (
-                        <li key={c.country} className="flex items-center justify-between py-1.5" data-testid={`country-row-${c.country}`}>
-                          <span className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} />
-                            <span className="font-medium">{COUNTRY_FLAGS[c.country] || "🌍"} {c.country}</span>
-                          </span>
-                          <span className="num"><span className="font-bold">{fmtKES(c.total_sales)}</span> <span className="text-muted ml-1">{pct.toFixed(1)}%</span></span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </>
-              )}
+                )}
+              </div>
             </div>
           </div>
 
           <div className="card-white p-5" data-testid="chart-daily-trend">
             <SectionTitle
-              title="Daily Sales Trend"
-              subtitle={compareMode === "none" ? `Total Sales per day · ${dailyTotalSeries.length} days` : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : "last year"}`}
+              title={rangeDays === 1 ? "Sales vs comparable days" : "Daily Sales Trend"}
+              subtitle={
+                rangeDays === 1
+                  ? "Single-day view · bars compare Today to Same-Day-Last-Week / Month / Year"
+                  : rangeDays <= 6
+                  ? `One bar per day · ${dailyTotalSeries.length} days`
+                  : compareMode === "none"
+                  ? `Total Sales per day · ${dailyTotalSeries.length} days`
+                  : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : compareMode === "last_year" ? "last year" : "prior period"}`
+              }
             />
-            {dailyTotalSeries.length === 0 ? (
-              <Empty label="No daily trend data for this date range." />
+
+            {rangeDays === 1 ? (
+              // --- Single-day paired bars ---
+              pairedBars.length === 0 ? (
+                <Loading label="Loading comparison days…" />
+              ) : (
+                <div style={{ width: "100%", height: 280 }} data-testid="trend-paired-bars">
+                  <ResponsiveContainer>
+                    <BarChart data={pairedBars} margin={{ top: 40, right: 20, left: 10, bottom: 36 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="subtitle" tick={{ fontSize: 11 }} />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
+                      <Tooltip content={
+                        <ChartTooltip formatters={{
+                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders${p?.delta_pct != null ? ` · ${p.delta_pct >= 0 ? "+" : ""}${p.delta_pct.toFixed(1)}% vs Today` : ""}`,
+                        }} labelFormat={(l, p) => `${l} · ${p?.[0]?.payload?.label || ""}`} />
+                      } />
+                      <Bar dataKey="total_sales" radius={[5, 5, 0, 0]} name="Total Sales">
+                        {pairedBars.map((r) => (
+                          <Cell key={r.key} fill={r.key === "today" ? "#1a5c38" : "#d97706"} />
+                        ))}
+                        <LabelList
+                          dataKey="total_sales"
+                          position="top"
+                          formatter={(v) => fmtKES(v)}
+                          style={{ fontSize: 11, fill: "#1f2937", fontWeight: 700 }}
+                        />
+                        <LabelList
+                          dataKey="delta_pct"
+                          position="insideTop"
+                          content={({ x, y, width, value, index }) => {
+                            if (value == null || index === 0) return null;
+                            const pos = value > 0;
+                            const color = pos ? "#059669" : "#b91c1c";
+                            return (
+                              <text x={x + width / 2} y={y - 18} fill={color} fontSize={10} textAnchor="middle" fontWeight={700}>
+                                {pos ? "▲" : "▼"} {Math.abs(value).toFixed(1)}%
+                              </text>
+                            );
+                          }}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            ) : rangeDays <= 6 ? (
+              // --- 2-6 day mini bar chart ---
+              dailyTotalSeries.length === 0 ? <Empty /> : (
+                <div style={{ width: "100%", height: 280 }} data-testid="trend-mini-bars">
+                  <ResponsiveContainer>
+                    <BarChart data={dailyTotalSeries} margin={{ top: 24, right: 20, left: 10, bottom: 10 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" })} />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
+                      <Tooltip content={<ChartTooltip formatters={{ total: (v) => fmtKES(v), total_prev: (v) => fmtKES(v) }} labelFormat={(l) => fmtDate(l)} />} />
+                      <Bar dataKey="total" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
+                        <LabelList dataKey="total" position="top" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                      </Bar>
+                      {compareMode !== "none" && (
+                        <Bar dataKey="total_prev" fill="#d97706" radius={[5, 5, 0, 0]} name="Previous" opacity={0.7} />
+                      )}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )
             ) : (
-              <div style={{ width: "100%", height: 300 }}>
-                <ResponsiveContainer>
-                  <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="day"
-                      tick={{ fontSize: 11 }}
-                      tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
-                    />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
-                    <Tooltip content={
-                      <ChartTooltip
-                        labelFormat={(l) => fmtDate(l)}
-                        formatters={{
-                          "Total Sales": (v) => fmtKES(v),
-                          "Previous": (v) => fmtKES(v),
-                        }}
-                      />
-                    } />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="total"
-                      stroke="#1a5c38"
-                      strokeWidth={3}
-                      dot={{ r: 3, fill: "#1a5c38" }}
-                      activeDot={{ r: 5 }}
-                      name="Total Sales"
-                      isAnimationActive={false}
-                    />
-                    {compareMode !== "none" && (
-                      <Line
-                        type="monotone"
-                        dataKey="total_prev"
-                        stroke="#d97706"
-                        strokeWidth={2}
-                        strokeDasharray="5 4"
-                        dot={false}
-                        name="Previous"
-                        isAnimationActive={false}
-                      />
-                    )}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              // --- ≥7 day line chart (original) ---
+              dailyTotalSeries.length === 0 ? <Empty /> : (
+                <div style={{ width: "100%", height: 300 }} data-testid="trend-line-chart">
+                  <ResponsiveContainer>
+                    <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
+                      <Tooltip content={<ChartTooltip labelFormat={(l) => fmtDate(l)} formatters={{ "Total Sales": (v) => fmtKES(v), "Previous": (v) => fmtKES(v) }} />} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Line type="monotone" dataKey="total" stroke="#1a5c38" strokeWidth={3} dot={{ r: 3, fill: "#1a5c38" }} activeDot={{ r: 5 }} name="Total Sales" isAnimationActive={false} />
+                      {compareMode !== "none" && (
+                        <Line type="monotone" dataKey="total_prev" stroke="#d97706" strokeWidth={2} strokeDasharray="5 4" dot={false} name="Previous" isAnimationActive={false} />
+                      )}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )
             )}
+            <div className="mt-1 text-[10.5px] text-muted/70">{suffix}</div>
           </div>
 
           <div className="card-white p-5" data-testid="category-chart">

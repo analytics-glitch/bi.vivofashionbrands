@@ -72,7 +72,10 @@ function computePrevRange(dateFrom, dateTo, mode) {
   const t = new Date(dateTo);
   let df;
   let dt;
-  if (mode === "last_month") {
+  if (mode === "yesterday") {
+    df = new Date(f); df.setDate(f.getDate() - 1);
+    dt = new Date(t); dt.setDate(t.getDate() - 1);
+  } else if (mode === "last_month") {
     df = new Date(f); df.setMonth(f.getMonth() - 1);
     dt = new Date(t); dt.setMonth(t.getMonth() - 1);
   } else if (mode === "last_year") {

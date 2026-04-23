@@ -15,7 +15,8 @@ const FiltersContext = createContext(null);
 // ch = channels  (comma-separated, URL-encoded)
 // cm = compareMode (none|last_month|last_year)
 const VALID_PRESETS = new Set(["yesterday", "today", "this_week", "this_month", "last_month", "this_year", "custom"]);
-const VALID_COMPARE = new Set(["none", "last_month", "last_year"]);
+const VALID_COMPARE = new Set(["none", "yesterday", "last_month", "last_year"]);
+const VALID_VAT = new Set(["excl", "incl"]);
 const ALL_COUNTRIES = new Set(["Kenya", "Uganda", "Rwanda", "Online"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -29,6 +30,7 @@ function readUrlParams() {
   if (p.has("co")) out.co = p.get("co");
   if (p.has("ch")) out.ch = p.get("ch");
   if (p.has("cm")) out.cm = p.get("cm");
+  if (p.has("v")) out.v = p.get("v");
   return Object.keys(out).length ? out : null;
 }
 
@@ -48,6 +50,7 @@ function writeUrlParams(state) {
   put("co", state.countries.join(","), state.countries.length === 0);
   put("ch", state.channels.join(","), state.channels.length === 0);
   put("cm", state.compareMode, state.compareMode === "last_month");
+  put("v", state.vatMode, state.vatMode === "excl");
   const qs = next.toString();
   const url = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
   window.history.replaceState(null, "", url);
@@ -70,6 +73,7 @@ export const FiltersProvider = ({ children }) => {
     ? urlParams.ch.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
   const initialCompare = urlParams?.cm && VALID_COMPARE.has(urlParams.cm) ? urlParams.cm : "last_month";
+  const initialVat = urlParams?.v && VALID_VAT.has(urlParams.v) ? urlParams.v : "excl";
 
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
@@ -77,6 +81,7 @@ export const FiltersProvider = ({ children }) => {
   const [countries, setCountries] = useState(initialCountries);
   const [channels, setChannels] = useState(initialChannels);
   const [compareMode, setCompareMode] = useState(initialCompare);
+  const [vatMode, setVatMode] = useState(initialVat);
   const [dataVersion, setDataVersion] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(null);
 
@@ -139,12 +144,12 @@ export const FiltersProvider = ({ children }) => {
   // string, so we re-apply our params right after the pathname updates).
   const location = useLocation();
   useEffect(() => {
-    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode });
-  }, [dateFrom, dateTo, preset, countries, channels, compareMode, location.pathname]);
+    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, vatMode });
+  }, [dateFrom, dateTo, preset, countries, channels, compareMode, vatMode, location.pathname]);
 
   const applied = useMemo(
-    () => ({ dateFrom, dateTo, countries, channels, compareMode, dataVersion }),
-    [dateFrom, dateTo, countries, channels, compareMode, dataVersion]
+    () => ({ dateFrom, dateTo, countries, channels, compareMode, vatMode, dataVersion }),
+    [dateFrom, dateTo, countries, channels, compareMode, vatMode, dataVersion]
   );
 
   const value = useMemo(
@@ -155,11 +160,12 @@ export const FiltersProvider = ({ children }) => {
       countries, setCountries,
       channels, setChannels,
       compareMode, setCompareMode,
+      vatMode, setVatMode,
       dataVersion, refresh,
       lastUpdated, touchLastUpdated,
       applied,
     }),
-    [dateFrom, dateTo, preset, countries, channels, compareMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset]
+    [dateFrom, dateTo, preset, countries, channels, compareMode, vatMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };

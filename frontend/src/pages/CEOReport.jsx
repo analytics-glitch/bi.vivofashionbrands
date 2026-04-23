@@ -14,6 +14,7 @@ import {
   shiftISO,
   COUNTRY_FLAGS,
 } from "@/lib/api";
+import SORHeader from "@/components/SORHeader";
 import { Loading, ErrorBox } from "@/components/common";
 import { Printer, CalendarBlank } from "@phosphor-icons/react";
 import {
@@ -483,7 +484,7 @@ const CEOReport = () => {
                   <th className="text-right">Current Stock</th>
                   <th className="text-right">% of Stock</th>
                   <th className="text-right">Variance</th>
-                  <th className="text-right">SOR</th>
+                  <th className="text-right"><SORHeader /></th>
                 </tr>
               </thead>
               <tbody>
@@ -530,7 +531,7 @@ const CEOReport = () => {
                     <th>Style</th>
                     <th className="text-right">Units</th>
                     <th className="text-right">Stock</th>
-                    <th className="text-right">SOR</th>
+                    <th className="text-right"><SORHeader /></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -556,7 +557,7 @@ const CEOReport = () => {
                     <th>Collection</th>
                     <th className="text-right">Units</th>
                     <th className="text-right">Stock</th>
-                    <th className="text-right">SOR</th>
+                    <th className="text-right"><SORHeader /></th>
                   </tr>
                 </thead>
                 <tbody>

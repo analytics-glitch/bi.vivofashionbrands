@@ -119,6 +119,20 @@ export const shiftISO = (iso, years, months) => {
 
 export const comparePeriod = (from, to, mode) => {
   if (!mode || mode === "none") return null;
+  if (mode === "yesterday") {
+    // Same range shifted back by 1 day — works for single and multi-day.
+    const shift = (iso) => {
+      const [y, m, d] = iso.split("-").map((x) => parseInt(x, 10));
+      const dt = new Date(y, m - 1, d);
+      dt.setDate(dt.getDate() - 1);
+      return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+    };
+    return {
+      date_from: shift(from),
+      date_to: shift(to),
+      label: "vs Yesterday",
+    };
+  }
   if (mode === "last_month") {
     return {
       date_from: shiftISO(from, 0, -1),
