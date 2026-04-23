@@ -4,6 +4,15 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 export const api = axios.create({ baseURL: API, timeout: 120000 });
 
+// Cache-busting interceptor — appends `_t` param to every GET so the
+// browser / upstream CDN can't return stale responses.
+api.interceptors.request.use((cfg) => {
+  if ((cfg.method || "get").toLowerCase() === "get") {
+    cfg.params = { ...(cfg.params || {}), _t: Date.now() };
+  }
+  return cfg;
+});
+
 // --- formatters ---
 export const fmtKES = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
