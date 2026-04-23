@@ -45,6 +45,8 @@ const Footfall = () => {
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [salesRows, setSalesRows] = useState([]); // /sales-summary — authoritative per-location sales
+  const [prevSalesRows, setPrevSalesRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -62,12 +64,18 @@ const Footfall = () => {
         ? api.get("/footfall", { params: { date_from: prevP.date_from, date_to: prevP.date_to } })
         : Promise.resolve({ data: [] }),
       api.get("/locations"),
+      api.get("/sales-summary", { params: { date_from: dateFrom, date_to: dateTo } }),
+      prevP
+        ? api.get("/sales-summary", { params: { date_from: prevP.date_from, date_to: prevP.date_to } })
+        : Promise.resolve({ data: [] }),
     ])
-      .then(([f, p, l]) => {
+      .then(([f, p, l, s, ps]) => {
         if (cancelled) return;
         setRows(f.data || []);
         setPrev(p.data || []);
         setLocations(l.data || []);
+        setSalesRows(s.data || []);
+        setPrevSalesRows(ps.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -75,6 +83,22 @@ const Footfall = () => {
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, compareMode, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  // Authoritative per-location sales come from /sales-summary (matches
+  // /kpis). Upstream /footfall returns a different `total_sales` per row —
+  // same orders but different sales figure (e.g. Vivo Junction: 462,775 in
+  // /footfall vs 477,275 in /sales-summary for 2026-04-22). We ignore
+  // /footfall.total_sales entirely and always join by channel name.
+  const salesMap = useMemo(() => {
+    const m = new Map();
+    for (const r of salesRows) m.set(r.channel, r);
+    return m;
+  }, [salesRows]);
+  const prevSalesMap = useMemo(() => {
+    const m = new Map();
+    for (const r of prevSalesRows) m.set(r.channel, r);
+    return m;
+  }, [prevSalesRows]);
 
   const channelCountry = useMemo(() => {
     const m = {};
@@ -102,13 +126,32 @@ const Footfall = () => {
   }, [prev]);
 
   const totals = useMemo(() => {
+    // Two concepts on this page:
+    //  • Headline `orders` / `sales` / `abv` → shared /kpis so they match
+    //    Overview / Locations / CEO Report exactly.
+    //  • `footfall` total + conversion rate → must use the per-store
+    //    SUBTOTAL (only stores with a footfall counter), because orders from
+    //    online channels and footfall-less stores have no visitor denominator.
+    //    The subtotal is computed from /sales-summary (authoritative) joined
+    //    on store name, NOT from /footfall.total_sales (which disagrees with
+    //    /sales-summary upstream — e.g. Junction 462,775 vs 477,275).
     const footfall = scoped.reduce((s, r) => s + (r.total_footfall || 0), 0);
-    const orders = scoped.reduce((s, r) => s + (r.orders || 0), 0);
-    const sales = scoped.reduce((s, r) => s + (r.total_sales || 0), 0);
-    const conv = footfall ? (orders / footfall) * 100 : 0;
-    const abv = orders ? sales / orders : 0; // Avg Basket Value = Sales / Orders
-    return { footfall, orders, sales, conv, abv };
-  }, [scoped]);
+    let scopedOrders = 0;
+    let scopedSales = 0;
+    for (const r of scoped) {
+      const s = salesMap.get(r.location);
+      if (s) {
+        scopedOrders += s.orders || s.total_orders || 0;
+        scopedSales += s.total_sales || 0;
+      }
+    }
+    const conv = footfall ? (scopedOrders / footfall) * 100 : 0;
+    // Headline values come from shared KPI response:
+    const orders = authoritativeKpis?.total_orders || 0;
+    const sales = authoritativeKpis?.total_sales || 0;
+    const abv = orders ? sales / orders : (authoritativeKpis?.avg_basket_size || 0);
+    return { footfall, orders, sales, conv, abv, scopedOrders, scopedSales };
+  }, [scoped, salesMap, authoritativeKpis]);
 
   const prevTotals = useMemo(() => {
     const scopedPrev = prev.filter((r) => {
@@ -120,12 +163,17 @@ const Footfall = () => {
       return true;
     });
     const footfall = scopedPrev.reduce((s, r) => s + (r.total_footfall || 0), 0);
-    const orders = scopedPrev.reduce((s, r) => s + (r.orders || 0), 0);
-    const sales = scopedPrev.reduce((s, r) => s + (r.total_sales || 0), 0);
-    const conv = footfall ? (orders / footfall) * 100 : 0;
-    const abv = orders ? sales / orders : 0;
-    return { footfall, orders, sales, conv, abv };
-  }, [prev, countries, channels, channelCountry]);
+    let scopedOrders = 0;
+    for (const r of scopedPrev) {
+      const s = prevSalesMap.get(r.location);
+      if (s) scopedOrders += s.orders || s.total_orders || 0;
+    }
+    const conv = footfall ? (scopedOrders / footfall) * 100 : 0;
+    const orders = authoritativePrevKpis?.total_orders || 0;
+    const sales = authoritativePrevKpis?.total_sales || 0;
+    const abv = orders ? sales / orders : (authoritativePrevKpis?.avg_basket_size || 0);
+    return { footfall, orders, sales, conv, abv, scopedOrders };
+  }, [prev, countries, channels, channelCountry, prevSalesMap, authoritativePrevKpis]);
 
   const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
   const delta = (a, b) => (compareMode !== "none" && b ? pctDelta(a, b) : null);
@@ -133,15 +181,30 @@ const Footfall = () => {
   const groupAvgConv = totals.conv;
 
   // Scoped rows enriched with previous-period footfall + ABV + delta.
+  // IMPORTANT: `total_sales`, `abv` and per-row orders are joined from
+  // /sales-summary (authoritative), NOT from /footfall.total_sales which
+  // disagrees with /kpis for the same store & date (see Junction example).
   const scopedEnriched = useMemo(() => {
     return scoped.map((r) => {
+      const auth = salesMap.get(r.location);
       const prevR = prevMap.get(r.location);
-      const abv = r.orders ? (r.total_sales || 0) / r.orders : 0;
+      const sales = auth ? (auth.total_sales || 0) : (r.total_sales || 0);
+      const orders = auth ? (auth.orders || auth.total_orders || 0) : (r.orders || 0);
+      const conversion = r.total_footfall ? (orders / r.total_footfall) * 100 : 0;
+      const abv = orders ? sales / orders : 0;
       const prevFootfall = prevR?.total_footfall || 0;
       const footfallDelta = prevFootfall ? ((r.total_footfall - prevFootfall) / prevFootfall) * 100 : null;
-      return { ...r, abv, prev_footfall: prevFootfall, footfall_delta: footfallDelta };
+      return {
+        ...r,
+        orders,                  // authoritative
+        total_sales: sales,      // authoritative
+        conversion_rate: conversion,
+        abv,
+        prev_footfall: prevFootfall,
+        footfall_delta: footfallDelta,
+      };
     });
-  }, [scoped, prevMap]);
+  }, [scoped, salesMap, prevMap]);
 
   const byFootfall = useMemo(
     () => [...scopedEnriched].sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0)),
@@ -169,14 +232,14 @@ const Footfall = () => {
         <p className="text-muted text-[13px] mt-0.5">
           {fmtDate(dateFrom)} → {fmtDate(dateTo)} · all locations included
         </p>
-        {authoritativeKpis && authoritativeKpis.total_orders && totals.orders !== authoritativeKpis.total_orders && (
+        {authoritativeKpis && authoritativeKpis.total_orders && totals.scopedOrders !== authoritativeKpis.total_orders && (
           <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
             ℹ️ Upstream footfall counters cover physical stores only.
             Showing <b>{fmtNum(authoritativeKpis.total_orders)}</b> total
             orders (matches Overview / Locations);
-            per-store footfall table below tracks <b>{fmtNum(totals.orders)}</b> orders
+            per-store footfall table below tracks <b>{fmtNum(totals.scopedOrders)}</b> orders
             from {rows.length} stores with a counter — the remaining {" "}
-            <b>{fmtNum(authoritativeKpis.total_orders - totals.orders)}</b>{" "}
+            <b>{fmtNum(authoritativeKpis.total_orders - totals.scopedOrders)}</b>{" "}
             come from online channels and stores without footfall counters.
           </div>
         )}
@@ -202,11 +265,11 @@ const Footfall = () => {
               testId="ff-kpi-orders"
               label="Orders"
               sub="all channels"
-              value={fmtNum(authoritativeKpis?.total_orders ?? totals.orders)}
+              value={fmtNum(authoritativeKpis?.total_orders ?? totals.scopedOrders)}
               icon={ShoppingCart}
               delta={delta(
-                authoritativeKpis?.total_orders ?? totals.orders,
-                authoritativePrevKpis?.total_orders ?? prevTotals.orders,
+                authoritativeKpis?.total_orders ?? totals.scopedOrders,
+                authoritativePrevKpis?.total_orders ?? prevTotals.scopedOrders,
               )}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
@@ -214,7 +277,7 @@ const Footfall = () => {
             <KPICard
               testId="ff-kpi-conv"
               label="Stores Conversion Rate"
-              sub={`${fmtNum(totals.orders)} orders ÷ ${fmtNum(totals.footfall)} footfall`}
+              sub={`${fmtNum(totals.scopedOrders)} orders ÷ ${fmtNum(totals.footfall)} footfall`}
               value={fmtPct(totals.conv, 2)}
               icon={Target}
               delta={delta(totals.conv, prevTotals.conv)}
