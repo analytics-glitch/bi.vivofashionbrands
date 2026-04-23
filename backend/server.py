@@ -462,6 +462,7 @@ async def get_customers(
         active = data.get("total_customers") or 0
         churn_window_days = 90
         churned_90 = 0
+        churn_source = "upstream_90d"
         try:
             ch = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 1})
             if isinstance(ch, dict):
@@ -471,13 +472,21 @@ async def get_customers(
         except Exception:
             churned_90 = 0
 
-        # All-time cumulative kept for reference (never displayed as primary).
+        # All-time cumulative from upstream /customers aggregate.
         churned_all = data.get("churned_customers") or 0
         denom_all = active + churned_all
         data["churn_rate_cumulative"] = round((churned_all / denom_all * 100), 2) if denom_all else 0
 
+        # Fallback: if upstream /churned-customers?days=90 is down (currently
+        # 500ing), surface the all-time count as the best available estimate
+        # and flag the data quality so the UI can show a caveat.
+        if churned_90 == 0 and churned_all > 0:
+            churned_90 = churned_all
+            churn_source = "cumulative_fallback"
+
         data["churned_last_90d"] = churned_90
         data["churn_window_days"] = churn_window_days
+        data["churn_source"] = churn_source
         denom = active + churned_90
         data["churn_rate"] = round((churned_90 / denom * 100), 2) if denom else 0
     return data

@@ -317,9 +317,9 @@ const Customers = () => {
             <KPICard
               testId="kpi-churned-count"
               label="Churned Customers"
-              sub="90-day rolling count"
-              formula="Count of customers whose LAST purchase was more than 90 days ago (as of today). Source: /churned-customers?days=90."
-              value={fmtNum(cust.churned_last_90d || churned.length)}
+              sub={cust.churn_source === "cumulative_fallback" ? "cumulative (upstream 90-day endpoint down)" : "90-day rolling count"}
+              formula="Count of customers whose LAST purchase was more than 90 days ago (as of today). Source: /churned-customers?days=90 — falls back to the cumulative count from /customers when the 90-day endpoint is unavailable upstream."
+              value={fmtNum(cust.churned_last_90d || 0)}
               icon={UserMinus}
               higherIsBetter={false}
               showDelta={false}
@@ -488,7 +488,11 @@ const Customers = () => {
               title={`Churned customers · ${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""}`}
               subtitle="Customers with no purchase in the last 90 days. Sorted by most recent churn first. Paginated · 25 rows per page."
             />
-            {churned.length === 0 ? <UpstreamNotReady /> : (
+            {churned.length === 0 ? (
+              <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">
+                ⚠️ Upstream <code>/churned-customers?days=90</code> is currently returning HTTP 500 — we cannot show the individual churned customers list right now. The headline count ({fmtNum(cust.churned_last_90d || 0)}) comes from the aggregated <code>/customers</code> endpoint instead. Data team has been notified via this dashboard's Data Freshness panel.
+              </div>
+            ) : (
               <SortableTable
                 testId="churned-customers"
                 exportName="churned-customers.csv"

@@ -56,13 +56,21 @@ export const setStoredToken = (t) => {
 };
 
 // axios interceptor: attach Bearer header on every request.
+//
+// CRITICAL for iOS Safari: we do NOT set `withCredentials = true` here.
+// When the server returns `Access-Control-Allow-Origin: *` (which the
+// Emergent ingress does by default in production), Safari iOS STRICTLY
+// refuses to read a credentialed response — it surfaces as a generic
+// "Network Error" on the frontend, which users see as "Login failed".
+// Chrome and Android tolerate this. By relying ONLY on the Bearer token
+// in the Authorization header (which works cross-origin with `*`), we
+// guarantee every browser — iOS Safari included — can read the response.
 api.interceptors.request.use((config) => {
   const t = getStoredToken();
   if (t) {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${t}`;
   }
-  config.withCredentials = true; // send the httpOnly session_token cookie too
   return config;
 });
 

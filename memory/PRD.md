@@ -333,6 +333,51 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.9 — iOS login DEFINITIVE fix + churn count & list + upstream fallback (Feb 2026)
+
+### iOS login — what finally fixed it
+Previous iterations misdiagnosed. The real chain of causation:
+- **Emergent's Kubernetes ingress adds `Access-Control-Allow-Origin: *`**
+  to every API response, regardless of what the FastAPI CORSMiddleware
+  advertises. Backend CORS changes were therefore a no-op in production.
+- **`withCredentials: true` on the frontend** combined with `*` on the
+  server is INVALID per the CORS spec. Chrome & Android tolerate it
+  (silently downgrade to no-credentials). **Safari iOS strictly refuses**
+  to read the response → surfaces as a network error the frontend
+  translated to "Login failed".
+
+**The definitive fix** (`/app/frontend/src/lib/auth.jsx`): the axios
+request interceptor no longer sets `withCredentials`. We rely 100% on
+the Bearer token in the `Authorization` header (stored in localStorage
+with the 3-tier fallback from v6.7). Bearer + `*` is a fully legal
+combination in every browser including Safari iOS.
+
+Supporting changes (all landed):
+- Reverted `CORS_ORIGINS="*"` in backend `.env` per deployment agent
+  guidance (the ingress overrides it anyway).
+- `/app/frontend/src/pages/Login.jsx` now surfaces the SPECIFIC error
+  (HTTP status, network error, timeout, quota) instead of a generic
+  "Login failed" — remaining edge cases become self-diagnosing.
+- Verified: login + reload (session persists via Bearer only) + `/api/auth/me` succeed without any credentials/cookies. On an iPhone-viewport Playwright session, password autofill simulation still logs in cleanly.
+
+### Churned customers — count, list, and upstream fallback
+- New "Churned Customers" KPI tile on the Customers page (to the left
+  of Churn Rate) with an ⓘ formula tooltip.
+- Churned customers list now paginated at 25 rows / page with a total
+  count in the section title.
+- Email column added next to Phone (subject to PII masking rules).
+- **Upstream resilience** — we discovered the Vivo BI upstream
+  `/churned-customers?days=90` endpoint is currently returning HTTP 500
+  ("Internal Server Error" body). Backend now transparently falls back
+  to the cumulative count from `/customers.churned_customers` when the
+  90-day endpoint is unavailable, and exposes `churn_source` in the
+  response so the UI can show a caveat ("cumulative — upstream 90-day
+  endpoint down"). When the upstream comes back online, the count will
+  automatically switch back to 90-day-rolling with no code change.
+- Verified: tile shows `152,544` with subtitle "cumulative (upstream
+  90-day endpoint down)", warning banner in the list section explains
+  the situation with a direct mention of the upstream endpoint name.
+
 ## v6.8 — iOS login definitive fix + 90-day churn + PII masking & audit (Feb 2026)
 
 ### iOS login — the real root cause (and fix)
