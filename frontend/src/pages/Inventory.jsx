@@ -251,8 +251,22 @@ const Inventory = () => {
       .sort((a, b) => b.understock_pct - a.understock_pct);
   }, [subcatSS, filtersActive, visibleSubcats]);
 
+  // Set of visible categories (derived from visible subcats) — used to
+  // restrict the Inventory-by-Category chart and Stock-to-Sales-by-Category
+  // table when a search / brand / subcategory filter is active.
+  const visibleCategories = useMemo(() => {
+    if (!filtersActive) return null;
+    const s = new Set();
+    for (const sc of visibleSubcats) {
+      const c = categoryFor(sc);
+      if (c) s.add(c);
+    }
+    return s;
+  }, [filtersActive, visibleSubcats]);
+
   const invByCategory = useMemo(() => {
-    const src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
+    let src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
+    if (visibleCategories) src = src.filter((r) => visibleCategories.has(r.category));
     const total = src.reduce((s, r) => s + (r.current_stock || 0), 0) || 1;
     return [...src]
       .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
@@ -260,7 +274,7 @@ const Inventory = () => {
         const pct = ((r.current_stock || 0) / total) * 100;
         return { ...r, pct, cat_label: `${fmtNum(r.current_stock)} · ${pct.toFixed(1)}%` };
       });
-  }, [stsByCat]);
+  }, [stsByCat, visibleCategories]);
 
   const invBySubcat = useMemo(() => {
     const raw = summary?.by_product_type || [];
@@ -287,10 +301,11 @@ const Inventory = () => {
     [sts, filtersActive, visibleLocations]
   );
 
-  const filteredStsByCat = useMemo(
-    () => stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category),
-    [stsByCat]
-  );
+  const filteredStsByCat = useMemo(() => {
+    let src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
+    if (visibleCategories) src = src.filter((r) => visibleCategories.has(r.category));
+    return src;
+  }, [stsByCat, visibleCategories]);
 
   const filteredSubcatSS = useMemo(
     () => subcatSS

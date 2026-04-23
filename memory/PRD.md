@@ -333,6 +333,44 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.5 — Shareable & persistent filter URLs + Inventory search fix (Feb 2026)
+
+User ask: encode every active filter into stable short URL query params,
+hydrate the filter bar from the URL on every page load, persist filters
+across SPA navigation, silently drop filters the user has no access to and
+toast them. Also: Inventory search must filter every chart and table, not
+just some of them.
+
+- **`/app/frontend/src/lib/filters.jsx`** rewritten:
+  - Short stable keys: `d` (date_from), `t` (date_to), `p` (preset),
+    `co` (countries CSV), `ch` (channels CSV), `cm` (compare mode).
+  - On mount: reads `window.location.search`, validates, hydrates state.
+    Invalid date strings, unknown presets/compare modes, unknown country
+    names → silently dropped.
+  - Channel validation: fetches `/analytics/active-pos` on mount; any
+    channel in the URL that isn't in the real list is dropped and the
+    user sees a Sonner `toast.warning("Some filters removed — you do
+    not have access")` with the offending POS names listed.
+  - On state change AND on every route change (via `useLocation`),
+    `window.history.replaceState` writes the canonical URL. This fixes
+    the SPA regression where clicking `NavLink to="/locations"` used to
+    reset the query string.
+  - Only emits params that differ from defaults (keeps URLs short).
+- **`/app/frontend/src/App.js`**: mounted `<Toaster position="top-right"
+  richColors />` from `components/ui/sonner.jsx`.
+- **`/app/frontend/src/pages/Inventory.jsx`**: search now also filters
+  `Inventory by Category` chart AND `Stock-to-Sales by Category` table
+  (derives `visibleCategories` from `visibleSubcats` via `categoryFor`).
+  Previously these two were hard-coded to full `stsByCat`.
+- **Verified live** — URL `?p=this_month`: searching "dress" shows
+  Filter pill = 9,289 SKUs / 19,353 units; Stock-by-Location = 28 stores
+  (Warehouse 6,931 → Capital Centre 336); STS-by-Category limited to
+  {Dresses, Tops, Outerwear}; KPIs all recompute; every downstream
+  section updates in ≤250ms of the keystroke.
+- **URL persistence verified** — `?p=this_week&co=Kenya&cm=last_year`
+  survives clicks through Overview → Locations → Products → CEO Report →
+  Inventory untouched. A hard reload re-hydrates the filter bar.
+
 ## v6.4 — Merchandise-only rule + Exports page (Feb 2026)
 New business rule: Inventory, stock-to-sales and replenishment views
 must only consider merchandise (apparel / footwear). Accessories, Sample

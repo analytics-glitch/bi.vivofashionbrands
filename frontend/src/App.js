@@ -21,6 +21,7 @@ import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ChatWidget from "@/components/ChatWidget";
+import { Toaster } from "@/components/ui/sonner";
 
 const Shell = ({ children }) => (
   <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
@@ -65,6 +66,7 @@ function App() {
           </FiltersProvider>
         </AuthProvider>
       </BrowserRouter>
+      <Toaster position="top-right" richColors />
     </div>
   );
 }
