@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCategory";
 import {
   api,
   fmtKES,
@@ -255,13 +256,15 @@ const Overview = () => {
   );
 
   // Top 15 subcategories with % of total sales (across ALL subcategories).
+  // Merchandise-only — Accessories/Sale/null excluded from the chart.
+  const merchSubcats = useMemo(() => subcats.filter((r) => isMerchandise(r.subcategory)), [subcats]);
   const subcatTotalSales = useMemo(
-    () => subcats.reduce((s, r) => s + (r.total_sales || 0), 0),
-    [subcats]
+    () => merchSubcats.reduce((s, r) => s + (r.total_sales || 0), 0),
+    [merchSubcats]
   );
   const subcatTop = useMemo(
     () =>
-      [...subcats]
+      [...merchSubcats]
         .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
         .slice(0, 15)
         .map((r) => {
@@ -272,7 +275,7 @@ const Overview = () => {
             subcat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%`,
           };
         }),
-    [subcats, subcatTotalSales]
+    [merchSubcats, subcatTotalSales]
   );
   const subcatTopTotal = useMemo(
     () => subcatTop.reduce((s, r) => s + (r.total_sales || 0), 0),
@@ -280,21 +283,14 @@ const Overview = () => {
   );
 
   // Sales by Category — map subcategory → high-level category.
-  const categoryFor = (subcat) => {
-    const s = (subcat || "").toLowerCase();
-    if (/dress|jumpsuit|gown|kaftan/.test(s)) return "Dresses";
-    if (/top|blouse|shirt|tee|tunic|cami/.test(s)) return "Tops";
-    if (/trouser|pant|short|skirt|jean|legging/.test(s)) return "Bottoms";
-    if (/jacket|blazer|coat|cardigan|sweater|hoodie|outerwear/.test(s)) return "Outerwear";
-    if (/bag|wallet|purse|clutch|belt|scarf|accessor|jewel/.test(s)) return "Accessories";
-    if (/shoe|sandal|heel|sneaker|boot|footwear/.test(s)) return "Footwear";
-    if (/swim|beach|lingerie|nightwear|underwear/.test(s)) return "Intimates & Swim";
-    return "Other";
-  };
+  // Merchandise-only: Accessories, Sale and null are excluded from this chart.
+  const categoryFor = sharedCategoryFor;
   const salesByCategory = useMemo(() => {
     const byCat = {};
     for (const r of subcats) {
+      if (!isMerchandise(r.subcategory)) continue;
       const cat = categoryFor(r.subcategory);
+      if (!cat) continue;
       if (!byCat[cat]) byCat[cat] = { category: cat, total_sales: 0, units_sold: 0 };
       byCat[cat].total_sales += r.total_sales || 0;
       byCat[cat].units_sold += r.units_sold || 0;
@@ -305,7 +301,7 @@ const Overview = () => {
       const pct = (r.total_sales / total) * 100;
       return { ...r, pct, cat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%` };
     });
-  }, [subcats]);
+  }, [subcats, categoryFor]);
 
   return (
     <div className="space-y-6" data-testid="overview-page">

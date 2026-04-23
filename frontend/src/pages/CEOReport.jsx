@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpisLMLY } from "@/lib/useKpis";
+import { isMerchandise } from "@/lib/productCategory";
 import {
   api,
   fmtKES,
@@ -486,7 +487,7 @@ const CEOReport = () => {
                 </tr>
               </thead>
               <tbody>
-                {subcats.slice(0, 15).map((r, i) => {
+                {subcats.filter((r) => isMerchandise(r.subcategory)).slice(0, 15).map((r, i) => {
                   const pill = (r.sor_percent || 0) < 30 ? "pill-red" : (r.sor_percent || 0) < 60 ? "pill-amber" : "pill-green";
                   const variance = (r.pct_of_total_stock || 0) - (r.pct_of_total_sold || 0);
                   const vPill = variance >= 2 ? "pill-red" : variance <= -2 ? "pill-green" : "pill-neutral";

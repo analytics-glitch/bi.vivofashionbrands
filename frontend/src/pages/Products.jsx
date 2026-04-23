@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { isMerchandise } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -54,8 +55,9 @@ const Products = () => {
       .then(([s, ss, cat, t, ns]) => {
         if (cancelled) return;
         setSor(s.data || []);
-        setStockSales(ss.data || []);
-        setStsByCat(cat.data || []);
+        // Merchandise-only: exclude Accessories, Sale, Sample & Sale Items, null.
+        setStockSales((ss.data || []).filter((r) => isMerchandise(r.subcategory)));
+        setStsByCat((cat.data || []).filter((r) => r.category && !["Accessories", "Sale", "Other"].includes(r.category)));
         setTop(t.data || []);
         setNewStyles(ns.data || []);
         touchLastUpdated();

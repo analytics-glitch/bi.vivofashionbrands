@@ -15,6 +15,7 @@ import {
   ClockClockwise,
   ArrowsClockwise,
   Truck,
+  DownloadSimple,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -27,6 +28,7 @@ const tabs = [
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
+  { to: "/exports", label: "Exports", icon: DownloadSimple, id: "exports" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },

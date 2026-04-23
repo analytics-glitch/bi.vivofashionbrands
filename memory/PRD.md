@@ -333,6 +333,36 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.4 — Merchandise-only rule + Exports page (Feb 2026)
+New business rule: Inventory, stock-to-sales and replenishment views
+must only consider merchandise (apparel / footwear). Accessories, Sample
+& Sale Items and rows with null/empty subcategory are excluded from every
+inventory section across the app.
+
+- **New shared lib `/app/frontend/src/lib/productCategory.js`** — single
+  source of truth for `categoryFor(subcat)` and `isMerchandise(subcat)`;
+  hard-coded exclusion list: {Accessories, Belts, Scarves, Fragrances,
+  Bags, Jewellery, Jewelry, Sample & Sale Items, Sale}.
+- **Inventory page**: search bar is now a LIVE debounced global filter
+  across every chart, table and KPI (no Search button). The detailed
+  per-SKU inventory table at the bottom has been removed (moved to the
+  new Exports page). Low-stock + Weeks-of-Cover tables gained a Category
+  column next to Subcategory.
+- **Overview / Products / CEO Report / Re-Order**: every subcategory or
+  stock-to-sales aggregate filtered through `isMerchandise`. Re-Order list
+  also gained a Category column.
+- **New `/exports` page** (between Inventory and Re-Order in nav):
+  30k-row SKU-level export with filters (POS Location, Country, Brand,
+  Category, Subcategory — all multi-select), search (SKU/Product/Style),
+  sortable columns, Next/Previous pagination @ 50 rows/page, full-filtered
+  CSV export, total-units footer, optional 'Include Accessories / Sale'
+  opt-in checkbox. Default sort: Location → Available desc.
+- **Verified (iteration 17)**: 30,398 merchandise SKUs (vs 30,998 with
+  accessories opt-in = 600 non-merch rows excluded). Live search shrinks
+  every Inventory section; Safari brand filter on Exports = 2,624 SKUs /
+  5,633 units. CSV download works (5.57 MB, 30,398 rows). No console
+  errors on any page.
+
 ## v6.3 — Cross-page KPI consistency (Feb 2026)
 Critical data-consistency mandate: the API is the single source of truth; no
 page may compute headline totals by summing per-location data.

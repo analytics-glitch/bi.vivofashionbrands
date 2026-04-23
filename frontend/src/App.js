@@ -7,6 +7,7 @@ import Overview from "@/pages/Overview";
 import Locations from "@/pages/Locations";
 import Products from "@/pages/Products";
 import Inventory from "@/pages/Inventory";
+import Exports from "@/pages/Exports";
 import Customers from "@/pages/Customers";
 import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
@@ -51,6 +52,7 @@ function App() {
               <Route path="/locations" element={<ProtectedShell><Locations /></ProtectedShell>} />
               <Route path="/products" element={<ProtectedShell><Products /></ProtectedShell>} />
               <Route path="/inventory" element={<ProtectedShell><Inventory /></ProtectedShell>} />
+              <Route path="/exports" element={<ProtectedShell><Exports /></ProtectedShell>} />
               <Route path="/customers" element={<ProtectedShell><Customers /></ProtectedShell>} />
               <Route path="/footfall" element={<ProtectedShell><Footfall /></ProtectedShell>} />
               <Route path="/ceo-report" element={<ProtectedShell><CEOReport /></ProtectedShell>} />

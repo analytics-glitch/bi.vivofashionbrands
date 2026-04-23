@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtPct } from "@/lib/api";
+import { isMerchandise, categoryFor } from "@/lib/productCategory";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
@@ -36,12 +37,14 @@ const ReOrder = () => {
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   // Re-order rule: new style (already filtered by backend ≤90 days) with SOR ≥ 50% in first 6 weeks.
-  // Frontend layer adds: SOR ≥ 50% AND ranked by sales velocity.
+  // Frontend layer adds: SOR ≥ 50% AND merchandise-only AND ranked by sales velocity.
   const reorderList = useMemo(() => {
     return [...newStyles]
+      .filter((r) => isMerchandise(r.product_type))
       .filter((r) => (r.sor_percent || 0) >= 50)
       .map((r) => ({
         ...r,
+        category: categoryFor(r.product_type),
         urgency:
           (r.sor_percent || 0) >= 80 ? "CRITICAL" :
           (r.sor_percent || 0) >= 65 ? "HIGH" : "MEDIUM",
@@ -101,6 +104,7 @@ const ReOrder = () => {
                   { key: "urgency", label: "Urgency", align: "left", render: (r) => <span className={pillFor(r.urgency)}>{r.urgency}</span>, csv: (r) => r.urgency },
                   { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.style_name}</span> },
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
                   { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
                   { key: "sor_percent", label: "SOR", numeric: true, render: (r) => <span className={pillFor(r.urgency)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent?.toFixed(2) },
                   { key: "units_sold_launch", label: "Units Sold (Launch)", numeric: true, render: (r) => fmtNum(r.units_sold_launch) },

@@ -1,19 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS, buildParams } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { ChartTooltip } from "@/components/ChartHelpers";
+import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import {
   Package,
   Warning,
   Storefront,
   MagnifyingGlass,
-  Buildings,
   TrendDown,
   Cube,
-  Timer,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -23,7 +22,6 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   Tooltip,
-  Legend,
   LabelList,
 } from "recharts";
 
@@ -39,10 +37,17 @@ const Inventory = () => {
   const [weeksOfCover, setWeeksOfCover] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [search, setSearch] = useState("");
+
+  // Live search — debounced via useEffect below to avoid re-render storms.
   const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 250);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,8 +55,7 @@ const Inventory = () => {
     setError(null);
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
     const locationsCsv = channels.length ? channels.join(",") : undefined;
-    const invParams = { country: countryCsv, locations: locationsCsv, product: search || undefined };
-    // On manual refresh, bust the 60s backend cache.
+    const invParams = { country: countryCsv, locations: locationsCsv };
     const refreshParams = dataVersion > 0 ? { ...invParams, refresh: true } : invParams;
     const dateParams = {
       date_from: dateFrom, date_to: dateTo,
@@ -79,22 +83,30 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), search, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  // --- Merchandise-only raw inventory ---
+  // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
+  // Sale Items, and any row with a null/empty product_type across the app.
+  const merchInv = useMemo(
+    () => inv.filter((r) => isMerchandise(r.product_type)),
+    [inv]
+  );
 
   const brands = useMemo(
-    () => [...new Set(inv.map((r) => r.brand).filter(Boolean))].sort(),
-    [inv]
+    () => [...new Set(merchInv.map((r) => r.brand).filter(Boolean))].sort(),
+    [merchInv]
   );
   const types = useMemo(
-    () => [...new Set(inv.map((r) => r.product_type).filter(Boolean))].sort(),
-    [inv]
+    () => [...new Set(merchInv.map((r) => r.product_type).filter(Boolean))].sort(),
+    [merchInv]
   );
 
-  // Dedupe styles mapped to multiple subcategories — each style name gets
-  // one canonical subcategory (the one with the most SKUs / units).
+  // Dedupe style → canonical subcategory (style with multiple product_types
+  // gets the one with the most units).
   const styleCanonicalType = useMemo(() => {
-    const counts = new Map(); // style → { [product_type]: count }
-    for (const r of inv) {
+    const counts = new Map();
+    for (const r of merchInv) {
       const style = r.style_name || r.product_name;
       const pt = r.product_type;
       if (!style || !pt) continue;
@@ -108,10 +120,13 @@ const Inventory = () => {
       if (best) out.set(style, best[0]);
     }
     return out;
-  }, [inv]);
+  }, [merchInv]);
 
+  // Apply country, location, brand, product-type AND search (product / sku /
+  // style / barcode) filters. This drives every downstream aggregate.
   const filteredInv = useMemo(() => {
-    return inv
+    const q = search.toLowerCase();
+    return merchInv
       .map((r) => {
         const style = r.style_name || r.product_name;
         const canonicalType = styleCanonicalType.get(style);
@@ -122,20 +137,91 @@ const Inventory = () => {
         if (channels.length && !channels.includes(r.location_name)) return false;
         if (brandFilter && r.brand !== brandFilter) return false;
         if (typeFilter && r.product_type !== typeFilter) return false;
-        return true;
+        if (!q) return true;
+        return (
+          (r.product_name || "").toLowerCase().includes(q) ||
+          (r.style_name || "").toLowerCase().includes(q) ||
+          (r.sku || "").toLowerCase().includes(q) ||
+          (r.barcode || "").toLowerCase().includes(q)
+        );
       });
-  }, [inv, countries, channels, brandFilter, typeFilter, styleCanonicalType]);
+  }, [merchInv, countries, channels, brandFilter, typeFilter, styleCanonicalType, search]);
+
+  // When any filter (search/brand/type) is active, derive the visible
+  // location & subcategory set and restrict the aggregated charts/tables to
+  // match. When no filters are active we show the raw merchandise aggregates.
+  const filtersActive = Boolean(search || brandFilter || typeFilter);
+  const visibleLocations = useMemo(
+    () => new Set(filteredInv.map((r) => r.location_name).filter(Boolean)),
+    [filteredInv]
+  );
+  const visibleSubcats = useMemo(
+    () => new Set(filteredInv.map((r) => r.product_type).filter(Boolean)),
+    [filteredInv]
+  );
+  const visibleStyles = useMemo(
+    () => new Set(filteredInv.map((r) => r.style_name || r.product_name).filter(Boolean)),
+    [filteredInv]
+  );
+
+  // Stock by location — from filteredInv when filters active, else from
+  // summary (backend merchandise-filtered aggregate if available).
+  const stockByLocation = useMemo(() => {
+    if (filtersActive) {
+      const m = new Map();
+      for (const r of filteredInv) {
+        const loc = r.location_name || "—";
+        m.set(loc, (m.get(loc) || 0) + (r.available || 0));
+      }
+      return [...m.entries()]
+        .map(([location, units]) => ({ location, units }))
+        .sort((a, b) => b.units - a.units);
+    }
+    // Filter summary.by_location to only include merchandise units — we don't
+    // have a per-subcat breakdown in by_location, so re-derive from merchInv.
+    const m = new Map();
+    for (const r of merchInv) {
+      const loc = r.location_name || "—";
+      m.set(loc, (m.get(loc) || 0) + (r.available || 0));
+    }
+    return [...m.entries()]
+      .map(([location, units]) => ({ location, units }))
+      .sort((a, b) => b.units - a.units);
+  }, [filtersActive, filteredInv, merchInv]);
+
+  const totalFilteredUnits = useMemo(
+    () => filteredInv.reduce((s, r) => s + (r.available || 0), 0),
+    [filteredInv]
+  );
+
+  // Store vs Warehouse split derived from filtered rows.
+  const storeVsWarehouse = useMemo(() => {
+    const isWarehouse = (loc) => {
+      const s = (loc || "").toLowerCase();
+      return /warehouse|wholesale|holding|staging|sale stock/.test(s);
+    };
+    let store = 0;
+    let warehouse = 0;
+    for (const r of filteredInv) {
+      if (isWarehouse(r.location_name)) warehouse += r.available || 0;
+      else store += r.available || 0;
+    }
+    return { store, warehouse };
+  }, [filteredInv]);
 
   const lowStockByStyle = useMemo(() => {
     const m = new Map();
     for (const r of filteredInv) {
       const style = r.style_name || r.product_name;
       if (!style) continue;
+      // Extra guard: filter out any non-merchandise that slipped through.
+      if (!isMerchandise(r.product_type)) continue;
       if (!m.has(style)) {
         m.set(style, {
           style_name: style,
           brand: r.brand,
           product_type: r.product_type,
+          category: categoryFor(r.product_type),
           collection: r.collection,
           available: 0,
           sku_count: 0,
@@ -147,29 +233,28 @@ const Inventory = () => {
       e.sku_count += 1;
       if (r.location_name) e.locations.add(r.location_name);
     }
-    const rows = [...m.values()]
+    return [...m.values()]
       .filter((e) => e.available <= 10)
       .map((e) => ({ ...e, locations: e.locations.size }))
       .sort((a, b) => a.available - b.available);
-    return rows;
   }, [filteredInv]);
 
-  // Understocked subcategories = % of total stock is LESS than % of total units sold.
-  // understock_pct = pct_of_total_sold − pct_of_total_stock (positive = understocked magnitude).
   const understockedSubcats = useMemo(() => {
-    return [...subcatSS]
+    return subcatSS
+      .filter((r) => isMerchandise(r.subcategory))
+      .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory))
       .map((r) => ({
         ...r,
         understock_pct: (r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0),
       }))
       .filter((r) => r.understock_pct > 0.5)
       .sort((a, b) => b.understock_pct - a.understock_pct);
-  }, [subcatSS]);
+  }, [subcatSS, filtersActive, visibleSubcats]);
 
-  // Inventory by Category — attach % of total stock for labels + tooltip.
   const invByCategory = useMemo(() => {
-    const total = stsByCat.reduce((s, r) => s + (r.current_stock || 0), 0) || 1;
-    return [...stsByCat]
+    const src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
+    const total = src.reduce((s, r) => s + (r.current_stock || 0), 0) || 1;
+    return [...src]
       .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
       .map((r) => {
         const pct = ((r.current_stock || 0) / total) * 100;
@@ -177,15 +262,46 @@ const Inventory = () => {
       });
   }, [stsByCat]);
 
-  // Inventory by Subcategory (top 15) — attach % of total stock.
   const invBySubcat = useMemo(() => {
-    const rows = summary?.by_product_type || [];
-    const total = rows.reduce((s, r) => s + (r.units || 0), 0) || 1;
-    return rows.slice(0, 15).map((r) => {
+    const raw = summary?.by_product_type || [];
+    const merch = raw
+      .filter((r) => isMerchandise(r.product_type))
+      .filter((r) => !filtersActive || visibleSubcats.has(r.product_type));
+    const sorted = [...merch].sort((a, b) => (b.units || 0) - (a.units || 0));
+    const total = sorted.reduce((s, r) => s + (r.units || 0), 0) || 1;
+    return sorted.slice(0, 15).map((r) => {
       const pct = ((r.units || 0) / total) * 100;
       return { ...r, pct, subcat_label: `${pct.toFixed(1)}%` };
     });
-  }, [summary]);
+  }, [summary, filtersActive, visibleSubcats]);
+
+  const filteredWeeksOfCover = useMemo(
+    () => weeksOfCover
+      .filter((r) => isMerchandise(r.subcategory))
+      .filter((r) => !filtersActive || visibleStyles.has(r.style_name)),
+    [weeksOfCover, filtersActive, visibleStyles]
+  );
+
+  const filteredSts = useMemo(
+    () => (filtersActive ? sts.filter((r) => visibleLocations.has(r.location)) : sts),
+    [sts, filtersActive, visibleLocations]
+  );
+
+  const filteredStsByCat = useMemo(
+    () => stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category),
+    [stsByCat]
+  );
+
+  const filteredSubcatSS = useMemo(
+    () => subcatSS
+      .filter((r) => isMerchandise(r.subcategory))
+      .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory)),
+    [subcatSS, filtersActive, visibleSubcats]
+  );
+
+  const kpiTotal = filtersActive ? totalFilteredUnits : (summary?.total_units || 0);
+  const kpiStore = filtersActive ? storeVsWarehouse.store : (summary?.store_units || 0);
+  const kpiWarehouse = filtersActive ? storeVsWarehouse.warehouse : (summary?.warehouse_units || 0);
 
   return (
     <div className="space-y-6" data-testid="inventory-page">
@@ -194,6 +310,10 @@ const Inventory = () => {
         <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
           Inventory
         </h1>
+        <p className="text-muted text-[13px] mt-0.5">
+          Merchandise only — Accessories, Sample &amp; Sale Items and
+          uncategorised products are excluded from every section below.
+        </p>
       </div>
 
       {loading && <Loading />}
@@ -206,7 +326,8 @@ const Inventory = () => {
               testId="inv-kpi-units"
               accent
               label="Total Available Units"
-              value={fmtNum(summary.total_units)}
+              sub={filtersActive ? "Filtered" : "All merchandise"}
+              value={fmtNum(kpiTotal)}
               icon={Package}
               showDelta={false}
             />
@@ -214,7 +335,7 @@ const Inventory = () => {
               testId="inv-kpi-store-stock"
               label="Stock in Stores"
               sub="Customer-facing units (excl. warehouse / holding)"
-              value={fmtNum(summary.store_units)}
+              value={fmtNum(kpiStore)}
               icon={Storefront}
               showDelta={false}
             />
@@ -222,7 +343,7 @@ const Inventory = () => {
               testId="inv-kpi-warehouse-stock"
               label="Stock in Warehouse"
               sub="Warehouse, wholesale, holding, staging"
-              value={fmtNum(summary.warehouse_units)}
+              value={fmtNum(kpiWarehouse)}
               icon={Cube}
               showDelta={false}
             />
@@ -236,29 +357,20 @@ const Inventory = () => {
           </div>
 
           <div className="card-white p-3 flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 input-pill flex-1 min-w-[200px]">
+            <div className="flex items-center gap-2 input-pill flex-1 min-w-[260px]">
               <MagnifyingGlass size={14} className="text-muted" />
               <input
-                placeholder="Search product name… press Enter or click Search"
+                placeholder="Search product name, style or SKU — filters every chart & table"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") setSearch(searchInput); }}
                 data-testid="inv-search"
                 className="bg-transparent outline-none text-[13px] w-full"
               />
             </div>
-            <button
-              type="button"
-              onClick={() => setSearch(searchInput)}
-              data-testid="inv-search-btn"
-              className="px-3 py-1.5 rounded-lg bg-brand text-white text-[12px] font-semibold hover:bg-brand-deep transition-colors"
-            >
-              Search
-            </button>
-            {search && (
+            {searchInput && (
               <button
                 type="button"
-                onClick={() => { setSearchInput(""); setSearch(""); }}
+                onClick={() => setSearchInput("")}
                 data-testid="inv-search-clear"
                 className="px-2.5 py-1.5 rounded-lg text-[12px] text-muted hover:bg-panel"
               >
@@ -282,79 +394,88 @@ const Inventory = () => {
               onChange={(e) => setTypeFilter(e.target.value)}
               data-testid="inv-type"
             >
-              <option value="">All product types</option>
+              <option value="">All subcategories</option>
               {types.map((t) => (
                 <option key={t}>{t}</option>
               ))}
             </select>
+            {filtersActive && (
+              <span className="pill-neutral text-[11px]">
+                Filtered — {fmtNum(filteredInv.length)} SKUs · {fmtNum(totalFilteredUnits)} units
+              </span>
+            )}
           </div>
 
           <div className="card-white p-5" data-testid="chart-inv-location">
             <SectionTitle
-              title={`Stock by location · ${summary.by_location.length} locations`}
+              title={`Stock by location · ${stockByLocation.length} locations`}
               subtitle="All locations sorted by stock descending"
             />
-            <div style={{ width: "100%", height: 24 + summary.by_location.length * 22 }}>
-              <ResponsiveContainer>
-                <BarChart data={summary.by_location} layout="vertical" margin={{ left: 10, right: 60, top: 4 }}>
-                  <CartesianGrid horizontal={false} />
-                  <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                  <YAxis type="category" dataKey="location" width={170} tick={{ fontSize: 10 }} />
-                  <Tooltip content={<ChartTooltip formatters={{ units: (v) => `${fmtNum(v)} units` }} />} />
-                  <Bar dataKey="units" fill="#1a5c38" radius={[0, 5, 5, 0]}>
-                    <LabelList dataKey="units" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {stockByLocation.length === 0 ? <Empty /> : (
+              <div style={{ width: "100%", height: 24 + stockByLocation.length * 22 }}>
+                <ResponsiveContainer>
+                  <BarChart data={stockByLocation} layout="vertical" margin={{ left: 10, right: 60, top: 4 }}>
+                    <CartesianGrid horizontal={false} />
+                    <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                    <YAxis type="category" dataKey="location" width={170} tick={{ fontSize: 10 }} />
+                    <Tooltip content={<ChartTooltip formatters={{ units: (v) => `${fmtNum(v)} units` }} />} />
+                    <Bar dataKey="units" fill="#1a5c38" radius={[0, 5, 5, 0]}>
+                      <LabelList dataKey="units" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card-white p-5" data-testid="chart-inv-category">
-              <SectionTitle title="Inventory by Category" subtitle="Grouped (Dresses, Tops, Bottoms, …) — % of total stock shown" />
-              <div style={{ width: "100%", height: 340 }}>
-                <ResponsiveContainer>
-                  <BarChart data={invByCategory} margin={{ top: 24, bottom: 60 }}>
-                    <CartesianGrid vertical={false} />
-                    <XAxis dataKey="category" interval={0} angle={-20} textAnchor="end" height={70} tick={{ fontSize: 10 }} />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <Tooltip content={<ChartTooltip formatters={{
-                      Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
-                      current_stock: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
-                    }} />} />
-                    <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
-                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <SectionTitle title="Inventory by Category" subtitle="Merchandise groupings only — Accessories &amp; Sale excluded" />
+              {invByCategory.length === 0 ? <Empty /> : (
+                <div style={{ width: "100%", height: 340 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={invByCategory} margin={{ top: 24, bottom: 60 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="category" interval={0} angle={-20} textAnchor="end" height={70} tick={{ fontSize: 10 }} />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                      <Tooltip content={<ChartTooltip formatters={{
+                        Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                        current_stock: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                      }} />} />
+                      <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
+                        <LabelList dataKey="cat_label" position="top" style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
             <div className="card-white p-5" data-testid="chart-inv-subcat">
-              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 subcategories — % of total stock shown" />
-              <div style={{ width: "100%", height: 340 }}>
-                <ResponsiveContainer>
-                  <BarChart data={invBySubcat} margin={{ top: 24, bottom: 80 }}>
-                    <CartesianGrid vertical={false} />
-                    <XAxis dataKey="product_type" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 9 }} />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <Tooltip content={<ChartTooltip formatters={{
-                      Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
-                      units: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
-                    }} />} />
-                    <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory">
-                      <LabelList dataKey="subcat_label" position="top" style={{ fontSize: 9, fill: "#4b5563", fontWeight: 600 }} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 fashion subcategories" />
+              {invBySubcat.length === 0 ? <Empty /> : (
+                <div style={{ width: "100%", height: 340 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={invBySubcat} margin={{ top: 24, bottom: 80 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="product_type" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 9 }} />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
+                      <Tooltip content={<ChartTooltip formatters={{
+                        Inventory: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                        units: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
+                      }} />} />
+                      <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory">
+                        <LabelList dataKey="subcat_label" position="top" style={{ fontSize: 9, fill: "#4b5563", fontWeight: 600 }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Stores-vs-Warehouse chart removed per user request (illegible at scale). */}
-
           <div className="card-white p-5" data-testid="weeks-of-cover">
             <SectionTitle
-              title={`Weeks of Cover · ${weeksOfCover.length} styles`}
+              title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
               subtitle="Weeks = current stock ÷ (units sold in last 4 weeks ÷ 4). Red <2w · Amber 2–4w · Green >4w."
             />
             <SortableTable
@@ -364,6 +485,7 @@ const Inventory = () => {
               initialSort={{ key: "weeks_of_cover", dir: "asc" }}
               columns={[
                 { key: "style_name", label: "Style Name", align: "left" },
+                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
                 { key: "avg_weekly_sales", label: "Avg Weekly Sales", numeric: true, render: (r) => fmtNum(Math.round(r.avg_weekly_sales)), csv: (r) => r.avg_weekly_sales?.toFixed(2) },
@@ -382,7 +504,7 @@ const Inventory = () => {
                   csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
                 },
               ]}
-              rows={weeksOfCover}
+              rows={filteredWeeksOfCover}
             />
           </div>
 
@@ -408,18 +530,19 @@ const Inventory = () => {
                   csv: (r) => r.variance?.toFixed(2),
                 },
               ]}
-              rows={stsByCat}
+              rows={filteredStsByCat}
             />
           </div>
 
           <div className="card-white p-5" data-testid="sts-by-subcategory-table">
-            <SectionTitle title="Stock-to-Sales · by Subcategory" subtitle="Granular view — one row per subcategory" />
+            <SectionTitle title="Stock-to-Sales · by Subcategory" subtitle="Granular view — one row per merchandise subcategory" />
             <SortableTable
               testId="inv-sts-subcat"
               exportName="inventory-sts-by-subcategory.csv"
               pageSize={15}
               initialSort={{ key: "units_sold", dir: "desc" }}
               columns={[
+                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                 { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
@@ -435,7 +558,7 @@ const Inventory = () => {
                   csv: (r) => r.variance?.toFixed(2),
                 },
               ]}
-              rows={subcatSS}
+              rows={filteredSubcatSS}
             />
           </div>
 
@@ -451,6 +574,7 @@ const Inventory = () => {
                 initialSort={{ key: "understock_pct", dir: "desc" }}
                 columns={[
                   { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
                   { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="font-medium">{r.subcategory}</span> },
                   { key: "pct_of_total_sold", label: "% of Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
                   { key: "pct_of_total_stock", label: "% of Stock", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
@@ -472,7 +596,7 @@ const Inventory = () => {
             <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
               <SectionTitle
                 title={`Low-stock alerts · ${lowStockByStyle.length} styles`}
-                subtitle="Styles with ≤10 total available units across all SKUs in the current scope"
+                subtitle="Merchandise styles with ≤10 total available units across all SKUs in the current scope"
               />
               <SortableTable
                 testId="low-stock"
@@ -482,6 +606,7 @@ const Inventory = () => {
                 columns={[
                   { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium max-w-[300px] truncate inline-block" title={r.style_name}>{r.style_name || "—"}</span> },
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
                   { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
                   { key: "sku_count", label: "SKUs", numeric: true, render: (r) => fmtNum(r.sku_count) },
                   { key: "locations", label: "Locations", numeric: true, render: (r) => fmtNum(r.locations) },
@@ -521,34 +646,7 @@ const Inventory = () => {
                   csv: (r) => r.stock_to_sales_ratio?.toFixed(2),
                 },
               ]}
-              rows={sts}
-            />
-          </div>
-
-          <div className="card-white p-5" data-testid="inventory-table">
-            <SectionTitle
-              title="Inventory"
-              subtitle={`${fmtNum(filteredInv.length)} rows · sortable, exportable`}
-            />
-            <SortableTable
-              testId="inventory-rows"
-              exportName="inventory.csv"
-              pageSize={300}
-              initialSort={{ key: "available", dir: "desc" }}
-              columns={[
-                { key: "product_name", label: "Product", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.product_name}>{r.product_name || "—"}</span> },
-                { key: "size", label: "Size", align: "left", render: (r) => r.size || "—" },
-                { key: "sku", label: "SKU", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.sku || "—"}</span>, csv: (r) => r.sku },
-                { key: "barcode", label: "Barcode", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.barcode || "—"}</span>, csv: (r) => r.barcode },
-                { key: "location_name", label: "Location", align: "left", render: (r) => <span className="text-muted">{r.location_name || "—"}</span>, csv: (r) => r.location_name },
-                { key: "country", label: "Country", align: "left", render: (r) => <span className="capitalize">{r.country || "—"}</span>, csv: (r) => r.country },
-                {
-                  key: "available", label: "Available", numeric: true,
-                  render: (r) => <span className={`font-semibold ${(r.available || 0) <= 2 ? "text-danger" : ""}`}>{fmtNum(r.available)}</span>,
-                  csv: (r) => r.available,
-                },
-              ]}
-              rows={filteredInv}
+              rows={filteredSts}
             />
           </div>
         </>
