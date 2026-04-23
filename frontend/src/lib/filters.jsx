@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from "react";
 import { datePresets } from "@/lib/api";
+import { api } from "@/lib/api";
 
 const FiltersContext = createContext(null);
 
@@ -26,7 +27,16 @@ export const FiltersProvider = ({ children }) => {
     setDateTo(p.date_to);
   };
 
-  const refresh = useCallback(() => setDataVersion((v) => v + 1), []);
+  const refresh = useCallback(async () => {
+    // Bust server-side caches (inventory fan-out etc.) then bump the
+    // client-side dataVersion to force every page to re-fetch.
+    try {
+      await api.post("/admin/cache-clear");
+    } catch {
+      /* non-fatal — still bump dataVersion */
+    }
+    setDataVersion((v) => v + 1);
+  }, []);
   const touchLastUpdated = useCallback(() => setLastUpdated(new Date()), []);
 
   // Applied object (same as live values — auto-apply)

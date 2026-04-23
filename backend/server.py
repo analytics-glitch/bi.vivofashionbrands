@@ -339,6 +339,17 @@ async def get_inventory(
     )
 
 
+@api_router.post("/admin/cache-clear")
+async def admin_cache_clear():
+    """Clear all server-side caches so the next request re-fetches
+    from upstream Vivo BI. Non-authenticated (same trust zone as /api/*).
+    """
+    _inv_cache["ts"] = 0
+    _inv_cache["key"] = None
+    _inv_cache["data"] = None
+    return {"ok": True, "cleared": ["inventory"]}
+
+
 @api_router.get("/stock-to-sales")
 async def get_stock_to_sales(
     date_from: Optional[str] = None,
