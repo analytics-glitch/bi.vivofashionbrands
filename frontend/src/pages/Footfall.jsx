@@ -44,6 +44,8 @@ const Footfall = () => {
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [authoritativeKpis, setAuthoritativeKpis] = useState(null); // for headline Orders / Sales
+  const [authoritativePrevKpis, setAuthoritativePrevKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -52,25 +54,35 @@ const Footfall = () => {
     setLoading(true);
     setError(null);
     const prevP = comparePeriod(dateFrom, dateTo, compareMode);
+    const country = countries.length === 1 ? countries[0] : undefined;
+    const channel = channels.length ? channels.join(",") : undefined;
     Promise.all([
       api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
       prevP
         ? api.get("/footfall", { params: { date_from: prevP.date_from, date_to: prevP.date_to } })
         : Promise.resolve({ data: [] }),
       api.get("/locations"),
+      api.get("/kpis", { params: { date_from: dateFrom, date_to: dateTo, country, channel } })
+        .catch(() => ({ data: null })),
+      prevP
+        ? api.get("/kpis", { params: { date_from: prevP.date_from, date_to: prevP.date_to, country, channel } })
+            .catch(() => ({ data: null }))
+        : Promise.resolve({ data: null }),
     ])
-      .then(([f, p, l]) => {
+      .then(([f, p, l, k, kp]) => {
         if (cancelled) return;
         setRows(f.data || []);
         setPrev(p.data || []);
         setLocations(l.data || []);
+        setAuthoritativeKpis(k.data);
+        setAuthoritativePrevKpis(kp.data);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, compareMode, dataVersion]);
+  }, [dateFrom, dateTo, compareMode, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   const channelCountry = useMemo(() => {
     const m = {};
@@ -165,6 +177,17 @@ const Footfall = () => {
         <p className="text-muted text-[13px] mt-0.5">
           {fmtDate(dateFrom)} → {fmtDate(dateTo)} · all locations included
         </p>
+        {authoritativeKpis && authoritativeKpis.total_orders && totals.orders !== authoritativeKpis.total_orders && (
+          <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
+            ℹ️ Upstream footfall counters cover physical stores only.
+            Showing <b>{fmtNum(authoritativeKpis.total_orders)}</b> total
+            orders (matches Overview / Locations);
+            per-store footfall table below tracks <b>{fmtNum(totals.orders)}</b> orders
+            from {rows.length} stores with a counter — the remaining {" "}
+            <b>{fmtNum(authoritativeKpis.total_orders - totals.orders)}</b>{" "}
+            come from online channels and stores without footfall counters.
+          </div>
+        )}
       </div>
 
       {loading && <Loading />}
@@ -186,9 +209,13 @@ const Footfall = () => {
             <KPICard
               testId="ff-kpi-orders"
               label="Orders"
-              value={fmtNum(totals.orders)}
+              sub="all channels"
+              value={fmtNum(authoritativeKpis?.total_orders ?? totals.orders)}
               icon={ShoppingCart}
-              delta={delta(totals.orders, prevTotals.orders)}
+              delta={delta(
+                authoritativeKpis?.total_orders ?? totals.orders,
+                authoritativePrevKpis?.total_orders ?? prevTotals.orders,
+              )}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
             />
