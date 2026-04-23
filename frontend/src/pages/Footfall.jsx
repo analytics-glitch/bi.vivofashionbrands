@@ -221,7 +221,8 @@ const Footfall = () => {
             />
             <KPICard
               testId="ff-kpi-conv"
-              label="Group Conversion"
+              label="Stores Conversion Rate"
+              sub={`${fmtNum(totals.orders)} orders ÷ ${fmtNum(totals.footfall)} footfall`}
               value={fmtPct(totals.conv, 2)}
               icon={Target}
               delta={delta(totals.conv, prevTotals.conv)}
