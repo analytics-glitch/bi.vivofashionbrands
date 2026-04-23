@@ -288,7 +288,7 @@ const Locations = () => {
               <div className="card-white p-5" data-testid="footfall-section">
                 <SectionTitle
                   title="Footfall & Conversion"
-                  subtitle="Traffic, orders, conversion rate, and revenue per visitor — all locations included."
+                  subtitle="Total Sales match the store grid above (sales-summary). Orders & sales/visitor recomputed from the authoritative totals."
                 />
                 <div className="overflow-x-auto">
                   <table className="w-full data" data-testid="footfall-table">
@@ -309,16 +309,22 @@ const Locations = () => {
                       {[...footfall]
                         .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
                         .map((r, i) => {
-                          const cr = r.conversion_rate || 0;
+                          // Authoritative figures from sales-summary (matches the grid).
+                          const store = enriched.find((l) => l.channel === r.location);
+                          const authoritativeSales = store ? (store.total_sales || 0) : (r.total_sales || 0);
+                          const authoritativeOrders = store ? (store.orders || store.total_orders || 0) : (r.orders || 0);
+                          const footfallCount = r.total_footfall || 0;
+                          const salesPerVisitor = footfallCount ? authoritativeSales / footfallCount : 0;
+                          const cr = footfallCount ? (authoritativeOrders / footfallCount) * 100 : 0;
                           const pill = cr > 15 ? "pill-green" : cr >= 10 ? "pill-amber" : "pill-red";
                           return (
                             <tr key={r.location + i}>
                               <td className="font-medium">{r.location}</td>
-                              <td className="text-right num">{fmtNum(r.total_footfall)}</td>
-                              <td className="text-right num">{fmtNum(r.orders)}</td>
+                              <td className="text-right num">{fmtNum(footfallCount)}</td>
+                              <td className="text-right num">{fmtNum(authoritativeOrders)}</td>
                               <td className="text-right"><span className={pill}>{fmtPct(cr)}</span></td>
-                              <td className="text-right num">{fmtKES(r.sales_per_visitor)}</td>
-                              <td className="text-right num font-bold">{fmtKES(r.total_sales)}</td>
+                              <td className="text-right num">{fmtKES(salesPerVisitor)}</td>
+                              <td className="text-right num font-bold">{fmtKES(authoritativeSales)}</td>
                             </tr>
                           );
                         })}
