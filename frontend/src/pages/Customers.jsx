@@ -100,7 +100,7 @@ const Customers = () => {
       ["top", api.get("/top-customers", { params: { ...dateP, limit: 20 } }).catch(() => ({ data: [] }))],
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
-      ["churned", api.get("/churned-customers", { params: { days: 90, limit: 20 } }).catch(() => ({ data: [] }))],
+      ["churned", api.get("/churned-customers", { params: { days: 90, limit: 500 } }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
@@ -315,6 +315,16 @@ const Customers = () => {
             </div>
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
             <KPICard
+              testId="kpi-churned-count"
+              label="Churned Customers"
+              sub="90-day rolling count"
+              formula="Count of customers whose LAST purchase was more than 90 days ago (as of today). Source: /churned-customers?days=90."
+              value={fmtNum(cust.churned_last_90d || churned.length)}
+              icon={UserMinus}
+              higherIsBetter={false}
+              showDelta={false}
+            />
+            <KPICard
               testId="kpi-churn"
               label="Churn Rate"
               sub="90-day rolling · as of today"
@@ -475,17 +485,19 @@ const Customers = () => {
           {/* ---- Churned customers ---- */}
           <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
             <SectionTitle
-              title={`Churned customers · top ${churned.length}`}
-              subtitle="Customers with no purchase in the last 90 days. Sorted by most recent churn first."
+              title={`Churned customers · ${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""}`}
+              subtitle="Customers with no purchase in the last 90 days. Sorted by most recent churn first. Paginated · 25 rows per page."
             />
             {churned.length === 0 ? <UpstreamNotReady /> : (
               <SortableTable
                 testId="churned-customers"
                 exportName="churned-customers.csv"
                 initialSort={{ key: "days_since_last_purchase", dir: "asc" }}
+                pageSize={25}
                 columns={[
                   { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
                   { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{r.phone || "—"}</span>, csv: (r) => r.phone },
+                  { key: "email", label: "Email", align: "left", render: (r) => <span className="text-muted text-[11px] max-w-[200px] truncate inline-block" title={r.email}>{r.email || "—"}</span>, csv: (r) => r.email },
                   { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
                   { key: "days_since_last_purchase", label: "Days Since", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
                   { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },

@@ -40,11 +40,27 @@ const Login = () => {
       await loginWithPassword(em, pw);
       navigate("/", { replace: true });
     } catch (err) {
-      // Detect Safari Private-mode storage failure so we can explain it.
-      const msg = err?.response?.data?.detail ||
-        (err?.name === "QuotaExceededError"
-          ? "Your browser is blocking session storage (iOS Safari Private mode). Turn off Private Browsing and try again."
-          : "Login failed");
+      // Surface the ACTUAL failure cause so iOS Safari issues are debuggable
+      // instead of a generic "Login failed". Pick the most specific source
+      // available, in priority order.
+      let msg;
+      if (err?.name === "QuotaExceededError") {
+        msg = "Your browser is blocking session storage (iOS Safari Private mode). Turn off Private Browsing and try again.";
+      } else if (err?.response?.data?.detail) {
+        // Backend replied with a structured error — trust it.
+        msg = err.response.data.detail;
+      } else if (err?.response) {
+        // Backend replied but with no detail field.
+        msg = `Server returned HTTP ${err.response.status}. Please try again or contact support.`;
+      } else if (err?.code === "ERR_NETWORK" || err?.message?.includes("Network Error")) {
+        // Most common iOS failure: browser blocked the request at the network
+        // layer (CORS / certificate / ITP). Give the user something actionable.
+        msg = "Cannot reach the server from this browser. On iOS: turn off Private Browsing, check your network, and reload the page. If the issue persists, please screenshot this and send to IT.";
+      } else if (err?.code === "ECONNABORTED") {
+        msg = "The server took too long to respond. Check your connection and try again.";
+      } else {
+        msg = `Login failed: ${err?.message || "unknown error"}`;
+      }
       setError(msg);
     } finally {
       setSubmitting(false);
