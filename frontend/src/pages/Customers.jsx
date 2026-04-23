@@ -19,6 +19,17 @@ const UpstreamNotReady = ({ label }) => (
   </div>
 );
 
+// Mask phone to "0705***589" style — keep first 4 and last 3 digits visible,
+// replace middle with ***. Leaves already-masked strings (containing •) alone.
+const maskPhone = (p) => {
+  if (!p) return "—";
+  const s = String(p);
+  if (s.includes("•") || s.includes("*")) return s; // already masked upstream
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 7) return s;
+  return `${digits.slice(0, 4)}***${digits.slice(-3)}`;
+};
+
 // Delta pill vs previous period
 const Delta = ({ curr, prev, invert }) => {
   if (prev == null || curr == null) return null;
@@ -216,7 +227,7 @@ const Customers = () => {
                       <UserCircle size={20} className="text-brand" weight="fill" />
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-[13px] truncate">{r.customer_name || "—"}</div>
-                        <div className="text-[11.5px] text-muted truncate">{r.phone || r.email || "—"}</div>
+                        <div className="text-[11.5px] text-muted truncate">{r.phone ? maskPhone(r.phone) : (r.email || "—")}</div>
                       </div>
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-1 text-[11px]">
@@ -238,7 +249,7 @@ const Customers = () => {
                   <div className="eyebrow">Customer detail</div>
                   <div className="font-bold text-[16px] mt-0.5">{selectedCustomer.customer_name || "—"}</div>
                   <div className="text-[12px] text-muted">
-                    {[selectedCustomer.phone, selectedCustomer.email, selectedCustomer.city].filter(Boolean).join(" · ") || "—"}
+                    {[selectedCustomer.phone ? maskPhone(selectedCustomer.phone) : null, selectedCustomer.email, selectedCustomer.city].filter(Boolean).join(" · ") || "—"}
                   </div>
                 </div>
                 <button type="button" onClick={() => { setSelectedCustomer(null); setCustomerProducts([]); }} className="p-1.5 rounded hover:bg-panel">
@@ -423,7 +434,7 @@ const Customers = () => {
                 columns={[
                   { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
                   { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[200px] inline-block">{r.customer_name || "—"}</span> },
-                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{r.phone || "—"}</span>, csv: (r) => r.phone },
+                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
                   { key: "city", label: "City", align: "left", render: (r) => r.city || "—", csv: (r) => r.city },
                   { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
                   { key: "total_units", label: "Units", numeric: true, render: (r) => fmtNum(r.total_units) },
@@ -500,7 +511,7 @@ const Customers = () => {
                 pageSize={25}
                 columns={[
                   { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
-                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{r.phone || "—"}</span>, csv: (r) => r.phone },
+                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
                   { key: "email", label: "Email", align: "left", render: (r) => <span className="text-muted text-[11px] max-w-[200px] truncate inline-block" title={r.email}>{r.email || "—"}</span>, csv: (r) => r.email },
                   { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
                   { key: "days_since_last_purchase", label: "Days Since", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
