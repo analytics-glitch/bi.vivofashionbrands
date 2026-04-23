@@ -433,6 +433,7 @@ const Customers = () => {
                 initialSort={{ key: "total_sales", dir: "desc" }}
                 columns={[
                   { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "customer_id", label: "Customer ID", align: "left", render: (r) => <span className="text-muted num text-[11px]">{r.customer_id || "—"}</span>, csv: (r) => r.customer_id },
                   { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[200px] inline-block">{r.customer_name || "—"}</span> },
                   { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
                   { key: "city", label: "City", align: "left", render: (r) => r.city || "—", csv: (r) => r.city },
