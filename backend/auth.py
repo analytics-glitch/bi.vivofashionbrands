@@ -57,7 +57,7 @@ class User(BaseModel):
     email: str
     name: Optional[str] = None
     picture: Optional[str] = None
-    role: str = "viewer"  # admin | viewer
+    role: str = "viewer"  # admin | exec | analyst | store_manager | viewer
     active: bool = True
     auth_method: Optional[str] = None  # "google" | "password"
     created_at: Optional[datetime] = None
@@ -344,13 +344,16 @@ async def list_users(_: User = Depends(require_admin)):
     return docs
 
 
+from pii import VALID_ROLES as PII_VALID_ROLES
+
+
 @admin_router.post("/users")
 async def create_user(body: CreateUserBody, _: User = Depends(require_admin)):
     email = body.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=409, detail="User already exists")
-    if body.role not in ("admin", "viewer"):
-        raise HTTPException(status_code=400, detail="role must be admin or viewer")
+    if body.role not in PII_VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {sorted(PII_VALID_ROLES)}")
     doc = {
         "user_id": f"user_{uuid.uuid4().hex[:12]}",
         "email": email,
@@ -372,14 +375,14 @@ async def create_user(body: CreateUserBody, _: User = Depends(require_admin)):
 async def update_user(user_id: str, body: UpdateUserBody, actor: User = Depends(require_admin)):
     upd = {}
     if body.role is not None:
-        if body.role not in ("admin", "viewer"):
-            raise HTTPException(status_code=400, detail="Invalid role")
+        if body.role not in PII_VALID_ROLES:
+            raise HTTPException(status_code=400, detail=f"role must be one of {sorted(PII_VALID_ROLES)}")
         upd["role"] = body.role
     if body.active is not None:
         upd["active"] = bool(body.active)
     if not upd:
         return {"ok": True}
-    if user_id == actor.user_id and body.role == "viewer":
+    if user_id == actor.user_id and body.role and body.role != "admin":
         raise HTTPException(status_code=400, detail="Cannot demote yourself")
     if user_id == actor.user_id and body.active is False:
         raise HTTPException(status_code=400, detail="Cannot disable yourself")
@@ -412,6 +415,34 @@ async def activity_logs(
     total = await db.activity_logs.count_documents(q)
     rows = (
         await db.activity_logs.find(q, {"_id": 0})
+        .sort("ts", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(None)
+    )
+    return {"total": total, "rows": rows}
+
+
+@admin_router.get("/pii-audit-logs")
+async def pii_audit_logs(
+    _: User = Depends(require_admin),
+    limit: int = Query(200, ge=1, le=2000),
+    skip: int = Query(0, ge=0),
+    user_id: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    row_id: Optional[str] = None,
+):
+    """Admin-only audit trail of every UNMASKED PII access."""
+    q = {}
+    if user_id:
+        q["user_id"] = user_id
+    if endpoint:
+        q["endpoint"] = {"$regex": endpoint, "$options": "i"}
+    if row_id:
+        q["row_id"] = row_id
+    total = await db.pii_audit_log.count_documents(q)
+    rows = (
+        await db.pii_audit_log.find(q, {"_id": 0})
         .sort("ts", -1)
         .skip(skip)
         .limit(limit)

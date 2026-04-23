@@ -89,8 +89,11 @@ const Users = () => {
             value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} data-testid="create-user-password" />
           <select className="px-3 py-2 rounded-lg border border-border text-[13px]" value={form.role}
             onChange={(e) => setForm({ ...form, role: e.target.value })} data-testid="create-user-role">
-            <option value="viewer">Viewer</option>
-            <option value="admin">Admin</option>
+            <option value="viewer">Viewer — PII masked</option>
+            <option value="store_manager">Store Manager — names visible</option>
+            <option value="analyst">Analyst — full PII (logged)</option>
+            <option value="exec">Exec — full PII (logged)</option>
+            <option value="admin">Admin — full access</option>
           </select>
           {formErr && <div className="col-span-full text-danger text-[12px]">{formErr}</div>}
           <button type="submit" className="col-span-full sm:col-span-1 py-2 rounded-lg bg-brand text-white font-semibold text-[13px]" data-testid="create-user-submit">Create</button>
@@ -114,11 +117,19 @@ const Users = () => {
                 key: "role",
                 label: "Role",
                 align: "left",
-                render: (r) => (
-                  <span className={`pill-${r.role === "admin" ? "green" : "neutral"} inline-flex items-center gap-1`}>
-                    {r.role === "admin" ? <ShieldCheck size={11} /> : <Eye size={11} />}{r.role}
-                  </span>
-                ),
+                render: (r) => {
+                  const cls = r.role === "admin" ? "pill-green"
+                    : r.role === "exec" ? "pill-green"
+                    : r.role === "analyst" ? "pill-amber"
+                    : r.role === "store_manager" ? "pill-amber"
+                    : "pill-neutral";
+                  const icon = (r.role === "admin" || r.role === "exec") ? <ShieldCheck size={11} /> : <Eye size={11} />;
+                  return (
+                    <span className={`${cls} inline-flex items-center gap-1`}>
+                      {icon}{r.role}
+                    </span>
+                  );
+                },
               },
               {
                 key: "auth_method",
@@ -150,6 +161,9 @@ const Users = () => {
                       disabled={r.user_id === user.user_id}
                     >
                       <option value="viewer">Viewer</option>
+                      <option value="store_manager">Store Manager</option>
+                      <option value="analyst">Analyst</option>
+                      <option value="exec">Exec</option>
                       <option value="admin">Admin</option>
                     </select>
                     <button

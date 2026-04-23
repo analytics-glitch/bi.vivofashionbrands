@@ -1,7 +1,24 @@
 import axios from "axios";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BACKEND_URL}/api`;
+
+// iOS Safari CORS resilience: if the configured backend shares an origin
+// with the page (common in production where /api/* is proxied via the
+// same domain), use a RELATIVE base URL. Same-origin requests bypass
+// CORS entirely — no preflight, no Origin header games, no ITP edge
+// cases. Falls back to the full URL when they differ (e.g. the preview
+// env where BACKEND_URL is a different subdomain).
+const sameOrigin = (() => {
+  try {
+    if (!BACKEND_URL || typeof window === "undefined") return false;
+    const u = new URL(BACKEND_URL);
+    return u.host === window.location.host && u.protocol === window.location.protocol;
+  } catch {
+    return false;
+  }
+})();
+
+export const API = sameOrigin ? "/api" : `${BACKEND_URL}/api`;
 export const api = axios.create({ baseURL: API, timeout: 120000 });
 
 // Cache-busting interceptor — appends `_t` param to every GET so the

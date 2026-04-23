@@ -333,6 +333,79 @@ country, top store, return rate vs LM, avg basket delta.
 - v5: complete rebuild — 6-page dashboard with auto-applying filters, KES
   formatting, comparison toggle.
 
+## v6.8 — iOS login definitive fix + 90-day churn + PII masking & audit (Feb 2026)
+
+### iOS login — the real root cause (and fix)
+The previous iteration's autofill + storage-resilience work helped, but
+the actual culprit was **CORS**:
+- `CORS_ORIGINS="*"` combined with `allow_credentials=True` is INVALID
+  per the CORS spec. Chrome and Android tolerate it (fall back to no
+  credentials); **Safari iOS strictly refuses** to read the response,
+  bubbling up as the user-visible "Login failed" message.
+
+**Backend fix** (`/app/backend/server.py`, `/app/backend/.env`):
+  - Whitelisted production origins:
+    `https://bi.vivofashionbrands.com`,
+    `https://bi-platform-2.preview.emergentagent.com`,
+    `http://localhost:3000`.
+  - Added `CORS_ORIGIN_REGEX` so any `*.vivofashionbrands.com`,
+    `*.vivofashiongroup.com`, `*.shopzetu.com` or `*.emergentagent.com`
+    origin is echoed back dynamically — covers future preview subdomains
+    and staging without an env edit.
+  - CORS middleware now explicitly advertises the REQUEST Origin in
+    `Access-Control-Allow-Origin`, which Safari iOS accepts with
+    `allow_credentials=True`.
+
+**Frontend bulletproofing** (`/app/frontend/src/lib/api.js`):
+  - Auto-detects when the configured backend URL shares an origin with
+    the page and switches to a RELATIVE `/api` base. Same-origin requests
+    bypass CORS entirely — no preflight, no Origin header games, no ITP
+    edge cases. This makes the app iOS-safe regardless of what CORS
+    config the production deploy ends up with, as long as `/api/*` is
+    proxied under the same hostname (standard Emergent ingress layout).
+
+### Churn rate — reverted to fixed 90-day-rolling
+Per user clarification ("Churned customer they have not visited for over
+90 days going back from present day"). Backend `/api/customers`:
+  - `churn_rate = churned_90d ÷ (active_in_period + churned_90d)`
+  - `churned_90d` = `/churned-customers?days=90` — always relative to
+    TODAY, independent of the selected date filter.
+  - Response includes `churn_window_days` so the UI can label it
+    explicitly. Frontend tile subtitle now reads "90-day rolling · as of
+    today" with a formula tooltip stating the business rule verbatim.
+
+### PII masking at the view layer + audit log
+New module `/app/backend/pii.py`:
+  - `mask_rows(rows, role)` applies the business rule below.
+  - `mask_and_audit(rows, user, endpoint, request_ip)` masks AND writes
+    one `pii_audit_log` row per customer the caller could see unmasked.
+  - Rule:
+      * email + phone — last 4 chars for role < analyst.
+      * name — `R. Nyambura` (initial + surname) for role < store_manager.
+      * analyst / exec / admin — full PII (logged).
+  - Applied inside the backend to `/api/top-customers`,
+    `/api/customer-search`, `/api/customer-products`,
+    `/api/churned-customers`, `/api/customer-frequency`,
+    `/api/customers-by-location`. CSV exports driven by these endpoints
+    therefore carry the same masking — fulfils the user's "view layer,
+    not UI" requirement.
+
+**Role hierarchy extended** to `{viewer, store_manager, analyst, exec,
+admin}` (was `{viewer, admin}`). Admin Users page (`/users`) renders the
+full dropdown with descriptive labels.
+
+**Audit log**:
+  - MongoDB collection `pii_audit_log` — one doc per
+    (user, endpoint, customer_row_id, fields, ts, request_ip).
+  - Admin endpoint `/api/admin/pii-audit-logs` (pagination + filter by
+    user_id / endpoint / row_id).
+
+**Verified live (admin token)**:
+  - admin role → `name='Velinah Kavoki'  phone='+254725512029'`
+  - viewer role → `name='V. Kavoki'       phone='•••••••••2029'`
+  - store_manager → `name='Velinah Kavoki' phone='•••••••••2029'`
+  - `/api/admin/pii-audit-logs` shows per-user rows with `fields=['email','phone','name']` for admin and `fields=['name']` for store_manager.
+
 ## v6.7 — iOS login fix + search speed-up (Feb 2026)
 
 User report: "iOS users cannot log in to the dashboard at

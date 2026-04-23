@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
@@ -23,6 +23,7 @@ from auth import (  # noqa: E402
     get_current_user, seed_admin,
 )
 from chat import chat_router  # noqa: E402
+from pii import mask_and_audit, mask_rows  # noqa: E402
 
 app = FastAPI(title="Vivo BI Dashboard API")
 # NB: all business endpoints live under this router and require auth.
@@ -32,6 +33,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _client: Optional[httpx.AsyncClient] = None
+
+
+def _client_ip(request: Request) -> Optional[str]:
+    """Best-effort client IP (handles X-Forwarded-For from the ingress)."""
+    if not request:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -440,51 +451,35 @@ async def get_customers(
             total.pop(k)
         data = total
 
-    # Period-scoped churn rate.
-    #   customers_active_in_period = data.total_customers (from upstream)
-    #   customers_churned_in_period = count from /churned-customers?days=<period_length>
-    #     (upstream semantic: customers whose last purchase was more than
-    #      N days ago as of NOW — which is exactly "has not purchased in
-    #      the last N days" i.e. churned within a period of length N).
-    #   churn_rate = churned / (active + churned)
-    # When date_to is not today, this is an approximation — we log a caveat.
+    # Churn rate — business definition (user-confirmed):
+    #   A customer is "churned" if their LAST purchase was more than 90 days
+    #   ago, measured from TODAY (not from the period end date). This number
+    #   is therefore INDEPENDENT of the selected date filter — it is a
+    #   rolling 90-day health metric.
+    #
+    #   churn_rate = churned_90d ÷ (active_in_period + churned_90d)
     if data:
         active = data.get("total_customers") or 0
-        # Period length in days (inclusive).
+        churn_window_days = 90
+        churned_90 = 0
         try:
-            from datetime import date as _d
-            _f = _d.fromisoformat(date_from) if date_from else _d.today()
-            _t = _d.fromisoformat(date_to) if date_to else _d.today()
-            period_days = max(1, (_t - _f).days + 1)
-            today_d = _d.today()
-            period_ends_today = (_t >= today_d)
+            ch = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 1})
+            if isinstance(ch, dict):
+                churned_90 = ch.get("total") or ch.get("count") or 0
+            elif isinstance(ch, list):
+                churned_90 = len(ch)
         except Exception:
-            period_days = 30
-            period_ends_today = True
+            churned_90 = 0
 
         # All-time cumulative kept for reference (never displayed as primary).
         churned_all = data.get("churned_customers") or 0
         denom_all = active + churned_all
         data["churn_rate_cumulative"] = round((churned_all / denom_all * 100), 2) if denom_all else 0
 
-        # Period-scoped churned count via upstream /churned-customers?days=N.
-        churned_in_period = 0
-        try:
-            ch = await _safe_fetch("/churned-customers", {"days": period_days, "limit": 1})
-            if isinstance(ch, dict):
-                churned_in_period = ch.get("total") or ch.get("count") or 0
-            elif isinstance(ch, list):
-                churned_in_period = len(ch)
-        except Exception:
-            churned_in_period = 0
-
-        data["churned_in_period"] = churned_in_period
-        data["period_length_days"] = period_days
-        data["period_ends_today"] = period_ends_today
-        denom = active + churned_in_period
-        data["churn_rate"] = round((churned_in_period / denom * 100), 2) if denom else 0
-        # Keep legacy key for any caller still reading it.
-        data["churned_last_90d"] = churned_in_period if period_days == 90 else data.get("churned_last_90d")
+        data["churned_last_90d"] = churned_90
+        data["churn_window_days"] = churn_window_days
+        denom = active + churned_90
+        data["churn_rate"] = round((churned_90 / denom * 100), 2) if denom else 0
     return data
 
 
@@ -528,50 +523,64 @@ async def _safe_fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any
 
 @api_router.get("/top-customers")
 async def get_top_customers(
+    request: Request,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     country: Optional[str] = None,
     channel: Optional[str] = None,
     limit: int = 20,
+    user=Depends(get_current_user),
 ):
-    return await _safe_fetch("/top-customers", {
+    rows = await _safe_fetch("/top-customers", {
         "date_from": date_from, "date_to": date_to,
         "country": country, "channel": channel, "limit": limit,
     })
+    return await mask_and_audit(rows or [], user=user, endpoint="/top-customers", request_ip=_client_ip(request))
 
 
 @api_router.get("/customer-search")
-async def customer_search(q: str):
+async def customer_search(request: Request, q: str, user=Depends(get_current_user)):
     if not q or not q.strip():
         return []
-    return await _safe_fetch("/customer-search", {"q": q.strip()})
+    rows = await _safe_fetch("/customer-search", {"q": q.strip()})
+    return await mask_and_audit(rows or [], user=user, endpoint="/customer-search", request_ip=_client_ip(request))
 
 
 @api_router.get("/customer-products")
-async def customer_products(customer_id: str):
-    return await _safe_fetch("/customer-products", {"customer_id": customer_id})
+async def customer_products(request: Request, customer_id: str, user=Depends(get_current_user)):
+    rows = await _safe_fetch("/customer-products", {"customer_id": customer_id})
+    # Per-purchase data; mask_and_audit is still safe (no-op if no PII fields).
+    return await mask_and_audit(rows or [], user=user, endpoint="/customer-products", request_ip=_client_ip(request))
 
 
 @api_router.get("/churned-customers")
-async def churned_customers(days: int = 90, limit: int = 20):
-    return await _safe_fetch("/churned-customers", {"days": days, "limit": limit})
+async def churned_customers(request: Request, days: int = 90, limit: int = 20, user=Depends(get_current_user)):
+    rows = await _safe_fetch("/churned-customers", {"days": days, "limit": limit})
+    return await mask_and_audit(rows or [], user=user, endpoint="/churned-customers", request_ip=_client_ip(request))
 
 
 @api_router.get("/customer-frequency")
 async def customer_frequency(
+    request: Request,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    user=Depends(get_current_user),
 ):
-    return await _safe_fetch("/customer-frequency", {
+    rows = await _safe_fetch("/customer-frequency", {
         "date_from": date_from, "date_to": date_to,
     })
+    # Aggregate buckets have no row-level PII; pass-through via mask_rows
+    # (no-op when fields are absent).
+    return mask_rows(rows or [], getattr(user, "role", None))
 
 
 @api_router.get("/customers-by-location")
 async def customers_by_location(
+    request: Request,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     channel: Optional[str] = None,
+    user=Depends(get_current_user),
 ):
     rows = await _safe_fetch("/customers-by-location", {
         "date_from": date_from, "date_to": date_to,
@@ -580,7 +589,8 @@ async def customers_by_location(
     if chs:
         ch_set = {c.strip() for c in chs}
         rows = [r for r in (rows or []) if r.get("pos_location") in ch_set]
-    return rows
+    # Aggregate counts per POS — no row-level PII, mask is a no-op.
+    return mask_rows(rows or [], getattr(user, "role", None))
 
 
 @api_router.get("/new-customer-products")
@@ -1819,12 +1829,21 @@ async def health():
     return {"status": "ok"}
 
 
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_origin_regex = os.environ.get("CORS_ORIGIN_REGEX") or None
+# iOS Safari STRICTLY rejects `Access-Control-Allow-Origin: *` combined with
+# `allow_credentials=True` (Chrome/Android tolerate it). When credentials are
+# in play we MUST advertise an explicit origin — either from the allow_origins
+# list or via allow_origin_regex — so Safari will accept the response.
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins or ["*"],
+    allow_origin_regex=_cors_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+    max_age=600,
 )
 # Activity logging — runs after the request so it sees the final status_code.
 app.add_middleware(ActivityLogMiddleware)
