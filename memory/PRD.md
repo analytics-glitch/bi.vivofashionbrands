@@ -733,4 +733,23 @@ API, (c) figure from a different source system. Pending user confirmation.
   so both absolute count change and mix shift are visible. Tooltips
   added. "Repeat" terminology removed everywhere in favour of
   "Returning" (card label, period-comparison table row).
+- **Period Comparison table rebuilt as "Customer Trends" narrative**:
+  grouped sections Customer Volume → Customer Mix → Spend → Order →
+  Retention Signals; renamed columns to "Change" / "Change %"; pp
+  formatting for mix-shift rows (% New, % Returning, Churn Rate);
+  business-action color logic including inverted modes for churn
+  metrics (green ▼ = improving). Export CSV button writes
+  `customer-trends_vs-<period>_<yyyy-mm-dd>.csv` with Group, Metric
+  columns preserving the narrative order. Tooltips on every row explain
+  the metric and what "good" looks like.
+- **Customer Loyalty Distribution chart** (replaces flat frequency
+  chart): always renders all 5 buckets (1 / 2 / 3 / 4 / 5+ orders);
+  action-oriented color gradient (amber = one-time buyer retention risk,
+  green gradient up to dark green for VIP); grouped bars overlay
+  previous-period counts when compare is active; insight bar above
+  chart narrates repeat-rate movement in pp; supporting KPIs (Repeat
+  Purchase Rate, Avg Orders / Returning, VIP count) rendered in a
+  tight strip; rich per-bar tooltip shows count, share, pp delta vs
+  comparison. Backend fetches `/customer-frequency` for the comparison
+  window when `compareMode !== none`.
 

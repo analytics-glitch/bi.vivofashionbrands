@@ -4,13 +4,12 @@ import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
-import { ChartTooltip } from "@/components/ChartHelpers";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
   MagnifyingGlass, X, UserCircle,
 } from "@phosphor-icons/react";
 import {
-  BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
+  BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
 } from "recharts";
 
 const UpstreamNotReady = ({ label }) => (
@@ -53,6 +52,7 @@ const Customers = () => {
   const [cust, setCust] = useState(null);
   const [top, setTop] = useState([]);
   const [freq, setFreq] = useState([]);
+  const [freqPrev, setFreqPrev] = useState([]);
   const [byLoc, setByLoc] = useState([]);
   const [churned, setChurned] = useState([]);
   const [newProducts, setNewProducts] = useState([]);
@@ -119,10 +119,11 @@ const Customers = () => {
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
+      ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
-      np: setNewProducts, cw: setCrosswalk, prev: setCustPrev,
+      np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
     };
     for (const [key, p] of rest) {
       p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
@@ -415,76 +416,357 @@ const Customers = () => {
             />
           </div>
 
-          {/* ---- Period comparison table ---- */}
-          {compareLbl && custPrev && (
-            <div className="card-white p-5" data-testid="period-comparison">
-              <SectionTitle
-                title={`Period comparison · current ${compareLbl}`}
-                subtitle="Raw customer counts for the current window next to the comparison window"
-              />
-              <div className="overflow-x-auto">
-                <table className="w-full data">
-                  <thead>
-                    <tr>
-                      <th>Metric</th>
-                      <th className="text-right">Current</th>
-                      <th className="text-right">Previous</th>
-                      <th className="text-right">Δ abs</th>
-                      <th className="text-right">Δ %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      ["Total Customers", cust.total_customers, custPrev.total_customers],
-                      ["New Customers", cust.new_customers, custPrev.new_customers],
-                      ["Returning Customers (≥2 orders)", (cust.returning_customers || 0) + (cust.repeat_customers || 0), (custPrev.returning_customers || 0) + (custPrev.repeat_customers || 0)],
-                      ["Avg Spend per Customer (KES)", cust.avg_customer_spend, custPrev.avg_customer_spend, "kes"],
-                      ["Avg Orders per Customer", cust.avg_orders_per_customer, custPrev.avg_orders_per_customer, "dec"],
-                    ].map(([label, c, p, fmt]) => {
-                      const diff = (c || 0) - (p || 0);
-                      const pct = p ? (diff / p) * 100 : 0;
-                      const fmtV = fmt === "kes" ? fmtKES : fmt === "dec" ? (v) => (v || 0).toFixed(2) : fmtNum;
-                      return (
-                        <tr key={label}>
-                          <td className="font-medium">{label}</td>
-                          <td className="text-right num font-semibold">{fmtV(c)}</td>
-                          <td className="text-right num text-muted">{fmtV(p)}</td>
-                          <td className={`text-right num font-semibold ${diff >= 0 ? "text-brand" : "text-danger"}`}>
-                            {diff >= 0 ? "+" : ""}{fmt === "kes" ? fmtKES(diff) : fmt === "dec" ? diff.toFixed(2) : fmtNum(diff)}
-                          </td>
-                          <td className={`text-right num font-semibold ${diff >= 0 ? "text-brand" : "text-danger"}`}>
-                            {diff >= 0 ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+          {/* ---- Customer Trends narrative table ---- */}
+          {compareLbl && custPrev && (() => {
+            // Helpers ------------------------------------------------------
+            const cur = cust; const prev = custPrev;
+            const curActive = cur.total_customers || 0;
+            const prevActive = prev.total_customers || 0;
+            const curNew = cur.new_customers || 0;
+            const prevNew = prev.new_customers || 0;
+            const curRet = (cur.returning_customers || 0) + (cur.repeat_customers || 0);
+            const prevRet = (prev.returning_customers || 0) + (prev.repeat_customers || 0);
+            const pctNewCur = curActive ? (curNew / curActive) * 100 : 0;
+            const pctNewPrev = prevActive ? (prevNew / prevActive) * 100 : 0;
+            const pctRetCur = curActive ? (curRet / curActive) * 100 : 0;
+            const pctRetPrev = prevActive ? (prevRet / prevActive) * 100 : 0;
+
+            // Row factory. `mode` drives formatting:
+            //  - "num"  : integer, diff shown as +/- integer
+            //  - "kes"  : KES currency, diff shown as ±KES
+            //  - "dec"  : 2dp decimal, diff shown as ±dec
+            //  - "pct"  : percentage VALUE (not pp) — diff is relative %
+            //  - "pp"   : percentage-point diff (for shares, rates)
+            //  - "pctInv": percentage metric where LOWER is BETTER (churn)
+            //  - "ppInv" : pp metric where LOWER is BETTER (churn rate)
+            // Returns <tr>. `tip` shows on row hover.
+            const fmtKesPos = (v) => (v >= 0 ? "+" : "−") + fmtKES(Math.abs(v));
+            const fmtDecPos = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+            const fmtNumPos = (v) => (v >= 0 ? "+" : "−") + fmtNum(Math.abs(v));
+            const row = (label, c, p, mode, tip) => {
+              const diff = (c || 0) - (p || 0);
+              // Determine business-good direction
+              const invert = mode === "pctInv" || mode === "ppInv" || mode === "numInv";
+              const isGood = invert ? diff < 0 : diff > 0;
+              const near = Math.abs(diff) < 1e-9;
+              const color = near ? "text-muted" : isGood ? "text-brand" : "text-danger";
+              const arrow = near ? "●" : diff > 0 ? "▲" : "▼";
+              // Format current / previous cells
+              let curCell, prevCell, changeAbs, changeRel;
+              if (mode === "kes") {
+                curCell = fmtKES(c); prevCell = fmtKES(p);
+                changeAbs = fmtKesPos(diff);
+                changeRel = p ? `${arrow} ${Math.abs((diff / p) * 100).toFixed(1)}%` : "—";
+              } else if (mode === "dec") {
+                curCell = (c || 0).toFixed(2); prevCell = (p || 0).toFixed(2);
+                changeAbs = fmtDecPos(diff);
+                changeRel = p ? `${arrow} ${Math.abs((diff / p) * 100).toFixed(1)}%` : "—";
+              } else if (mode === "pct" || mode === "pctInv") {
+                curCell = `${(c || 0).toFixed(2)}%`; prevCell = `${(p || 0).toFixed(2)}%`;
+                // For straight rate metrics we also show pp diff (more useful)
+                changeAbs = `${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(2)}pp`;
+                changeRel = p ? `${arrow} ${Math.abs((diff / p) * 100).toFixed(1)}%` : "—";
+              } else if (mode === "pp" || mode === "ppInv") {
+                curCell = `${(c || 0).toFixed(1)}%`; prevCell = `${(p || 0).toFixed(1)}%`;
+                changeAbs = `${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(1)}pp`;
+                changeRel = `${arrow}`;
+              } else {
+                // "num" or "numInv"
+                curCell = fmtNum(c); prevCell = fmtNum(p);
+                changeAbs = fmtNumPos(diff);
+                changeRel = p ? `${arrow} ${Math.abs((diff / p) * 100).toFixed(1)}%` : "—";
+              }
+              return (
+                <tr key={label} title={tip}>
+                  <td className="font-medium">
+                    {label}
+                    {tip && <span className="ml-1 text-muted text-[10px] cursor-help" title={tip}>ⓘ</span>}
+                  </td>
+                  <td className="text-right num font-semibold">{curCell}</td>
+                  <td className="text-right num text-muted">{prevCell}</td>
+                  <td className={`text-right num font-semibold ${color}`}>{changeAbs}</td>
+                  <td className={`text-right num font-semibold ${color}`}>{changeRel}</td>
+                </tr>
+              );
+            };
+
+            // Section header row
+            const groupHeader = (label) => (
+              <tr key={`grp-${label}`} className="bg-brand-soft/30">
+                <td colSpan={5} className="font-bold text-[11px] uppercase tracking-wider text-brand-deep py-1.5">{label}</td>
+              </tr>
+            );
+
+            // CSV export — preserves narrative order with group labels
+            const csvRows = [
+              ["Group", "Metric", "Current", "Previous", "Change", "Change %"],
+              ["Customer Volume", "Total Active Customers", curActive, prevActive, curActive - prevActive, prevActive ? ((curActive - prevActive) / prevActive * 100).toFixed(2) + "%" : ""],
+              ["Customer Volume", "New Customers", curNew, prevNew, curNew - prevNew, prevNew ? ((curNew - prevNew) / prevNew * 100).toFixed(2) + "%" : ""],
+              ["Customer Volume", "Returning Customers", curRet, prevRet, curRet - prevRet, prevRet ? ((curRet - prevRet) / prevRet * 100).toFixed(2) + "%" : ""],
+              ["Customer Mix", "% New (of active)", pctNewCur.toFixed(2) + "%", pctNewPrev.toFixed(2) + "%", (pctNewCur - pctNewPrev).toFixed(2) + "pp", ""],
+              ["Customer Mix", "% Returning (of active)", pctRetCur.toFixed(2) + "%", pctRetPrev.toFixed(2) + "%", (pctRetCur - pctRetPrev).toFixed(2) + "pp", ""],
+              ["Spend Behavior", "Avg Spend / Customer (KES)", cur.avg_customer_spend || 0, prev.avg_customer_spend || 0, (cur.avg_customer_spend || 0) - (prev.avg_customer_spend || 0), ""],
+              ["Order Behavior", "Avg Orders / Customer", (cur.avg_orders_per_customer || 0).toFixed(2), (prev.avg_orders_per_customer || 0).toFixed(2), ((cur.avg_orders_per_customer || 0) - (prev.avg_orders_per_customer || 0)).toFixed(2), ""],
+              ["Retention Signals", "Churn Rate (selected period)", (cur.churn_rate || 0).toFixed(2) + "%", (prev.churn_rate || 0).toFixed(2) + "%", ((cur.churn_rate || 0) - (prev.churn_rate || 0)).toFixed(2) + "pp", ""],
+              ["Retention Signals", "Churned Customers", cur.churned_customers || 0, prev.churned_customers || 0, (cur.churned_customers || 0) - (prev.churned_customers || 0), ""],
+            ];
+            const exportCsv = () => {
+              const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+              const csv = csvRows.map((r) => r.map(esc).join(",")).join("\n");
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const iso = new Date().toISOString().slice(0, 10);
+              const lbl = compareMode === "yesterday" ? "vs-yesterday" : compareMode === "last_year" ? "vs-last-year" : "vs-last-month";
+              const a = document.createElement("a");
+              a.href = url; a.download = `customer-trends_${lbl}_${iso}.csv`;
+              document.body.appendChild(a); a.click(); a.remove();
+              URL.revokeObjectURL(url);
+            };
+
+            return (
+              <div className="card-white p-5" data-testid="period-comparison">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <SectionTitle
+                    title={`Customer Trends ${compareLbl}`}
+                    subtitle="Track how customer acquisition, retention, and spending behavior have shifted between the current period and the comparison period."
+                  />
+                  <button
+                    type="button"
+                    onClick={exportCsv}
+                    data-testid="export-period-comparison"
+                    className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg border border-border hover:border-brand/40 hover:bg-brand-soft/50 bg-white"
+                  >
+                    Export CSV
+                  </button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full data">
+                    <thead>
+                      <tr>
+                        <th>Metric</th>
+                        <th className="text-right">Current</th>
+                        <th className="text-right">Previous</th>
+                        <th className="text-right">Change</th>
+                        <th className="text-right">Change %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupHeader("Customer Volume")}
+                      {row("Total Active Customers", curActive, prevActive, "num", "Customers with at least one transaction in the period. Green ▲ = growing base.")}
+                      {row("New Customers", curNew, prevNew, "num", "First-time buyers in the period. Green ▲ = acquisition improving.")}
+                      {row("Returning Customers", curRet, prevRet, "num", "Customers with ≥2 orders in the period. Green ▲ = retention improving.")}
+
+                      {groupHeader("Customer Mix")}
+                      {row("% New (of active)", pctNewCur, pctNewPrev, "pp", "Share of active customers who are new. Healthy mix depends on growth stage — early-stage should lean new; mature business should lean returning.")}
+                      {row("% Returning (of active)", pctRetCur, pctRetPrev, "pp", "Share of active customers who are returning. Green ▲ = stronger retention mix.")}
+
+                      {groupHeader("Spend Behavior")}
+                      {row("Avg Spend / Customer", cur.avg_customer_spend, prev.avg_customer_spend, "kes", "Total sales ÷ active customers. Green ▲ = customers spending more per head.")}
+
+                      {groupHeader("Order Behavior")}
+                      {row("Avg Orders / Customer", cur.avg_orders_per_customer, prev.avg_orders_per_customer, "dec", "Total orders ÷ active customers. Green ▲ = customers buying more frequently.")}
+
+                      {groupHeader("Retention Signals")}
+                      {row("Churn Rate (selected period)", cur.churn_rate, prev.churn_rate, "pctInv", "% of customers who bought in the period but have not returned in 90+ days. Green ▼ = retention improving. Red ▲ = retention weakening.")}
+                      {row("Churned Customers", cur.churned_customers, prev.churned_customers, "numInv", "Count of churned customers in the selected period (90-day cutoff). Lower is better — green ▼.")}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[11px] text-muted mt-3">
+                  pp = percentage points. Color follows business meaning, not math: lower churn is green, higher returning share is green.
+                </p>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Projection card moved to Overview page */}
 
-          {/* ---- Frequency chart ---- */}
-          <div className="card-white p-5" data-testid="customer-frequency-chart">
-            <SectionTitle title="Customer purchase frequency" subtitle="How many times customers ordered in the window" />
-            {freq.length === 0 ? <UpstreamNotReady /> : (
-              <div style={{ width: "100%", height: 300 }}>
-                <ResponsiveContainer>
-                  <BarChart data={freq} margin={{ top: 24, right: 20, left: 10, bottom: 10 }}>
-                    <CartesianGrid vertical={false} />
-                    <XAxis dataKey="frequency_bucket" tick={{ fontSize: 12 }} />
-                    <YAxis tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
-                    <Tooltip content={<ChartTooltip formatters={{ customer_count: (v) => `${fmtNum(v)} customers`, Customers: (v) => `${fmtNum(v)} customers` }} />} />
-                    <Bar dataKey="customer_count" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Customers">
-                      <LabelList dataKey="customer_count" position="top" formatter={(v) => fmtNum(v)} style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+          {/* ---- Customer Loyalty Distribution (replaces raw frequency chart) ---- */}
+          {(() => {
+            // Always render all 5 buckets — fill zeros if upstream omits any.
+            const BUCKETS = [
+              { key: "1 order",   label: "1 order",   meaning: "One-time buyer",       color: "#f59e0b" }, // amber
+              { key: "2 orders",  label: "2 orders",  meaning: "Early repeat",         color: "#86efac" }, // light green
+              { key: "3 orders",  label: "3 orders",  meaning: "Emerging loyal",       color: "#22c55e" }, // medium green
+              { key: "4 orders",  label: "4 orders",  meaning: "Loyal",                color: "#15803d" }, // darker green
+              { key: "5+ orders", label: "5+ orders", meaning: "VIP / super-loyal",    color: "#14532d" }, // darkest green
+            ];
+            const lookup = (arr, k) => (arr || []).find((r) => r.frequency_bucket === k)?.customer_count || 0;
+            const curTotal = BUCKETS.reduce((s, b) => s + lookup(freq, b.key), 0);
+            const prevTotal = BUCKETS.reduce((s, b) => s + lookup(freqPrev, b.key), 0);
+            const data = BUCKETS.map((b) => {
+              const c = lookup(freq, b.key);
+              const p = lookup(freqPrev, b.key);
+              const curPct = curTotal ? (c / curTotal) * 100 : 0;
+              const prevPct = prevTotal ? (p / prevTotal) * 100 : 0;
+              return { ...b, count: c, prev: p, pct: curPct, prevPct, ppDelta: curPct - prevPct };
+            });
+            const oneOrderShare = data[0]?.pct || 0;
+            const repeatRate = 100 - oneOrderShare;
+            const prevOneOrderShare = data[0]?.prevPct || 0;
+            const prevRepeatRate = 100 - prevOneOrderShare;
+            const repeatRateDelta = repeatRate - prevRepeatRate; // pp
+            const hasCompare = compareLbl && prevTotal > 0;
+            const avgOrdersPerReturning = (() => {
+              const retTotal = curTotal - (data[0]?.count || 0); // customers with ≥2 orders
+              if (!retTotal) return 0;
+              const ordersFromReturning = data.slice(1).reduce((s, b, i) => {
+                // Use midpoint for 5+ bucket (conservative: 5)
+                const n = i === 3 ? 5 : i + 2; // i=0→2, i=1→3, i=2→4, i=3→5+
+                return s + b.count * n;
+              }, 0);
+              return ordersFromReturning / retTotal;
+            })();
+
+            const insight = (() => {
+              if (curTotal === 0) return "No customer orders in the selected window.";
+              const parts = [
+                `${oneOrderShare.toFixed(1)}% of active customers made only 1 purchase this period.`,
+                `Repeat rate: ${repeatRate.toFixed(1)}%.`,
+              ];
+              if (hasCompare) {
+                const arrow = repeatRateDelta >= 0 ? "▲" : "▼";
+                const verdict = Math.abs(repeatRateDelta) < 0.1 ? "stable" : (repeatRateDelta > 0 ? "retention strengthening" : "retention weakening");
+                parts.push(`${compareLbl}: ${arrow} ${Math.abs(repeatRateDelta).toFixed(1)}pp — ${verdict}.`);
+              }
+              return parts.join(" ");
+            })();
+
+            return (
+              <div className="card-white p-5" data-testid="customer-frequency-chart">
+                <SectionTitle
+                  title="Customer Loyalty Distribution"
+                  subtitle="Distribution of customers by order frequency in the selected period. Higher-frequency segments indicate stronger loyalty and lifetime value."
+                />
+
+                {/* ---- Summary insight bar ---- */}
+                {curTotal > 0 && (
+                  <div
+                    className={`mb-4 rounded-xl p-3 text-[12.5px] border ${
+                      repeatRate < 10
+                        ? "bg-amber-50 border-amber-300 text-amber-900"
+                        : "bg-brand-soft/40 border-brand/30 text-brand-deep"
+                    }`}
+                    data-testid="frequency-insight"
+                  >
+                    <strong>{insight}</strong>
+                  </div>
+                )}
+
+                {curTotal === 0 ? <UpstreamNotReady /> : (
+                  <>
+                    {/* ---- Supporting KPI strip ---- */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-repeat-rate">
+                        <div className="eyebrow">Repeat Purchase Rate</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{repeatRate.toFixed(1)}%</div>
+                        {hasCompare && (
+                          <div className={`text-[11px] font-semibold mt-0.5 ${repeatRateDelta >= 0 ? "text-brand" : "text-danger"}`}>
+                            {repeatRateDelta >= 0 ? "▲" : "▼"} {Math.abs(repeatRateDelta).toFixed(1)}pp {compareLbl}
+                          </div>
+                        )}
+                      </div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-orders-per-returning">
+                        <div className="eyebrow">Avg Orders / Returning Customer</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{avgOrdersPerReturning.toFixed(2)}</div>
+                        <div className="text-[11px] text-muted mt-0.5">customers with ≥2 orders</div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-vip-count">
+                        <div className="eyebrow">VIP (5+ orders)</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{fmtNum(data[4]?.count || 0)}</div>
+                        <div className="text-[11px] text-muted mt-0.5">
+                          {curTotal ? ((data[4]?.count || 0) / curTotal * 100).toFixed(1) : "0.0"}% of base
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ---- Grouped / single bar chart ---- */}
+                    <div style={{ width: "100%", height: 320 }}>
+                      <ResponsiveContainer>
+                        <BarChart data={data} margin={{ top: 32, right: 20, left: 10, bottom: 10 }}>
+                          <CartesianGrid vertical={false} />
+                          <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                          <YAxis tickFormatter={(v) => fmtNum(v)} tick={{ fontSize: 11 }} />
+                          <Tooltip
+                            content={({ active, payload }) => {
+                              if (!active || !payload?.length) return null;
+                              const d = payload[0].payload;
+                              return (
+                                <div className="rounded-lg shadow-lg bg-white border border-border p-3 text-[12px] min-w-[180px]">
+                                  <div className="font-bold text-[13px]">{d.label}</div>
+                                  <div className="text-muted text-[11px] mb-1.5">{d.meaning}</div>
+                                  <div className="flex justify-between gap-4"><span className="text-muted">Customers</span><span className="font-semibold num">{fmtNum(d.count)}</span></div>
+                                  <div className="flex justify-between gap-4"><span className="text-muted">Share of base</span><span className="font-semibold num">{d.pct.toFixed(1)}%</span></div>
+                                  {hasCompare && (
+                                    <div className="flex justify-between gap-4 mt-1 pt-1 border-t border-border">
+                                      <span className="text-muted">{compareLbl}</span>
+                                      <span className={`font-semibold num ${d.ppDelta >= 0 ? "text-brand" : "text-danger"}`}>
+                                        {d.ppDelta >= 0 ? "▲" : "▼"} {Math.abs(d.ppDelta).toFixed(1)}pp
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }}
+                          />
+                          {hasCompare ? (
+                            <>
+                              <Bar dataKey="prev" name="Previous" fill="#e5e7eb" radius={[4, 4, 0, 0]}>
+                                <LabelList dataKey="prev" position="top" formatter={(v) => v ? fmtNum(v) : ""} style={{ fontSize: 10, fill: "#9ca3af" }} />
+                              </Bar>
+                              <Bar dataKey="count" name="Current" radius={[4, 4, 0, 0]}>
+                                {data.map((d, i) => <Cell key={i} fill={d.color} />)}
+                                <LabelList
+                                  dataKey="count"
+                                  position="top"
+                                  formatter={(v) => v ? fmtNum(v) : ""}
+                                  style={{ fontSize: 11, fill: "#111827", fontWeight: 700 }}
+                                />
+                              </Bar>
+                            </>
+                          ) : (
+                            <Bar dataKey="count" name="Customers" radius={[5, 5, 0, 0]}>
+                              {data.map((d, i) => <Cell key={i} fill={d.color} />)}
+                              <LabelList
+                                dataKey="count"
+                                position="top"
+                                formatter={(v, entry) => {
+                                  const rec = data.find((x) => x.count === v);
+                                  return v ? `${fmtNum(v)} (${rec ? rec.pct.toFixed(1) : "0"}%)` : "0";
+                                }}
+                                style={{ fontSize: 11, fill: "#111827", fontWeight: 700 }}
+                              />
+                            </Bar>
+                          )}
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* ---- Color legend ---- */}
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded-sm" style={{ background: "#f59e0b" }} /> One-time buyer (retention risk)
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded-sm" style={{ background: "#86efac" }} /> Early repeat
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded-sm" style={{ background: "#15803d" }} /> Loyal
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded-sm" style={{ background: "#14532d" }} /> VIP / super-loyal
+                      </span>
+                      {hasCompare && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block w-3 h-3 rounded-sm" style={{ background: "#e5e7eb" }} /> Previous period
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* ---- Top 20 customers (with City) ---- */}
           <div className="card-white p-5" data-testid="top-customers-section">
