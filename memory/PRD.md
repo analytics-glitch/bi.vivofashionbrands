@@ -1011,3 +1011,40 @@ API, (c) figure from a different source system. Pending user confirmation.
 ### Testing
 - Iteration 19 report: `/app/test_reports/iteration_19.json` — all
   backend (6/6) + frontend checks pass, no regressions.
+
+## Session Update — 2026-04-24 (Dopamine Design Phase 5)
+
+- **Canvas-confetti burst on first NEW RECORD render (frontend):**
+  - Installed `canvas-confetti` (1.9.4). `LocationLeaderboard.jsx` now
+    fires a small warm-palette (brand green + amber + white) burst
+    originating at the 🏆 NEW RECORD pill's center the first time each
+    record+winner appears in a session.
+  - De-duped via `sessionStorage` key `record_fired_<badge>_<winner>`
+    so the celebration fires ONCE per tab-session per record.
+  - Respects `prefers-reduced-motion` at two layers (matchMedia check
+    + `disableForReducedMotion: true` to the lib).
+  - Wrapped in try/except — confetti failure never breaks the page.
+
+- **Stores of the Week recap card (backend + frontend):**
+  - New endpoint `GET /api/leaderboard/store-of-the-week` in
+    `/app/backend/leaderboard.py::get_store_of_the_week`.
+    Computes winners over the last 7 *completed* days (today excluded)
+    for Top Seller / Highest ABV / Top Conversion plus the week-over-
+    week % delta against the preceding 7 days. 15-minute in-memory
+    cache (`_sotw_cache`).
+  - Same noise filters as monthly leaderboard (orders ≥ 50 for ABV,
+    footfall ≥ 200 and CR ≤ 50 % for conversion).
+  - New component `/app/frontend/src/components/StoreOfTheWeek.jsx`
+    renders on the Overview page directly below the leaderboard strip
+    (data-testid `store-of-the-week`, three sub-cards with ids
+    `sotw-top-seller`, `sotw-highest-abv`, `sotw-top-conversion` and
+    `sotw-delta` WoW chips with ▲/▼ glyphs).
+  - Graceful no-op if upstream returns empty.
+
+### Testing
+- Iteration 20 report: `/app/test_reports/iteration_20.json` — 8/8
+  backend pytest + frontend Playwright flows all pass. Verified
+  end-to-end that the NEW RECORD pill + confetti + SOTW recap all
+  render correctly.  The session-scoped dedupe key was observed in
+  `sessionStorage` after first render.
+

@@ -2068,6 +2068,7 @@ app.include_router(chat_router)
 # ─────────────────────────────────────────────────────────────────────────────
 from leaderboard import (  # noqa: E402
     get_streaks_cached, snapshot_period, _previous_complete_period,
+    get_store_of_the_week,
 )
 
 
@@ -2076,6 +2077,12 @@ async def leaderboard_streaks(lookback_months: int = 6):
     """Return per-badge streaks for the most recent complete months."""
     data = await get_streaks_cached(lookback_months=lookback_months)
     return data
+
+
+@api_router.get("/leaderboard/store-of-the-week")
+async def leaderboard_sotw():
+    """Last 7 completed days' winners with WoW deltas — Overview recap card."""
+    return await get_store_of_the_week()
 
 
 @api_router.post("/admin/leaderboard/snapshot")

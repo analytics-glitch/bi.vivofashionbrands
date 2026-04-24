@@ -1,5 +1,51 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import confetti from "canvas-confetti";
 import { api, fmtKES } from "@/lib/api";
+
+/**
+ * Fire a small, warm confetti burst targeted at a DOM element. Designed
+ * to feel like a micro-reward — never a full-screen takeover. Brand
+ * palette: dark green, bright green, amber, white.
+ */
+const fireRecordConfetti = (targetEl) => {
+  if (!targetEl || typeof window === "undefined") return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const rect = targetEl.getBoundingClientRect();
+  const origin = {
+    x: (rect.left + rect.width / 2) / window.innerWidth,
+    y: (rect.top + rect.height / 2) / window.innerHeight,
+  };
+  const colors = ["#1a5c38", "#00c853", "#f59e0b", "#ffffff"];
+  try {
+    confetti({
+      particleCount: 36,
+      spread: 55,
+      startVelocity: 28,
+      gravity: 0.9,
+      scalar: 0.85,
+      ticks: 120,
+      origin,
+      colors,
+      disableForReducedMotion: true,
+    });
+    // Second, smaller sparkle slightly later for depth.
+    setTimeout(() => {
+      confetti({
+        particleCount: 16,
+        spread: 70,
+        startVelocity: 22,
+        gravity: 1.0,
+        scalar: 0.7,
+        ticks: 90,
+        origin,
+        colors,
+        disableForReducedMotion: true,
+      });
+    }, 180);
+  } catch {
+    /* confetti is decorative — never break the app */
+  }
+};
 
 /**
  * Returns { top_seller: { "Channel": 3 }, highest_abv: {...}, top_conversion: {...} }
@@ -131,6 +177,26 @@ export const useLocationBadges = ({ sales, prevSales, footfall, compareMode, com
  * the same badge 2+ months running we surface a 🔥 flame with the count.
  */
 export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", streaks }) => {
+  // Fire a confetti burst on first render per session for each record-breaker.
+  // sessionStorage dedupes across route navigations; a tab refresh counts as
+  // a fresh session (intentional — execs should re-see the celebration once).
+  const recordRefs = useRef(new Map());
+  useEffect(() => {
+    if (!streaks?.records) return;
+    Object.entries(streaks.records).forEach(([badgeKey, info]) => {
+      if (!info || !info.winner) return;
+      const key = `record_fired_${badgeKey}_${info.winner}`;
+      try {
+        if (sessionStorage.getItem(key)) return;
+        const el = recordRefs.current.get(badgeKey);
+        if (!el) return;
+        // Defer to next frame so the DOM is painted before we target the rect.
+        requestAnimationFrame(() => fireRecordConfetti(el));
+        sessionStorage.setItem(key, "1");
+      } catch { /* storage blocked — skip quietly */ }
+    });
+  }, [streaks]);
+
   if (!badges || badges.size === 0) return null;
 
   // Map UI badge label → backend streak key.
@@ -180,6 +246,10 @@ export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", str
             )}
             {isRecord && (
               <span
+                ref={(el) => {
+                  if (el) recordRefs.current.set(streakKey, el);
+                  else recordRefs.current.delete(streakKey);
+                }}
                 className="inline-flex items-center gap-0.5 ml-0.5 px-1.5 py-0.5 rounded-full bg-gradient-to-br from-amber-100 via-yellow-100 to-amber-200 text-amber-800 text-[10px] font-bold border border-amber-400 shadow-sm animate-pulse"
                 data-testid={`record-${streakKey}`}
                 title="New 12-month record"

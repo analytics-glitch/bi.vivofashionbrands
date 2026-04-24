@@ -286,3 +286,106 @@ async def get_streaks_cached(lookback_months: int = MAX_MONTHS_BACK):
     data = await get_streaks(lookback_months=lookback_months)
     _streaks_cache[key] = (_t.time(), data)
     return data
+
+
+# ---------- Store of the Week ----------
+#
+# Celebratory recap of the last 7 completed days (today excluded to keep
+# numbers final). Returns one dict per badge with current value and pct
+# delta vs the prior 7 days — used by the Overview "Store of the Week"
+# card.
+
+_sotw_cache: Dict[str, tuple] = {}
+_SOTW_TTL = 900  # 15 minutes — day boundary matters, not minute
+
+
+async def _compute_sotw():
+    from datetime import timedelta
+    from server import get_sales_summary, get_footfall
+
+    today = datetime.now(timezone.utc).date()
+    # Yesterday is the last complete day; window = prior 7 completed days.
+    end = today - timedelta(days=1)
+    start = end - timedelta(days=6)  # inclusive 7-day window
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=6)
+
+    def iso(d):
+        return d.strftime("%Y-%m-%d")
+
+    sales, prev_sales, footfall, prev_footfall = await asyncio.gather(
+        get_sales_summary(date_from=iso(start), date_to=iso(end)),
+        get_sales_summary(date_from=iso(prev_start), date_to=iso(prev_end)),
+        get_footfall(date_from=iso(start), date_to=iso(end)),
+        get_footfall(date_from=iso(prev_start), date_to=iso(prev_end)),
+    )
+    if not isinstance(sales, list):
+        sales = []
+    if not isinstance(prev_sales, list):
+        prev_sales = []
+    if not isinstance(footfall, list):
+        footfall = []
+    if not isinstance(prev_footfall, list):
+        prev_footfall = []
+
+    prev_map = {r.get("channel"): r for r in prev_sales if r.get("channel")}
+    ff_by_loc = {r.get("location"): r.get("total_footfall") or 0 for r in footfall}
+
+    rows = []
+    for r in sales:
+        ch = r.get("channel")
+        if not ch:
+            continue
+        ts = r.get("total_sales") or 0
+        orders = r.get("orders") or r.get("total_orders") or 0
+        abv = (ts / orders) if orders else 0
+        ff = ff_by_loc.get(ch, 0)
+        cr = ((orders / ff) * 100) if ff else 0
+        p = prev_map.get(ch, {})
+        p_sales = p.get("total_sales") or 0
+        pct = ((ts - p_sales) / p_sales * 100) if p_sales else None
+        rows.append({
+            "channel": ch, "sales": ts, "orders": orders,
+            "abv": abv, "ff": ff, "cr": cr, "pct_vs_prev_week": pct,
+        })
+
+    def pack(row, metric, value_key):
+        if not row:
+            return None
+        return {
+            "winner": row["channel"],
+            "value": row[metric],
+            "sales": row["sales"],
+            "orders": row["orders"],
+            "pct_vs_prev_week": row.get("pct_vs_prev_week"),
+            "metric": value_key,
+        }
+
+    top_seller = max(rows, key=lambda r: r["sales"], default=None)
+    top_abv = max([r for r in rows if r["orders"] >= 50], key=lambda r: r["abv"], default=None)
+    top_cr = max([r for r in rows if r["ff"] >= 200 and r["cr"] <= 50], key=lambda r: r["cr"], default=None)
+
+    return {
+        "window": {"start": iso(start), "end": iso(end)},
+        "prev_window": {"start": iso(prev_start), "end": iso(prev_end)},
+        "top_seller": pack(top_seller, "sales", "sales") if top_seller and top_seller["sales"] > 0 else None,
+        "highest_abv": pack(top_abv, "abv", "abv") if top_abv else None,
+        "top_conversion": pack(top_cr, "cr", "conversion_rate") if top_cr and top_cr["cr"] > 0 else None,
+    }
+
+
+async def get_store_of_the_week():
+    import time as _t
+    key = "sotw"
+    cached = _sotw_cache.get(key)
+    if cached and (_t.time() - cached[0]) < _SOTW_TTL:
+        return cached[1]
+    try:
+        data = await _compute_sotw()
+    except Exception as e:
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("[leaderboard] store-of-the-week compute failed: %s", e)
+        data = {"window": None, "prev_window": None,
+                "top_seller": None, "highest_abv": None, "top_conversion": None}
+    _sotw_cache[key] = (_t.time(), data)
+    return data
