@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { CaretUp, CaretDown, Download } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
-/** Download rows as CSV */
+/** Download rows as CSV and show a success toast. */
 export const exportCSV = (rows, columns, filename = "export.csv") => {
   const header = columns.map((c) => `"${(c.label || c.key).replace(/"/g, '""')}"`).join(",");
   const lines = rows.map((r) =>
@@ -24,6 +25,13 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  // Friendly confirmation — small acknowledgements matter (dopamine design).
+  try {
+    toast.success(`${rows.length} row${rows.length === 1 ? "" : "s"} exported`, {
+      description: filename,
+      duration: 2800,
+    });
+  } catch (_err) { /* silent */ }
 };
 
 /**

@@ -20,6 +20,8 @@ import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
+import { useLocationBadges, LocationLeaderboard } from "@/components/LocationLeaderboard";
+import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
@@ -72,6 +74,7 @@ const Overview = () => {
 
   const [countrySummary, setCountrySummary] = useState([]);
   const [sales, setSales] = useState([]);
+  const [salesPrev, setSalesPrev] = useState([]);
   const [dailyByCountry, setDailyByCountry] = useState({});
   const [dailyByCountryPrev, setDailyByCountryPrev] = useState({});
   const [topStyles, setTopStyles] = useState([]);
@@ -121,11 +124,15 @@ const Overview = () => {
         ? safe(api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } }))
         : Promise.resolve({ ok: true, data: [] }),
       safe(api.get("/locations")),
+      prev
+        ? safe(api.get("/sales-summary", { params: { ...p, date_from: prev.date_from, date_to: prev.date_to } }))
+        : Promise.resolve({ ok: true, data: [] }),
     ])
-      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs]) => {
+      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs, sp]) => {
         if (cancelled) return;
         setCountrySummary(cs.ok ? cs.data || [] : []);
         setSales(s.ok ? s.data || [] : []);
+        setSalesPrev(sp?.ok ? sp.data || [] : []);
         setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
         setSubcats(sc.ok ? sc.data || [] : []);
         setFootfall(ff.ok ? ff.data || [] : []);
@@ -521,6 +528,13 @@ const Overview = () => {
             prevKpis={kpisPrev}
             sales={sales}
             inventory={kpis}
+            compareLbl={compareLbl}
+          />
+          <OverviewLeaderboard
+            sales={sales}
+            salesPrev={salesPrev}
+            footfall={footfall}
+            compareMode={compareMode}
             compareLbl={compareLbl}
           />
           <DataFreshness />
@@ -926,3 +940,17 @@ const Overview = () => {
 };
 
 export default Overview;
+
+// Tiny wrapper so the `useLocationBadges` hook is called from a valid
+// component context. Navigates to Locations filtered by the clicked winner.
+const OverviewLeaderboard = ({ sales, salesPrev, footfall, compareMode, compareLbl }) => {
+  const navigate = useNavigate();
+  const badges = useLocationBadges({ sales, prevSales: salesPrev, footfall, compareMode, compareLbl });
+  if (!badges || badges.size === 0) return null;
+  return (
+    <LocationLeaderboard
+      badges={badges}
+      onWinnerClick={(channel) => navigate(`/locations?channel=${encodeURIComponent(channel)}`)}
+    />
+  );
+};

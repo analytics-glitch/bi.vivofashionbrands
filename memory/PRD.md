@@ -705,6 +705,29 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Slice 5 — Micro-interactions pass**:
+  - **CSV export toasts**: every call to `exportCSV` (reused by every
+    `SortableTable`) now raises a `sonner` success toast — e.g.
+    "20 rows exported · top-20-styles.csv" — so exports feel
+    acknowledged rather than silent. Dopamine: small confirmations
+    matter.
+  - **Skeleton loading state** replaces the plain spinner in the
+    shared `Loading` component. Rotating playful, section-aware copy
+    ("Crunching the numbers…" / "Polishing the receipts…" /
+    "Counting the stock…"), a brand-coloured spinner and three
+    staggered pulse stripes that hint real content is imminent.
+  - Call sites that want bespoke copy keep the old override
+    (`<Loading label="Aggregating group KPIs…" />`).
+- **Locations leaderboard promoted to Overview**. Extracted
+  `useLocationBadges` hook + `<LocationLeaderboard />` component to
+  `/app/frontend/src/components/LocationLeaderboard.jsx`. Same four
+  badges (🏆 Top Seller · 💰 Highest ABV · ⚡ Top Conversion · 📈
+  Biggest Mover) now appear in a winners strip right under the Daily
+  Briefing. Clicking any chip deep-links to the winner's drill-down
+  on the Locations page. Overview fetches previous-period
+  `/sales-summary` so the Biggest Mover badge activates when compare
+  is on. Locations page refactored to use the shared hook — no
+  duplicated logic.
 - **Slice 3 — Locations leaderboard & badges**. Four business-
   aligned, positive-only badges awarded at most once each per period:
   - 🏆 **Top Seller** — highest total_sales in the scope

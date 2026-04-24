@@ -1,15 +1,46 @@
 import React from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 
-export const Loading = ({ label = "Loading…" }) => (
-  <div
-    className="flex items-center gap-2 text-muted text-sm py-10 justify-center"
-    data-testid="loading"
-  >
-    <CircleNotch className="animate-spin" size={18} />
-    <span>{label}</span>
-  </div>
-);
+/**
+ * Loading state used across all pages. Picks a playful section-aware message
+ * and pairs a small spinner with a subtle pulse so the wait feels intentional
+ * rather than broken. Falls back to the `label` prop for bespoke strings.
+ */
+const LOADING_MESSAGES = [
+  "Crunching the numbers…",
+  "Polishing the receipts…",
+  "Counting the stock…",
+  "Asking the POS nicely…",
+  "Reading between the rows…",
+];
+
+export const Loading = ({ label }) => {
+  // Rotate playful messages but keep it deterministic per mount so users
+  // don't see the string flicker during re-renders.
+  const msg = React.useMemo(
+    () => label || LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)],
+    [label]
+  );
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-2 text-muted text-sm py-10"
+      data-testid="loading"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2">
+        <CircleNotch className="animate-spin text-brand" size={18} />
+        <span>{msg}</span>
+      </div>
+      {/* Skeleton stripes hint that real content is incoming. */}
+      <div className="mt-2 w-full max-w-md space-y-2" aria-hidden="true">
+        <div className="h-3 rounded bg-panel/80 animate-pulse" />
+        <div className="h-3 rounded bg-panel/70 animate-pulse [animation-delay:120ms]" style={{ width: "85%" }} />
+        <div className="h-3 rounded bg-panel/60 animate-pulse [animation-delay:240ms]" style={{ width: "65%" }} />
+      </div>
+    </div>
+  );
+};
 
 export const ErrorBox = ({ message }) => (
   <div
