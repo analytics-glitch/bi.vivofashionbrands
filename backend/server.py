@@ -6,9 +6,9 @@ import os
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -1078,6 +1078,168 @@ async def get_footfall(
             seen.add(k)
             out.append(r)
     return out
+
+
+# Footfall weekday pattern — caches for 1 hour since the data only shifts
+# when a new day completes. Key: (date_from, date_to, country).
+_weekday_pattern_cache: Dict[str, tuple] = {}
+_WEEKDAY_PATTERN_TTL = 3600  # 1h
+
+
+@api_router.get("/footfall/weekday-pattern")
+async def get_footfall_weekday_pattern(
+    # Hard default: trailing 28 days (exactly 4 weeks) so every weekday
+    # gets an equal number of samples. Callers can override with an
+    # explicit range but we cap the span at 56 days to protect upstream.
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """
+    Per-location × per-weekday footfall / conversion averages, for a
+    heatmap on the Footfall page. Upstream exposes daily aggregates only,
+    so we fan out one /footfall call per day across the window and
+    aggregate client-side. 1h in-memory cache (keyed by range + country).
+
+    Response shape:
+      {
+        "window": {"start": "2026-03-27", "end": "2026-04-23", "days": 28},
+        "locations": ["Vivo Moi Avenue", ...],           # sorted by total footfall
+        "rows": [                                         # one per location
+          {
+            "location": "Vivo Moi Avenue",
+            "avg_footfall": 315.4,
+            "avg_conversion_rate": 12.3,
+            "by_weekday": [                               # index 0=Mon .. 6=Sun
+              {"weekday": 0, "avg_footfall": 280, "avg_conversion_rate": 11.8, "days": 4},
+              ...
+            ]
+          },
+        ],
+        "group_avg_by_weekday": [                         # across all locations
+          {"weekday": 0, "avg_footfall": 2100, "avg_conversion_rate": 12.1, "days": 4},
+          ...
+        ]
+      }
+    """
+    from datetime import date, timedelta
+
+    # Default / validate window. 28-day default, 56-day hard cap.
+    try:
+        today = datetime.now(timezone.utc).date()
+        end_d = date.fromisoformat(date_to) if date_to else today - timedelta(days=1)
+        start_d = date.fromisoformat(date_from) if date_from else end_d - timedelta(days=27)
+        if end_d < start_d:
+            start_d, end_d = end_d, start_d
+        if (end_d - start_d).days > 55:
+            start_d = end_d - timedelta(days=55)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date_from / date_to")
+
+    cache_key = f"{start_d.isoformat()}|{end_d.isoformat()}|{country or ''}"
+    import time as _t
+    cached = _weekday_pattern_cache.get(cache_key)
+    if cached and (_t.time() - cached[0]) < _WEEKDAY_PATTERN_TTL:
+        return cached[1]
+
+    # Enumerate dates, fan out /footfall per day (concurrency-limited).
+    dates = []
+    d = start_d
+    while d <= end_d:
+        dates.append(d)
+        d += timedelta(days=1)
+
+    sem = asyncio.Semaphore(6)
+
+    async def _one_day(day):
+        async with sem:
+            iso = day.isoformat()
+            try:
+                return day, await fetch("/footfall", {
+                    "date_from": iso, "date_to": iso,
+                    "channel": country,  # NB: upstream uses `channel` for country grouping
+                })
+            except Exception as e:
+                logger.warning("[weekday-pattern] %s fetch failed: %s", iso, e)
+                return day, []
+
+    results = await asyncio.gather(*(_one_day(dd) for dd in dates))
+
+    # Aggregate: {location: {weekday: [ (footfall, orders, sales), ... ]}}
+    from collections import defaultdict
+    loc_wk: Dict[str, Dict[int, List[Tuple[int, int, float]]]] = defaultdict(lambda: defaultdict(list))
+    group_wk: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    for day, rows in results:
+        if not isinstance(rows, list):
+            continue
+        wk = day.weekday()  # 0=Mon..6=Sun
+        for r in rows:
+            loc = r.get("location")
+            if not loc:
+                continue
+            ff = int(r.get("total_footfall") or 0)
+            orders = int(r.get("orders") or 0)
+            sales = float(r.get("total_sales") or 0.0)
+            if ff <= 0 and orders <= 0:
+                continue
+            loc_wk[loc][wk].append((ff, orders, sales))
+            group_wk[wk].append((ff, orders))
+
+    def avg(xs, i):
+        vals = [x[i] for x in xs if x[i] is not None]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    def conv_rate(xs):
+        total_orders = sum(x[1] for x in xs)
+        total_ff = sum(x[0] for x in xs)
+        return (total_orders / total_ff * 100) if total_ff else 0.0
+
+    rows_out = []
+    for loc, wk_map in loc_wk.items():
+        by_weekday = []
+        all_samples: List[Tuple[int, int, float]] = []
+        for wk in range(7):
+            samples = wk_map.get(wk, [])
+            by_weekday.append({
+                "weekday": wk,
+                "avg_footfall": round(avg(samples, 0), 1),
+                "avg_orders": round(avg(samples, 1), 1),
+                "avg_conversion_rate": round(conv_rate(samples), 2),
+                "days": len(samples),
+            })
+            all_samples.extend(samples)
+        total_footfall = sum(s[0] for s in all_samples)
+        rows_out.append({
+            "location": loc,
+            "avg_footfall": round(avg(all_samples, 0), 1),
+            "avg_conversion_rate": round(conv_rate(all_samples), 2),
+            "total_footfall_window": total_footfall,
+            "by_weekday": by_weekday,
+        })
+    rows_out.sort(key=lambda r: r["total_footfall_window"], reverse=True)
+
+    group_out = []
+    for wk in range(7):
+        samples = group_wk.get(wk, [])
+        group_out.append({
+            "weekday": wk,
+            "avg_footfall": round(sum(s[0] for s in samples) / max(1, len(set(day for day, rs in results if day.weekday() == wk))), 1) if samples else 0,
+            "avg_conversion_rate": round(conv_rate(samples), 2),
+            "days": len(set(day for day, rs in results if day.weekday() == wk)),
+        })
+
+    data = {
+        "window": {
+            "start": start_d.isoformat(),
+            "end": end_d.isoformat(),
+            "days": (end_d - start_d).days + 1,
+        },
+        "locations": [r["location"] for r in rows_out],
+        "rows": rows_out,
+        "group_avg_by_weekday": group_out,
+    }
+    _weekday_pattern_cache[cache_key] = (_t.time(), data)
+    return data
 
 
 @api_router.get("/subcategory-sales")

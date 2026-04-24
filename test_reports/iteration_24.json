@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 24 full-stack verification of (1) GET /api/footfall/weekday-pattern and (2) the new Data Quality console at /data-quality. All acceptance criteria green on backend + frontend. 7/7 pytest cases pass. UI end-to-end flow verified: heatmap renders 15×7=105 cells above the existing charts, mode toggle repaints, narrative line is correct; DQ page shows both expected flags (Shop Zetu 16.09% return rate WARN 5.2σ, Vivo Junction 52.50% CR SEVERE 4.8σ), Mark-PO-raised flow fires toast + hides row + increments 'already investigated' counter + persists across reload via recommendation_state collection with item_type='dq'; empty state copy matches spec; How-it-works card states actual group mean + sd.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified_features": [
+    "GET /api/footfall/weekday-pattern requires auth — 401 without Bearer token ✓",
+    "Default 28-day window with {start, end, days=28}; rows sorted desc by total_footfall_window; each row has by_weekday length 7; every weekday has exactly 4 days of samples ✓",
+    "Cache: second call returns in <2s (measured) vs ~7s cold call ✓",
+    "Invalid date_from returns 400 ✓",
+    "Recommendations item_type='dq' POST→GET→DELETE round-trip works; 'reorder' and 'ibt' still return 200; bogus item_type returns 422 ✓",
+    "Frontend /footfall: [data-testid='weekday-heatmap'] present, 105 wkd-cell-<Store>-<Day> elements (15 stores × 7 weekdays), narrative 'Group peak: Sat (3,152 avg). Softest: Sun. Best CR day: Fri (13.4%)' matches spec, mode toggles heatmap-mode-footfall / heatmap-mode-conversion repaint cells, legend 'Quiet day … Peak day … Dashed cell = no data' present ✓",
+    "DOM order: heatmap Y=479 < first recharts-wrapper Y=1226 → heatmap ABOVE per-day charts ✓",
+    "Frontend /data-quality: [data-testid='data-quality-page'], h1 'Data Quality', 4 KPI tiles (dq-kpi-total 'ACTIVE FLAGS 2 all pending', dq-kpi-severe 1, dq-kpi-warn 1, dq-kpi-metrics 2 with 'Learn how it works' pill) ✓",
+    "dq-flags-table shows exactly 2 expected flags in This Month window: Warn · Online - Shop Zetu · Return rate · 16.09% · 1.75% · 5.2σ · 'Above 2σ of group avg (1.7%) — verify the return rate source.' · 'KES 6,092,894 sales · KES 980,555 returns' · Pending · Change; and Severe · Vivo Junction · Conversion · 52.50% · 14.43% · 4.8σ · 'Unusually high CR (≥50%) — likely counter miscalibration' · '831 visitors sampled' · Pending · Change ✓",
+    "Action pill: clicking Change → Mark PO raised fires green toast 'PO raised · conversion_rate::Vivo Junction' (and 'return_rate::Online - Shop Zetu'); row hides from default view; Active Flags KPI decrements and subtitle flips to 'N already investigated' ✓",
+    "Empty state after both marked: '🎉 Every open flag has been investigated. Toggle \"Show resolved\" to review.' — exact copy match ✓",
+    "dq-show-resolved toggle present; count updates as flags are resolved (Show resolved (2)) ✓",
+    "State persists across hard reload — confirmed via GET /api/recommendations?item_type=dq returning both POSTed rows with status 'po_raised' after reload ✓",
+    "How-it-works card [data-testid='dq-how'] below table: 'Over physical stores with ≥ 200 visitors, we compute the group mean (14.43%) and standard deviation (7.94%pp)' + 'Over stores with ≥ KES 100k sales, same 2σ math. Group mean 1.75% ± 2.76%pp.' — actual group stats wired in ✓",
+    "Sidebar: new 'Data Quality' tab with ⚠ icon sits between CEO Report and Exports ✓",
+    "Regression: existing outlier-banner/outlier-pill logic still on Footfall page (verified present when window has data; on Today window both are expectedly absent because 0 orders that day — not a regression)"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_24_weekday_dq.py",
+    "/app/test_reports/pytest/pytest_iter24.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py line 1226: group_avg_by_weekday avg_footfall uses sum(s[0])/max(1, len(set of days)) where the set iterates results and does the weekday filter inside the len() — O(7×28) on a hot path but acceptable; the expression is nested and hard to read. Consider pre-bucketing day→results once before the loop.",
+    "/api/footfall/weekday-pattern cache is in-memory per process and keyed only on (start, end, country). It will grow unbounded if called with many custom ranges. Consider an LRU cap (cachetools.TTLCache) or evicting on add.",
+    "server.py is 2324 lines — well over the 700-line guideline. Splitting the endpoint blocks (footfall, sales, recommendations routing) into separate modules is overdue.",
+    "Weekday pattern relies on upstream returning a `location` string per daily row; if upstream ever changes that field name the endpoint will silently return an empty rows[] list (fan-out succeeds but aggregation produces nothing). A health probe returning counts per day would surface this early.",
+    "DQ page wires item_type='dq' into the shared recommendation_state collection — good reuse, but note that the Pydantic Literal enforces status ∈ {pending, po_raised, dismissed, done}. If future DQ flows want a dedicated 'investigated' status, the whole enum needs updating — current UI works around this by using 'po_raised' to mean investigated, which is slightly overloaded semantically (reorder domain term leaking into DQ)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_24_weekday_dq.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7 pytest)", "frontend": "100% — all 8 acceptance criteria verified"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md). Direct POST /api/auth/login works from in-cluster (pytest) but returns 403 from the browser-automation egress; in the browser flow the email login form works.",
+  "seed_data_creation": "Two dq recommendation_state rows were POSTed during UI flow testing (conversion_rate::Vivo Junction and return_rate::Online - Shop Zetu, both status=po_raised). Both were cleaned up via DELETE /api/recommendations?item_type=dq&item_key=... at end of run (verified empty).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 24 verified Weekday-pattern endpoint + /data-quality page green. Backend test suite at /app/backend/tests/test_iteration_24_weekday_dq.py exercises the auth gate, shape, 4-samples-per-weekday invariant, cache (<2s), invalid dates, dq POST/GET/DELETE, regression on reorder/ibt, and rejection of unknown item_type. Next iterations: the heatmap DOM order check assumes .recharts-wrapper classes exist under Footfall — if footfall charts ever switch away from recharts, update the selector. Direct /api/auth/login returns 403 from the browser-automation IP but the email login form works — use the form for any UI-driven test.",
+  "rca of the issue": "No bugs found. Both shippable features (weekday heatmap + /data-quality console) meet every spec item. Data Quality state persistence is wired correctly via the existing recommendation_state Mongo collection with item_type='dq', which also correctly prevents user-A's decisions from affecting user-B's view (per-user unique index on user_id+item_type+item_key)."
+}

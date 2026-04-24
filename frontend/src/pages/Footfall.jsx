@@ -16,6 +16,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
+import FootfallWeekdayHeatmap from "@/components/FootfallWeekdayHeatmap";
 import {
   Footprints,
   Target,
@@ -333,6 +334,8 @@ const Footfall = () => {
               action={{ label: "Top ABV stores", to: "/locations" }}
             />
           </div>
+
+          <FootfallWeekdayHeatmap />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card-white p-5" data-testid="ff-chart-footfall">

@@ -41,12 +41,12 @@ from auth import db, get_current_user, User
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
-ITEM_TYPES = ("reorder", "ibt")
+ITEM_TYPES = ("reorder", "ibt", "dq")
 STATUSES = ("pending", "po_raised", "dismissed", "done")
 
 
 class StatePayload(BaseModel):
-    item_type: Literal["reorder", "ibt"]
+    item_type: Literal["reorder", "ibt", "dq"]
     item_key: str = Field(..., min_length=1, max_length=400)
     status: Literal["pending", "po_raised", "dismissed", "done"]
     note: Optional[str] = Field(None, max_length=500)
@@ -73,7 +73,7 @@ async def _ensure_index():
 
 @router.get("", response_model=List[StateRow])
 async def list_state(
-    item_type: Literal["reorder", "ibt"] = Query(...),
+    item_type: Literal["reorder", "ibt", "dq"] = Query(...),
     user: User = Depends(get_current_user),
 ):
     """Return every row of state the caller has set for `item_type`.
@@ -134,7 +134,7 @@ async def set_state(
 
 @router.delete("")
 async def clear_state(
-    item_type: Literal["reorder", "ibt"] = Query(...),
+    item_type: Literal["reorder", "ibt", "dq"] = Query(...),
     item_key: Optional[str] = Query(None),
     user: User = Depends(get_current_user),
 ):
