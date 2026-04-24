@@ -175,7 +175,7 @@ const Footfall = () => {
     return { footfall, orders, sales, conv, abv, scopedOrders };
   }, [prev, countries, channels, channelCountry, prevSalesMap, authoritativePrevKpis]);
 
-  const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  const compareLbl = compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const delta = (a, b) => (compareMode !== "none" && b ? pctDelta(a, b) : null);
 
   const groupAvgConv = totals.conv;

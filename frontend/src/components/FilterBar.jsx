@@ -48,7 +48,7 @@ const FilterBar = () => {
 
   return (
     <div
-      className="fixed !top-[56px] sm:!top-[58px] lg:!top-[58px] !left-0 !right-0 z-30 bg-[#fed7aa] border-b border-border px-3 sm:px-5 lg:px-10 py-2 sm:py-3 no-print"
+      className="bg-[#fed7aa] border-b border-border px-3 sm:px-5 lg:px-10 py-2 sm:py-3 no-print"
       data-testid="filter-bar"
     >
       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5">
@@ -138,9 +138,9 @@ const FilterBar = () => {
           </span>
           {[
             ["none", "None"],
-            ["yesterday", "vs Yd"],
-            ["last_month", "vs LM"],
-            ["last_year", "vs LY"],
+            ["yesterday", "vs Yesterday"],
+            ["last_month", "vs Last Month"],
+            ["last_year", "vs Last Year"],
           ].map(([k, lbl]) => (
             <button
               key={k}

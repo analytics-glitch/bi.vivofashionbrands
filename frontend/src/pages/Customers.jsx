@@ -168,7 +168,7 @@ const Customers = () => {
     }));
   }, [byLoc]);
 
-  const compareLbl = compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  const compareLbl = compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
 
   return (
     <div className="space-y-6" data-testid="customers-page">

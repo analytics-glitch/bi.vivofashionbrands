@@ -256,7 +256,7 @@ const Overview = () => {
   }, [sales]);
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
-  const compareLbl = compareMode === "yesterday" ? "vs Yd" : compareMode === "last_month" ? "vs LM" : compareMode === "last_year" ? "vs LY" : null;
+  const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const degraded = kpisError ? `Upstream KPIs unavailable (${kpisError}). Other sections still rendered below.` : null;
 
   const kpis = useMemo(() => {

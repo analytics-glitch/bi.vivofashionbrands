@@ -26,13 +26,13 @@ const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
+  { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
-  { to: "/exports", label: "Exports", icon: DownloadSimple, id: "exports" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
-  { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
+  { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports" },
 ];
 
 const relativeTime = (d) => {
@@ -129,7 +129,7 @@ const TopNav = () => {
   }, []);
   return (
     <nav
-      className="sticky-nav px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print"
+      className="relative px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print bg-[#fed7aa] border-b border-border"
       data-testid="top-nav"
     >
       <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
@@ -198,7 +198,7 @@ const TopNav = () => {
 
       {mobileOpen && (
         <div
-          className="lg:hidden fixed left-0 right-0 top-[56px] sm:top-[64px] bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
+          className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
           data-testid="mobile-menu"
         >
           {tabs.map((t) => (

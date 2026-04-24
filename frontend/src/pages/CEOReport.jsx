@@ -347,8 +347,8 @@ const CEOReport = () => {
                 <tr>
                   <th>Country</th>
                   <th className="text-right">Total Sales</th>
-                  <th className="text-right">vs LM</th>
-                  <th className="text-right">vs LY</th>
+                  <th className="text-right">vs Last Month</th>
+                  <th className="text-right">vs Last Year</th>
                   <th className="text-right">Orders</th>
                   <th className="text-right">Units</th>
                   <th className="text-right">Avg Basket</th>
@@ -409,7 +409,7 @@ const CEOReport = () => {
                   <th>Location</th>
                   <th>Country</th>
                   <th className="text-right">Total Sales</th>
-                  <th className="text-right">vs LM</th>
+                  <th className="text-right">vs Last Month</th>
                   <th className="text-right">Orders</th>
                   <th className="text-right">Units</th>
                   <th className="text-right">Avg Basket</th>

@@ -6,6 +6,7 @@ import { isMerchandise, categoryFor } from "@/lib/productCategory";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import VariantDrillDown from "@/components/VariantDrillDown";
 import { Package, ArrowsClockwise, Fire, TrendUp } from "@phosphor-icons/react";
 
 const ReOrder = () => {
@@ -15,6 +16,7 @@ const ReOrder = () => {
   const [newStyles, setNewStyles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [drillStyle, setDrillStyle] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,7 +105,18 @@ const ReOrder = () => {
                 initialSort={{ key: "sor_percent", dir: "desc" }}
                 columns={[
                   { key: "urgency", label: "Urgency", align: "left", render: (r) => <span className={pillFor(r.urgency)}>{r.urgency}</span>, csv: (r) => r.urgency },
-                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.style_name}</span> },
+                  { key: "style_name", label: "Style", align: "left", render: (r) => (
+                    <button
+                      type="button"
+                      onClick={() => setDrillStyle(r)}
+                      className="font-medium break-words max-w-[280px] inline-block text-left text-brand hover:underline cursor-pointer"
+                      style={{ whiteSpace: "normal", wordBreak: "break-word" }}
+                      title="Click to view SKU variants (color × size × location)"
+                      data-testid={`reorder-style-link-${r.style_name}`}
+                    >
+                      {r.style_name}
+                    </button>
+                  ) },
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
                   { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
                   { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
@@ -128,6 +141,10 @@ const ReOrder = () => {
             </div>
           </div>
         </>
+      )}
+
+      {drillStyle && (
+        <VariantDrillDown style={drillStyle} onClose={() => setDrillStyle(null)} />
       )}
     </div>
   );
