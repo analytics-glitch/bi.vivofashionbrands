@@ -974,3 +974,40 @@ API, (c) figure from a different source system. Pending user confirmation.
     Returning Customers Bought" view (needs upstream per-style
     new-vs-returning breakdown).
 
+
+
+## Session Update — 2026-04-24 (Dopamine Design Phase 4)
+
+- **🏆 NEW RECORD pill wired to UI (frontend):**
+  - `LocationLeaderboard.jsx` now reads the `records` object from
+    `/api/leaderboard/streaks` and renders a pulsing "🏆 NEW RECORD"
+    micro-badge next to the streak 🔥 on the corresponding winner chip
+    (data-testid `record-<badge_key>`).
+  - Only lights up when that badge's most recent complete month beat
+    its prior 12-month max (computed server-side in
+    `/app/backend/leaderboard.py::_detect_record`).
+  - Verified end-to-end on `/locations` — revert flag restored after test.
+
+- **Most Improved Conversion badge (frontend):**
+  - New 🎯 chip added to `useLocationBadges` hook. Awarded when:
+    current footfall ≥ 200, CR ≤ 50% (noise filter), and CR gained
+    ≥ 5 percentage points vs compare period. Requires `compareMode`
+    active. Intrinsically per-period → no streak tracking.
+
+- **Daily visit streak (backend + frontend):**
+  - New endpoint `GET /api/auth/activity-streak` (auth.py) — derives
+    consecutive active UTC days from `activity_logs` for the current
+    user. Returns `{streak, visits_30d, today_active}`. 45-day cap.
+  - `DailyBriefing.jsx` fetches this on mount and renders a
+    `🔥 N-day visit streak` chip in the header (testid
+    `visit-streak-chip`) when streak ≥ 2. Strictly decorative — a
+    fetch failure does not break the page.
+
+- **Day-of-week flavor in DailyBriefing:**
+  - New italic sub-line (testid `daily-briefing-flavor`) under the
+    greeting that rotates based on weekday — "Fresh week, fresh
+    numbers.", "Friday read — the weekend rush is building.", etc.
+
+### Testing
+- Iteration 19 report: `/app/test_reports/iteration_19.json` — all
+  backend (6/6) + frontend checks pass, no regressions.
