@@ -1483,23 +1483,62 @@ async def analytics_sts_by_category(
                 if is_warehouse_location(r.get("location_name")):
                     inv_rows.append(r)
 
+    # Official Vivo merchandise taxonomy (supplied by merchandising team on
+    # 2026-04-24). Map is product_type → category. Anything not in this map
+    # falls back to "Other" so downstream filters can cleanly exclude it
+    # instead of leaking random subcategory names as their own "category".
+    SUBCATEGORY_TO_CATEGORY = {
+        # Accessories
+        "Accessories": "Accessories",
+        "Bangles & Bracelets": "Accessories",
+        "Belts": "Accessories",
+        "Body Mists & Fragrances": "Accessories",
+        "Earrings": "Accessories",
+        "Necklaces": "Accessories",
+        "Rings": "Accessories",
+        "Scarves": "Accessories",
+        # Bottoms
+        "Culottes & Capri Pants": "Bottoms",
+        "Full Length Pants": "Bottoms",
+        "Jumpsuits & Playsuits": "Bottoms",
+        "Leggings": "Bottoms",
+        "Shorts & Skorts": "Bottoms",
+        # Dresses
+        "Knee Length Dresses": "Dresses",
+        "Maxi Dresses": "Dresses",
+        "Midi & Capri Dresses": "Dresses",
+        "Short & Mini Dresses": "Dresses",
+        # Mens
+        "Men's Bottoms": "Mens",
+        "Men's Tops": "Mens",
+        # Outerwear
+        "Hoodies & Sweatshirts": "Outerwear",
+        "Jackets & Coats": "Outerwear",
+        "Sweaters & Ponchos": "Outerwear",
+        "Waterfalls & Kimonos": "Outerwear",
+        # Sale
+        "Sample & Sale Items": "Sale",
+        # Skirts
+        "Knee Length Skirts": "Skirts",
+        "Maxi Skirts": "Skirts",
+        "Midi & Capri Skirts": "Skirts",
+        "Short & Mini Skirts": "Skirts",
+        # Tops
+        "Bodysuits": "Tops",
+        "Fitted Tops": "Tops",
+        "Loose Tops": "Tops",
+        "Midriff & Crop Tops": "Tops",
+        "T-shirts & Tank Tops": "Tops",
+        # Two-Piece Sets
+        "Pants & Top Set": "Two-Piece Sets",
+        "Pants & Waterfall Set": "Two-Piece Sets",
+        "Skirts & Top Set": "Two-Piece Sets",
+    }
+
     def category_of(sub: str) -> str:
         if not sub:
-            return "—"
-        s = sub.lower()
-        if "dress" in s:
-            return "Dresses"
-        if "top" in s:
-            return "Tops"
-        if "pant" in s or "legging" in s or "shorts" in s or "skorts" in s or "skirt" in s:
-            return "Bottoms"
-        if "coat" in s or "jacket" in s or "poncho" in s or "sweater" in s or "kimono" in s or "waterfall" in s:
-            return "Outerwear"
-        if "jumpsuit" in s or "playsuit" in s or "bodysuit" in s:
-            return "Sets & Bodysuits"
-        if "accessory" in s or "bag" in s or "scarf" in s or "jewel" in s:
-            return "Accessories"
-        return sub
+            return "Other"
+        return SUBCATEGORY_TO_CATEGORY.get(sub, "Other")
 
     # If locations filter is provided, rebuild current_stock per row
     # from local inventory (upstream's channel param only filters sales).

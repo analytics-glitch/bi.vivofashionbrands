@@ -705,6 +705,22 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Fix: category taxonomy mis-bucketing.** The regex-based
+  `category_of()` in `/app/backend/server.py` was leaking subcategories
+  as fake categories (`Sets & Bodysuits`, `Hoodies & Sweatshirts`,
+  `Men's Bottoms`) and using an ad-hoc mapping that didn't match the
+  merchandise team's taxonomy. Replaced with a hard-coded dictionary
+  of 35 subcategories → 9 canonical categories (Dresses, Tops, Bottoms,
+  Outerwear, Skirts, Two-Piece Sets, Mens, Accessories, Sale) supplied
+  by the merchandising team on 2026-04-24. Unknown subcategories now
+  fall through to "Other" (dropped from merchandise views) instead of
+  appearing as their own category. Updated frontend
+  `/app/frontend/src/lib/productCategory.js` to use the same mapping so
+  both sides stay in lock-step — if merchandising adds a subcategory,
+  update both files. Live verification: category table now shows
+  Dresses 41.8% · Tops 20.9% (Bodysuits rolled up) · Bottoms 20.0%
+  (Jumpsuits rolled up) · Outerwear 13.2% (Hoodies rolled up) · Skirts
+  2.3% · Two-Piece Sets 1.6% · Mens 0.2%.
 - **Product Performance by Category & Subcategory** (new). Two new
   tables on the Products page that complement the existing Stock-to-
   Sales tables with commercial metrics: Units Sold · Sales · % of

@@ -1,56 +1,82 @@
 /**
- * Single source of truth for product subcategory → high-level category
- * mapping AND for the merchandise-only exclusion rule.
+ * Single source of truth for product subcategory → category mapping.
+ *
+ * Taxonomy provided by Vivo merchandising team on 2026-04-24; must stay in
+ * lock-step with the `SUBCATEGORY_TO_CATEGORY` dict in /app/backend/server.py.
+ * If the merchandising team adds a new subcategory, update BOTH this file
+ * and the backend dict.
  *
  * Business rule (mandated by the user, matches BigQuery `all_products_clean`
  * view which excludes `category NOT IN ('Accessories', 'Sale')`):
  *   Inventory, stock-to-sales and replenishment views must only consider
- *   merchandise — apparel & footwear — and must exclude Accessories, Sample
- *   & Sale items, and any row whose subcategory/category is null / empty.
+ *   merchandise (apparel) and must exclude Accessories, Sample & Sale, and
+ *   anything whose subcategory is null/unknown.
  */
 
-// Subcategory strings (product_type) that must be filtered out of every
-// inventory-related chart, table and KPI across the app.
-export const NON_MERCHANDISE_SUBCATS = new Set([
-  "Accessories",
-  "Belts",
-  "Scarves",
-  "Fragrances",
-  "Bags",
-  "Jewellery",
-  "Jewelry",
-  "Sample & Sale Items",
-  "Sale",
-]);
+export const SUBCATEGORY_TO_CATEGORY = {
+  // Accessories
+  "Accessories": "Accessories",
+  "Bangles & Bracelets": "Accessories",
+  "Belts": "Accessories",
+  "Body Mists & Fragrances": "Accessories",
+  "Earrings": "Accessories",
+  "Necklaces": "Accessories",
+  "Rings": "Accessories",
+  "Scarves": "Accessories",
+  // Bottoms
+  "Culottes & Capri Pants": "Bottoms",
+  "Full Length Pants": "Bottoms",
+  "Jumpsuits & Playsuits": "Bottoms",
+  "Leggings": "Bottoms",
+  "Shorts & Skorts": "Bottoms",
+  // Dresses
+  "Knee Length Dresses": "Dresses",
+  "Maxi Dresses": "Dresses",
+  "Midi & Capri Dresses": "Dresses",
+  "Short & Mini Dresses": "Dresses",
+  // Mens
+  "Men's Bottoms": "Mens",
+  "Men's Tops": "Mens",
+  // Outerwear
+  "Hoodies & Sweatshirts": "Outerwear",
+  "Jackets & Coats": "Outerwear",
+  "Sweaters & Ponchos": "Outerwear",
+  "Waterfalls & Kimonos": "Outerwear",
+  // Sale
+  "Sample & Sale Items": "Sale",
+  // Skirts
+  "Knee Length Skirts": "Skirts",
+  "Maxi Skirts": "Skirts",
+  "Midi & Capri Skirts": "Skirts",
+  "Short & Mini Skirts": "Skirts",
+  // Tops
+  "Bodysuits": "Tops",
+  "Fitted Tops": "Tops",
+  "Loose Tops": "Tops",
+  "Midriff & Crop Tops": "Tops",
+  "T-shirts & Tank Tops": "Tops",
+  // Two-Piece Sets
+  "Pants & Top Set": "Two-Piece Sets",
+  "Pants & Waterfall Set": "Two-Piece Sets",
+  "Skirts & Top Set": "Two-Piece Sets",
+};
 
 // High-level category buckets that are considered non-merchandise.
 export const NON_MERCHANDISE_CATEGORIES = new Set(["Accessories", "Sale", "Other"]);
 
 export function categoryFor(subcat) {
   if (!subcat) return null;
-  const s = String(subcat).toLowerCase();
-  if (/sample|sale/.test(s)) return "Sale";
-  if (/bag|wallet|purse|clutch|belt|scarf|accessor|jewel|fragrance|perfume/.test(s)) return "Accessories";
-  if (/dress|jumpsuit|playsuit|gown|kaftan/.test(s)) return "Dresses";
-  if (/top|blouse|shirt|tee|tunic|cami|bodysuit/.test(s)) return "Tops";
-  if (/trouser|pant|short|skort|skirt|jean|legging/.test(s)) return "Bottoms";
-  if (/jacket|blazer|coat|cardigan|sweater|poncho|hoodie|waterfall|kimono|outerwear/.test(s)) return "Outerwear";
-  if (/shoe|sandal|heel|sneaker|boot|footwear/.test(s)) return "Footwear";
-  if (/swim|beach|lingerie|nightwear|underwear|intimate/.test(s)) return "Intimates & Swim";
-  return "Other";
+  return SUBCATEGORY_TO_CATEGORY[subcat] || "Other";
 }
 
 /**
- * True when a subcategory/category pair represents MERCHANDISE that should
- * appear in inventory / stock-to-sales / replenishment views.
- *
- * Pass either the subcategory alone (most common) or both.
+ * True when a subcategory represents MERCHANDISE that should appear in
+ * inventory / stock-to-sales / replenishment views. Anything mapped to
+ * Accessories, Sale, or Other is excluded.
  */
-export function isMerchandise(subcat, category) {
+export function isMerchandise(subcat) {
   if (subcat == null || String(subcat).trim() === "") return false;
-  if (NON_MERCHANDISE_SUBCATS.has(subcat)) return false;
-  const cat = category || categoryFor(subcat);
-  if (!cat) return false;
-  if (NON_MERCHANDISE_CATEGORIES.has(cat)) return false;
-  return true;
+  const cat = SUBCATEGORY_TO_CATEGORY[subcat];
+  if (!cat) return false; // unknown subcategory → exclude
+  return !NON_MERCHANDISE_CATEGORIES.has(cat);
 }
