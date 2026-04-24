@@ -318,6 +318,51 @@ async def me(user: User = Depends(get_current_user)):
     return user.model_dump()
 
 
+@auth_router.get("/activity-streak")
+async def activity_streak(user: User = Depends(get_current_user)):
+    """
+    Consecutive-day login streak for the authenticated user.
+
+    Derives from activity_logs (already captured by middleware). A day counts
+    as "active" if the user had at least one authenticated /api/* request on
+    that UTC day. Streak = consecutive days ending today (or ending yesterday
+    — a user who hasn't loaded the dashboard yet today shouldn't lose their
+    streak until tomorrow).
+    """
+    # Pull distinct active days over the last 45 days (hard cap for cheap query).
+    since = datetime.now(timezone.utc) - timedelta(days=45)
+    active_days: set[str] = set()
+    cursor = db.activity_logs.find(
+        {"user_id": user.user_id, "ts": {"$gte": since}},
+        {"_id": 0, "ts": 1},
+    )
+    async for doc in cursor:
+        ts = doc.get("ts")
+        if isinstance(ts, datetime):
+            active_days.add(ts.strftime("%Y-%m-%d"))
+
+    today = datetime.now(timezone.utc).date()
+    # Seed cursor at today if active, else yesterday (grace period).
+    if today.strftime("%Y-%m-%d") in active_days:
+        cur = today
+    else:
+        cur = today - timedelta(days=1)
+        if cur.strftime("%Y-%m-%d") not in active_days:
+            return {"streak": 0, "visits_30d": len(active_days), "today_active": False}
+
+    streak = 0
+    while cur.strftime("%Y-%m-%d") in active_days:
+        streak += 1
+        cur = cur - timedelta(days=1)
+        if streak > 45:
+            break
+    return {
+        "streak": streak,
+        "visits_30d": len(active_days),
+        "today_active": today.strftime("%Y-%m-%d") in active_days,
+    }
+
+
 @auth_router.post("/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get("session_token")

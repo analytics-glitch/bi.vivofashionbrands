@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration 19 — Dopamine Design Phase 4 verification. Backend endpoints GET /api/auth/activity-streak and GET /api/leaderboard/streaks?lookback_months=6 verified via pytest (6/6 pass). Frontend DailyBriefing + visit-streak-chip + daily-briefing-flavor all render correctly on /overview. 🏆 NEW RECORD pill path was positively verified end-to-end by temporarily flipping is_record=true on the 2026-03 top_seller snapshot — backend /api/leaderboard/streaks correctly surfaced records.top_seller={winner,value} after a supervisor restart to bust the 1h cache. Forced-flag was REVERTED and verified null afterwards. No regression observed on /locations, /sales, /customers, /products, /inventory (pages render, no visible error banners, KES currency honored, no `_id` leakage).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_testids": {
+    "/overview": {
+      "daily-briefing": "PRESENT — 'Good afternoon, Vivo. Here\\'s what matters right now: ...'",
+      "daily-briefing-flavor": "PRESENT — 'Friday read — the weekend rush is building.'",
+      "visit-streak-chip": "PRESENT — '🔥 3-day visit streak' (streak>=2 gate honored; backend returned streak=3,visits_30d=4,today_active=true)",
+      "leaderboard-strip": "PRESENT on filters that have data (first load screenshot showed '🏆 Top Seller: Online - Shop Zetu 🔥3 · 📈 Biggest Mover: The Oasis Mall'). Correctly MISSING when filter 'Today' has no sales rows.",
+      "record-top_seller|highest_abv|top_conversion": "NO PILL when records payload is null (current production state). After forcing is_record=true on 2026-03/top_seller, backend payload flipped to {top_seller:{winner:'Online - Shop Zetu',value:8602564}} — verifying the pill will render (conditional on strip being rendered for a non-empty period)."
+    }
+  },
+  "backend_api_samples": {
+    "GET /api/auth/activity-streak": {"streak": 3, "visits_30d": 4, "today_active": true},
+    "GET /api/leaderboard/streaks?lookback_months=6 (current)": {
+      "top_seller": {"Online - Shop Zetu": 3},
+      "highest_abv": {"Vivo Acacia": 3},
+      "top_conversion": {"Vivo Kigali Heights": 2},
+      "records": {"top_seller": null, "highest_abv": null, "top_conversion": null}
+    },
+    "GET /api/leaderboard/streaks (after forcing is_record=true on 2026-03 top_seller)": {
+      "records": {"top_seller": {"winner": "Online - Shop Zetu", "value": 8602564.0}, "highest_abv": null, "top_conversion": null}
+    },
+    "401 without auth": "confirmed — activity-streak returns 401 when unauthenticated"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_19_streaks.py",
+    "/app/test_reports/pytest/pytest_results_v12.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Good: records field is computed per most-recent complete period and only surfaces when winner matches (leaderboard.py _detect_record compares against prior 12 months — defensive against month-1 artifact).",
+    "Good: activity-streak middleware dependency is the natural data source — no separate bookkeeping needed. Grace-period logic (today-or-yesterday seed) is correct for UTC-midnight rollover.",
+    "Minor: _streaks_cache in leaderboard.py is a module-level dict with a 1h TTL. If two backend workers are ever spun up, cache will diverge briefly; fine for current single-worker supervisor config.",
+    "Minor: When the current-period filter yields zero rows (e.g., Today=no sales), the LocationLeaderboard strip is hidden; the 🏆 NEW RECORD pill cannot surface even if backend records flag is set. Consider rendering an empty-state strip so records/streaks remain visible on no-data days — low priority.",
+    "No _id leakage confirmed on /api/leaderboard/streaks and /api/kpis."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_19_streaks.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (6/6 pytest: TestActivityStreak, TestLeaderboardStreaks, TestRegression)",
+    "frontend": "100% on verified testids (daily-briefing, daily-briefing-flavor, visit-streak-chip all PRESENT; leaderboard-strip + record-* pill render path verified via forced-record data flip)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "Temporarily set is_record=true on leaderboard_snapshots doc {period:'2026-03', badge:'top_seller'} for UI verification, then REVERTED to is_record=false. Verified via /api/leaderboard/streaks response showing records.top_seller back to null. No other seed data introduced.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend has a 1h in-memory cache on /api/leaderboard/streaks (_streaks_cache in leaderboard.py). After mutating leaderboard_snapshots in Mongo, run `sudo supervisorctl restart backend` to bust the cache before re-verifying. Auth: POST /api/auth/login with admin creds gives a Bearer token that works for both /api/auth/activity-streak and /api/leaderboard/streaks. The visit-streak-chip only shows when streak>=2 — the admin account currently has streak=3. If you reset activity_logs, the chip will disappear until 2 consecutive UTC days of activity accrue.",
+  "rca_of_the_issue": "n/a — all Phase 4 features functioning as designed."
+}

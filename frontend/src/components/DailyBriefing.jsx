@@ -1,6 +1,6 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { fmtKES, fmtNum } from "@/lib/api";
+import { api, fmtKES, fmtNum } from "@/lib/api";
 import { Sun, Moon, SunHorizon } from "@phosphor-icons/react";
 
 /**
@@ -30,6 +30,25 @@ const greetingFor = (hour) => {
   if (hour < 22) return { text: "Good evening",   Icon: SunHorizon };
   return { text: "Good night", Icon: Moon };
 };
+
+// Day-of-week flavor text — a small dopamine hit that reinforces
+// that the dashboard knows your week's rhythm. Subtle, never cloying.
+const dayFlavor = (date) => {
+  const dow = date.getDay();  // 0=Sun .. 6=Sat
+  switch (dow) {
+    case 1: return "Fresh week, fresh numbers.";
+    case 2: return "Momentum day — yesterday's story is still unfolding.";
+    case 3: return "Midweek check-in.";
+    case 4: return "Thursday push — the weekend run-up starts now.";
+    case 5: return "Friday read — the weekend rush is building.";
+    case 6: return "Saturday trade — peak retail window.";
+    case 0: return "Sunday overview — last day of the week.";
+    default: return "";
+  }
+};
+
+// Pluralize "day" correctly in streak copy.
+const plural = (n, s) => `${n} ${s}${n === 1 ? "" : "s"}`;
 
 // Build a signed percentage-change bullet from KPI payload + prev payload.
 const salesBullet = (kpis, prev, compareLbl) => {
@@ -96,6 +115,17 @@ const DailyBriefing = ({ kpis, prevKpis, sales, inventory, compareLbl }) => {
   const { user } = useAuth();
   const { text: hello, Icon } = useMemo(() => greetingFor(new Date().getHours()), []);
   const name = firstName(user);
+  const flavor = useMemo(() => dayFlavor(new Date()), []);
+
+  // Fetch visit streak on mount — cheap, cached, nice-to-have.
+  const [streakInfo, setStreakInfo] = useState(null);
+  useEffect(() => {
+    let cancel = false;
+    api.get("/auth/activity-streak")
+      .then((r) => { if (!cancel) setStreakInfo(r.data || null); })
+      .catch(() => { /* streak is decorative, not required */ });
+    return () => { cancel = true; };
+  }, []);
 
   const bullets = useMemo(() => {
     const out = [];
@@ -112,17 +142,36 @@ const DailyBriefing = ({ kpis, prevKpis, sales, inventory, compareLbl }) => {
 
   if (bullets.length === 0) return null;
 
+  const streak = streakInfo?.streak || 0;
+
   return (
     <div
       className="rounded-2xl border border-brand/20 bg-gradient-to-br from-brand-soft/70 via-white to-amber-50 p-4 sm:p-5 shadow-sm"
       data-testid="daily-briefing"
     >
-      <div className="flex items-center gap-2 text-brand-deep">
+      <div className="flex items-center gap-2 text-brand-deep flex-wrap">
         <Icon size={18} weight="fill" />
         <div className="text-[13px] sm:text-[14px] font-bold tracking-tight">
           {hello}{name ? `, ${name}` : ""}. Here's what matters right now:
         </div>
+        {streak >= 2 && (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-br from-orange-100 to-red-100 text-red-700 text-[10.5px] font-bold border border-orange-300"
+            title={`You've checked in ${plural(streak, "day")} in a row — keep it up!`}
+            data-testid="visit-streak-chip"
+          >
+            🔥 {streak}-day visit streak
+          </span>
+        )}
       </div>
+      {flavor && (
+        <div
+          className="mt-1 text-[11.5px] text-brand-deep/70 italic"
+          data-testid="daily-briefing-flavor"
+        >
+          {flavor}
+        </div>
+      )}
       <ul className="mt-2.5 sm:mt-3 space-y-1.5" data-testid="daily-briefing-list">
         {bullets.map((b, i) => (
           <li

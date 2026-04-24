@@ -93,6 +93,31 @@ export const useLocationBadges = ({ sales, prevSales, footfall, compareMode, com
           tip: `Sales up ${topGain.pctGrowth.toFixed(0)}% ${compareLbl} — momentum leader.`,
         });
       }
+
+      // Most Improved Conversion: biggest absolute CR gain vs compare period.
+      // Guards: current ≥ 200 footfall, CR ≤ 50% (noise filter), ≥ 5pp gain.
+      const prevFFByLoc = new Map();  // compare-period footfall — optional,
+      // if you want hard-matched comparison fetch it upstream; fall back to
+      // comparing this-period CR against compare-period orders÷footfall we
+      // can approximate from prev row if shape matches.
+      const movers_cr = rows
+        .map((r) => {
+          const prev = prevMap.get(r.channel);
+          if (!prev) return null;
+          const pOrders = prev.orders || prev.total_orders || 0;
+          const pFF = prevFFByLoc.get(r.channel) || prev.footfall || prev.total_footfall || 0;
+          const pCR = pFF > 0 ? (pOrders / pFF) * 100 : null;
+          if (pCR == null) return null;
+          return { ...r, pCR, crGain: r.cr - pCR };
+        })
+        .filter((r) => r && r.ff >= 200 && r.cr <= 50 && r.crGain >= 5);
+      const topCrGain = [...movers_cr].sort((a, b) => b.crGain - a.crGain)[0];
+      if (topCrGain) {
+        award(topCrGain.channel, {
+          icon: "🎯", label: "Most Improved Conversion", tone: "teal",
+          tip: `Conversion up ${topCrGain.crGain.toFixed(1)} pts ${compareLbl} — from ${topCrGain.pCR.toFixed(1)}% to ${topCrGain.cr.toFixed(1)}%.`,
+        });
+      }
     }
 
     return badges;
@@ -113,7 +138,8 @@ export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", str
     "Top Seller": "top_seller",
     "Highest ABV": "highest_abv",
     "Top Conversion": "top_conversion",
-    // "Biggest Mover" is intrinsically per-period; no streak tracking.
+    // "Biggest Mover" and "Most Improved Conversion" are intrinsically
+    // per-period (they describe change vs comparison window); no streak.
   };
 
   return (
@@ -127,12 +153,17 @@ export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", str
       {Array.from(badges.entries()).map(([channel, b]) => {
         const streakKey = BADGE_STREAK_KEY[b.label];
         const streak = streakKey && streaks?.[streakKey]?.[channel];
+        const recordInfo = streakKey && streaks?.records?.[streakKey];
+        const isRecord = !!(recordInfo && recordInfo.winner === channel);
+        const tipParts = [b.tip];
+        if (streak && streak >= 2) tipParts.push(`🔥 ${streak} months running`);
+        if (isRecord) tipParts.push("🏆 New 12-month record!");
         return (
           <button
             key={`lb-${channel}-${b.label}`}
             type="button"
             onClick={() => onWinnerClick && onWinnerClick(channel)}
-            title={streak ? `${b.tip} · 🔥 ${streak} months running` : b.tip}
+            title={tipParts.join(" · ")}
             data-testid={`leader-badge-${b.label.replace(/\s+/g, "-").toLowerCase()}`}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white rounded-full border border-brand/30 shadow-sm hover:shadow-md hover:border-brand/60 transition-all text-[11.5px] font-semibold text-brand-deep"
           >
@@ -145,6 +176,15 @@ export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", str
                 data-testid={`streak-${streakKey}`}
               >
                 🔥 {streak}
+              </span>
+            )}
+            {isRecord && (
+              <span
+                className="inline-flex items-center gap-0.5 ml-0.5 px-1.5 py-0.5 rounded-full bg-gradient-to-br from-amber-100 via-yellow-100 to-amber-200 text-amber-800 text-[10px] font-bold border border-amber-400 shadow-sm animate-pulse"
+                data-testid={`record-${streakKey}`}
+                title="New 12-month record"
+              >
+                🏆 NEW RECORD
               </span>
             )}
           </button>
