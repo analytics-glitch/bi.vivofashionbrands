@@ -1218,3 +1218,50 @@ high CR…", "Above 2σ of group avg…", etc).
   regressions on Overview / Customers / Re-Order / IBT / Wins / WhatChanged /
   NEW RECORD / SOTW / login / currency / _id masking.
 
+
+
+## Session Update — 2026-04-24 (Data-Quality layer generalised)
+
+Extracted the Footfall-specific outlier detector into a reusable kernel
+so any page on the platform can self-check its numbers in one line.
+
+### New reusable primitives
+
+**Hook — `/app/frontend/src/lib/useOutliers.js`**
+- Takes rows + `{valueKey, filter?, hardHi?, hardLo?, label, valueFmt, sigmas=2, minSample=4, outputKey}`.
+- Computes group mean + σ over the filter-passed sample.
+- Tags each row with `r.outlier = {kind, severity, reason}` or null.
+- Two severity levels: `severe` (hard-cap hit) vs `warn` (statistical).
+- Returns `{enriched, stats, count}` — drop-in replacement for the 60-line
+  inline block the Footfall page used to carry.
+
+**Components — `/app/frontend/src/components/DataQualityPill.jsx`**
+- `<DataQualityPill flag={r.outlier} label="verify counter" />` — renders
+  an amber ⚠ chip with tooltip when flag is truthy, null otherwise (so
+  callers can inline it without conditionals).
+- `<DataQualityBanner count={N} statsLine={…} noun="stores" action="…" />`
+  — the reusable "N flagged" banner that sits above any table.
+
+### Adoptions
+
+1. **Footfall** — refactored. The old 60-line `outlierStats` + `enrichedWithFlag`
+   useMemo pair collapsed to a single `useOutliers(...)` call. Same data-testids
+   preserved (`outlier-banner`, `outlier-pill-<Location>`). Amber bar + row pill
+   + banner work identically.
+
+2. **Locations** — new adoption. Return-rate outliers flagged on each
+   location card: physical/online store with ≥100k KES sales, return-rate
+   ≥ group_mean + 2σ OR ≥ 30% hard cap, renders a `return-outlier-<channel>`
+   pill next to the "Returns" metric + a group-level `returns-dq-banner`
+   above the grid. Today flags **Online - Shop Zetu** (~17% return rate
+   vs group avg 1.8% ± 2.8pp).
+
+### Tested
+- Iteration 23 report: all acceptance criteria green, no regressions on
+  Overview / Customers / Re-Order / IBT / Wins / Products / Inventory /
+  CEO Report / Exports. The two DQ adoptions emit identical data-testids
+  as before the refactor.
+
+### Files added
+- `/app/frontend/src/lib/useOutliers.js`
+- `/app/frontend/src/components/DataQualityPill.jsx`
