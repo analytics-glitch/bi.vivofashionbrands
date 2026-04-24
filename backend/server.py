@@ -547,8 +547,12 @@ async def get_customers(
         data["churned_last_90d"] = churned_90
         data["churn_window_days"] = churn_window_days
         data["churn_source"] = churn_source
-        denom = active + churned_90
-        data["churn_rate"] = round((churned_90 / denom * 100), 2) if denom else 0
+        # CHURN RATE (final) = churned_all_time ÷ (active + churned_all_time) × 100.
+        # Aligned to the product definition: "% of lifetime unique customers
+        # who have not purchased in the last 90 days." This is identical to
+        # `churn_rate_cumulative` above; kept as separate field for clarity and
+        # backwards compatibility (UI reads `churn_rate`).
+        data["churn_rate"] = data["churn_rate_cumulative"]
     return data
 
 

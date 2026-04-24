@@ -68,6 +68,10 @@ const Customers = () => {
   const [searchQ, setSearchQ] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
+
+  // Days-inactive filter for the churned customers list. Upstream supports
+  // any integer; UI offers 60 / 90 / 120 / 180 day presets. Default 90.
+  const [churnDays, setChurnDays] = useState(90);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [customerProducts, setCustomerProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
@@ -111,7 +115,7 @@ const Customers = () => {
       ["top", api.get("/top-customers", { params: { ...dateP, limit: 20 } }).catch(() => ({ data: [] }))],
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
-      ["churned", api.get("/churned-customers", { params: { days: 90, limit: 500 } }).catch(() => ({ data: [] }))],
+      ["churned", api.get("/churned-customers", { params: { days: churnDays, limit: 500 } }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
@@ -125,7 +129,7 @@ const Customers = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays]);
 
   // debounced search
   useEffect(() => {
@@ -162,10 +166,15 @@ const Customers = () => {
 
   const byLocWithPct = useMemo(() => {
     const total = byLoc.reduce((s, r) => s + (r.total_customers || 0), 0) || 1;
-    return byLoc.map((r) => ({
-      ...r,
-      pct_of_total: r.pct_of_total != null ? r.pct_of_total : (r.total_customers / total) * 100,
-    }));
+    return byLoc.map((r) => {
+      const t = r.total_customers || 0;
+      return {
+        ...r,
+        pct_of_total: r.pct_of_total != null ? r.pct_of_total : (t / total) * 100,
+        pct_new: t ? ((r.new_customers || 0) / t) * 100 : 0,
+        pct_returning: t ? ((r.returning_customers || 0) / t) * 100 : 0,
+      };
+    });
   }, [byLoc]);
 
   const compareLbl = compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
@@ -328,9 +337,9 @@ const Customers = () => {
             <KPICard
               testId="kpi-churned-count"
               label="Churned Customers"
-              sub={cust.churn_source === "cumulative_fallback" ? "cumulative (upstream 3-month endpoint down)" : "3-month rolling count"}
-              formula="Count of customers whose LAST purchase was more than 3 months (90 days) ago, as of today. Source: /churned-customers?days=90 — falls back to the cumulative count from /customers when the upstream endpoint is unavailable."
-              value={fmtNum(cust.churned_last_90d || 0)}
+              sub={`no purchase in ${churnDays}+ days`}
+              formula={`Count of customers whose LAST purchase was more than ${churnDays} days ago (as of today). Source: /churned-customers?days=${churnDays}.`}
+              value={fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
               icon={UserMinus}
               higherIsBetter={false}
               showDelta={false}
@@ -338,12 +347,12 @@ const Customers = () => {
             <KPICard
               testId="kpi-churn"
               label="Churn Rate"
-              sub="3-month rolling · as of today"
+              sub={`${churnDays}-day rolling · as of today`}
               formula={
-                "Churn Rate = churned_3m ÷ (active_in_period + churned_3m).\n\n" +
-                "A customer is considered CHURNED if their LAST purchase was more than 3 months (90 days) ago, " +
-                "measured from TODAY (not from the selected date-range end). This number is therefore " +
-                "independent of the date filter — it is a rolling 3-month health metric."
+                `Churn Rate = churned_customers ÷ total_unique_customers_all_time × 100.\n\n` +
+                `A customer is considered CHURNED if their LAST purchase was more than ${churnDays} days ago, ` +
+                `measured from TODAY (not from the selected date-range end). This number is therefore ` +
+                `independent of the date filter — it is a rolling health metric.`
               }
               value={fmtPct(cust.churn_rate, 2)}
               icon={UserMinus}
@@ -475,7 +484,10 @@ const Customers = () => {
 
           {/* ---- Customers by POS ---- */}
           <div className="card-white p-5" data-testid="customers-by-location-section">
-            <SectionTitle title="Customers by POS" subtitle="New vs returning breakdown per location" />
+            <SectionTitle
+              title="Customers by POS"
+              subtitle="New vs returning customer mix at each location. % New and % Returning show the split within each store; % Share of Customers shows each store's contribution to total customer count."
+            />
             {byLocWithPct.length === 0 ? <UpstreamNotReady /> : (
               <SortableTable
                 testId="customers-by-location"
@@ -487,7 +499,27 @@ const Customers = () => {
                   { key: "new_customers", label: "New", numeric: true, render: (r) => fmtNum(r.new_customers) },
                   { key: "returning_customers", label: "Returning", numeric: true, render: (r) => fmtNum(r.returning_customers) },
                   { key: "total_customers", label: "Total", numeric: true, render: (r) => <span className="font-semibold">{fmtNum(r.total_customers)}</span> },
-                  { key: "pct_of_total", label: "% of Total", numeric: true, render: (r) => fmtPct(r.pct_of_total, 1), csv: (r) => r.pct_of_total?.toFixed(2) },
+                  {
+                    key: "pct_new",
+                    label: "% New",
+                    numeric: true,
+                    render: (r) => <span className="pill-green">{(r.pct_new || 0).toFixed(1)}%</span>,
+                    csv: (r) => (r.pct_new || 0).toFixed(2),
+                  },
+                  {
+                    key: "pct_returning",
+                    label: "% Returning",
+                    numeric: true,
+                    render: (r) => <span className="pill-neutral" style={{ background: "#dbeafe", color: "#1e40af" }}>{(r.pct_returning || 0).toFixed(1)}%</span>,
+                    csv: (r) => (r.pct_returning || 0).toFixed(2),
+                  },
+                  {
+                    key: "pct_of_total",
+                    label: "% Share of Customers",
+                    numeric: true,
+                    render: (r) => fmtPct(r.pct_of_total, 1),
+                    csv: (r) => r.pct_of_total?.toFixed(2),
+                  },
                 ]}
                 rows={byLocWithPct}
               />
@@ -497,27 +529,46 @@ const Customers = () => {
           {/* ---- Churned customers ---- */}
           <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
             <SectionTitle
-              title={`Churned customers · ${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""}`}
-              subtitle="Customers with no purchase in the last 3 months. Sorted by most recent churn first. Paginated · 25 rows per page."
+              title={`Churned Customers (no purchase in ${churnDays}+ days)`}
+              subtitle={`${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""} customers · sorted by Lifetime Spend descending. Paginated · 25 rows per page.`}
+              action={
+                <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="churn-days-filter">
+                  <span className="text-muted font-medium">Days inactive:</span>
+                  {[60, 90, 120, 180].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setChurnDays(d)}
+                      data-testid={`churn-days-${d}`}
+                      className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${
+                        churnDays === d
+                          ? "bg-brand text-white"
+                          : "bg-panel text-foreground/70 hover:bg-white border border-border"
+                      }`}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+              }
             />
             {churned.length === 0 ? (
               <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">
-                ⚠️ Upstream <code>/churned-customers?days=90</code> is currently returning HTTP 500 — we cannot show the individual churned customers list right now. The headline count ({fmtNum(cust.churned_last_90d || 0)}) comes from the aggregated <code>/customers</code> endpoint instead. Data team has been notified via this dashboard's Data Freshness panel.
+                ⚠️ Upstream <code>/churned-customers?days={churnDays}</code> returned no rows. The aggregated count ({fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}) from <code>/customers</code> is used for the KPI above.
               </div>
             ) : (
               <SortableTable
                 testId="churned-customers"
-                exportName="churned-customers.csv"
-                initialSort={{ key: "days_since_last_purchase", dir: "asc" }}
+                exportName={`churned-customers-${churnDays}d.csv`}
+                initialSort={{ key: "lifetime_spend", dir: "desc" }}
                 pageSize={25}
                 columns={[
                   { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
                   { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
-                  { key: "email", label: "Email", align: "left", render: (r) => <span className="text-muted text-[11px] max-w-[200px] truncate inline-block" title={r.email}>{r.email || "—"}</span>, csv: (r) => r.email },
-                  { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
-                  { key: "days_since_last_purchase", label: "Days Since", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
-                  { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
-                  { key: "lifetime_spend", label: "Lifetime Spend", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>, csv: (r) => r.lifetime_spend },
+                  { key: "last_purchase_date", label: "Last Purchase Date", render: (r) => fmtDate(r.last_purchase_date) || "—" },
+                  { key: "days_since_last_purchase", label: "Days Since Last Purchase", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
+                  { key: "total_orders", label: "Total Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
+                  { key: "lifetime_spend", label: "Lifetime Spend KES", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>, csv: (r) => r.lifetime_spend },
                 ]}
                 rows={churned}
               />
