@@ -1,0 +1,150 @@
+{
+  "overview": {
+    "error": "Page.evaluate: TypeError: Cannot read properties of undefined (reading 'replace')\n    at eval (eval at evaluate (:290:30), <anonymous>:5:35)\n    at NodeList.forEach (<anonymous>)\n    at eval (eval at "
+  },
+  "locations": {
+    "kpi": {
+      "loc-kpi-count": "TOTAL LOCATIONS 31",
+      "loc-kpi-count-value": "31",
+      "loc-kpi-sales": "TOTAL SALES KES 72,871,052 vs Last Month\u25b2 +2.6% vs KES 71,041,751",
+      "loc-kpi-sales-value": "KES 72,871,052",
+      "loc-kpi-sales-prev": "vs KES 71,041,751",
+      "loc-kpi-orders": "TOTAL ORDERS 8,354 vs Last Month\u25b2 +6.8% vs 7,825",
+      "loc-kpi-orders-value": "8,354",
+      "loc-kpi-orders-prev": "vs 7,825",
+      "loc-kpi-units": "TOTAL UNITS 16,933 vs Last Month\u25b2 +4.4% vs 16,227",
+      "loc-kpi-units-value": "16,933",
+      "loc-kpi-units-prev": "vs 16,227",
+      "loc-kpi-abv": "ABV KES 8,723 Sales \u00f7 Orders vs Last Month\u25bc -3.9% vs KES 9,079",
+      "loc-kpi-abv-value": "KES 8,723",
+      "loc-kpi-abv-prev": "vs KES 9,079",
+      "loc-kpi-asp": "ASP KES 4,303 Sales \u00f7 Units vs Last Month\u25bc -1.7% vs KES 4,378",
+      "loc-kpi-asp-value": "KES 4,303",
+      "loc-kpi-asp-prev": "vs KES 4,378",
+      "loc-kpi-msi": "MSI 2.03 Units \u00f7 Orders vs Last Month\u25bc -2.3% vs 2.07",
+      "loc-kpi-msi-value": "2.03",
+      "loc-kpi-msi-prev": "vs 2.07"
+    },
+    "tbl": {
+      "t0": "1 | Vivo Acacia | \ud83c\uddfa\ud83c\uddec Uganda | KES 13,481",
+      "t1": "Vivo Moi Avenue | 4,977 | 528 | 10.6%"
+    },
+    "kes": [
+      "KES 72,871,052",
+      "KES 71,041,751",
+      "KES 8,723",
+      "KES 9,079",
+      "KES 4,303",
+      "KES 4,378",
+      "KES 5,979,174",
+      "KES 975,605",
+      "KES 5,465",
+      "KES 2,912",
+      "KES 5,763,810",
+      "KES 118,103",
+      "KES 9,671",
+      "KES 4,465",
+      "KES 4,050,625",
+      "KES 63,017",
+      "KES 9,784",
+      "KES 4,640",
+      "KES 3,995,450",
+      "KES 57,328"
+    ],
+    "warehouseTogglePresent": false
+  },
+  "footfall": {
+    "kpi": {},
+    "tbl": {
+      "t0": "Vivo Moi Avenue | 4,977 | \u25b2 11.8% | 528"
+    },
+    "kes": [
+      "KES 8,723",
+      "KES 7,567",
+      "KES 3,995,450",
+      "KES 9,671",
+      "KES 5,763,810",
+      "KES 9,496",
+      "KES 3,465,965",
+      "KES 8,608",
+      "KES 3,581,050",
+      "KES 3,585",
+      "KES 509,070",
+      "KES 11,008",
+      "KES 3,654,710",
+      "KES 9,967",
+      "KES 2,122,950",
+      "KES 9,529",
+      "KES 2,325,010",
+      "KES 7,792",
+      "KES 1,963,489",
+      "KES 8,263"
+    ],
+    "warehouseTogglePresent": false
+  },
+  "customers": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "products": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "inventory": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "reorder": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "ibt": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "ceo": {
+    "kpi": {},
+    "tbl": {},
+    "kes": [],
+    "warehouseTogglePresent": false
+  },
+  "exports": {
+    "kpi": {},
+    "tbl": {
+      "t0": "2026-04-24 | #9965 | Vivo Acacia | Uganda"
+    },
+    "kes": [
+      "KES 18,288,110",
+      "KES 1,534",
+      "KES 17,981,140",
+      "KES 6,322",
+      "KES 0",
+      "KES 0",
+      "KES 6,322",
+      "KES 6,322",
+      "KES 4,759",
+      "KES 0",
+      "KES 0",
+      "KES 4,759",
+      "KES 4,759",
+      "KES 7,121",
+      "KES 0",
+      "KES 0",
+      "KES 7,121",
+      "KES 7,121",
+      "KES 4,411",
+      "KES 0"
+    ],
+    "warehouseTogglePresent": false
+  }
+}

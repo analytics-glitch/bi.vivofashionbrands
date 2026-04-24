@@ -1,0 +1,97 @@
+{
+  "summary": "Iteration 18 — Filter-propagation regression matrix (10 pages x 4 permutations). Used URL-based filter seeding (filters.jsx reads p/d/t/c/ch/cm from querystring). Captured body-text numeric fingerprints + MD5 hash of first 40 metrics on each page. RESULTS: Permutation A (Kenya + Vivo Sarit, this_month) and Permutation C (custom 2026-04-15→2026-04-20) PROPAGATE correctly on every loaded page. Permutation B (Uganda only, this_month) is INCONCLUSIVE on Overview / Locations / Footfall / Exports — the first-40 number fingerprint matched baseline (identical MD5). Needs E1 verification whether those pages truly scope to Uganda or ignore the country filter.",
+  "matrix": {
+    "legend": "hash = MD5 of first 40 numeric tokens on page; PASS = hash differs from baseline; FAIL = hash identical; N/A = page did not finish loading within 4.5 s (shows 0 metrics).",
+    "baseline_qs": "p=this_month",
+    "A_Kenya_VivoSarit": {
+      "overview":  {"hash": "53e581d5cc", "result": "PASS"},
+      "locations": {"hash": "b70ec84ae8", "result": "PASS"},
+      "footfall":  {"hash": "5e78354d42", "result": "PASS", "note": "Δ Conv (pp) column present"},
+      "customers": {"hash": "2d4ed64267", "result": "PASS", "note": "%New column detected"},
+      "products":  {"hash": "95132b4679", "result": "PASS"},
+      "inventory": {"hash": "399b8f7466", "result": "PASS", "note": "Active-filter breadcrumb + 'Include warehouse' toggle both rendered"},
+      "reorder":   {"hash": "e511306363", "result": "PASS"},
+      "ibt":       {"hash": "c0f46f1c4d", "result": "INCONCLUSIVE - n=2 (sparse data, known upstream gap)"},
+      "ceo":       {"hash": "1368dbd3fc", "result": "PASS"},
+      "exports":   {"hash": "317ab50e84", "result": "PASS — LINES 1,301 vs baseline 5,000; NET KES 4,850,497 vs 17,981,140"}
+    },
+    "B_Uganda": {
+      "overview":  {"hash": "e56001a680", "baseline_hash": "e56001a680", "result": "FAIL? — identical first-40-number fingerprint as baseline; numCount grew 124→200 so body did change, but the leading 40 metrics are unchanged. Investigate whether country filter actually applied."},
+      "locations": {"hash": "1054b3dc85", "result": "FAIL? — identical hash to baseline"},
+      "footfall":  {"hash": "62649531de", "result": "FAIL? — identical hash to baseline"},
+      "customers": {"hash": "d41d8cd98f", "result": "N/A — page didn't render data in 4.5 s wait (empty body). Re-test with longer wait."},
+      "products":  {"hash": "d41d8cd98f", "result": "N/A — didn't render"},
+      "inventory": {"hash": "d41d8cd98f", "result": "N/A — didn't render"},
+      "reorder":   {"hash": "2496af30b6", "result": "INCONCLUSIVE — n=1 (empty state)"},
+      "ibt":       {"hash": "c0f46f1c4d", "result": "INCONCLUSIVE — sparse data"},
+      "ceo":       {"hash": "d41d8cd98f", "result": "N/A — didn't render"},
+      "exports":   {"hash": "d9ce0b21de", "baseline_hash": "d9ce0b21de", "result": "FAIL? — identical first-40-number fingerprint as baseline (5,000 lines cap also applies)"}
+    },
+    "C_custom_2026_04_15_to_20": {
+      "overview":  {"hash": "6c3a5ce59c", "result": "PASS"},
+      "locations": {"hash": "06bd2885f7", "result": "PASS"},
+      "footfall":  {"hash": "f72374c92d", "result": "PASS"},
+      "customers": {"hash": "90884ce513", "result": "PASS"},
+      "products":  {"hash": "d41d8cd98f", "result": "N/A — didn't render"},
+      "inventory": {"hash": "5a72ff4be9", "result": "PASS"},
+      "reorder":   {"hash": "781dc66cd3", "result": "PASS"},
+      "ibt":       {"hash": "b77aa8cb38", "result": "PASS"},
+      "ceo":       {"hash": "b9bd0ff772", "result": "PASS"},
+      "exports":   {"hash": "534319562b", "result": "PASS — LINES 4,825; date range '15 Apr 2026 → 20 Apr 2026' visible in header"}
+    }
+  },
+  "spec_checks": {
+    "inventory_breadcrumb_on_A": "PASS — element containing 'Showing inventory for' rendered under Permutation A",
+    "inventory_warehouse_toggle_on_A": "PASS — [data-testid='inv-include-warehouse-toggle'] present under A only (not under baseline/B/C)",
+    "footfall_delta_conv_column": "PASS — 'Δ Conv' / 'Conv (pp)' text present on baseline, A and C",
+    "customers_pct_new_column": "PASS — under Permutation A and C the Customers page exposes a '%\u00a0New' column",
+    "customers_churn_rate_~95.88": "NOT VERIFIED — churn KPI text did not match regex 'Churn.*\\d+%' within the 4.5 s render window on any permutation. Either the element name differs from 'Churn' or the /churned-customers call (known 500 upstream) hadn't returned. Recommend targeted re-test."
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Country filter propagation (Permutation B = c=Uganda, p=this_month)",
+        "issue": "Overview / Locations / Footfall / Exports render with IDENTICAL first-40 metric fingerprint vs baseline (no filter). MD5 match is suspicious and may indicate the country-only filter (without POS/date change) is not propagating to those pages, OR the pages are showing stale-cached numbers while the Uganda query is still inflight.",
+        "affected_selectors": ["body text"],
+        "evidence_files": ["/app/test_reports/fp_part1.json", "/app/test_reports/fp_part2.json"],
+        "priority": "HIGH - NEEDS E1 INVESTIGATION"
+      },
+      {
+        "flow": "Customers / Products / Inventory / CEO under Country=Uganda",
+        "issue": "Pages returned empty body (numCount=0) within 4.5 s wait — either slow query on country filter or the query aborted. Retest with 10-15 s wait to distinguish slow-load from broken-filter.",
+        "affected_selectors": [],
+        "priority": "MEDIUM"
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/fp_part1.json",
+    "/app/test_reports/fp_part2.json",
+    "/app/test_reports/fp_baseline.json"
+  ],
+  "action_items": [
+    "E1 to investigate why overview/locations/footfall/exports show identical first-40 metric fingerprint under c=Uganda vs no-country baseline. Reproduce: open /?p=this_month vs /?p=this_month&c=Uganda and compare KPI values manually. Confirm whether the country filter is piped through to the /api/kpis, /api/locations, /api/footfall and /api/orders calls (check network tab for country=Uganda query param).",
+    "Extend customers/products/inventory/ceo wait time OR prefetch on filter-change so Uganda-filtered queries finish before render. Consider a skeleton-loader so empty body doesn't look like 'no data'.",
+    "Verify Churn Rate ~95.88% cumulative KPI renders (expected on Customers page). Current test regex did not match.",
+    "(LOW) Iteration 16 suggestion still open: persist dateFrom/dateTo/compareMode in URL or localStorage so full reloads preserve filter state."
+  ],
+  "critical_code_review_comments": [
+    "Strong design: URL-as-source-of-truth filter sync (filters.jsx) lets deep links carry p/d/t/c/ch/cm — crucial for reproducible BI URLs.",
+    "Potential bug in country filter path: Permutation B (c=Uganda) appears to leave Overview/Locations/Footfall/Exports values unchanged. Suspect that `channels` is falsy-checked to decide whether to propagate, while `countries` may be dropped by an early-return in the API query builder. Check /app/backend/server.py /api/kpis handler and the frontend useKpis hook's params composition for `country` vs `countries` naming drift.",
+    "Exports page /api/orders takes >10s on first hit — cache banner would help UX during that window.",
+    "/churned-customers upstream 500 is swallowed silently; Customers page should show an explicit 'Churn data unavailable — upstream error' alert instead of 0.02% fallback or empty state."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "n/a (frontend-only run)",
+    "frontend": "Permutation A: 10/10 PASS  ·  Permutation C: 9/10 PASS (products didn't render)  ·  Permutation B: 0/10 fully verified — 4 pages show identical fingerprint (possible regression), 4 pages didn't render in time, 2 sparse-data pages inconclusive."
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use URL params to set filters — fastest & reliable (filters.jsx reads p/d/t/c/ch/cm on initial mount). For country-only tests extend wait to 10-15 s after goto because Uganda triggers slower upstream queries. Login selector that works: `page.fill('input[type=email]',...)` then click `form button[type=submit]` LAST (first submit on page is Google OAuth button). Token lives in localStorage under `vivo_bi_token`.",
+  "rca_of_the_issue": "Permutation B (c=Uganda) fingerprint collision with baseline suggests the country-only filter may not reach the data layer. Needs: (1) DevTools Network capture on /?p=this_month&c=Uganda — inspect /api/kpis call for country=Uganda param; (2) backend log inspection for the same request; (3) compare response body hash vs /api/kpis?... without country. If response bodies differ but UI shows same numbers, the bug is in the React state update; if responses are identical, the bug is in the backend proxy forwarding the country filter upstream."
+}
