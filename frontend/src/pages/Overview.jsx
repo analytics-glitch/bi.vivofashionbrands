@@ -300,12 +300,32 @@ const Overview = () => {
   }, [dateFrom, dateTo]);
 
   const top15 = useMemo(() => {
-    return [...sales]
-      .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
-      .map((r) => ({
-        ...r,
-        label: (r.channel || "").length > 24 ? (r.channel || "").slice(0, 23) + "…" : r.channel,
-      }));
+    const sorted = [...sales].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0));
+    // Detect a common prefix shared by every non-empty channel name (e.g.
+    // "Vivo ", "Safari ") so we can strip it on mobile for readability.
+    // Only stripped when ALL labels share it AND it's at least 4 chars.
+    const names = sorted.map((r) => r.channel || "").filter(Boolean);
+    let commonPrefix = "";
+    if (names.length >= 2) {
+      const first = names[0];
+      let i = 0;
+      while (i < first.length && names.every((n) => n[i] === first[i])) i++;
+      // Trim back to last space so we don't cut mid-word
+      const cand = first.slice(0, i);
+      const lastSp = cand.lastIndexOf(" ");
+      if (lastSp >= 4) commonPrefix = cand.slice(0, lastSp + 1);
+    }
+    return sorted.map((r) => {
+      const raw = r.channel || "";
+      // Full label (desktop) — just truncate overlong names to 24 chars.
+      const label = raw.length > 24 ? raw.slice(0, 23) + "…" : raw;
+      // Short label (mobile) — drop common prefix, truncate to 15 chars.
+      // 15 keeps ~all Vivo names on a single line at 10px at 120-px y-axis
+      // column; longer names fall back to ellipsis with tooltip showing full.
+      const shortRaw = commonPrefix && raw.startsWith(commonPrefix) ? raw.slice(commonPrefix.length) : raw;
+      const labelShort = shortRaw.length > 15 ? shortRaw.slice(0, 14) + "…" : shortRaw;
+      return { ...r, label, labelShort, labelFull: raw };
+    });
   }, [sales]);
 
   const topCountry = useMemo(() => {
@@ -582,17 +602,26 @@ const Overview = () => {
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
-                    <BarChart data={top15} layout="vertical" margin={{ left: isMobile ? 4 : 20, right: isMobile ? 64 : 110, top: 4 }}>
+                    <BarChart data={top15} layout="vertical" margin={{ left: isMobile ? 2 : 20, right: isMobile ? 38 : 110, top: 4 }}>
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 11 }} />
-                      <YAxis type="category" dataKey="label" width={isMobile ? 96 : 150} tick={{ fontSize: isMobile ? 9 : 11 }} />
+                      <YAxis
+                        type="category"
+                        dataKey={isMobile ? "labelShort" : "label"}
+                        width={isMobile ? 130 : 150}
+                        interval={0}
+                        tick={{ fontSize: isMobile ? 10 : 11 }}
+                      />
                       <Tooltip
                         allowEscapeViewBox={{ x: false, y: true }}
                         wrapperStyle={{ outline: "none", zIndex: 20 }}
                         content={
-                          <ChartTooltip formatters={{
-                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
-                          }} />
+                          <ChartTooltip
+                            labelKey="labelFull"
+                            formatters={{
+                              total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
+                            }}
+                          />
                         }
                       />
                       <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">

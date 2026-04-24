@@ -705,6 +705,15 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Bug fix: mobile "Top locations by Total Sales" horizontal bar
+  chart.** Location names were wrapping onto 2–3 lines and the right
+  side of the chart had ~30% wasted space. Fix: rebalanced label/bar
+  ratio on mobile (y-axis column 96→130 px, right margin 64→38 px),
+  added auto-abbreviation of common prefixes (strips shared "Vivo "
+  when every label starts with it), 15-char truncation with ellipsis
+  for genuinely long names. Y-axis now uses `labelShort`; tooltip
+  continues to show `labelFull` via new `labelKey` prop added to
+  `ChartTooltip`.
 - **Bug fix (P0): Inventory page rendering zero everywhere.** Root
   cause: `fetch_all_inventory()` compared the country filter from the
   frontend (lowercase `"kenya"`) against upstream `/locations` response

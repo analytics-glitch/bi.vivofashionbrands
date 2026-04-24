@@ -17,17 +17,23 @@ export const useIsMobile = () => {
 
 /** Custom Recharts tooltip that shows all payload values formatted.
  * Formatter lookup prefers dataKey (matches chart code conventions) and
- * falls back to name. Tooltip auto-constrains within viewport on mobile. */
-export const ChartTooltip = ({ active, payload, label, formatters = {}, labelFormat }) => {
+ * falls back to name. Tooltip auto-constrains within viewport on mobile.
+ * `labelKey` overrides the header — pulls from payload[0].payload[labelKey]
+ * (useful when the Y-axis uses a shortened label but we want the full
+ * name in the tooltip). */
+export const ChartTooltip = ({ active, payload, label, formatters = {}, labelFormat, labelKey }) => {
   if (!active || !payload || !payload.length) return null;
+  const displayLabel = labelKey && payload[0]?.payload?.[labelKey] != null
+    ? payload[0].payload[labelKey]
+    : label;
   return (
     <div
       className="rounded-lg border border-border bg-white px-3 py-2 shadow-lg text-[11.5px] max-w-[80vw] sm:max-w-none pointer-events-none"
       role="tooltip"
     >
-      {label != null && (
+      {displayLabel != null && (
         <div className="font-semibold text-foreground mb-1 truncate">
-          {labelFormat ? labelFormat(label) : label}
+          {labelFormat ? labelFormat(displayLabel) : displayLabel}
         </div>
       )}
       {payload.map((p, i) => {
