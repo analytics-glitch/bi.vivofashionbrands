@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 _client: Optional[httpx.AsyncClient] = None
 
+# In-memory stale cache for /kpis — used to avoid blank dashboards when the
+# upstream BI API is mid-refresh / cold-starting. Key: (date_from, date_to,
+# country, channel). Value: (timestamp, data_with_stale_flag=False).
+_kpi_stale_cache: Dict[tuple, tuple] = {}
+
 
 def _client_ip(request: Request) -> Optional[str]:
     """Best-effort client IP (handles X-Forwarded-For from the ingress)."""
@@ -55,18 +60,34 @@ async def get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-    """Fetch with 2 retries on transient network / 5xx errors."""
+async def fetch(
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    timeout_sec: Optional[float] = None,
+    max_attempts: int = 3,
+) -> Any:
+    """Fetch with retries on transient network / 5xx errors.
+
+    `timeout_sec` overrides the default 45 s per-call timeout (used by the
+    KPI stale-cache path to fail fast and fall back to the last good value).
+    `max_attempts` caps the retry budget (default 3).
+    """
     client = await get_client()
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
     last_err: Optional[Exception] = None
-    for attempt in range(3):
+    req_timeout = (
+        httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec))
+        if timeout_sec is not None
+        else None
+    )
+    for attempt in range(max_attempts):
         try:
-            resp = await client.get(path, params=clean)
+            resp = await client.get(path, params=clean, timeout=req_timeout) if req_timeout else await client.get(path, params=clean)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
-            if 500 <= e.response.status_code < 600 and attempt < 2:
+            if 500 <= e.response.status_code < 600 and attempt < max_attempts - 1:
                 await asyncio.sleep(0.4 * (attempt + 1))
                 last_err = e
                 continue
@@ -77,13 +98,13 @@ async def fetch(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
             )
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
             last_err = e
-            if attempt < 2:
+            if attempt < max_attempts - 1:
                 await asyncio.sleep(0.4 * (attempt + 1))
                 continue
             logger.error(f"Upstream {path} timeout/connect: {type(e).__name__}: {e}")
             raise HTTPException(
                 status_code=504,
-                detail=f"Upstream {path} {type(e).__name__}: timed out after 3 attempts",
+                detail=f"Upstream {path} {type(e).__name__}: timed out after {max_attempts} attempts",
             )
         except httpx.HTTPError as e:
             logger.error(f"Upstream {path} connection error: {type(e).__name__}: {e}")
@@ -180,14 +201,53 @@ async def get_kpis(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
-    """Supports comma-separated country & channel. Aggregates if more than one combo."""
+    """Supports comma-separated country & channel. Aggregates if more than one combo.
+
+    Hedged path: tries a single upstream attempt with a 30 s per-call timeout
+    (2 × 30 s = 60 s max budget, well inside the 120 s frontend timeout).
+    On upstream error/timeout, falls back to a short-lived stale cache so the
+    dashboard never goes blank during Vivo BI refresh windows / cold starts.
+    """
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     chs = _split_csv(channel)
-    if len(cs) <= 1 and len(chs) <= 1:
-        return await fetch("/kpis", {**base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None})
-    results = await multi_fetch("/kpis", base, cs, chs)
-    return agg_kpis(results)
+    cache_key = (date_from or "", date_to or "", country or "", channel or "")
+    single = len(cs) <= 1 and len(chs) <= 1
+
+    try:
+        if single:
+            data = await fetch(
+                "/kpis",
+                {**base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None},
+                timeout_sec=30.0,
+                max_attempts=2,
+            )
+        else:
+            # Multi-country/channel fan-out — keep default timeout (more calls,
+            # each should still be fast individually) but cap attempts at 2.
+            tasks = []
+            for c in (cs or [None]):
+                for ch in (chs or [None]):
+                    params = {**base}
+                    if c:
+                        params["country"] = c
+                    if ch:
+                        params["channel"] = ch
+                    tasks.append(fetch("/kpis", params, timeout_sec=30.0, max_attempts=2))
+            results = await asyncio.gather(*tasks)
+            data = agg_kpis(results)
+        # Cache the good result. 90 s TTL — long enough to cover a Cloud Run
+        # cold start, short enough that numbers are near-real-time.
+        data = {**data, "stale": False}
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < 180):  # 3-min window
+            stale_data = {**cached[1], "stale": True, "stale_age_sec": int(time.time() - cached[0])}
+            logger.warning(f"/kpis upstream {e.status_code} — serving stale cache (age={stale_data['stale_age_sec']}s)")
+            return stale_data
+        raise
 
 
 @api_router.get("/sales-summary")

@@ -482,6 +482,14 @@ const Overview = () => {
           ⚠️ {degraded}
         </div>
       )}
+      {kpis?.stale && (
+        <div
+          className="rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900"
+          data-testid="stale-banner"
+        >
+          ⚠️ Upstream KPI service is slow right now — showing last known values from {Math.round((kpis.stale_age_sec || 0) / 60) || "&lt;1"} min ago. Auto-refreshes when upstream recovers.
+        </div>
+      )}
 
       {!loading && !kpisLoading && !error && kpis && (
         <>
