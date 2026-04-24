@@ -1354,3 +1354,41 @@ Iteration 26: **18/18 backend pytest pass**, full E2E frontend verification. Zer
 - Changed: `/app/frontend/src/App.js` (new `/pricing` route)
 - Changed: `/app/frontend/src/components/Sidebar.jsx` (new Pricing tab)
 - Changed: `/app/frontend/src/pages/Products.jsx`, `ReOrder.jsx`, `IBT.jsx`, `Customers.jsx`
+
+## v28 — Stock Aging + Mobile Cards + Notifications Bell (Feb 2026)
+
+### (a) Stock aging + Phantom stock — Inventory
+Audit #13 ("stock by weeks-on-hand") shipped. Frontend classifies every merchandise style into one of five buckets based on weeks-of-cover:
+- **Fresh** (<4w), **Healthy** (4-8w), **Aging** (8-16w), **Stale** (>16w)
+- **Phantom** — stock ≥ 30 AND zero sales in the last 4 weeks (dead money)
+
+New UI on Inventory:
+- `Stock Aging · buckets by weeks-on-hand` summary card with 5 coloured tiles (count + percentage).
+- Conditional `👻 Phantom Stock` anomaly card — lists phantom styles with `RecommendationActionPill` (reuses `recommendation_state` collection, `item_type="dq"`, `item_key="phantom::<style>"`).
+- Weeks-of-Cover table gains an **Aging** pill column.
+
+### (b) Mobile card views — Audit #14
+Added `mobileCards` opt-in prop + `mobilePrimary` / `mobileHidden` column flags to `SortableTable`. Below 768px (Tailwind `md`), the table auto-swaps for a stacked card list with a compact "Sort:" select. Enabled on priority tables: Products SOR, ReOrder, IBT, Pricing, Inventory WoC, Phantom Stock. Desktop behaviour unchanged.
+
+### (c) Notifications bell — Audit #15
+New router `/app/backend/notifications.py` with 4 event types synthesised from existing upstream data:
+- **new_record** 🏆 — from leaderboard Store-of-the-Week
+- **stockout** ⚠️ — styles with WoH < 1 week (from `/sor`)
+- **vip_return** 💎 — top-20 customer returning after 30+ days absent
+- **anomaly** 🚨 — conversion ≥50% or return-rate ≥30% (from `/footfall` + `/sales-summary`)
+
+Endpoints: `POST /api/notifications/refresh` (idempotent — deterministic event_ids), `GET /api/notifications`, `GET /api/notifications/unread-count`, `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`. Events auto-prune after 14 days.
+
+Frontend: `<NotificationBell />` mounted in top-nav beside the user menu. Bell shows red unread-count badge; dropdown (w-360) shows emoji-avatar event list with per-type colour accents, mark-all-read, and click-through to the relevant page. Unread count polls every 2 min; panel `/refresh`es on open.
+
+### Testing
+Iteration 27: **14/14 pytest backend tests pass**, full frontend E2E green on desktop + mobile viewports. `/app/test_reports/iteration_27.json`.
+
+### Files added / changed
+- Added: `/app/backend/notifications.py`
+- Added: `/app/frontend/src/components/NotificationBell.jsx`
+- Changed: `/app/backend/server.py` (mount notifications router)
+- Changed: `/app/frontend/src/components/SortableTable.jsx` (mobileCards prop + `MobileCardList`)
+- Changed: `/app/frontend/src/components/Sidebar.jsx` (mount NotificationBell)
+- Changed: `/app/frontend/src/pages/Inventory.jsx` (aging summary, phantom card, aging column)
+- Changed: `/app/frontend/src/pages/{Products,ReOrder,IBT,Pricing}.jsx` (mobileCards enabled)

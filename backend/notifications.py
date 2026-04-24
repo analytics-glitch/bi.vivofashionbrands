@@ -35,6 +35,7 @@ read-state is personal.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +43,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from auth import db, get_current_user, User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -273,6 +276,8 @@ async def refresh_notifications(_: User = Depends(get_current_user)):
     for s in synths:
         if isinstance(s, list):
             events.extend(s)
+        elif isinstance(s, Exception):
+            logger.warning("notifications synthesiser failed: %s: %s", type(s).__name__, s)
     now = datetime.now(timezone.utc)
     upserted = 0
     for e in events:
