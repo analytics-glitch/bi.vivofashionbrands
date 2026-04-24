@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 23 frontend-only verification of the Data-Quality layer generalisation (useOutliers hook + DataQualityPill/DataQualityBanner reusable components). All acceptance criteria green. Footfall page unchanged post-refactor (outlier-banner + amber Vivo Junction bar + outlier-pill-Vivo Junction all render; Oasis Mall & Zoya Sarit correctly NOT flagged). Locations page NEW adoption works: returns-dq-banner renders with exact copy, return-outlier-Online - Shop Zetu pill present with correct tooltip, mid-range stores (Vivo Sarit, Vivo Moi Avenue, Oasis Mall) correctly NOT flagged. Overview regression green; KES currency everywhere; no _id leakage; no USD leak.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_features": [
+    "Footfall outlier-banner (This Month): text = '⚠ 1 store flagged · conversion outside ±2σ (group avg 14.1% ± 7.8pp) — verify the footfall counter before acting on the number.' ✓",
+    "Footfall data-testid='outlier-pill-Vivo Junction' PRESENT. outlier-pill-Oasis Mall and outlier-pill-Zoya Sarit correctly ABSENT ✓",
+    "Footfall amber (#f59e0b) bar count = 1 (only Vivo Junction) — matches spec ✓",
+    "Locations data-testid='returns-dq-banner' PRESENT: '⚠ 1 store flagged · return rate outside ±2σ (group avg 1.8% ± 2.8pp) — verify the refund data before trusting the delta.' — exact banner copy from spec ✓",
+    "Locations data-testid='return-outlier-Online - Shop Zetu' PRESENT with tooltip 'Above 2σ of group avg (1.8%) — verify the return rate source.' and chip text '⚠ verify' ✓",
+    "Locations negative case: Vivo Sarit, Vivo Moi Avenue, Oasis Mall NOT flagged (return rate within ±2σ and < 30% hard cap) ✓",
+    "Locations KPI action pills (7/7): loc-kpi-{count,sales,orders,units,abv,asp,msi}-action all render ✓",
+    "Overview KPI action pills (4/4 sampled): kpi-{total-sales,orders,footfall,conversion}-action all render ✓",
+    "Currency discipline: KES visible across all pages, no USD/$ leak, no _id leak in body text ✓",
+    "CEO Report loads cleanly; no obvious 'KES 0' Sales/Visitor issue ✓",
+    "Reusable hook contract verified in source: useOutliers returns {enriched, stats:{mean,sd,hiCut,loCut,sampleSize}, count}. DataQualityPill returns null when flag is falsy (verified — non-outlier store cards have no return-outlier-<channel> testid rendered). DataQualityBanner auto-hides when count<=0 (would be true on pages where filter excludes all rows)."
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "useOutliers hook (/app/frontend/src/lib/useOutliers.js, 110 lines) is clean, well-documented, pure, and correctly memoised. Guards zero-sd, tiny-sample (<minSample), and non-finite values. Hard caps correctly override statistical bands. Good extraction.",
+    "DataQualityPill + DataQualityBanner (/app/frontend/src/components/DataQualityPill.jsx, 75 lines) — minimal, composable, `return null when !flag/!count` idiom is ideal for inline use. ARIA role='status' + aria-label = accessible.",
+    "Recurring Recharts console warning: 'The width(-1) and height(-1) of chart should be greater than 0 … add a minWidth(0) or minHeight(undefined)'. Fires on Overview and Locations page loads multiple times. Cosmetic (charts still render), likely a transient ResponsiveContainer mount before layout settles. Consider setting minWidth={0} minHeight={200} on any <ResponsiveContainer> in Overview/Locations chart wrappers to silence the warning and prevent potential 0-dimension first paint flicker.",
+    "Locations.jsx return_rate derivation at line 117: `sales > 0 ? (returns / sales) * 100 : 0`. Note: this treats `returns` as a KES amount (refund value ÷ revenue). Semantics look right given the API (returns is in KES). Confirm the returns field on the backend is refund-value not refund-count — if it's count, the ratio is wrong. (Quick sanity on-page: Shop Zetu returns KES 980,555 / sales KES 6,087,994 = 16.1% → flagged. Math checks out.)",
+    "Footfall.jsx is still 616 lines (unchanged from iter 22). With the hook extraction now landing, this is a good moment to split the conversion chart + legend into a <FootfallConversionChart/> sub-component (~80-100 lines out) to get well below the 700-line guideline.",
+    "The `sampleIds` Set trick in useOutliers (line 74) uses object-reference membership. This works because `sample = all.filter(filter)` keeps the same object refs, but it's a subtle invariant — a future refactor that maps/clones rows before filtering would silently break it. Consider a comment or switch to an index-based sample set for robustness."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only iteration)", "frontend": "100% — all 4 requested acceptance criteria verified; regression sweep green"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md). Automated tests: POST /api/auth/login → inject token into localStorage keys [token, auth_token, access_token, vivo_token] before navigating.",
+  "seed_data_creation": "None. Read-only verification on This Month preset.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 23 verified the DQ generalisation (useOutliers + DataQualityPill/Banner) works on both Footfall (existing) and Locations (new adoption). Current This Month data → Footfall flags exactly 1 store (Vivo Junction, CR 53.84%) and Locations flags exactly 1 store (Online - Shop Zetu, return rate ~16.1%). If the dataset changes, update expectations. Shop Zetu's return-rate outlier is a WARN-severity 2σ flag (not the 30% hard cap), tooltip starts with 'Above 2σ of group avg'. Recharts 'width(-1) height(-1)' console warning is pre-existing and cosmetic — not a new regression.",
+  "rca of the issue": "No bugs found. All 4 acceptance criteria (Footfall regression, Locations new adoption, no-flag negative case, reusable component contract) and the full regression sweep (Overview action pills, KES currency, no _id leak, CEO Report loads) are green. Extraction from Footfall.jsx into /app/frontend/src/lib/useOutliers.js + /app/frontend/src/components/DataQualityPill.jsx is a clean refactor that preserves all previous behaviour and correctly generalises to the Locations return-rate case."
+}

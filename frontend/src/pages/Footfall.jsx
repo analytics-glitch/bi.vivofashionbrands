@@ -14,6 +14,8 @@ import {
 } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { useOutliers } from "@/lib/useOutliers";
+import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import {
   Footprints,
   Target,
@@ -231,61 +233,25 @@ const Footfall = () => {
     [scopedEnriched]
   );
 
-  // Data-quality outlier detection (audit #9). Physical stores whose
-  // conversion rate falls outside ±2σ of the group mean are almost
-  // certainly a broken/miscalibrated footfall counter (the classic
-  // example: Vivo Junction showing 54% CR when the group runs ~13%).
-  // We only run this over physical stores with a minimum sample so a
-  // brand-new store with 1 day of traffic doesn't get branded an outlier.
-  const outlierStats = useMemo(() => {
-    const physicals = scopedEnriched.filter(
-      (r) => r.physical !== false && (r.total_footfall || 0) >= 200
-    );
-    if (physicals.length < 4) return { mean: 0, sd: 0, hiCut: Infinity, loCut: -Infinity };
-    const vals = physicals.map((r) => r.conversion_rate || 0);
-    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-    const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
-    const sd = Math.sqrt(variance);
-    return {
-      mean,
-      sd,
-      // Guard against zero-sd (all stores identical) so nothing flags.
-      hiCut: sd > 0 ? mean + 2 * sd : Infinity,
-      loCut: sd > 0 ? mean - 2 * sd : -Infinity,
-    };
-  }, [scopedEnriched]);
-
-  // Tag each row with an outlier flag so the chart + table can show a
-  // "⚠ verify counter" pill consistently. Absolute-hard caps (>50 or <1)
-  // are kept as extra belts-and-braces signals.
-  const enrichedWithFlag = useMemo(() => {
-    return scopedEnriched.map((r) => {
-      const cr = r.conversion_rate || 0;
-      const ff = r.total_footfall || 0;
-      let flag = null;
-      if (r.physical === false || ff < 200) {
-        // Don't flag online or tiny-sample stores.
-        flag = null;
-      } else if (cr >= 50) {
-        flag = { reason: "Unusually high CR (≥50%) — likely counter miscalibration", kind: "hi" };
-      } else if (cr > 0 && cr < 1) {
-        flag = { reason: "Unusually low CR (<1%) — counter may be over-counting traffic", kind: "lo" };
-      } else if (cr > outlierStats.hiCut) {
-        flag = { reason: `Above 2σ of group avg (${outlierStats.mean.toFixed(1)}%) — verify counter`, kind: "hi" };
-      } else if (cr < outlierStats.loCut && cr > 0) {
-        flag = { reason: `Below 2σ of group avg (${outlierStats.mean.toFixed(1)}%) — verify counter`, kind: "lo" };
-      }
-      return { ...r, outlier: flag };
-    });
-  }, [scopedEnriched, outlierStats]);
+  // Data-quality outlier detection (audit #9) — via the reusable
+  // `useOutliers` hook so every table on the platform can adopt the
+  // same math with one line. Here: conversion rate on physical stores
+  // with ≥ 200 footfall, 2σ + structural caps.
+  const { enriched: enrichedWithFlag, stats: outlierStats, count: outlierCount } = useOutliers(
+    scopedEnriched,
+    {
+      valueKey: "conversion_rate",
+      filter: (r) => r.physical !== false && (r.total_footfall || 0) >= 200,
+      hardHi: { at: 50, reason: "Unusually high CR (≥50%) — likely counter miscalibration" },
+      hardLo: { at: 1, reason: "Unusually low CR (<1%) — counter may be over-counting traffic" },
+      label: "CR",
+      valueFmt: (v) => `${v.toFixed(1)}%`,
+      sigmas: 2,
+    }
+  );
 
   const byConversion = useMemo(
     () => [...enrichedWithFlag].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0)),
-    [enrichedWithFlag]
-  );
-
-  const outlierCount = useMemo(
-    () => enrichedWithFlag.filter((r) => r.outlier).length,
     [enrichedWithFlag]
   );
 
@@ -405,19 +371,13 @@ const Footfall = () => {
                 </span>
               }
             />
-            {outlierCount > 0 && (
-              <div
-                className="mt-1 mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-300 bg-amber-50/80 px-3 py-1.5 text-[11.5px] text-amber-900"
-                data-testid="outlier-banner"
-                title="These stores' conversion rates fall outside ±2σ of the group mean OR are structurally implausible (>50% or <1%). Investigate the footfall counter before using these numbers."
-              >
-                <span className="font-bold">⚠ {outlierCount} {outlierCount === 1 ? "store" : "stores"} flagged</span>
-                <span className="text-amber-800/90">
-                  conversion outside ±2σ (group avg {outlierStats.mean.toFixed(1)}% ± {outlierStats.sd.toFixed(1)}pp)
-                  — verify the footfall counter before acting on the number.
-                </span>
-              </div>
-            )}
+            <DataQualityBanner
+              count={outlierCount}
+              noun="stores"
+              statsLine={`conversion outside ±2σ (group avg ${outlierStats.mean.toFixed(1)}% ± ${outlierStats.sd.toFixed(1)}pp)`}
+              action="verify the footfall counter before acting on the number."
+              testId="outlier-banner"
+            />
             {byConversion.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: Math.max(320, 24 + byConversion.length * 20) }}>
                 <ResponsiveContainer>
@@ -489,15 +449,11 @@ const Footfall = () => {
                         <Storefront size={14} className="text-muted" />
                         {r.location}
                       </span>
-                      {r.outlier && (
-                        <span
-                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 text-[9.5px] font-bold"
-                          title={r.outlier.reason}
-                          data-testid={`outlier-pill-${r.location}`}
-                        >
-                          ⚠ verify counter
-                        </span>
-                      )}
+                      <DataQualityPill
+                        flag={r.outlier}
+                        label="verify counter"
+                        testId={r.outlier ? `outlier-pill-${r.location}` : undefined}
+                      />
                     </div>
                   ),
                   csv: (r) => r.outlier ? `${r.location} [⚠ ${r.outlier.reason}]` : r.location,

@@ -7,6 +7,8 @@ import { InlineDelta } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
+import { useOutliers } from "@/lib/useOutliers";
+import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -109,6 +111,10 @@ const Locations = () => {
         abv: basket,
         asp,
         msi,
+        // Return rate = returns ÷ total_sales (fraction of sales flipped
+        // back). Exposed here so the Data-Quality layer can flag stores
+        // whose return behaviour sits outside the group norm.
+        return_rate: sales > 0 ? (returns / sales) * 100 : 0,
         // Legacy headline delta (kept for SortableTable row)
         delta: prev ? pctDelta(sales, pSales) : null,
         // Per-metric deltas (null when no prev data / prev is 0)
@@ -165,14 +171,31 @@ const Locations = () => {
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
 
+  // Data-quality outlier flagging on return-rate. Physical + online stores
+  // whose return rate falls ≥ 2σ above the group mean OR ≥ 30% (structural
+  // cap) get a "⚠ verify" chip on their card. Catches the
+  // "Vivo Sarit RETURNS ▲ +135.6%" class of anomaly the audit flagged.
+  const { enriched: enrichedWithDq, stats: returnStats, count: returnOutlierCount } = useOutliers(
+    enriched,
+    {
+      valueKey: "return_rate",
+      filter: (r) => (r.total_sales || 0) >= 100000,  // min 100k KES sample
+      hardHi: { at: 30, reason: "Return rate ≥ 30% — suspicious, investigate before using." },
+      label: "return rate",
+      valueFmt: (v) => `${v.toFixed(1)}%`,
+      sigmas: 2,
+      outputKey: "return_outlier",
+    }
+  );
+
   const sorted = useMemo(() => {
-    return [...enriched].sort((a, b) => {
+    return [...enrichedWithDq].sort((a, b) => {
       if (sortKey === "avg_basket" || sortKey === "abv") return (b.abv || 0) - (a.abv || 0);
       if (sortKey === "asp") return (b.asp || 0) - (a.asp || 0);
       if (sortKey === "msi") return (b.msi || 0) - (a.msi || 0);
       return (b[sortKey] || 0) - (a[sortKey] || 0);
     });
-  }, [enriched, sortKey]);
+  }, [enrichedWithDq, sortKey]);
 
   // Shared leaderboard badges (also used on Overview). Extracted into
   // `/app/frontend/src/components/LocationLeaderboard.jsx` so both pages
@@ -300,6 +323,17 @@ const Locations = () => {
                 className="mb-3"
               />
 
+              {/* Return-rate data-quality banner — reuses the platform-wide
+                  outlier kernel to flag stores whose returns sit outside the
+                  group norm (catches the "RETURNS ▲ +135%" anomaly class). */}
+              <DataQualityBanner
+                count={returnOutlierCount}
+                noun="stores"
+                statsLine={`return rate outside ±2σ (group avg ${returnStats.mean.toFixed(1)}% ± ${returnStats.sd.toFixed(1)}pp)`}
+                action="verify the refund data before trusting the delta."
+                testId="returns-dq-banner"
+              />
+
               <div
                 className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3"
                 data-testid="locations-grid"
@@ -376,7 +410,10 @@ const Locations = () => {
                           )}
                         </div>
                         <div>
-                          <div className="eyebrow">Returns</div>
+                          <div className="eyebrow flex items-center gap-1">
+                            <span>Returns</span>
+                            <DataQualityPill flag={l.return_outlier} label="verify" testId={l.return_outlier ? `return-outlier-${l.channel}` : undefined} />
+                          </div>
                           <div
                             className={`font-semibold text-[13px] num mt-0.5 ${
                               (l.returns || 0) > 0 ? "text-danger" : ""
