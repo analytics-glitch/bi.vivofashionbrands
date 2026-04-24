@@ -1048,3 +1048,92 @@ API, (c) figure from a different source system. Pending user confirmation.
   render correctly.  The session-scoped dedupe key was observed in
   `sessionStorage` after first render.
 
+
+## Session Update — 2026-04-24 (UX Audit Fixes — P0 + Phase W/M/S)
+
+### 🔥 Three P0 bugs fixed (trust restored)
+
+1. **Customers Avg-Spend scale bug (−880% fantasy delta)**
+   - Upstream `/customers` was returning `avg_customer_spend=116,887`
+     for Apr while Mar was `11,939` (10× scale drift).
+   - Fix: in `server.py::get_customers`, after upstream response, we now
+     recompute `avg_customer_spend = /kpis.total_sales ÷ total_customers`
+     and set a `avg_customer_spend_source` flag (`recomputed_local` or
+     `upstream_unverified`). Apr now reads KES 11,162.
+
+2. **CEO Report "Sales / Visitor KES 0"**
+   - Upstream `/footfall` does not expose sales-per-visitor. The CEO
+     Report was reading a non-existent `sales_per_visitor` field.
+   - Fix: `CEOReport.jsx` section 8 now joins `sales` by channel with
+     `footfall.location` and computes locally: `spv = locSales / ff`.
+     Falls back to "—" for stores with 0 footfall.
+
+3. **Churn Rate 0.00% tile on short windows**
+   - Churn is defined relative to a ≥ 90-day cutoff. For any window
+     shorter than that, the metric is structurally forced to 0.
+   - Fix: `Customers.jsx` detects `windowDays < churnDays` and replaces
+     the two churn tiles with a single `churn-not-applicable` card that
+     honestly explains "Churn needs ≥ 90-day window" and nudges the user
+     to the Reactivation Opportunity section.
+
+### 🎯 Metric-Action Contract (audit #3)
+
+`KPICard.jsx` now accepts an optional `action` prop:
+```
+action={{ label, to?: string, onClick?: fn, icon?: Icon, testId?: string }}
+```
+Renders a slim pill at the bottom of the card. `to` uses react-router.
+Back-compat with every existing call-site (omission = no pill).
+
+Wired on Overview's 8 headline tiles (Total Sales, Net Sales, Orders,
+Units, Return Rate, Returns, Footfall, Conversion) + Customers page's
+Avg Spend / New / Returning. Pattern is now the template for the rest
+of the platform.
+
+### 🔁 Re-Order + IBT close-the-loop (audit #5)
+
+Per-user persisted recommendation state. Backend:
+- New collection `recommendation_state` (uniq index on user_id × item_type × item_key)
+- New `/api/recommendations` CRUD (GET/POST/DELETE)
+- `status ∈ {pending, po_raised, dismissed, done}` — pending is
+  absence-of-record, keeping the collection lean.
+
+Frontend:
+- `useRecommendationState(itemType)` hook with optimistic UI
+- `RecommendationActionPill` — per-row status chip + change dropdown
+  (Mark PO raised / Mark done / Dismiss… with optional reason / Reset)
+- Re-Order + IBT pages hide resolved rows by default and surface a
+  "Show resolved (N)" checkbox + live-updating KPI ("Open re-orders:
+  N · M already actioned"). State persists across sessions.
+
+### 🕰️ "Since you were last here" belt on Overview (audit #4)
+
+Backend:
+- `/api/user/last-visit` — reads `activity_logs` to classify whether
+  the current user is a fresh session (< 10 min) or a warm return
+  (≥ 2h and ≤ 30d). Returns `{last_visit_at, hours_since, is_warm_return,
+  first_ever}`.
+
+Frontend:
+- `WhatChangedBelt.jsx` — renders below DailyBriefing only for warm
+  returns where the last visit date < today. Fetches KPIs for
+  `dateFrom..lastVisitDate` and computes 2–3 narrative deltas
+  (sales, orders, return-rate). Each bullet has an inline CTA that
+  deep-links to the relevant page. Fully decorative — any fetch
+  failure silently hides the belt.
+
+### Testing
+- Iteration 21 report: `/app/test_reports/iteration_21.json` —
+  **15/15 backend tests pass, 0 findings, no regressions**. All three
+  P0 bugs verified, Metric-Action Contract coverage verified, Re-Order
+  close-the-loop state persistence verified across reload, WhatChangedBelt
+  endpoint auth + payload verified.
+
+### Files added this session
+- `/app/backend/recommendations.py`
+- `/app/backend/user_activity.py`
+- `/app/frontend/src/lib/useRecommendationState.js`
+- `/app/frontend/src/components/RecommendationActionPill.jsx`
+- `/app/frontend/src/components/WhatChangedBelt.jsx`
+- `/app/memory/UX_AUDIT.md` — the full platform audit document
+
