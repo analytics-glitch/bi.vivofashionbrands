@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtPct, buildParams, normaliseSalesRows } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
@@ -64,7 +64,9 @@ const DataQuality = () => {
       .then(([ffRes, sRes]) => {
         if (cancel) return;
         setFootfall(Array.isArray(ffRes.data) ? ffRes.data : []);
-        setSales(Array.isArray(sRes.data) ? sRes.data : []);
+        // Normalise sales rows so display (e.g. "KES X sales") shows net,
+        // while gross_sales stays around for the return-rate denominator.
+        setSales(normaliseSalesRows(Array.isArray(sRes.data) ? sRes.data : []));
         touchLastUpdated();
       })
       .catch((e) => { if (!cancel) setError(e?.message || "Failed to load anomalies"); })
@@ -94,18 +96,24 @@ const DataQuality = () => {
   // --- Anomaly family 2: Return-rate outliers (from sales-summary) ---
   const salesEnriched = useMemo(() => {
     return (sales || []).map((r) => {
-      const ts = r.total_sales || 0;
+      // IMPORTANT: return rate must use GROSS sales as the denominator
+      // (fraction of gross revenue that was returned). After
+      // normaliseSalesRows, r.total_sales is net; the original gross is
+      // preserved under r.gross_sales.
+      const gross = r.gross_sales || r.total_sales || 0;
       const ret = r.returns || 0;
       return {
         ...r,
-        return_rate: ts > 0 ? (ret / ts) * 100 : 0,
+        return_rate: gross > 0 ? (ret / gross) * 100 : 0,
       };
     });
   }, [sales]);
 
   const { enriched: salesFlags, stats: rrStats } = useOutliers(salesEnriched, {
     valueKey: "return_rate",
-    filter: (r) => (r.total_sales || 0) >= 100000,
+    // Keep the 100k floor meaningful — filter on gross so the threshold
+    // doesn't shrink post-returns for stores with high return rates.
+    filter: (r) => (r.gross_sales || r.total_sales || 0) >= 100000,
     hardHi: { at: 30, reason: "Return rate ≥ 30% — investigate before using this store's numbers." },
     label: "return rate",
     valueFmt: (v) => `${v.toFixed(1)}%`,

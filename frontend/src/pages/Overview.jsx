@@ -133,9 +133,19 @@ const Overview = () => {
     ])
       .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs, sp]) => {
         if (cancelled) return;
+        // Normalise sales-summary rows: upstream `total_sales` on a
+        // per-channel row INCLUDES returns (it's gross minus discount).
+        // Swap in `net_sales` so every downstream chart/table shows
+        // the true net figure, while preserving the gross number as
+        // `gross_sales` for any return-rate math that needs it.
+        const normSales = (rows) => (rows || []).map((r) => ({
+          ...r,
+          gross_sales: r.total_sales || 0,
+          total_sales: r.net_sales != null ? r.net_sales : (r.total_sales || 0),
+        }));
         setCountrySummary(cs.ok ? cs.data || [] : []);
-        setSales(s.ok ? s.data || [] : []);
-        setSalesPrev(sp?.ok ? sp.data || [] : []);
+        setSales(s.ok ? normSales(s.data) : []);
+        setSalesPrev(sp?.ok ? normSales(sp.data) : []);
         setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
         setSubcats(sc.ok ? sc.data || [] : []);
         setFootfall(ff.ok ? ff.data || [] : []);
@@ -274,14 +284,16 @@ const Overview = () => {
 
   const kpis = useMemo(() => {
     if (!rawKpis) return null;
+    // Sales numbers already normalised to net in useKpis — apply
+    // page-local adjust (e.g. rounding toggle).
     return {
       ...rawKpis,
       total_sales: adj(rawKpis.total_sales),
       net_sales: adj(rawKpis.net_sales),
+      gross_sales: adj(rawKpis.gross_sales),
       total_returns: adj(rawKpis.total_returns),
       avg_basket_size: adj(rawKpis.avg_basket_size),
       avg_selling_price: adj(rawKpis.avg_selling_price),
-      gross_sales: adj(rawKpis.gross_sales),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawKpis]);

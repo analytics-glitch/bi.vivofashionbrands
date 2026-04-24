@@ -11,6 +11,7 @@ import {
   pctDelta,
   comparePeriod,
   COUNTRY_FLAGS,
+  normaliseSalesRows,
 } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -78,8 +79,8 @@ const Footfall = () => {
         setRows(f.data || []);
         setPrev(p.data || []);
         setLocations(l.data || []);
-        setSalesRows(s.data || []);
-        setPrevSalesRows(ps.data || []);
+        setSalesRows(normaliseSalesRows(s.data));
+        setPrevSalesRows(normaliseSalesRows(ps.data));
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))

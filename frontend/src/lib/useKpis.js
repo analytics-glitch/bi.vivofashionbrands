@@ -51,8 +51,22 @@ export function fetchKpis(params) {
       },
     })
     .then((r) => {
-      kpiCache.get(key).data = r.data;
-      return r.data;
+      // Normalise the headline sales number to be NET of returns. The
+      // upstream /kpis.total_sales field includes returns (it's really
+      // "gross minus discount"), so pages that rely on it show inflated
+      // revenue. Swap in net_sales as the canonical total_sales, keep
+      // the original gross around for callers that need it.
+      const raw = r.data || {};
+      const gross = raw.gross_sales != null ? raw.gross_sales : raw.total_sales;
+      const net = raw.net_sales != null ? raw.net_sales : raw.total_sales;
+      const normalised = {
+        ...raw,
+        total_sales: net,
+        net_sales: net,
+        gross_sales: gross,
+      };
+      kpiCache.get(key).data = normalised;
+      return normalised;
     })
     .catch((e) => {
       kpiCache.delete(key);

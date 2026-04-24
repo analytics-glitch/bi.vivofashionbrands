@@ -400,10 +400,11 @@ async def _fetch_stores(filters: Dict[str, Any]) -> Dict[str, Any]:
         loc = r.get("channel")
         if not loc:
             continue
+        # Prefer net_sales (accounts for returns + discounts).
         merged[loc] = {
             "location": loc,
             "country": (r.get("country") or "").title() or None,
-            "sales": float(r.get("total_sales") or r.get("net_sales") or 0),
+            "sales": float(r.get("net_sales") or r.get("total_sales") or 0),
             "orders": int(r.get("orders") or 0),
             "footfall": 0,
             "conversion_rate": 0.0,

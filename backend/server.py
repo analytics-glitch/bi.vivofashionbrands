@@ -1916,6 +1916,10 @@ async def analytics_sell_through_by_location(
             continue
         units = int(r.get("units_sold") or 0)
         stock = float(stock_by_loc.get(loc, 0))
+        # Prefer net_sales (returns + discounts subtracted) for display;
+        # upstream total_sales is gross-minus-discount only.
+        net_sales = float(r.get("net_sales") or 0)
+        gross_sales = float(r.get("total_sales") or 0)
         if stock <= 0:
             # Pure-online or non-inventoried channels (no stock reported)
             # — sell-through is not meaningful. Flag them separately so
@@ -1927,8 +1931,8 @@ async def analytics_sell_through_by_location(
                 "country": (r.get("country") or "").title() or None,
                 "units_sold": units,
                 "current_stock": 0,
-                "total_sales": float(r.get("total_sales") or 0),
-                "net_sales": float(r.get("net_sales") or 0),
+                "total_sales": net_sales or gross_sales,
+                "net_sales": net_sales or gross_sales,
                 "sell_through_pct": None,
                 "health": "no_stock_data",
             })
@@ -1948,8 +1952,8 @@ async def analytics_sell_through_by_location(
             "country": (r.get("country") or "").title() or None,
             "units_sold": units,
             "current_stock": stock,
-            "total_sales": float(r.get("total_sales") or 0),
-            "net_sales": float(r.get("net_sales") or 0),
+            "total_sales": net_sales or gross_sales,
+            "net_sales": net_sales or gross_sales,
             "sell_through_pct": round(pct, 2),
             "health": health,
         })

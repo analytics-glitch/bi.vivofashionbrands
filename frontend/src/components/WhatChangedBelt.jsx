@@ -132,7 +132,16 @@ const WhatChangedBelt = ({ kpis, dateFrom, dateTo }) => {
     // through), skip — same day comparison is too narrow to tell a story.
     if (sinceDate === dateTo) return;
     api.get("/kpis", { params: { date_from: dateFrom, date_to: sinceDate } })
-      .then((r) => { if (!cancelled) setKpisSince(r.data); })
+      .then((r) => {
+        if (cancelled) return;
+        // Normalise headline sales to net (same treatment useKpis
+        // applies). Without this, the "what changed" belt would
+        // under/overstate the delta against the current (already-net)
+        // kpis prop.
+        const raw = r.data || {};
+        const net = raw.net_sales != null ? raw.net_sales : raw.total_sales;
+        setKpisSince({ ...raw, total_sales: net, net_sales: net, gross_sales: raw.gross_sales ?? raw.total_sales });
+      })
       .catch(() => { /* quiet */ });
     return () => { cancelled = true; };
   }, [lastVisit, dateFrom, dateTo]);

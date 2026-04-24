@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 30 net-sales display fix verified. Backend: /api/kpis still exposes total_sales/net_sales/gross_sales; /api/analytics/sell-through-by-location now returns total_sales == net_sales per row; /api/search/ask intent=stores uses net_sales via _fetch_stores. Frontend: Overview & Locations KPI Total Sales headlines MATCH (KES 3,348,314) confirming the cross-page consistency goal. Locations KPI card shows the required 'Net of returns & discounts' subtitle. Data Quality flag row shows net sales (KES 208,997) alongside KES 73,050 returns for Online - Shop Zetu, with return-rate denominator preserved. All 6 pytest cases passed.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": { "ui_bugs": [], "integration_issues": [], "design_issues": [] },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_30_net_sales.py",
+    "/app/test_reports/pytest/iteration_30_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1934-1956 — /api/analytics/sell-through-by-location correctly sets total_sales = net_sales (falls back to gross when net missing). Clear intent-preserving comment. OK.",
+    "useKpis.js fetchKpis normaliser swaps total_sales -> net_sales and preserves gross_sales under gross_sales. Cache keys unchanged, so previously cached gross values aren't served stale. OK.",
+    "lib/api.js normaliseSalesRows preserves r.total_sales under gross_sales before overwriting — correct. Note: helper falls back to total_sales if net_sales is null/missing (safe default).",
+    "ask.py:384 _fetch_stores hardcodes a 28-day window and ignores filters.date_from/date_to — not a regression of this fix, but worth noting the LLM cannot actually scope by user's date filter for the 'stores' intent.",
+    "Locations.jsx:150,164 prefers rawKpis.net_sales directly (in addition to the normaliser at fetch) — defensive duplication, fine."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_30_net_sales.py"],
+  "success_rate": { "backend": "100% (6/6)", "frontend": "100%" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 30 fixed the display-level gross/net sales swap across channel & location views. Spot-verified facts: (a) /api/kpis returns { total_sales=97.84M, net_sales=90.11M, gross_sales=93.25M } for wide windows; (b) /api/analytics/sell-through-by-location rows have total_sales == net_sales; (c) frontend Overview & Locations KPI 'Total Sales' headlines are identical for the same filter window; (d) Locations KPI subtitle 'Net of returns & discounts' rendered correctly; (e) DataQuality flag row preserves gross in the return-rate denominator while showing net in the displayed sales column. Style/customer lifetime total_sales NOT touched (and not in scope).",
+  "rca of the issue": "Upstream /kpis.total_sales and /sales-summary rows expose total_sales as 'gross minus discounts' which still includes returns; for channel/location headline 'Total Sales' the correct value is net_sales. Fix implemented at two layers: (1) backend sell-through-by-location endpoint now materialises total_sales = net_sales so direct consumers see net by default; (2) frontend normalisers (useKpis.fetchKpis + lib/api.normaliseSalesRows) swap total_sales with net_sales at fetch time, preserving original gross as gross_sales for return-rate math. This guarantees every page reading these shared helpers displays the same net figure."
+}
