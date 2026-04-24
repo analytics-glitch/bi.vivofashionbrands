@@ -776,4 +776,51 @@ API, (c) figure from a different source system. Pending user confirmation.
   - Deferred items documented in the UI footnote: email (upstream does
     not expose `res.partner.email`), margin contribution,
     per-customer favourite category/location, return rate.
+- **Customers-by-POS → "Customer Acquisition & Retention by Location"**:
+  - Fetches `/customers-by-location` for the comparison window too,
+    and renders per-location deltas inline (count ▲/▼ %, % Ret Shift
+    in pp, Total ▲/▼ %).
+  - Action **Signal** column classifies each location: 🔴 At Risk
+    (total −20 % AND retention −5 pp), ⚠️ Retention Weakening, 🆕
+    Acquisition Engine (>30 % new mix), 💚 Retention Strong (>85 %
+    returning AND stable/growing), 🌟 Balanced.
+  - Summary insight bar names the volume leader, % of locations
+    declining, and count of retention-risk flagged stores.
+  - Country column uses emoji flags (🇰🇪 🇺🇬 🇷🇼), Online channel
+    shows 🌐 icon next to the location name.
+  - `% OF TOTAL` renamed → `% SHARE OF CUSTOMERS` with tooltip.
+  - CSV filename encodes filters. Revenue / Revenue-per-customer
+    columns deferred (upstream doesn't expose per-location revenue).
+- **Churned Customers → "Reactivation Opportunity"**:
+  - Priority scorer (🔥 Hot / 🌡️ Warm / ❄️ Cold) combining LTV,
+    orders, recency and contact completeness. Missing contact
+    auto-drops to Cold regardless of LTV.
+  - Revenue-at-risk summary bar: total churn LTV, top-50 contribution
+    and count churned in last 30 days (highest reactivation
+    probability).
+  - Filter chips: All / 🔥 Hot / Ex-VIP (5+ orders) / High spenders
+    (LTV ≥ 100 k) / Recent 30–60 d / Long >180 d / Contactable.
+  - New columns: Priority pill, Contact (tel: clickable, ⚠️ when
+    missing), Avg Order Value (LTV ÷ orders), Actions (📞 + 👁️).
+  - Default sort by priority desc.
+  - CSV filename `reactivation-list_<country>_<N>d-churn[<chip>]_<date>.csv`.
+  - Deferred (upstream): email, favourite category/location per
+    customer, bulk-campaign assignment, outreach tracking.
+- **"What new customers bought" → "Product Mix: New vs Returning"**:
+  - Cross-references `/new-customer-products` against `/top-skus`
+    (limit 200) to compute **Acquisition Skew** =
+    `% of New-Cust Sales ÷ % of Total Sales` per style.
+  - Signal classifier: >1.2× 🆕 Acquisition driver, 0.8–1.2× ⚖️
+    Balanced, <0.8× 💚 Retention driver.
+  - Confidence flag by unit count: ≥10 ✅, 3–9 ⚠️, <3 ❓.
+  - Summary insight bar names the top acquisition category and the
+    count of rows meeting the 3-unit confidence floor.
+  - New columns: Signal, Acq Skew, Units (Total), % of Total Sales,
+    Current Stock (from /top-skus, colour-coded),  Confidence.
+  - Default sort by Acq Skew desc — acquisition drivers surface at
+    the top.
+  - Deferred: per-style new-vs-returning SKU (colour/size) mix,
+    cross-links to Re-Order / Pricing / Margin, paired "What
+    Returning Customers Bought" view (needs upstream per-style
+    new-vs-returning breakdown).
 

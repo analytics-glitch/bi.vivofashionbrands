@@ -113,6 +113,14 @@ const Customers = () => {
   const [showCustomerId, setShowCustomerId] = useState(false);
   const [topPrev, setTopPrev] = useState([]);
 
+  // Client-side filter chip for the Reactivation Opportunity table.
+  const [reactivationChip, setReactivationChip] = useState("all");
+
+  // Previous-period byLoc for period comparisons on the POS table, and
+  // /top-skus to compute Acquisition Skew on the "Product Mix" table.
+  const [byLocPrev, setByLocPrev] = useState([]);
+  const [topSkus, setTopSkus] = useState([]);
+
   // Compute the previous-period range
   const prevRange = useMemo(() => {
     if (compareMode === "none") return null;
@@ -158,11 +166,13 @@ const Customers = () => {
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
       ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["byLocPrev", prevRange ? api.get("/customers-by-location", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["topSkus", api.get("/top-skus", { params: { ...dateP, limit: 200 } }).catch(() => ({ data: [] }))],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
-      topPrev: setTopPrev,
+      topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
     };
     for (const [key, p] of rest) {
       p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
@@ -1106,122 +1116,559 @@ const Customers = () => {
             </p>
           </div>
 
-          {/* ---- Customers by POS ---- */}
-          <div className="card-white p-5" data-testid="customers-by-location-section">
-            <SectionTitle
-              title="Customers by POS"
-              subtitle="New vs returning customer mix at each location. % New and % Returning show the split within each store; % Share of Customers shows each store's contribution to total customer count."
-            />
-            {byLocWithPct.length === 0 ? <UpstreamNotReady /> : (
-              <SortableTable
-                testId="customers-by-location"
-                exportName="customers-by-location.csv"
-                initialSort={{ key: "total_customers", dir: "desc" }}
-                columns={[
-                  { key: "pos_location", label: "POS Location", align: "left", render: (r) => <span className="font-medium">{r.pos_location}</span> },
-                  { key: "country", label: "Country", align: "left" },
-                  { key: "new_customers", label: "New", numeric: true, render: (r) => fmtNum(r.new_customers) },
-                  { key: "returning_customers", label: "Returning", numeric: true, render: (r) => fmtNum(r.returning_customers) },
-                  { key: "total_customers", label: "Total", numeric: true, render: (r) => <span className="font-semibold">{fmtNum(r.total_customers)}</span> },
-                  {
-                    key: "pct_new",
-                    label: "% New",
-                    numeric: true,
-                    render: (r) => <span className="pill-green">{(r.pct_new || 0).toFixed(1)}%</span>,
-                    csv: (r) => (r.pct_new || 0).toFixed(2),
-                  },
-                  {
-                    key: "pct_returning",
-                    label: "% Returning",
-                    numeric: true,
-                    render: (r) => <span className="pill-neutral" style={{ background: "#dbeafe", color: "#1e40af" }}>{(r.pct_returning || 0).toFixed(1)}%</span>,
-                    csv: (r) => (r.pct_returning || 0).toFixed(2),
-                  },
-                  {
-                    key: "pct_of_total",
-                    label: "% Share of Customers",
-                    numeric: true,
-                    render: (r) => fmtPct(r.pct_of_total, 1),
-                    csv: (r) => r.pct_of_total?.toFixed(2),
-                  },
-                ]}
-                rows={byLocWithPct}
-              />
-            )}
-          </div>
+          {/* ---- Customer Acquisition & Retention by Location ---- */}
+          {(() => {
+            // Index previous period by pos_location for delta lookups.
+            const prevMap = new Map((byLocPrev || []).map((r) => [r.pos_location, r]));
+            const hasCompare = compareLbl && byLocPrev && byLocPrev.length > 0;
+            const rows = byLocWithPct.map((r) => {
+              const p = prevMap.get(r.pos_location);
+              const prevTotal = p?.total_customers || 0;
+              const prevNew = p?.new_customers || 0;
+              const prevRet = p?.returning_customers || 0;
+              const prevPctRet = prevTotal ? (prevRet / prevTotal) * 100 : 0;
+              const pctRetDelta = (r.pct_returning || 0) - prevPctRet; // pp shift
+              const totalPctChange = prevTotal ? ((r.total_customers || 0) - prevTotal) / prevTotal * 100 : null;
+              const newPctChange = prevNew ? ((r.new_customers || 0) - prevNew) / prevNew * 100 : null;
+              const retPctChange = prevRet ? ((r.returning_customers || 0) - prevRet) / prevRet * 100 : null;
 
-          {/* ---- Churned customers ---- */}
-          <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
-            <SectionTitle
-              title={`Churned Customers (no purchase in ${churnDays}+ days)`}
-              subtitle={`${fmtNum(churned.length)}${churned.length >= 500 ? "+" : ""} customers · sorted by Lifetime Spend descending. Paginated · 25 rows per page.`}
-              action={
-                <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="churn-days-filter">
-                  <span className="text-muted font-medium">Days inactive:</span>
-                  {[60, 90, 120, 180].map((d) => (
+              // Action tag logic — first-match wins.
+              let tag = null;
+              if (hasCompare && totalPctChange != null && totalPctChange < -20 && pctRetDelta < 0) {
+                tag = { label: "🔴 At Risk", cls: "pill-red", tip: "Total customers declining >20% AND returning-share weakening." };
+              } else if (hasCompare && pctRetDelta < -5) {
+                tag = { label: "⚠️ Retention Weakening", cls: "pill-amber", tip: "% Returning dropped >5pp vs comparison period." };
+              } else if ((r.pct_new || 0) > 30) {
+                tag = { label: "🆕 Acquisition Engine", cls: "pill-neutral", tip: "Acquiring new customers heavily (>30% of mix)." };
+              } else if ((r.pct_returning || 0) > 85 && (totalPctChange == null || totalPctChange >= 0)) {
+                tag = { label: "💚 Retention Strong", cls: "pill-green", tip: "Over 85% returning mix, customer base stable or growing." };
+              } else {
+                tag = { label: "🌟 Balanced", cls: "pill-neutral", tip: "Healthy, balanced mix." };
+              }
+
+              return {
+                ...r,
+                prevTotal, prevNew, prevRet, prevPctRet,
+                pctRetDelta, totalPctChange, newPctChange, retPctChange, tag,
+              };
+            });
+
+            // Summary insight bar
+            const leader = [...rows].sort((a, b) => (b.total_customers || 0) - (a.total_customers || 0))[0];
+            const declining = rows.filter((r) => (r.totalPctChange || 0) < 0).length;
+            const weakening = rows.filter((r) => r.tag.label.startsWith("⚠️") || r.tag.label.startsWith("🔴")).length;
+            const insight = rows.length > 0
+              ? `${leader?.pos_location || "—"} leads customer volume (${(leader?.pct_of_total || 0).toFixed(1)}% share).${
+                  hasCompare ? ` ${Math.round(declining / rows.length * 100)}% of locations saw customer count decline ${compareLbl}.` : ""
+                }${weakening > 0 ? ` ${weakening} location${weakening === 1 ? "" : "s"} flagged for retention risk.` : ""}`
+              : null;
+
+            const COUNTRY_FLAG = { Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐" };
+            const isOnline = (r) => (r.country === "Online") || String(r.pos_location || "").toLowerCase().startsWith("online");
+
+            // CSV filename reflects filter state
+            const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
+            const csvCountry = countries.length === 1 ? slug(countries[0]) : countries.length ? `${countries.length}-countries` : "all-countries";
+            const csvChannel = channels.length ? `${channels.length}-pos` : "all-pos";
+            const csvDate = new Date().toISOString().slice(0, 10);
+            const csvFilename = `customers-by-location_${csvCountry}_${csvChannel}_${csvDate}.csv`;
+
+            return (
+              <div className="card-white p-5" data-testid="customers-by-location-section">
+                <SectionTitle
+                  title="Customer Acquisition & Retention by Location"
+                  subtitle="New vs returning customer mix at each location. Use to identify acquisition-heavy vs retention-strong stores and surface locations that need attention."
+                />
+
+                {insight && (
+                  <div className="rounded-xl bg-brand-soft/40 border border-brand/30 text-brand-deep p-3 text-[12.5px] mb-3" data-testid="byloc-insight">
+                    <strong>{insight}</strong>
+                  </div>
+                )}
+
+                {rows.length === 0 ? <UpstreamNotReady /> : (
+                  <SortableTable
+                    testId="customers-by-location"
+                    exportName={csvFilename}
+                    initialSort={{ key: "total_customers", dir: "desc" }}
+                    columns={[
+                      {
+                        key: "pos_location", label: "POS Location", align: "left",
+                        render: (r) => (
+                          <div className="flex items-center gap-1.5">
+                            {isOnline(r) && <span title="Online channel" className="text-[11px]">🌐</span>}
+                            <span className="font-medium">{r.pos_location}</span>
+                          </div>
+                        ),
+                      },
+                      {
+                        key: "tag", label: "Signal", align: "left",
+                        sortValue: (r) => ({ "🔴 At Risk": 5, "⚠️ Retention Weakening": 4, "🆕 Acquisition Engine": 3, "💚 Retention Strong": 2, "🌟 Balanced": 1 }[r.tag.label] || 0),
+                        render: (r) => <span className={r.tag.cls} title={r.tag.tip}>{r.tag.label}</span>,
+                        csv: (r) => r.tag.label.replace(/[^\w\s]/g, "").trim(),
+                      },
+                      {
+                        key: "country", label: "Country", align: "left",
+                        render: (r) => <span title={r.country}>{COUNTRY_FLAG[r.country] || r.country}</span>,
+                        csv: (r) => r.country,
+                      },
+                      {
+                        key: "new_customers", label: "New", numeric: true,
+                        render: (r) => (
+                          <div className="inline-flex flex-col items-end">
+                            <span className="num font-semibold">{fmtNum(r.new_customers)} <span className="text-[10px] text-muted">({(r.pct_new || 0).toFixed(1)}%)</span></span>
+                            {hasCompare && r.newPctChange != null && (
+                              <span className={`text-[10px] font-semibold ${r.newPctChange >= 0 ? "text-brand" : "text-danger"}`}>
+                                {r.newPctChange >= 0 ? "▲" : "▼"} {Math.abs(r.newPctChange).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+                        ),
+                      },
+                      {
+                        key: "returning_customers", label: "Returning", numeric: true,
+                        render: (r) => (
+                          <div className="inline-flex flex-col items-end">
+                            <span className="num font-semibold">{fmtNum(r.returning_customers)} <span className="text-[10px] text-muted">({(r.pct_returning || 0).toFixed(1)}%)</span></span>
+                            {hasCompare && r.retPctChange != null && (
+                              <span className={`text-[10px] font-semibold ${r.retPctChange >= 0 ? "text-brand" : "text-danger"}`}>
+                                {r.retPctChange >= 0 ? "▲" : "▼"} {Math.abs(r.retPctChange).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+                        ),
+                      },
+                      {
+                        key: "pct_returning_delta", label: "% Ret Shift", numeric: true,
+                        sortValue: (r) => r.pctRetDelta || 0,
+                        render: (r) => hasCompare
+                          ? <span className={`text-[11px] font-semibold ${r.pctRetDelta >= 0 ? "text-brand" : "text-danger"}`}>
+                              {r.pctRetDelta >= 0 ? "+" : ""}{r.pctRetDelta.toFixed(1)}pp
+                            </span>
+                          : <span className="text-muted">—</span>,
+                        csv: (r) => hasCompare ? r.pctRetDelta.toFixed(2) : "",
+                      },
+                      {
+                        key: "total_customers", label: "Total", numeric: true,
+                        render: (r) => (
+                          <div className="inline-flex flex-col items-end">
+                            <span className="font-semibold num">{fmtNum(r.total_customers)}</span>
+                            {hasCompare && r.totalPctChange != null && (
+                              <span className={`text-[10px] font-semibold ${r.totalPctChange >= 0 ? "text-brand" : "text-danger"}`}>
+                                {r.totalPctChange >= 0 ? "▲" : "▼"} {Math.abs(r.totalPctChange).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+                        ),
+                      },
+                      {
+                        key: "pct_of_total", label: "% Share of Customers", numeric: true,
+                        render: (r) => <span title="This location's share of the total customer base across all selected stores.">{fmtPct(r.pct_of_total, 1)}</span>,
+                        csv: (r) => r.pct_of_total?.toFixed(2),
+                      },
+                    ]}
+                    rows={rows}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2">
+                  Revenue and Revenue / Customer columns deferred — upstream <code>/customers-by-location</code> does not yet expose per-location revenue aggregates. Location drill-down pattern available on the Locations page.
+                </p>
+              </div>
+            );
+          })()}
+
+          {/* ---- Reactivation Opportunity (redesigned churned customers) ---- */}
+          {(() => {
+            // Priority scorer — combines LTV, orders, recency, contact.
+            // Score logic:
+            //   contact valid (phone present) required for Hot/Warm
+            //   Hot   = LTV ≥ 50k AND orders ≥ 5 AND days ≤ 60 AND has contact
+            //   Warm  = (LTV ≥ 10k OR orders ≥ 3) AND days ≤ 120 AND has contact
+            //   Cold  = everything else (missing contact auto-cold regardless of LTV)
+            // These thresholds are tuned for Vivo KES spend; adjust as needed.
+            const priorityFor = (r) => {
+              const ltv = r.lifetime_spend || 0;
+              const orders = r.total_orders || 0;
+              const days = r.days_since_last_purchase || 0;
+              const hasContact = Boolean(r.phone);
+              if (!hasContact) return { key: "cold", label: "❄️ Cold", cls: "pill-neutral", rank: 1, tip: "No contact on file — cannot run automated reactivation. Consider completing profile at next in-store visit." };
+              if (ltv >= 50000 && orders >= 5 && days <= 60) return { key: "hot", label: "🔥 Hot", cls: "pill-red", rank: 4, tip: "High LTV + frequent + recent churn → immediate personal outreach." };
+              if ((ltv >= 10000 || orders >= 3) && days <= 120) return { key: "warm", label: "🌡️ Warm", cls: "pill-amber", rank: 3, tip: "Meaningful value + still recent → automated win-back campaign with offer." };
+              return { key: "cold", label: "❄️ Cold", cls: "pill-neutral", rank: 1, tip: "Low value or very old churn → bulk low-cost campaign or deprioritize." };
+            };
+
+            const decorated = (churned || []).map((r) => {
+              const priority = priorityFor(r);
+              const orders = r.total_orders || 0;
+              const ltv = r.lifetime_spend || 0;
+              const aov = orders ? ltv / orders : 0;
+              const hasContact = Boolean(r.phone);
+              return { ...r, priority, aov, hasContact };
+            });
+
+            // Apply client-side filter chip
+            const filtered = decorated.filter((r) => {
+              const days = r.days_since_last_purchase || 0;
+              if (reactivationChip === "all") return true;
+              if (reactivationChip === "hot") return r.priority.key === "hot";
+              if (reactivationChip === "ex_vip") return (r.total_orders || 0) >= 5;
+              if (reactivationChip === "high_spender") return (r.lifetime_spend || 0) >= 100000;
+              if (reactivationChip === "recent") return days <= 60;
+              if (reactivationChip === "long") return days > 180;
+              if (reactivationChip === "contactable") return r.hasContact;
+              return true;
+            });
+
+            // Revenue-at-risk summary
+            const revAtRisk = decorated.reduce((s, r) => s + (r.lifetime_spend || 0), 0);
+            const top50 = [...decorated].sort((a, b) => (b.lifetime_spend || 0) - (a.lifetime_spend || 0)).slice(0, 50);
+            const top50Rev = top50.reduce((s, r) => s + (r.lifetime_spend || 0), 0);
+            const top50Pct = revAtRisk ? (top50Rev / revAtRisk) * 100 : 0;
+            const recentChurn = decorated.filter((r) => (r.days_since_last_purchase || 0) <= 30).length;
+
+            const CHIPS = [
+              ["all", `All (${decorated.length})`],
+              ["hot", `🔥 Hot (${decorated.filter((r) => r.priority.key === "hot").length})`],
+              ["ex_vip", `Ex-VIP (${decorated.filter((r) => (r.total_orders || 0) >= 5).length})`],
+              ["high_spender", `High spenders (${decorated.filter((r) => (r.lifetime_spend || 0) >= 100000).length})`],
+              ["recent", `Recent 30–60d (${decorated.filter((r) => (r.days_since_last_purchase || 0) <= 60).length})`],
+              ["long", `Long >180d (${decorated.filter((r) => (r.days_since_last_purchase || 0) > 180).length})`],
+              ["contactable", `Contactable (${decorated.filter((r) => r.hasContact).length})`],
+            ];
+
+            const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
+            const csvCountry = countries.length === 1 ? slug(countries[0]) : countries.length ? `${countries.length}-countries` : "all-countries";
+            const csvChipLabel = reactivationChip === "all" ? "" : `_${reactivationChip}`;
+            const csvDate = new Date().toISOString().slice(0, 10);
+            const csvFilename = `reactivation-list_${csvCountry}_${churnDays}d-churn${csvChipLabel}_${csvDate}.csv`;
+
+            return (
+              <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <SectionTitle
+                    title={`Reactivation Opportunity · ${fmtNum(decorated.length)}${decorated.length >= 500 ? "+" : ""} Churned Customers`}
+                    subtitle={`Customers with no purchase in the last ${churnDays} days. Prioritized by reactivation value — target high-LTV / high-frequency / recent-churn segments first for win-back campaigns.`}
+                    action={
+                      <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="churn-days-filter">
+                        <span className="text-muted font-medium">Churn window:</span>
+                        {[60, 90, 120, 180].map((d) => (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => setChurnDays(d)}
+                            data-testid={`churn-days-${d}`}
+                            className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${
+                              churnDays === d ? "bg-brand text-white" : "bg-panel text-foreground/70 hover:bg-white border border-border"
+                            }`}
+                          >
+                            {d}d
+                          </button>
+                        ))}
+                      </div>
+                    }
+                  />
+                </div>
+
+                {/* ---- Revenue-at-risk summary ---- */}
+                {decorated.length > 0 && (
+                  <div className="rounded-xl bg-red-50 border border-red-200 text-red-900 p-3.5 text-[12.5px] my-3" data-testid="revenue-at-risk">
+                    <div className="flex items-start gap-2 flex-wrap">
+                      <span>📉 <strong>Revenue at Risk:</strong> <span className="num font-bold">{fmtKES(revAtRisk)}</span> in historical LTV from {fmtNum(decorated.length)}{decorated.length >= 500 ? "+" : ""} churned customers.</span>
+                    </div>
+                    <div className="flex items-start gap-2 mt-1">
+                      <span>🎯 <strong>Top 50:</strong> {fmtKES(top50Rev)} ({top50Pct.toFixed(0)}% of churn LTV) — prioritize for personal outreach.</span>
+                    </div>
+                    <div className="flex items-start gap-2 mt-1">
+                      <span>⏰ <strong>Recent (≤30d):</strong> {fmtNum(recentChurn)} customers — highest reactivation probability.</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* ---- Filter chips ---- */}
+                <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                  {CHIPS.map(([k, label]) => (
                     <button
-                      key={d}
+                      key={k}
                       type="button"
-                      onClick={() => setChurnDays(d)}
-                      data-testid={`churn-days-${d}`}
-                      className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${
-                        churnDays === d
-                          ? "bg-brand text-white"
-                          : "bg-panel text-foreground/70 hover:bg-white border border-border"
+                      onClick={() => setReactivationChip(k)}
+                      data-testid={`reactivation-chip-${k}`}
+                      className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors ${
+                        reactivationChip === k
+                          ? "bg-brand-deep text-white border-brand-deep"
+                          : "bg-white text-foreground/70 border-border hover:border-brand/40"
                       }`}
                     >
-                      {d}d
+                      {label}
                     </button>
                   ))}
                 </div>
-              }
-            />
-            {churned.length === 0 ? (
-              <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">
-                ⚠️ Upstream <code>/churned-customers?days={churnDays}</code> returned no rows. The aggregated count ({fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}) from <code>/customers</code> is used for the KPI above.
-              </div>
-            ) : (
-              <SortableTable
-                testId="churned-customers"
-                exportName={`churned-customers-${churnDays}d.csv`}
-                initialSort={{ key: "lifetime_spend", dir: "desc" }}
-                pageSize={25}
-                columns={[
-                  { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.customer_name || "—"}</span> },
-                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
-                  { key: "last_purchase_date", label: "Last Purchase Date", render: (r) => fmtDate(r.last_purchase_date) || "—" },
-                  { key: "days_since_last_purchase", label: "Days Since Last Purchase", numeric: true, render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>, csv: (r) => r.days_since_last_purchase },
-                  { key: "total_orders", label: "Total Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
-                  { key: "lifetime_spend", label: "Lifetime Spend KES", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>, csv: (r) => r.lifetime_spend },
-                ]}
-                rows={churned}
-              />
-            )}
-          </div>
 
-          {/* ---- What new customers bought ---- */}
-          <div className="card-white p-5" data-testid="new-customer-products-section">
-            <SectionTitle
-              title="What new customers bought"
-              subtitle="Acquisition-driving styles — prioritize these for new-customer campaigns"
-            />
-            {newProducts.length === 0 ? <UpstreamNotReady /> : (
-              <SortableTable
-                testId="new-customer-products"
-                exportName="new-customer-products.csv"
-                initialSort={{ key: "total_sales", dir: "desc" }}
-                columns={[
-                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block">{r.style_name}</span> },
-                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
-                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
-                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
-                  { key: "pct_of_new_customer_sales", label: "% of New-Cust Sales", numeric: true, render: (r) => fmtPct(r.pct_of_new_customer_sales, 2), csv: (r) => r.pct_of_new_customer_sales?.toFixed(2) },
-                ]}
-                rows={newProducts}
-              />
-            )}
-          </div>
+                {decorated.length === 0 ? (
+                  <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">
+                    ⚠️ Upstream <code>/churned-customers?days={churnDays}</code> returned no rows. The aggregated count ({fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}) from <code>/customers</code> is used for the KPI above.
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <Empty label={`No churned customers match "${CHIPS.find(([k]) => k === reactivationChip)?.[1] || reactivationChip}".`} />
+                ) : (
+                  <SortableTable
+                    testId="churned-customers"
+                    exportName={csvFilename}
+                    initialSort={{ key: "priority", dir: "desc" }}
+                    pageSize={25}
+                    columns={[
+                      {
+                        key: "priority", label: "Priority", align: "left",
+                        sortValue: (r) => r.priority.rank,
+                        render: (r) => <span className={r.priority.cls} title={r.priority.tip}>{r.priority.label}</span>,
+                        csv: (r) => r.priority.label.replace(/[^\w\s]/g, "").trim(),
+                      },
+                      {
+                        key: "customer_name", label: "Name", align: "left",
+                        render: (r) => {
+                          if (!r.customer_name) return <span className="pill-amber" title="Anonymous / walk-in sale">Walk-in / Unregistered</span>;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => openCustomer(r)}
+                              title="Open full customer profile"
+                              className="font-medium text-brand-deep hover:text-brand hover:underline underline-offset-2 break-words max-w-[220px] inline-block text-left"
+                            >
+                              {r.customer_name}
+                              {!r.hasContact && <span title="Missing contact — cannot run automated outreach" className="ml-1">⚠️</span>}
+                            </button>
+                          );
+                        },
+                        csv: (r) => r.customer_name || "Walk-in",
+                      },
+                      {
+                        key: "phone", label: "Contact", align: "left",
+                        render: (r) => {
+                          if (!r.phone) return <span className="text-muted" title="No contact on file">— ⚠️</span>;
+                          const href = telHref(r.phone);
+                          const masked = maskPhone(r.phone);
+                          return href
+                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{masked}</a>
+                            : <span className="text-muted">{masked}</span>;
+                        },
+                        csv: (r) => maskPhone(r.phone),
+                      },
+                      { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
+                      {
+                        key: "days_since_last_purchase", label: "Days Since", numeric: true,
+                        render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>,
+                        csv: (r) => r.days_since_last_purchase,
+                      },
+                      { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
+                      {
+                        key: "lifetime_spend", label: "LTV", numeric: true,
+                        render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>,
+                        csv: (r) => r.lifetime_spend,
+                      },
+                      {
+                        key: "aov", label: "Avg Order Value", numeric: true,
+                        render: (r) => fmtKES(r.aov),
+                        csv: (r) => r.aov?.toFixed(0),
+                      },
+                      {
+                        key: "actions", label: "", align: "left", sortable: false,
+                        render: (r) => {
+                          const href = telHref(r.phone);
+                          return (
+                            <div className="inline-flex items-center gap-1.5">
+                              {href ? (
+                                <a href={href} className="p-1 rounded hover:bg-panel" title="Call for win-back"><Phone size={13} /></a>
+                              ) : (
+                                <span className="p-1 text-muted/40" title="No phone"><Phone size={13} /></span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openCustomer(r)}
+                                title="View profile"
+                                className="p-1 rounded hover:bg-panel"
+                              >
+                                <Eye size={13} />
+                              </button>
+                            </div>
+                          );
+                        },
+                        csv: () => "",
+                      },
+                    ]}
+                    rows={filtered}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2">
+                  Email, favourite category/location per customer, bulk-campaign assignment and outreach tracking deferred — upstream Vivo BI API does not currently expose these. Use Export CSV to push this list into your CRM workflow.
+                </p>
+              </div>
+            );
+          })()}
+
+          {/* ---- Product Mix: New vs Returning (redesigned new-customer products) ---- */}
+          {(() => {
+            // Cross-reference /new-customer-products against /top-skus to
+            // compute Acquisition Skew for each style.
+            //
+            //   Acquisition Skew = (% of New-Cust Sales) ÷ (% of Total Sales)
+            //
+            // Match keys are normalized style names (case/whitespace-insensitive).
+            const norm = (s) => String(s || "").trim().toLowerCase();
+            const totalSalesAllSkus = (topSkus || []).reduce((s, r) => s + (r.total_sales || 0), 0);
+            const skuMap = new Map();
+            for (const r of topSkus || []) {
+              const k = norm(r.style_name);
+              if (!k) continue;
+              // If dupes (different SKUs under same style), aggregate.
+              const prev = skuMap.get(k) || { units: 0, sales: 0 };
+              skuMap.set(k, {
+                units: prev.units + (r.units_sold || 0),
+                sales: prev.sales + (r.total_sales || 0),
+                current_stock: (prev.current_stock || 0) + (r.current_stock || 0),
+              });
+            }
+
+            const confidenceFor = (u) => {
+              if ((u || 0) >= 10) return { key: "hi", label: "✅", tip: "High confidence — ≥10 units sold." };
+              if ((u || 0) >= 3) return { key: "lo", label: "⚠️", tip: "Low confidence — 3–9 units, directional only." };
+              return { key: "none", label: "❓", tip: "Insufficient data — <3 units. Exclude from decision-making." };
+            };
+
+            const decorated = (newProducts || []).map((r) => {
+              const k = norm(r.style_name);
+              const total = skuMap.get(k) || { units: 0, sales: 0, current_stock: 0 };
+              const pctNewSales = r.pct_of_new_customer_sales || 0; // already percent of new-cust sales
+              const pctTotalSales = totalSalesAllSkus ? (total.sales / totalSalesAllSkus) * 100 : 0;
+              const skew = pctTotalSales > 0 ? pctNewSales / pctTotalSales : null;
+              const totalUnits = total.units || 0;
+              const confidence = confidenceFor(r.units_sold);
+
+              let signal = { label: "—", cls: "pill-neutral", key: "unknown", tip: "" };
+              if (skew != null) {
+                if (skew > 1.2) signal = { label: "🆕 Acquisition driver", cls: "pill-neutral", key: "acq", tip: "Disproportionately acquires new customers. Feature in new-customer campaigns." };
+                else if (skew >= 0.8) signal = { label: "⚖️ Balanced", cls: "pill-neutral", key: "bal", tip: "Balanced appeal — popular with both new and returning customers." };
+                else signal = { label: "💚 Retention driver", cls: "pill-green", key: "ret", tip: "Skews toward returning customers. Protect stock for loyalty campaigns." };
+              }
+              return {
+                ...r,
+                total_units: totalUnits,
+                pct_total_sales: pctTotalSales,
+                skew,
+                confidence,
+                signal,
+                current_stock: total.current_stock || 0,
+              };
+            });
+
+            // Insight
+            const acqDrivers = decorated.filter((r) => r.signal.key === "acq" && r.confidence.key !== "none").length;
+            const totalHighConf = decorated.filter((r) => r.confidence.key !== "none").length;
+            const topAcqCategory = (() => {
+              const byCat = new Map();
+              for (const r of decorated.filter((r) => r.signal.key === "acq")) {
+                const k = r.subcategory || "—";
+                byCat.set(k, (byCat.get(k) || 0) + (r.units_sold || 0));
+              }
+              let best = null, bv = 0;
+              for (const [k, v] of byCat) if (v > bv) { best = k; bv = v; }
+              return best;
+            })();
+            const insight = decorated.length === 0
+              ? null
+              : `${acqDrivers} style${acqDrivers === 1 ? "" : "s"} identified as acquisition drivers (skew > 1.2×)${
+                  topAcqCategory ? `. Top acquisition category: ${topAcqCategory}` : ""
+                }. ${totalHighConf} of ${decorated.length} rows meet the ≥3-unit confidence floor.`;
+
+            const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
+            const csvCountry = countries.length === 1 ? slug(countries[0]) : countries.length ? `${countries.length}-countries` : "all-countries";
+            const csvDate = new Date().toISOString().slice(0, 10);
+            const csvFilename = `product-mix-new-vs-returning_${csvCountry}_${csvDate}.csv`;
+
+            return (
+              <div className="card-white p-5" data-testid="new-customer-products-section">
+                <SectionTitle
+                  title="Product Mix: New vs Returning Customers"
+                  subtitle="Identify styles that acquire new customers vs styles that drive repeat purchase. Skew > 1.2× = acquisition driver; < 0.8× = retention driver; in-between = balanced. Recommended lookback: 30+ days for meaningful signal."
+                />
+                {insight && (
+                  <div className="rounded-xl bg-brand-soft/40 border border-brand/30 text-brand-deep p-3 text-[12.5px] mb-3" data-testid="newcust-insight">
+                    <strong>{insight}</strong>
+                  </div>
+                )}
+                {decorated.length === 0 ? <UpstreamNotReady /> : (
+                  <SortableTable
+                    testId="new-customer-products"
+                    exportName={csvFilename}
+                    initialSort={{ key: "skew", dir: "desc" }}
+                    columns={[
+                      {
+                        key: "style_name", label: "Style", align: "left",
+                        render: (r) => <span className="font-medium break-words max-w-[260px] inline-block">{r.style_name}</span>,
+                      },
+                      {
+                        key: "signal", label: "Signal", align: "left",
+                        sortValue: (r) => ({ acq: 3, bal: 2, ret: 1, unknown: 0 }[r.signal.key] || 0),
+                        render: (r) => <span className={r.signal.cls} title={r.signal.tip}>{r.signal.label}</span>,
+                        csv: (r) => r.signal.label.replace(/[^\w\s]/g, "").trim(),
+                      },
+                      {
+                        key: "skew", label: "Acq Skew", numeric: true,
+                        sortValue: (r) => r.skew ?? -1,
+                        render: (r) => r.skew == null
+                          ? <span className="text-muted">—</span>
+                          : <span className={r.skew > 1.2 ? "pill-neutral font-bold" : r.skew < 0.8 ? "pill-green" : "pill-neutral"}>
+                              {r.skew.toFixed(2)}×
+                            </span>,
+                        csv: (r) => r.skew?.toFixed(3),
+                      },
+                      { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                      { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                      {
+                        key: "units_sold", label: "Units (New)", numeric: true,
+                        render: (r) => fmtNum(r.units_sold),
+                      },
+                      {
+                        key: "total_units", label: "Units (Total)", numeric: true,
+                        render: (r) => <span className="text-muted num">{fmtNum(r.total_units)}</span>,
+                        csv: (r) => r.total_units,
+                      },
+                      {
+                        key: "total_sales", label: "Sales (New)", numeric: true,
+                        render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>,
+                        csv: (r) => r.total_sales,
+                      },
+                      {
+                        key: "pct_of_new_customer_sales", label: "% of New-Cust Sales", numeric: true,
+                        render: (r) => fmtPct(r.pct_of_new_customer_sales, 2),
+                        csv: (r) => r.pct_of_new_customer_sales?.toFixed(2),
+                      },
+                      {
+                        key: "pct_total_sales", label: "% of Total Sales", numeric: true,
+                        render: (r) => <span className="text-muted">{(r.pct_total_sales || 0).toFixed(2)}%</span>,
+                        csv: (r) => r.pct_total_sales?.toFixed(2),
+                      },
+                      {
+                        key: "current_stock", label: "Current Stock", numeric: true,
+                        render: (r) => r.current_stock
+                          ? <span className={r.current_stock < 10 ? "pill-red" : r.current_stock < 30 ? "pill-amber" : "pill-green"}>{fmtNum(r.current_stock)}</span>
+                          : <span className="text-muted">—</span>,
+                        csv: (r) => r.current_stock,
+                      },
+                      {
+                        key: "confidence", label: "Conf.", align: "left",
+                        sortValue: (r) => ({ hi: 3, lo: 2, none: 1 }[r.confidence.key] || 0),
+                        render: (r) => <span title={r.confidence.tip} className="text-[13px]">{r.confidence.label}</span>,
+                        csv: (r) => r.confidence.key,
+                      },
+                    ]}
+                    rows={decorated}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2">
+                  SKU-level color/size mix available via the Style drill-down on the Products page. Cross-references to Inventory / Re-Order / Pricing dashboards, and a paired "What Returning Customers Bought" view deferred — pending upstream per-style new-vs-returning breakdown.
+                </p>
+              </div>
+            );
+          })()}
         </>
       )}
     </div>
