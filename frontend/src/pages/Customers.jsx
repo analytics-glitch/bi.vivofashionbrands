@@ -347,12 +347,13 @@ const Customers = () => {
             <KPICard
               testId="kpi-churn"
               label="Churn Rate"
-              sub={`${churnDays}-day rolling · as of today`}
+              sub="in selected period · 90-day cutoff"
               formula={
-                `Churn Rate = churned_customers ÷ total_unique_customers_all_time × 100.\n\n` +
-                `A customer is considered CHURNED if their LAST purchase was more than ${churnDays} days ago, ` +
-                `measured from TODAY (not from the selected date-range end). This number is therefore ` +
-                `independent of the date filter — it is a rolling health metric.`
+                `Churn Rate = churned_in_period ÷ total_customers × 100.\n\n` +
+                `A customer is counted as CHURNED if their last purchase falls INSIDE the ` +
+                `selected date range AND they have not bought anything in the ` +
+                `${churnDays} days up to today. For an in-progress period (ends today) ` +
+                `this number is naturally near-zero; for historical periods it rises.`
               }
               value={fmtPct(cust.churn_rate, 2)}
               icon={UserMinus}

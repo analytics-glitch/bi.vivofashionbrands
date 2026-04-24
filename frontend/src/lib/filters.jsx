@@ -23,12 +23,21 @@ function readUrlParams() {
   if (typeof window === "undefined") return null;
   const p = new URLSearchParams(window.location.search);
   const out = {};
-  if (p.has("d")) out.d = p.get("d");
-  if (p.has("t")) out.t = p.get("t");
-  if (p.has("p")) out.p = p.get("p");
-  if (p.has("co")) out.co = p.get("co");
-  if (p.has("ch")) out.ch = p.get("ch");
-  if (p.has("cm")) out.cm = p.get("cm");
+  // Accept both short (d/t/p/co/ch/cm — internal) and long (date_from, date_to,
+  // period, country, pos, compare — shareable) URL param names.
+  const pick = (short, long) => (p.has(short) ? p.get(short) : (p.has(long) ? p.get(long) : null));
+  const d = pick("d", "date_from");
+  const t = pick("t", "date_to");
+  const preset = pick("p", "period");
+  const co = pick("co", "country");
+  const ch = pick("ch", "pos");
+  const cm = pick("cm", "compare");
+  if (d) out.d = d;
+  if (t) out.t = t;
+  if (preset) out.p = preset;
+  if (co) out.co = co;
+  if (ch) out.ch = ch;
+  if (cm) out.cm = cm;
   return Object.keys(out).length ? out : null;
 }
 
@@ -134,6 +143,25 @@ export const FiltersProvider = ({ children }) => {
   }, []);
   const touchLastUpdated = useCallback(() => setLastUpdated(new Date()), []);
 
+  /** Build a human-readable URL for sharing the current filter state.
+   *  Keys (period, date_from, date_to, country, pos, compare) are self-
+   *  describing so a recipient can read them in WhatsApp / email. The
+   *  reader accepts both long AND short keys for backward compatibility
+   *  with existing bookmarks. */
+  const buildShareableLink = useCallback(() => {
+    if (typeof window === "undefined") return "";
+    const p = new URLSearchParams();
+    const defs = datePresets().today;
+    if (preset && preset !== "today") p.set("period", preset);
+    if (preset === "custom" || (dateFrom && dateFrom !== defs.date_from)) p.set("date_from", dateFrom);
+    if (preset === "custom" || (dateTo && dateTo !== defs.date_to)) p.set("date_to", dateTo);
+    if (countries.length) p.set("country", countries.join(","));
+    if (channels.length) p.set("pos", channels.join(","));
+    if (compareMode && compareMode !== "last_month") p.set("compare", compareMode);
+    const qs = p.toString();
+    return window.location.origin + window.location.pathname + (qs ? `?${qs}` : "");
+  }, [preset, dateFrom, dateTo, countries, channels, compareMode]);
+
   // Sync state → URL on every meaningful change AND on every route change
   // (react-router's NavLink replaces the whole URL including the query
   // string, so we re-apply our params right after the pathname updates).
@@ -158,8 +186,9 @@ export const FiltersProvider = ({ children }) => {
       dataVersion, refresh,
       lastUpdated, touchLastUpdated,
       applied,
+      buildShareableLink,
     }),
-    [dateFrom, dateTo, preset, countries, channels, compareMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset]
+    [dateFrom, dateTo, preset, countries, channels, compareMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };

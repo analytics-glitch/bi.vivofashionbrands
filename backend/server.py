@@ -511,48 +511,53 @@ async def get_customers(
             total.pop(k)
         data = total
 
-    # Churn rate — business definition (user-confirmed):
-    #   A customer is "churned" if their LAST purchase was more than 90 days
-    #   ago, measured from TODAY (not from the period end date). This number
-    #   is therefore INDEPENDENT of the selected date filter — it is a
-    #   rolling 90-day health metric.
+    # Churn rate — FINAL business definition (user-confirmed):
+    #   A churned customer is one whose LAST purchase was more than 90 days
+    #   ago from TODAY. "Period-churned" means: their LAST purchase date
+    #   falls INSIDE the selected date range — i.e. they bought in the
+    #   period and have not returned in 90+ days.
     #
-    #   churn_rate = churned_90d ÷ (active_in_period + churned_90d)
+    #   churn_rate = churned_in_period ÷ total_customers_in_period × 100
+    #
+    # For an IN-PROGRESS period (range ends today), this number is naturally
+    # near-zero because customers can't have bought in the period AND also
+    # be 90d+ inactive. For historical ranges (e.g. Jan 2026 viewed in Apr
+    # 2026), the rate is meaningful.
     if data:
         active = data.get("total_customers") or 0
         churn_window_days = 90
-        churned_90 = 0
         churn_source = "upstream_90d"
+        churned_in_period = 0
         try:
-            ch = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 1})
-            if isinstance(ch, dict):
-                churned_90 = ch.get("total") or ch.get("count") or 0
-            elif isinstance(ch, list):
-                churned_90 = len(ch)
+            # Upstream caps at ~100k rows. Full list is needed so we can
+            # slice by last_purchase_date within [date_from, date_to].
+            churned_list = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 100000})
+            if isinstance(churned_list, list) and date_from and date_to:
+                for c in churned_list:
+                    lp = c.get("last_purchase_date") or ""
+                    if date_from <= lp <= date_to:
+                        churned_in_period += 1
+            elif isinstance(churned_list, list):
+                # No period filter → report the full list (all-time 90d churned).
+                churned_in_period = len(churned_list)
         except Exception:
-            churned_90 = 0
+            churn_source = "upstream_down"
 
-        # All-time cumulative from upstream /customers aggregate.
+        # All-time cumulative churn (fallback / reference).
         churned_all = data.get("churned_customers") or 0
         denom_all = active + churned_all
         data["churn_rate_cumulative"] = round((churned_all / denom_all * 100), 2) if denom_all else 0
 
-        # Fallback: if upstream /churned-customers?days=90 is down (currently
-        # 500ing), surface the all-time count as the best available estimate
-        # and flag the data quality so the UI can show a caveat.
-        if churned_90 == 0 and churned_all > 0:
-            churned_90 = churned_all
+        if churned_in_period == 0 and (not date_from or not date_to):
+            # No period filter → fall back to all-time count.
+            churned_in_period = churned_all
             churn_source = "cumulative_fallback"
 
-        data["churned_last_90d"] = churned_90
+        data["churned_customers"] = churned_in_period  # override with period-scoped count
+        data["churned_last_90d"] = churned_in_period   # legacy field name kept for UI compat
         data["churn_window_days"] = churn_window_days
         data["churn_source"] = churn_source
-        # CHURN RATE (final) = churned_all_time ÷ (active + churned_all_time) × 100.
-        # Aligned to the product definition: "% of lifetime unique customers
-        # who have not purchased in the last 90 days." This is identical to
-        # `churn_rate_cumulative` above; kept as separate field for clarity and
-        # backwards compatibility (UI reads `churn_rate`).
-        data["churn_rate"] = data["churn_rate_cumulative"]
+        data["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
     return data
 
 

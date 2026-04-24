@@ -2,13 +2,26 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets } from "@/lib/api";
 import MultiSelect from "@/components/MultiSelect";
-import { CalendarBlank, Globe, Storefront } from "@phosphor-icons/react";
+import { CalendarBlank, Globe, Storefront, ShareNetwork, Check } from "@phosphor-icons/react";
 
 const COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const FilterBar = () => {
   const f = useFilters();
   const [locations, setLocations] = useState([]);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const handleShare = async () => {
+    const url = f.buildShareableLink?.() || window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 1600);
+    } catch {
+      // Fallback for older browsers / insecure contexts.
+      window.prompt("Copy this link:", url);
+    }
+  };
 
   useEffect(() => {
     // Only active physical store POS locations — excludes online, warehouse,
@@ -157,6 +170,28 @@ const FilterBar = () => {
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          onClick={handleShare}
+          data-testid="share-filter-link"
+          title="Copy a shareable link to this filtered view. Paste into WhatsApp / email — the recipient lands on the same dashboard state."
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold transition-all ml-auto ${
+            shareCopied
+              ? "bg-[#059669] text-white border border-[#059669]"
+              : "bg-white text-foreground/80 border border-border hover:border-brand/40 hover:bg-brand-soft/50"
+          }`}
+        >
+          {shareCopied ? (
+            <>
+              <Check size={13} weight="bold" /> Copied
+            </>
+          ) : (
+            <>
+              <ShareNetwork size={13} weight="bold" /> Share view
+            </>
+          )}
+        </button>
       </div>
     </div>
   );
