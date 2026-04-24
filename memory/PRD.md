@@ -705,6 +705,15 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Bug fix (P0): Inventory page rendering zero everywhere.** Root
+  cause: `fetch_all_inventory()` compared the country filter from the
+  frontend (lowercase `"kenya"`) against upstream `/locations` response
+  (title-case `"Kenya"`) using strict membership — intersection was
+  always empty, so the per-location fan-out ran on an empty list. Fix:
+  normalize both sides to lowercase before the set intersection.
+  Verified: Kenya-only summary now returns 67,315 units across 25 real
+  locations (was 0); global summary returns 74,192 units. No other
+  callers affected.
 - **Perf**: Added in-memory TTL (30 min) cache for upstream
   `/churned-customers?limit=100000` used by the `/customers` churn
   calculation. Cold-cache Customers page load went from ~38 s to ~0.3 s on

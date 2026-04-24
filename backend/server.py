@@ -1246,7 +1246,12 @@ async def fetch_all_inventory(
     locs_raw = [loc for loc in locs_raw if not is_excluded_location(loc.get("channel"))]
     cs = _split_csv(country)
     if cs:
-        locs_raw = [loc for loc in locs_raw if (loc.get("country") or "") in cs]
+        # Case-insensitive match — frontend normalizes to lowercase ("kenya")
+        # but upstream /locations returns title-case ("Kenya"). Without this
+        # normalization the intersection would be empty and the whole
+        # inventory page would render zero.
+        cs_lower = {c.lower() for c in cs}
+        locs_raw = [loc for loc in locs_raw if (loc.get("country") or "").lower() in cs_lower]
 
     async def _one(loc):
         try:
