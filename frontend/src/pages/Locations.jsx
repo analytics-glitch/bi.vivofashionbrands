@@ -4,6 +4,7 @@ import { useKpis } from "@/lib/useKpis";
 import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { InlineDelta } from "@/components/ChartHelpers";
+import SortableTable from "@/components/SortableTable";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
@@ -329,6 +330,74 @@ const Locations = () => {
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="card-white p-5" data-testid="abv-by-location">
+                <SectionTitle
+                  title="Average Basket Value by Location"
+                  subtitle={
+                    compareMode !== "none"
+                      ? `Total Sales ÷ Orders — how valuable each customer transaction is. Sorted by ABV descending. Change vs ${compareMode === "yesterday" ? "yesterday" : compareMode === "last_month" ? "last month" : "last year"}.`
+                      : "Total Sales ÷ Orders — how valuable each customer transaction is. Sorted by ABV descending."
+                  }
+                />
+                <SortableTable
+                  testId="abv-table"
+                  exportName="abv-by-location.csv"
+                  initialSort={{ key: "abv", dir: "desc" }}
+                  columns={[
+                    { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="num text-muted">{i + 1}</span> },
+                    {
+                      key: "channel",
+                      label: "Location",
+                      align: "left",
+                      render: (r) => (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setSelected(r.channel); }}
+                          className="font-medium text-left hover:text-brand hover:underline decoration-dotted underline-offset-[3px]"
+                          data-testid={`abv-row-link-${r.channel}`}
+                        >
+                          {r.channel}
+                        </button>
+                      ),
+                    },
+                    {
+                      key: "country",
+                      label: "Country",
+                      align: "left",
+                      render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country || "—"}</span>,
+                    },
+                    {
+                      key: "abv",
+                      label: "ABV",
+                      numeric: true,
+                      render: (r) => <span className="font-semibold">{fmtKES(r.abv)}</span>,
+                      csv: (r) => Math.round(r.abv || 0),
+                    },
+                    { key: "orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.orders) },
+                    {
+                      key: "total_sales",
+                      label: "Total Sales",
+                      numeric: true,
+                      render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>,
+                      csv: (r) => Math.round(r.total_sales || 0),
+                    },
+                    ...(compareMode !== "none" ? [{
+                      key: "d_abv",
+                      label: `Δ ABV ${compareMode === "yesterday" ? "(vs Yd)" : compareMode === "last_month" ? "(vs LM)" : "(vs LY)"}`,
+                      numeric: true,
+                      sortValue: (r) => r.d_abv == null ? -9999 : r.d_abv,
+                      render: (r) => (
+                        r.d_abv == null
+                          ? <span className="text-muted text-[11px]">n/a</span>
+                          : <InlineDelta delta={r.d_abv} compact />
+                      ),
+                      csv: (r) => r.d_abv == null ? "" : r.d_abv.toFixed(2),
+                    }] : []),
+                  ]}
+                  rows={sorted}
+                />
               </div>
 
               <div className="card-white p-5" data-testid="footfall-section">

@@ -188,12 +188,24 @@ const Footfall = () => {
     return scoped.map((r) => {
       const auth = salesMap.get(r.location);
       const prevR = prevMap.get(r.location);
+      const prevAuth = prevSalesMap.get(r.location);
       const sales = auth ? (auth.total_sales || 0) : (r.total_sales || 0);
       const orders = auth ? (auth.orders || auth.total_orders || 0) : (r.orders || 0);
       const conversion = r.total_footfall ? (orders / r.total_footfall) * 100 : 0;
       const abv = orders ? sales / orders : 0;
       const prevFootfall = prevR?.total_footfall || 0;
       const footfallDelta = prevFootfall ? ((r.total_footfall - prevFootfall) / prevFootfall) * 100 : null;
+
+      // Previous-period values from /sales-summary (authoritative).
+      const prevSales = prevAuth ? (prevAuth.total_sales || 0) : 0;
+      const prevOrders = prevAuth ? (prevAuth.orders || prevAuth.total_orders || 0) : 0;
+      const prevAbv = prevOrders ? prevSales / prevOrders : 0;
+      const prevConv = prevFootfall ? (prevOrders / prevFootfall) * 100 : null;
+
+      // Conversion change is in PERCENTAGE POINTS (pp), not % change —
+      // since conversion is itself a %.
+      const convDeltaPp = prevConv != null ? conversion - prevConv : null;
+
       return {
         ...r,
         orders,                  // authoritative
@@ -201,10 +213,18 @@ const Footfall = () => {
         conversion_rate: conversion,
         abv,
         prev_footfall: prevFootfall,
+        prev_orders: prevOrders,
+        prev_sales: prevSales,
+        prev_abv: prevAbv,
+        prev_conv: prevConv,
         footfall_delta: footfallDelta,
+        orders_delta: prevOrders ? ((orders - prevOrders) / prevOrders) * 100 : null,
+        sales_delta: prevSales ? ((sales - prevSales) / prevSales) * 100 : null,
+        abv_delta: prevAbv ? ((abv - prevAbv) / prevAbv) * 100 : null,
+        conv_delta_pp: convDeltaPp,
       };
     });
-  }, [scoped, salesMap, prevMap]);
+  }, [scoped, salesMap, prevMap, prevSalesMap]);
 
   const byFootfall = useMemo(
     () => [...scopedEnriched].sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0)),
@@ -213,11 +233,6 @@ const Footfall = () => {
 
   const byConversion = useMemo(
     () => [...scopedEnriched].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0)),
-    [scopedEnriched]
-  );
-
-  const byABV = useMemo(
-    () => [...scopedEnriched].sort((a, b) => (b.abv || 0) - (a.abv || 0)),
     [scopedEnriched]
   );
 
@@ -359,25 +374,6 @@ const Footfall = () => {
           </div>
           </div>
 
-          <div className="card-white p-5" data-testid="ff-chart-abv">
-            <SectionTitle title="Avg Basket Value by location" subtitle="Total Sales ÷ Orders — how valuable each customer transaction is" />
-            {byABV.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 320 }}>
-                <ResponsiveContainer>
-                  <BarChart data={byABV.slice(0, 25)} margin={{ bottom: 80 }}>
-                    <CartesianGrid vertical={false} />
-                    <XAxis dataKey="location" interval={0} angle={-30} textAnchor="end" height={90} tick={{ fontSize: 10 }} />
-                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                    <Tooltip content={<ChartTooltip formatters={{ abv: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders` }} />} />
-                    <Bar dataKey="abv" fill="#00c853" radius={[5, 5, 0, 0]} name="ABV">
-                      <LabelList dataKey="abv" position="top" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
           <div className="card-white p-5" data-testid="ff-table">
             <SectionTitle
               title="Location-level breakdown"
@@ -385,6 +381,22 @@ const Footfall = () => {
               action={
                 <span className="pill-neutral flex items-center gap-1.5">
                   <TrendUp size={12} /> Conversion benchmark: {fmtPct(groupAvgConv, 2)}
+                  {compareMode !== "none" && prevTotals.conv != null && (
+                    <>
+                      {(() => {
+                        const pp = groupAvgConv - prevTotals.conv;
+                        const cls = pp > 0.05 ? "text-[#059669]" : pp < -0.05 ? "text-[#dc2626]" : "text-muted";
+                        const arr = pp > 0.05 ? "▲" : pp < -0.05 ? "▼" : "—";
+                        const sign = pp > 0 ? "+" : "";
+                        return (
+                          <span className={`${cls} font-bold ml-1`} data-testid="ff-benchmark-delta">
+                            {arr} {sign}{pp.toFixed(2)}pp
+                          </span>
+                        );
+                      })()}
+                      <span className="text-muted font-normal">{compareLbl?.toLowerCase()}</span>
+                    </>
+                  )}
                 </span>
               }
             />
@@ -406,12 +418,6 @@ const Footfall = () => {
                 },
                 { key: "total_footfall", label: "Footfall", numeric: true, render: (r) => fmtNum(r.total_footfall) },
                 ...(compareMode !== "none" ? [{
-                  key: "prev_footfall",
-                  label: compareMode === "last_month" ? "Footfall (LM)" : "Footfall (LY)",
-                  numeric: true,
-                  render: (r) => <span className="text-muted">{fmtNum(r.prev_footfall)}</span>,
-                  csv: (r) => r.prev_footfall,
-                }, {
                   key: "footfall_delta",
                   label: "Δ Footfall",
                   numeric: true,
@@ -420,6 +426,14 @@ const Footfall = () => {
                   csv: (r) => r.footfall_delta == null ? "" : r.footfall_delta.toFixed(2),
                 }] : []),
                 { key: "orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.orders) },
+                ...(compareMode !== "none" ? [{
+                  key: "orders_delta",
+                  label: "Δ Orders",
+                  numeric: true,
+                  sortValue: (r) => r.orders_delta == null ? -9999 : r.orders_delta,
+                  render: (r) => <Delta value={r.orders_delta} precision={1} />,
+                  csv: (r) => r.orders_delta == null ? "" : r.orders_delta.toFixed(2),
+                }] : []),
                 {
                   key: "conversion_rate",
                   label: "Conversion",
@@ -431,8 +445,41 @@ const Footfall = () => {
                   },
                   csv: (r) => r.conversion_rate?.toFixed(2),
                 },
-                { key: "abv", label: "ABV", numeric: true, render: (r) => fmtKES(r.abv), csv: (r) => r.abv?.toFixed(2) },
+                ...(compareMode !== "none" ? [{
+                  key: "conv_delta_pp",
+                  label: "Δ Conv (pp)",
+                  numeric: true,
+                  sortValue: (r) => r.conv_delta_pp == null ? -9999 : r.conv_delta_pp,
+                  render: (r) => {
+                    const pp = r.conv_delta_pp;
+                    if (pp == null || isNaN(pp)) return <span className="text-muted text-[11px]">n/a</span>;
+                    const pos = pp > 0.05;
+                    const neg = pp < -0.05;
+                    const cls = pos ? "text-[#059669]" : neg ? "text-[#dc2626]" : "text-muted";
+                    const arr = pos ? "▲" : neg ? "▼" : "—";
+                    const sign = pp > 0 ? "+" : "";
+                    return <span className={`${cls} font-semibold text-[11.5px] num`}>{arr} {sign}{pp.toFixed(2)}pp</span>;
+                  },
+                  csv: (r) => r.conv_delta_pp == null ? "" : r.conv_delta_pp.toFixed(2),
+                }] : []),
+                { key: "abv", label: "ABV", numeric: true, render: (r) => fmtKES(r.abv), csv: (r) => Math.round(r.abv || 0) },
+                ...(compareMode !== "none" ? [{
+                  key: "abv_delta",
+                  label: "Δ ABV",
+                  numeric: true,
+                  sortValue: (r) => r.abv_delta == null ? -9999 : r.abv_delta,
+                  render: (r) => <Delta value={r.abv_delta} precision={1} />,
+                  csv: (r) => r.abv_delta == null ? "" : r.abv_delta.toFixed(2),
+                }] : []),
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                ...(compareMode !== "none" ? [{
+                  key: "sales_delta",
+                  label: "Δ Sales",
+                  numeric: true,
+                  sortValue: (r) => r.sales_delta == null ? -9999 : r.sales_delta,
+                  render: (r) => <Delta value={r.sales_delta} precision={1} />,
+                  csv: (r) => r.sales_delta == null ? "" : r.sales_delta.toFixed(2),
+                }] : []),
               ]}
               rows={scopedEnriched}
             />
