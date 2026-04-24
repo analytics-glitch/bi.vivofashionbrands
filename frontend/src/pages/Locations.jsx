@@ -14,7 +14,7 @@ const Locations = () => {
   const filters = { dateFrom, dateTo, countries, channels };
 
   // Shared KPI state — guarantees Total Sales/Orders/Units match Overview & CEO Report.
-  const { kpis: rawKpis, loading: kpisLoading, error: kpisError } = useKpis();
+  const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
 
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
@@ -118,6 +118,10 @@ const Locations = () => {
         d_abv: prev ? pctDelta(basket, pAbv) : null,
         d_asp: prev ? pctDelta(asp, pAsp) : null,
         d_msi: prev ? pctDelta(msi, pMsi) : null,
+        // Raw previous-period values (exposed for table display / CSV export)
+        prev_abv: pAbv,
+        prev_orders: pOrders,
+        prev_sales: pSales,
       };
     });
   }, [rows, prevMap]);
@@ -140,6 +144,25 @@ const Locations = () => {
       msi: orders ? units / orders : 0,
     };
   }, [kpis]);
+
+  // Group-level previous-period totals (for KPI delta + prevValue).
+  const prevGroupTotals = useMemo(() => {
+    if (!rawKpisPrev) return null;
+    const sales = rawKpisPrev.total_sales || 0;
+    const orders = rawKpisPrev.total_orders || 0;
+    const units = rawKpisPrev.total_units || 0;
+    return {
+      total_sales: sales,
+      total_orders: orders,
+      total_units: units,
+      abv: orders ? sales / orders : (rawKpisPrev.avg_basket_size || 0),
+      asp: units ? sales / units : (rawKpisPrev.avg_selling_price || 0),
+      msi: orders ? units / orders : 0,
+    };
+  }, [rawKpisPrev]);
+
+  const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
+  const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
 
   const sorted = useMemo(() => {
     return [...enriched].sort((a, b) => {
@@ -176,23 +199,44 @@ const Locations = () => {
               testId="loc-kpi-sales"
               label="Total Sales"
               value={fmtKES(kpis.total_sales)}
-              showDelta={false}
+              delta={d(kpis.total_sales, prevGroupTotals?.total_sales)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.total_sales) : null}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
               testId="loc-kpi-orders"
               label="Total Orders"
               value={fmtNum(kpis.total_orders)}
-              showDelta={false}
+              delta={d(kpis.total_orders, prevGroupTotals?.total_orders)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? fmtNum(prevGroupTotals.total_orders) : null}
+              showDelta={compareMode !== "none"}
             />
             <KPICard
               testId="loc-kpi-units"
               label="Total Units"
               value={fmtNum(kpis.total_units)}
-              showDelta={false}
+              delta={d(kpis.total_units, prevGroupTotals?.total_units)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? fmtNum(prevGroupTotals.total_units) : null}
+              showDelta={compareMode !== "none"}
             />
-            <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)} showDelta={false} />
-            <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)} showDelta={false} />
-            <KPICard small testId="loc-kpi-msi" label="MSI" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)} showDelta={false} />
+            <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)}
+              delta={d(groupTotals.abv, prevGroupTotals?.abv)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.abv) : null}
+              showDelta={compareMode !== "none"} />
+            <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)}
+              delta={d(groupTotals.asp, prevGroupTotals?.asp)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.asp) : null}
+              showDelta={compareMode !== "none"} />
+            <KPICard small testId="loc-kpi-msi" label="MSI" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)}
+              delta={d(groupTotals.msi, prevGroupTotals?.msi)}
+              deltaLabel={compareLbl}
+              prevValue={prevGroupTotals && compareMode !== "none" ? prevGroupTotals.msi.toFixed(2) : null}
+              showDelta={compareMode !== "none"} />
           </div>
 
           {!selected && (
@@ -375,6 +419,17 @@ const Locations = () => {
                       render: (r) => <span className="font-semibold">{fmtKES(r.abv)}</span>,
                       csv: (r) => Math.round(r.abv || 0),
                     },
+                    ...(compareMode !== "none" ? [{
+                      key: "prev_abv",
+                      label: `ABV ${compareMode === "yesterday" ? "(Yd)" : compareMode === "last_month" ? "(LM)" : "(LY)"}`,
+                      numeric: true,
+                      render: (r) => (
+                        r.prev_abv == null
+                          ? <span className="text-muted text-[11px]">n/a</span>
+                          : <span className="text-muted">{fmtKES(r.prev_abv)}</span>
+                      ),
+                      csv: (r) => r.prev_abv == null ? "" : Math.round(r.prev_abv),
+                    }] : []),
                     { key: "orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.orders) },
                     {
                       key: "total_sales",
