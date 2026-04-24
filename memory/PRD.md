@@ -705,6 +705,20 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Product Performance by Category & Subcategory** (new). Two new
+  tables on the Products page that complement the existing Stock-to-
+  Sales tables with commercial metrics: Units Sold · Sales · % of
+  Sales · Orders · ABV (Sales ÷ Orders) · ASP (Sales ÷ Units) · MSI
+  (Units ÷ Orders) · Variance. Every metric gains a period-delta
+  cell (▲/▼ % vs Last Month / vs Last Year / vs Yesterday) when the
+  compare toggle is active. Backend `/analytics/stock-to-sales-by-
+  subcat` and `.../by-category` enriched with `orders` (joined from
+  `/subcategory-sales`) to enable the derived metrics. Subcategory
+  % of sales is computed client-side from the local total so upstream
+  doesn't need to change. Margin % / Return Rate columns deferred with
+  footnote — pending upstream cost/returns feed.
+  Reusable `ProductPerformance` sub-component keeps both tables in
+  lockstep and is ready to drop on any future product-performance view.
 - **Bug fix: mobile "Top locations by Total Sales" horizontal bar
   chart.** Location names were wrapping onto 2–3 lines and the right
   side of the chart had ~30% wasted space. Fix: rebalanced label/bar

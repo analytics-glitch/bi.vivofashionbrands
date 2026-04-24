@@ -1382,6 +1382,15 @@ async def analytics_sts_by_subcat(
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
     )
+    # Pull /subcategory-sales in parallel for `orders` (needed by callers to
+    # compute ABV / MSI at subcategory level). Keyed by subcategory.
+    sales_rows = await get_subcategory_sales(
+        date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
+    )
+    orders_by_subcat: Dict[str, int] = {
+        (r.get("subcategory") or ""): int(r.get("orders") or 0)
+        for r in (sales_rows or [])
+    }
     locs = _split_csv(locations) or _split_csv(channel)
     stock_by_subcat: Optional[Dict[str, float]] = None
     if locs:
@@ -1424,6 +1433,7 @@ async def analytics_sts_by_subcat(
             "variance": pct_sold - pct_stock,
             "sor_percent": r.get("sor_percent") or 0,
             "total_sales": r.get("total_sales") or 0,
+            "orders": orders_by_subcat.get(r.get("subcategory") or "", 0),
         })
     out.sort(key=lambda x: x["units_sold"], reverse=True)
     return out
@@ -1452,6 +1462,15 @@ async def analytics_sts_by_category(
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
     )
+    # Parallel pull of /subcategory-sales to enable orders-based metrics
+    # (ABV, MSI) at the category level after the subcategory→category roll-up.
+    sales_rows = await get_subcategory_sales(
+        date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
+    )
+    orders_by_subcat: Dict[str, int] = {
+        (r.get("subcategory") or ""): int(r.get("orders") or 0)
+        for r in (sales_rows or [])
+    }
     # See note in `analytics_sts_by_subcat` — scope stock side to the same POS
     # whether the client sent `locations` or `channel`.
     locs = _split_csv(locations) or _split_csv(channel)
@@ -1506,11 +1525,12 @@ async def analytics_sts_by_category(
         if cat not in agg:
             agg[cat] = {
                 "category": cat, "units_sold": 0, "current_stock": 0,
-                "total_sales": 0, "subcategories": 0,
+                "total_sales": 0, "subcategories": 0, "orders": 0,
             }
         agg[cat]["units_sold"] += r.get("units_sold") or 0
         agg[cat]["current_stock"] += r.get("current_stock") or 0
         agg[cat]["total_sales"] += r.get("total_sales") or 0
+        agg[cat]["orders"] += orders_by_subcat.get(r.get("subcategory") or "", 0)
         agg[cat]["subcategories"] += 1
 
     for v in agg.values():

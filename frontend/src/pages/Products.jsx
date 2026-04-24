@@ -24,13 +24,15 @@ const BRAND_OPTIONS = ["Vivo", "Safari", "Zoya", "Sowairina", "Third Party Brand
 
 const Products = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const [brands, setBrands] = useState([]);
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
   const [stockSales, setStockSales] = useState([]);
   const [stsByCat, setStsByCat] = useState([]);
+  const [stockSalesPrev, setStockSalesPrev] = useState([]);
+  const [stsByCatPrev, setStsByCatPrev] = useState([]);
   const [top, setTop] = useState([]);
   const [newStyles, setNewStyles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -40,11 +42,36 @@ const Products = () => {
   // Shared KPI state — identical to Overview / Locations / CEO Report.
   const { kpis, loading: kpisLoading, error: kpisError } = useKpis();
 
+  const compareLbl = compareMode === "last_month" ? "vs Last Month"
+    : compareMode === "last_year" ? "vs Last Year"
+    : compareMode === "yesterday" ? "vs Yesterday" : null;
+
+  // Previous-period range — mirror of the logic on Customers page.
+  const prevRange = useMemo(() => {
+    if (!compareMode || compareMode === "none") return null;
+    const f = new Date(dateFrom); const t = new Date(dateTo);
+    let fromPrev, toPrev;
+    if (compareMode === "last_month") {
+      fromPrev = new Date(f); fromPrev.setMonth(f.getMonth() - 1);
+      toPrev = new Date(t); toPrev.setMonth(t.getMonth() - 1);
+    } else if (compareMode === "last_year") {
+      fromPrev = new Date(f); fromPrev.setFullYear(f.getFullYear() - 1);
+      toPrev = new Date(t); toPrev.setFullYear(t.getFullYear() - 1);
+    } else {
+      // yesterday
+      fromPrev = new Date(f); fromPrev.setDate(f.getDate() - 1);
+      toPrev = new Date(t); toPrev.setDate(t.getDate() - 1);
+    }
+    const iso = (d) => d.toISOString().slice(0, 10);
+    return { date_from: iso(fromPrev), date_to: iso(toPrev) };
+  }, [compareMode, dateFrom, dateTo]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     const p = buildParams(filters);
+    const prevP = prevRange ? { ...p, ...prevRange } : null;
     // Brand filter is applied client-side (upstream `product` does prefix match
     // on product_name, not brand, so server-side filtering is unreliable).
     Promise.all([
@@ -53,13 +80,17 @@ const Products = () => {
       api.get("/analytics/stock-to-sales-by-category", { params: p }),
       api.get("/top-skus", { params: { ...p, limit: 200 } }),
       api.get("/analytics/new-styles", { params: p }),
+      prevP ? api.get("/analytics/stock-to-sales-by-subcat", { params: prevP }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      prevP ? api.get("/analytics/stock-to-sales-by-category", { params: prevP }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
     ])
-      .then(([s, ss, cat, t, ns]) => {
+      .then(([s, ss, cat, t, ns, ssPrev, catPrev]) => {
         if (cancelled) return;
         setSor(s.data || []);
         // Merchandise-only: exclude Accessories, Sale, Sample & Sale Items, null.
         setStockSales((ss.data || []).filter((r) => isMerchandise(r.subcategory)));
         setStsByCat((cat.data || []).filter((r) => r.category && !["Accessories", "Sale", "Other"].includes(r.category)));
+        setStockSalesPrev((ssPrev.data || []).filter((r) => isMerchandise(r.subcategory)));
+        setStsByCatPrev((catPrev.data || []).filter((r) => r.category && !["Accessories", "Sale", "Other"].includes(r.category)));
         setTop(t.data || []);
         setNewStyles(ns.data || []);
         touchLastUpdated();
@@ -68,7 +99,7 @@ const Products = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion]);
 
   // Client-side filter on results when multiple brands picked (upstream `product`
   // is a single-value filter).
@@ -204,6 +235,31 @@ const Products = () => {
             />
           </div>
 
+          {/* ---- Product Performance by Category / Subcategory ---- */}
+          <ProductPerformance
+            title="Product Performance · by Category"
+            testId="perf-category"
+            nameKey="category"
+            nameLabel="Category"
+            rows={stsByCat}
+            prevRows={stsByCatPrev}
+            compareLbl={compareLbl}
+            csvName="performance-by-category.csv"
+            subtitle="Commercial performance per category — sales, orders, avg basket value (ABV), avg selling price (ASP), multiple selling index (MSI). Margin % and return rate deferred — pending upstream cost/returns data."
+          />
+
+          <ProductPerformance
+            title="Product Performance · by Subcategory"
+            testId="perf-subcat"
+            nameKey="subcategory"
+            nameLabel="Subcategory"
+            rows={stockSales}
+            prevRows={stockSalesPrev}
+            compareLbl={compareLbl}
+            csvName="performance-by-subcategory.csv"
+            subtitle="Granular view — one row per merchandise subcategory. Period deltas shown beneath each metric when a comparison window is selected."
+          />
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="sor-k-avg" accent label="Avg Group SOR" value={fmtPct(avgSor)} icon={Gauge} showDelta={false} />
             <KPICard testId="sor-k-hi" label="Styles > 60%" value={fmtNum(hi)} icon={Star} showDelta={false} />
@@ -301,3 +357,114 @@ const Products = () => {
 };
 
 export default Products;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Product Performance sub-component — reused for both Category and Subcategory.
+// Renders Units / Sales / Orders / ABV / ASP / MSI with period-delta cells when
+// a previous-period dataset is supplied. Pure presentation; parent owns data.
+// ─────────────────────────────────────────────────────────────────────────────
+const pctChange = (c, p) => (p ? ((c - p) / p) * 100 : null);
+const MetricCell = ({ curr, prev, format, invert }) => {
+  const pc = pctChange(curr, prev);
+  const arrow = pc == null ? null : pc > 0 ? "▲" : pc < 0 ? "▼" : "●";
+  const good = invert ? (pc < 0) : (pc > 0);
+  const color = pc == null ? "text-muted" : Math.abs(pc) < 0.1 ? "text-muted" : good ? "text-brand" : "text-danger";
+  return (
+    <div className="inline-flex flex-col items-end leading-tight">
+      <span className="num font-semibold">{format(curr)}</span>
+      {pc != null && (
+        <span className={`text-[10px] font-semibold ${color}`}>{arrow} {Math.abs(pc).toFixed(1)}%</span>
+      )}
+    </div>
+  );
+};
+
+const ProductPerformance = ({ title, subtitle, testId, nameKey, nameLabel, rows, prevRows, compareLbl, csvName }) => {
+  // Ensure every row has pct_of_total_sales (category endpoint supplies it,
+  // subcategory endpoint does not — compute from the local total so both
+  // cases render consistently).
+  const totalSales = (rows || []).reduce((s, r) => s + (r.total_sales || 0), 0);
+  const prevMap = new Map((prevRows || []).map((r) => [r[nameKey], r]));
+  const decorated = (rows || []).map((r) => {
+    const units = r.units_sold || 0;
+    const sales = r.total_sales || 0;
+    const orders = r.orders || 0;
+    const pctSales = r.pct_of_total_sales != null ? r.pct_of_total_sales : (totalSales ? (sales / totalSales) * 100 : 0);
+    const abv = orders ? sales / orders : 0;
+    const asp = units ? sales / units : 0;
+    const msi = orders ? units / orders : 0;
+    const p = prevMap.get(r[nameKey]) || {};
+    const pUnits = p.units_sold || 0;
+    const pSales = p.total_sales || 0;
+    const pOrders = p.orders || 0;
+    return {
+      ...r, abv, asp, msi, pct_of_total_sales: pctSales,
+      _prev: {
+        units: pUnits, sales: pSales, orders: pOrders,
+        abv: pOrders ? pSales / pOrders : 0,
+        asp: pUnits ? pSales / pUnits : 0,
+        msi: pOrders ? pUnits / pOrders : 0,
+      },
+    };
+  });
+
+  const hasCompare = Boolean(compareLbl) && (prevRows || []).length > 0;
+
+  return (
+    <div className="card-white p-5" data-testid={testId}>
+      <SectionTitle
+        title={title}
+        subtitle={subtitle + (hasCompare ? ` Deltas ${compareLbl}.` : "")}
+      />
+      <SortableTable
+        testId={testId + "-table"}
+        exportName={csvName}
+        initialSort={{ key: "total_sales", dir: "desc" }}
+        columns={[
+          { key: nameKey, label: nameLabel, align: "left" },
+          { key: "units_sold", label: "Units Sold", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.units_sold} prev={r._prev.units} format={fmtNum} />
+              : (r) => fmtNum(r.units_sold),
+            csv: (r) => r.units_sold },
+          { key: "total_sales", label: "Sales", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.total_sales} prev={r._prev.sales} format={fmtKES} />
+              : (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>,
+            csv: (r) => r.total_sales },
+          { key: "pct_of_total_sales", label: "% of Sales", numeric: true,
+            render: (r) => fmtPct(r.pct_of_total_sales, 1),
+            csv: (r) => r.pct_of_total_sales?.toFixed(2) },
+          { key: "orders", label: "Orders", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.orders} prev={r._prev.orders} format={fmtNum} />
+              : (r) => fmtNum(r.orders),
+            csv: (r) => r.orders },
+          { key: "abv", label: "ABV", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.abv} prev={r._prev.abv} format={fmtKES} />
+              : (r) => fmtKES(r.abv),
+            csv: (r) => r.abv?.toFixed(0) },
+          { key: "asp", label: "ASP", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.asp} prev={r._prev.asp} format={fmtKES} />
+              : (r) => fmtKES(r.asp),
+            csv: (r) => r.asp?.toFixed(0) },
+          { key: "msi", label: "MSI", numeric: true,
+            render: hasCompare
+              ? (r) => <MetricCell curr={r.msi} prev={r._prev.msi} format={(v) => v.toFixed(2)} />
+              : (r) => r.msi.toFixed(2),
+            csv: (r) => r.msi?.toFixed(3) },
+          { key: "variance", label: "Variance %", numeric: true,
+            sortValue: (r) => Math.abs(r.variance || 0),
+            render: (r) => <VarianceCell value={r.variance} />,
+            csv: (r) => r.variance?.toFixed(2) },
+        ]}
+        rows={decorated}
+      />
+      <p className="text-[11px] text-muted italic mt-2">
+        ABV = Sales ÷ Orders · ASP = Sales ÷ Units Sold · MSI = Units ÷ Orders. Margin % and Return Rate columns deferred — pending upstream cost / returns data feed.
+      </p>
+    </div>
+  );
+};
