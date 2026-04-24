@@ -315,7 +315,7 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-chart-footfall">
             <SectionTitle
               title={`Footfall by location · ${byFootfall.length}`}
-              subtitle="All locations sorted by footfall descending"
+              subtitle="All locations sorted by footfall descending — identify your busiest stores and cross-check against conversion to spot locations leaking potential sales."
             />
             {byFootfall.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: Math.max(320, 24 + byFootfall.length * 20) }}>
@@ -341,7 +341,7 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-chart-conversion">
             <SectionTitle
               title={`Conversion rate by location · ${byConversion.length}`}
-              subtitle="Red = below group avg · Green = at/above"
+              subtitle="Visitor-to-buyer conversion by location. Red = below group average (opportunity to coach staff or re-stage floor). Green = at or above (replicate what's working)."
               action={
                 <span className="text-[11px] text-muted">
                   Avg: <span className="font-bold text-brand">{fmtPct(groupAvgConv, 2)}</span>
@@ -377,7 +377,7 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-table">
             <SectionTitle
               title="Location-level breakdown"
-              subtitle={`${scopedEnriched.length} locations · click any column to sort`}
+              subtitle={`${scopedEnriched.length} locations · click any column to sort. Surface the best and worst conversion stores side-by-side, then act: coach low-conversion store managers, replicate high-conversion practices.`}
               action={
                 <span className="pill-neutral flex items-center gap-1.5">
                   <TrendUp size={12} /> Conversion benchmark: {fmtPct(groupAvgConv, 2)}

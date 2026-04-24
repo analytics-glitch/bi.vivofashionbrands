@@ -495,7 +495,7 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="chart-inv-location">
             <SectionTitle
               title={`Stock by location · ${stockByLocation.length} locations`}
-              subtitle="All locations sorted by stock descending"
+              subtitle="All locations sorted by stock-on-hand descending — spot which warehouses and stores are holding the bulk of your inventory and whether the distribution matches sales demand."
             />
             {stockByLocation.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 24 + stockByLocation.length * 22 }}>
@@ -516,7 +516,7 @@ const Inventory = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card-white p-5" data-testid="chart-inv-category">
-              <SectionTitle title="Inventory by Category" subtitle="Merchandise groupings only — Accessories &amp; Sale excluded" />
+              <SectionTitle title="Inventory by Category" subtitle="Stock distribution across the 7 merchandise categories. Use to check whether your inventory mix matches the sales mix on the Products page." />
               {invByCategory.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
@@ -537,7 +537,7 @@ const Inventory = () => {
               )}
             </div>
             <div className="card-white p-5" data-testid="chart-inv-subcat">
-              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 fashion subcategories" />
+              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 subcategories by stock-on-hand. Heavy stock on low-selling subcategories is overstock; thin stock on best-sellers is stockout risk." />
               {invBySubcat.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
@@ -627,7 +627,7 @@ const Inventory = () => {
             <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">
               <SectionTitle
                 title={`Understocked subcategories · ${understockedSubcats.length}`}
-                subtitle="Selling more than their share of inventory. Understock % = % of Units Sold − % of Total Stock."
+                subtitle="Subcategories where sales share exceeds inventory share. These are your replenishment priorities — re-order before they go fully out of stock."
               />
               <SortableTable
                 testId="understocked"
@@ -657,7 +657,7 @@ const Inventory = () => {
             <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
               <SectionTitle
                 title={`Low-stock alerts · ${lowStockByStyle.length} styles`}
-                subtitle="Merchandise styles with ≤10 total available units across all SKUs in the current scope"
+                subtitle="Merchandise styles with ≤10 total available units across all SKUs in the current scope — imminent stockout risk. Review re-order list and fast-track POs."
               />
               <SortableTable
                 testId="low-stock"
@@ -685,7 +685,7 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
               title="Stock cover (units-sold multiplier) by location"
-              subtitle="multiplier = current_stock ÷ units_sold_period — a HIGH value means low velocity, not necessarily overstock. Weeks of Cover uses the last-4-week weekly velocity and is more actionable."
+              subtitle="Stock-to-units-sold multiplier — a HIGH value means low velocity (potential overstock). Weeks of Cover (next table) uses last-4-week velocity and is more actionable for replenishment decisions."
             />
             <SortableTable
               testId="sts-location"
@@ -741,7 +741,7 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="weeks-of-cover">
             <SectionTitle
               title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
-              subtitle="Weeks = current stock ÷ (units sold in last 4 weeks ÷ 4). Red <2w · Amber 2–4w · Green >4w."
+              subtitle="Weeks of stock cover = current stock ÷ average weekly velocity (last 4 weeks). Red <2w = urgent replenishment · Amber 2–4w = watch · Green >4w = safe. Act on reds before the next shipment cycle."
             />
             <SortableTable
               testId="woc"

@@ -705,6 +705,28 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Slice 2 — Purpose / "So What?" subtitle pass** across Customers,
+  Inventory, Locations, Footfall, IBT and Overview. Every `SectionTitle`
+  whose subtitle was mechanical ("Sorted by x descending") now
+  explains the **insight** + the **action** in plain English. Examples:
+  - Footfall · *Conversion by location* → "Visitor-to-buyer conversion
+    by location. Red = below group average (opportunity to coach staff
+    or re-stage floor). Green = at or above (replicate what's
+    working)."
+  - Inventory · *Weeks of Cover* → "Weeks of stock cover = current
+    stock ÷ average weekly velocity (last 4 weeks). Red <2w = urgent
+    replenishment · Amber 2–4w = watch · Green >4w = safe."
+  - Overview · *Country split* → "Total sales by market — see which
+    country is carrying the group and whether growth is balanced or
+    concentrated."
+  - Overview · *Top 20 Styles* → "Protect stock cover on these styles
+    and use them as anchor pieces in the next campaign or window
+    display."
+  - Customers · *Customer Crosswalk* → "Pairs with high overlap
+    indicate customers who shop both stores — fertile ground for
+    cross-promotion, shared loyalty events, and joint stock planning."
+  No layout changes, pure copy — tone is friendlier, every chart now
+  passes the four-question test (insight · audience · action · decision).
 - **Daily Briefing card** (new, top of Overview). Personalised greeting
   + 2–4 narrative bullets generated from existing KPIs — no new API
   calls. Bullets:

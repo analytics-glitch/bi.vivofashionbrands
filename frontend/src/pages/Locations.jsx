@@ -517,7 +517,7 @@ const Locations = () => {
               <div className="card-white p-5">
                 <SectionTitle
                   title={selected}
-                  subtitle="Top 10 styles at this channel"
+              subtitle="Top 10 styles at this channel — the best-sellers driving this location's revenue. Protect their stock cover and feature them in local marketing."
                   action={
                     <button
                       onClick={() => setSelected(null)}

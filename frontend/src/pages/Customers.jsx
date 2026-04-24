@@ -324,7 +324,7 @@ const Customers = () => {
                 <div><div className="eyebrow">Last Purchase</div><div className="text-[13px]">{fmtDate(selectedCustomer.last_purchase_date) || "—"}</div></div>
               </div>
               <div className="mt-5">
-                <SectionTitle title="Top products bought" subtitle="Ranked by units purchased" />
+                <SectionTitle title="Top products bought" subtitle="Ranked by units purchased by this customer — use to personalise next-visit recommendations and reactivation offers." />
                 {loadingProducts ? <Loading /> : customerProducts.length === 0 ? (
                   <Empty label="No product history available for this customer." />
                 ) : (
@@ -1095,7 +1095,7 @@ const Customers = () => {
           <div className="card-white p-5" data-testid="customer-crosswalk-section">
             <SectionTitle
               title="Stores sharing customers"
-              subtitle="Which POS locations attract the same shoppers — handy for cross-promotion and loyalty campaigns"
+              subtitle="Which POS locations share the same shoppers. Pairs with high overlap indicate customers who shop both stores — fertile ground for cross-promotion, shared loyalty events, and joint stock planning."
             />
             {crosswalk.length === 0 ? <UpstreamNotReady label="No cross-shop overlap detected in the selected window." /> : (
               <SortableTable

@@ -606,7 +606,7 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title={`Top locations by Total Sales · ${top15.length}`} subtitle="All POS locations in scope, ranked by sales" />
+              <SectionTitle title={`Top locations by Total Sales · ${top15.length}`} subtitle="All POS locations ranked by revenue — spot the volume leaders and flag any laggards that deserve a conversation with their store manager." />
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
@@ -642,7 +642,7 @@ const Overview = () => {
             </div>
 
             <div className="card-white p-5" data-testid="chart-country-split">
-              <SectionTitle title="Country split" subtitle="Total Sales by market · sorted descending" />
+              <SectionTitle title="Country split" subtitle="Total sales by market — see which country is carrying the group and whether growth is balanced or concentrated." />
               {countryBars.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 24 + countryBars.length * 56 }}>
                   <ResponsiveContainer>
@@ -676,7 +676,7 @@ const Overview = () => {
               )}
 
               <div className="mt-6" data-testid="chart-channel-split">
-                <SectionTitle title="Channel split" subtitle="Retail · Online · Wholesale" />
+                <SectionTitle title="Channel split" subtitle="Retail · Online · Wholesale share of total sales — track whether the channel mix is shifting as planned." />
                 {channelBars.length === 0 ? <Empty /> : (
                   <div style={{ width: "100%", height: 24 + channelBars.length * 48 }}>
                     <ResponsiveContainer>
@@ -833,7 +833,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="category-chart">
-            <SectionTitle title="Sales by Category" subtitle="High-level category groupings (Dresses, Tops, Bottoms, …)" />
+            <SectionTitle title="Sales by Category" subtitle="Merchandise-mix at a glance — is your revenue concentrated in one category or diversified? Compare vs previous period to spot category-level momentum." />
             {salesByCategory.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
@@ -895,7 +895,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="top-styles-section">
-            <SectionTitle title="Top 20 Styles" subtitle="Ranked by units sold. Click any column to re-sort." />
+            <SectionTitle title="Top 20 Styles" subtitle="Ranked by units sold. Protect stock cover on these styles and use them as anchor pieces in the next campaign or window display. Click any column to re-sort." />
             <SortableTable
               testId="top-styles"
               exportName="top-20-styles.csv"

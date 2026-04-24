@@ -120,7 +120,7 @@ const IBT = () => {
           <div className="card-white p-5" data-testid="ibt-table-card">
             <SectionTitle
               title={`Transfer list · ${filtered.length} suggested moves`}
-              subtitle="Sorted by estimated revenue uplift descending. Export to your logistics workflow."
+              subtitle="Proposed inter-branch transfers — move surplus stock from source stores to understocked destinations to prevent lost sales. Sorted by estimated revenue uplift descending. Export to your logistics workflow."
             />
             {filtered.length === 0 ? (
               <Empty label="No transfer opportunities found for the current window. Try widening the date range." />
