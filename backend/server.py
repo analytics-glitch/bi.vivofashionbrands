@@ -2601,6 +2601,7 @@ from user_activity import router as user_activity_router  # noqa: E402
 from thumbnails import router as thumbnails_router  # noqa: E402
 from notifications import router as notifications_router  # noqa: E402
 from search import router as search_router  # noqa: E402
+from ask import router as ask_router  # noqa: E402
 
 
 @api_router.get("/leaderboard/streaks")
@@ -2630,6 +2631,7 @@ app.include_router(user_activity_router)
 app.include_router(thumbnails_router)
 app.include_router(notifications_router)
 app.include_router(search_router)
+app.include_router(ask_router)
 
 
 @app.get("/api/health")
