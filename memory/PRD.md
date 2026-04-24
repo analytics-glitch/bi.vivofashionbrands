@@ -752,4 +752,28 @@ API, (c) figure from a different source system. Pending user confirmation.
   tight strip; rich per-bar tooltip shows count, share, pp delta vs
   comparison. Backend fetches `/customer-frequency` for the comparison
   window when `compareMode !== none`.
+- **Top N Customers table — insight-oriented rebuild**:
+  - Configurable Top N (10 / 20 / 50 / 100 chips); client-side segment
+    filter (All / VIP 5+ / Loyal 3–4 / Emerging 2 / New 1 / Lapsing
+    60+ days).
+  - New columns: Segment pill (VIP / Loyal / Emerging / New),
+    Customer Since (first_purchase_date), Days Since Last Purchase
+    (pill-coloured green / amber / red at 60 / 180-day thresholds),
+    Profile Completeness (✅ complete / ⚠️ partial / — walk-in),
+    Actions (tel: dial + eye-icon drill-down).
+  - Clickable name opens the existing customer-detail drawer with
+    full order history + products.
+  - Walk-in / anonymous rows (no name AND no phone) rendered with a
+    "Walk-in / Unregistered" amber pill instead of blank dashes so
+    data-quality issues are visible.
+  - Rank movement: when compare is active, fetches previous-period
+    Top N and shows 🆕 flag for new entrants + ▲/▼ rank delta.
+  - Summary insight bar above the table: Top N sales contribution,
+    % of total sales (from shared `useKpis`), repeat rate, avg spend.
+  - Customer ID column hidden by default (toggle button on the header
+    to reveal); CSV export filename encodes filters and period
+    (e.g. `top-20-customers_kenya_all-pos_2026-04-24.csv`).
+  - Deferred items documented in the UI footnote: email (upstream does
+    not expose `res.partner.email`), margin contribution,
+    per-customer favourite category/location, return rate.
 

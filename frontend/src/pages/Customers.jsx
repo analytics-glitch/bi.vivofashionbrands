@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useKpis } from "@/lib/useKpis";
 import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
-  MagnifyingGlass, X, UserCircle,
+  MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy,
 } from "@phosphor-icons/react";
 import {
   BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
@@ -29,6 +30,32 @@ const maskPhone = (p) => {
   return `${digits.slice(0, 4)}***${digits.slice(-3)}`;
 };
 
+// Raw digits for tel: link. Returns null if unusable.
+const telHref = (p) => {
+  if (!p) return null;
+  const digits = String(p).replace(/\D/g, "");
+  return digits.length >= 7 ? `tel:${digits}` : null;
+};
+
+// Loyalty segment classifier (from total_orders in the period).
+// 1 order → New, 2 → Emerging, 3-4 → Loyal, 5+ → VIP.
+const segmentFor = (orders) => {
+  const n = orders || 0;
+  if (n >= 5) return { key: "vip", label: "VIP", cls: "pill-green", icon: "★" };
+  if (n >= 3) return { key: "loyal", label: "Loyal", cls: "pill-neutral", icon: "◆" };
+  if (n === 2) return { key: "emerging", label: "Emerging", cls: "pill-amber", icon: "△" };
+  if (n === 1) return { key: "new", label: "New", cls: "pill-neutral", icon: "○" };
+  return { key: "unknown", label: "—", cls: "pill-neutral", icon: "" };
+};
+
+// Days since a YYYY-MM-DD or ISO date to today.
+const daysSince = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)));
+};
+
 // Delta pill vs previous period
 const Delta = ({ curr, prev, invert }) => {
   if (prev == null || curr == null) return null;
@@ -47,6 +74,8 @@ const Delta = ({ curr, prev, invert }) => {
 const Customers = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  // Shared KPIs — used to compute Top N's % share of total sales.
+  const { kpis } = useKpis();
 
   // primary period
   const [cust, setCust] = useState(null);
@@ -75,6 +104,14 @@ const Customers = () => {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [customerProducts, setCustomerProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
+
+  // Top N table controls. UI chip changes `topN`, which re-fetches.
+  // `topSegment` is a client-side filter (VIP / Loyal / Emerging / New /
+  // Lapsing). `showCustomerId` toggles visibility of the technical ID.
+  const [topN, setTopN] = useState(20);
+  const [topSegment, setTopSegment] = useState("all");
+  const [showCustomerId, setShowCustomerId] = useState(false);
+  const [topPrev, setTopPrev] = useState([]);
 
   // Compute the previous-period range
   const prevRange = useMemo(() => {
@@ -112,7 +149,7 @@ const Customers = () => {
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message));
 
     const rest = [
-      ["top", api.get("/top-customers", { params: { ...dateP, limit: 20 } }).catch(() => ({ data: [] }))],
+      ["top", api.get("/top-customers", { params: { ...dateP, limit: topN } }).catch(() => ({ data: [] }))],
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", { params: { days: churnDays, limit: 500 } }).catch(() => ({ data: [] }))],
@@ -120,17 +157,19 @@ const Customers = () => {
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
       ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
+      topPrev: setTopPrev,
     };
     for (const [key, p] of rest) {
       p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
 
   // debounced search
   useEffect(() => {
@@ -768,30 +807,279 @@ const Customers = () => {
             );
           })()}
 
-          {/* ---- Top 20 customers (with City) ---- */}
-          <div className="card-white p-5" data-testid="top-customers-section">
-            <SectionTitle title="Top 20 Customers" subtitle="Ranked by total sales in the selected window" />
-            {top.length === 0 ? <UpstreamNotReady /> : (
-              <SortableTable
-                testId="top-customers"
-                exportName="top-20-customers.csv"
-                initialSort={{ key: "total_sales", dir: "desc" }}
-                columns={[
-                  { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
-                  { key: "customer_id", label: "Customer ID", align: "left", render: (r) => <span className="text-muted num text-[11px]">{r.customer_id || "—"}</span>, csv: (r) => r.customer_id },
-                  { key: "customer_name", label: "Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[200px] inline-block">{r.customer_name || "—"}</span> },
-                  { key: "phone", label: "Phone", align: "left", render: (r) => <span className="text-muted">{maskPhone(r.phone)}</span>, csv: (r) => maskPhone(r.phone) },
-                  { key: "city", label: "City", align: "left", render: (r) => r.city || "—", csv: (r) => r.city },
-                  { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
-                  { key: "total_units", label: "Units", numeric: true, render: (r) => fmtNum(r.total_units) },
-                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
-                  { key: "avg_basket", label: "Avg Basket", numeric: true, render: (r) => fmtKES(r.avg_basket), csv: (r) => r.avg_basket },
-                  { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
-                ]}
-                rows={top}
-              />
-            )}
-          </div>
+          {/* ---- Top N Customers (enhanced) ---- */}
+          {(() => {
+            // Decorate rows with derived fields (segment, days_since, rank,
+            // rank_delta, is_new_to_top, profile_completeness).
+            const prevRankMap = new Map((topPrev || []).map((r, i) => [r.customer_id, i + 1]));
+            const decorated = (top || []).map((r, i) => {
+              const rank = i + 1;
+              const seg = segmentFor(r.total_orders);
+              const daysLast = daysSince(r.last_purchase_date);
+              const isAnonymous = !r.customer_name && !r.phone;
+              const completeness =
+                isAnonymous ? "walk_in"
+                  : !r.customer_name || !r.phone || !r.city ? "partial"
+                  : "complete";
+              const prevRank = prevRankMap.get(r.customer_id) || null;
+              const rankDelta = prevRank ? prevRank - rank : null; // +ve = moved up
+              const isNewToTop = compareMode !== "none" && topPrev.length > 0 && !prevRankMap.has(r.customer_id);
+              return { ...r, rank, seg, daysLast, completeness, prevRank, rankDelta, isNewToTop };
+            });
+
+            // Segment-filter chip
+            const filtered = decorated.filter((r) => {
+              if (topSegment === "all") return true;
+              if (topSegment === "lapsing") return (r.daysLast || 0) > 60;
+              return r.seg.key === topSegment;
+            });
+
+            // Summary insight — pct of total_sales comes from shared KPIs.
+            const sumTopSales = decorated.reduce((s, r) => s + (r.total_sales || 0), 0);
+            const totalSales = kpis?.total_sales || 0;
+            const pctOfTotal = totalSales ? (sumTopSales / totalSales) * 100 : 0;
+            const repeatCount = decorated.filter((r) => (r.total_orders || 0) >= 2).length;
+            const repeatRateTop = decorated.length ? (repeatCount / decorated.length) * 100 : 0;
+            const avgSpend = decorated.length ? sumTopSales / decorated.length : 0;
+
+            // CSV filename reflects filter state
+            const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
+            const csvCountry = countries.length === 1 ? slug(countries[0]) : countries.length ? `${countries.length}-countries` : "all-countries";
+            const csvChannel = channels.length ? `${channels.length}-pos` : "all-pos";
+            const csvDate = new Date().toISOString().slice(0, 10);
+            const csvFilename = `top-${topN}-customers_${csvCountry}_${csvChannel}_${csvDate}.csv`;
+
+            const SEG_CHIPS = [
+              ["all", "All"],
+              ["vip", "VIP (5+ orders)"],
+              ["loyal", "Loyal (3–4)"],
+              ["emerging", "Emerging (2)"],
+              ["new", "New (1)"],
+              ["lapsing", "Lapsing (60+ days)"],
+            ];
+            const TOP_N_OPTIONS = [10, 20, 50, 100];
+
+            return (
+              <div className="card-white p-5" data-testid="top-customers-section">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <SectionTitle
+                    title={`Top ${topN} Customers`}
+                    subtitle="Ranked by total sales in the selected window. Click a name to open the full profile."
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomerId((v) => !v)}
+                    data-testid="toggle-customer-id"
+                    className="text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-border hover:border-brand/40 hover:bg-brand-soft/50 bg-white"
+                  >
+                    {showCustomerId ? "Hide Customer ID" : "Show Customer ID"}
+                  </button>
+                </div>
+
+                {/* ---- Insight bar ---- */}
+                {decorated.length > 0 && (
+                  <div
+                    className="rounded-xl bg-brand-soft/40 border border-brand/30 text-brand-deep p-3 text-[12.5px] my-3"
+                    data-testid="top-insight"
+                  >
+                    <strong>
+                      Top {decorated.length} customers contributed {fmtKES(sumTopSales)}
+                      {totalSales > 0 ? ` — ${pctOfTotal.toFixed(1)}% of total sales.` : "."}
+                    </strong>{" "}
+                    Repeat rate among top {decorated.length}: {repeatRateTop.toFixed(0)}%. Avg spend: {fmtKES(avgSpend)}.
+                  </div>
+                )}
+
+                {/* ---- Top-N selector + segment chips ---- */}
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <span className="text-[11px] text-muted uppercase tracking-wider">Top:</span>
+                  {TOP_N_OPTIONS.map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setTopN(n)}
+                      data-testid={`top-n-${n}`}
+                      className={`px-2.5 py-1 rounded-lg text-[11.5px] font-semibold transition-colors border ${
+                        topN === n
+                          ? "bg-brand text-white border-brand"
+                          : "bg-white text-foreground/70 border-border hover:border-brand/40"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                  <span className="mx-2 h-5 border-l border-border" />
+                  <span className="text-[11px] text-muted uppercase tracking-wider">Segment:</span>
+                  {SEG_CHIPS.map(([k, label]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setTopSegment(k)}
+                      data-testid={`seg-chip-${k}`}
+                      className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-colors border ${
+                        topSegment === k
+                          ? "bg-brand-deep text-white border-brand-deep"
+                          : "bg-white text-foreground/70 border-border hover:border-brand/40"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {decorated.length === 0 ? <UpstreamNotReady /> : filtered.length === 0 ? (
+                  <Empty label={`No customers match "${SEG_CHIPS.find(([k]) => k === topSegment)?.[1] || topSegment}" in the Top ${topN}.`} />
+                ) : (
+                  <SortableTable
+                    testId="top-customers"
+                    exportName={csvFilename}
+                    initialSort={{ key: "total_sales", dir: "desc" }}
+                    columns={[
+                      {
+                        key: "rank", label: "#", align: "left", sortable: false,
+                        render: (r) => (
+                          <div className="flex items-center gap-1 text-[11px]">
+                            <span className="text-muted num font-semibold">{r.rank}</span>
+                            {r.isNewToTop && (
+                              <span title={`New entrant this period`} className="pill-green !px-1 !py-0 text-[9px]" data-testid="top-new-entrant">🆕</span>
+                            )}
+                            {r.rankDelta != null && r.rankDelta !== 0 && (
+                              <span
+                                title={`${r.rankDelta > 0 ? "Moved up" : "Moved down"} ${Math.abs(r.rankDelta)} place${Math.abs(r.rankDelta) === 1 ? "" : "s"} vs comparison period`}
+                                className={`text-[10px] font-bold ${r.rankDelta > 0 ? "text-brand" : "text-danger"}`}
+                              >
+                                {r.rankDelta > 0 ? "▲" : "▼"}{Math.abs(r.rankDelta)}
+                              </span>
+                            )}
+                          </div>
+                        ),
+                        csv: (r) => r.rank,
+                      },
+                      ...(showCustomerId ? [{
+                        key: "customer_id", label: "Customer ID", align: "left",
+                        render: (r) => <span className="text-muted num text-[11px]">{r.customer_id || "—"}</span>,
+                        csv: (r) => r.customer_id,
+                      }] : []),
+                      {
+                        key: "customer_name", label: "Name", align: "left",
+                        render: (r) => (
+                          r.completeness === "walk_in" ? (
+                            <span className="pill-amber" title="Anonymous / walk-in sale — customer profile not captured in Odoo">Walk-in / Unregistered</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openCustomer(r)}
+                              data-testid="top-customer-name"
+                              title="Open full customer profile"
+                              className="font-medium text-brand-deep hover:text-brand underline-offset-2 hover:underline break-words max-w-[200px] inline-block text-left"
+                            >
+                              {r.customer_name || "—"}
+                            </button>
+                          )
+                        ),
+                        csv: (r) => r.customer_name || (r.completeness === "walk_in" ? "Walk-in / Unregistered" : ""),
+                      },
+                      {
+                        key: "segment", label: "Segment", align: "left",
+                        sortValue: (r) => ({ vip: 4, loyal: 3, emerging: 2, new: 1, unknown: 0 }[r.seg.key] || 0),
+                        render: (r) => <span className={r.seg.cls}>{r.seg.icon} {r.seg.label}</span>,
+                        csv: (r) => r.seg.label,
+                      },
+                      {
+                        key: "phone", label: "Phone", align: "left",
+                        render: (r) => {
+                          if (!r.phone) return <span className="text-muted">—</span>;
+                          const href = telHref(r.phone);
+                          const masked = maskPhone(r.phone);
+                          return href
+                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{masked}</a>
+                            : <span className="text-muted">{masked}</span>;
+                        },
+                        csv: (r) => maskPhone(r.phone),
+                      },
+                      { key: "city", label: "City", align: "left", render: (r) => r.city || <span className="text-muted">—</span>, csv: (r) => r.city || "" },
+                      { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
+                      { key: "total_units", label: "Units", numeric: true, render: (r) => fmtNum(r.total_units) },
+                      {
+                        key: "total_sales", label: "Total Sales", numeric: true,
+                        render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>,
+                        csv: (r) => r.total_sales,
+                      },
+                      {
+                        key: "avg_basket", label: "Avg Basket", numeric: true,
+                        // For 1-order customers avg_basket = total_sales which is redundant;
+                        // show a muted dash with hover tip.
+                        render: (r) => (r.total_orders || 0) >= 2
+                          ? fmtKES(r.avg_basket)
+                          : <span className="text-muted" title="Single-order customer — basket equals total sales">—</span>,
+                        csv: (r) => r.avg_basket,
+                      },
+                      {
+                        key: "first_purchase_date", label: "Customer Since",
+                        render: (r) => fmtDate(r.first_purchase_date) || "—",
+                        csv: (r) => r.first_purchase_date || "",
+                      },
+                      {
+                        key: "last_purchase_date", label: "Last Purchase",
+                        render: (r) => fmtDate(r.last_purchase_date) || "—",
+                        csv: (r) => r.last_purchase_date || "",
+                      },
+                      {
+                        key: "days_since_last_purchase", label: "Days Since", numeric: true,
+                        sortValue: (r) => r.daysLast ?? -1,
+                        render: (r) => {
+                          if (r.daysLast == null) return <span className="text-muted">—</span>;
+                          const cls = r.daysLast > 180 ? "pill-red" : r.daysLast > 60 ? "pill-amber" : "pill-green";
+                          return <span className={cls}>{fmtNum(r.daysLast)}d</span>;
+                        },
+                        csv: (r) => r.daysLast ?? "",
+                      },
+                      {
+                        key: "profile_completeness", label: "Profile", align: "left",
+                        sortValue: (r) => ({ complete: 2, partial: 1, walk_in: 0 }[r.completeness] || 0),
+                        render: (r) => {
+                          if (r.completeness === "complete") return <span className="pill-green text-[10px]" title="Name, phone and city on file">✅</span>;
+                          if (r.completeness === "partial") return <span className="pill-amber text-[10px]" title="Some contact fields missing (name / phone / city)">⚠️</span>;
+                          return <span className="pill-neutral text-[10px]" title="Anonymous / walk-in">—</span>;
+                        },
+                        csv: (r) => r.completeness,
+                      },
+                      {
+                        key: "actions", label: "", align: "left", sortable: false,
+                        render: (r) => {
+                          const href = telHref(r.phone);
+                          return (
+                            <div className="inline-flex items-center gap-1.5" data-testid="top-actions">
+                              {href ? (
+                                <a href={href} className="p-1 rounded hover:bg-panel" title="Call / dial"><Phone size={13} /></a>
+                              ) : (
+                                <span className="p-1 text-muted/40" title="No phone on file"><Phone size={13} /></span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openCustomer(r)}
+                                disabled={r.completeness === "walk_in"}
+                                title={r.completeness === "walk_in" ? "No profile for walk-in sale" : "View full profile"}
+                                className="p-1 rounded hover:bg-panel disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                <Eye size={13} />
+                              </button>
+                            </div>
+                          );
+                        },
+                        csv: () => "",
+                      },
+                    ]}
+                    rows={filtered}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2">
+                  <Trophy size={11} className="inline mr-1" weight="bold" />
+                  Email and margin contribution columns are deferred — upstream Vivo BI API does not yet expose <code>res.partner.email</code> or per-customer margin. Favorite category per customer is available on profile drill-down.
+                </p>
+              </div>
+            );
+          })()}
 
           {/* ---- Store cross-shop (customer-crosswalk) ---- */}
           <div className="card-white p-5" data-testid="customer-crosswalk-section">
