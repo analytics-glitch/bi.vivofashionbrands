@@ -1470,3 +1470,42 @@ Iteration 29: all intent types verified end-to-end, auth guards + 400 edge cases
 - Changed: `/app/backend/server.py` (mount ask_router)
 - Changed: `/app/frontend/src/components/GlobalSearch.jsx` (Ask mode state, toggle, panel render, examples, followups)
 
+## v31 — Net-Sales display fix for channel/location totals (Feb 2026)
+
+### The bug
+Upstream `/api/kpis.total_sales` and `/api/sales-summary[*].total_sales` are both **gross-minus-discount** — they still INCLUDE returns. Every channel/location sales view (KPI cards, per-store cards, bar charts, rank tables) was therefore overstating revenue. Example: Online - Shop Zetu showed 327,174 but the real net was 261,024.
+
+### Fix
+Centralised the normalisation at two single points — zero risk of missed display sites.
+
+**1. `fetchKpis` in `/app/frontend/src/lib/useKpis.js`** now swaps:
+```js
+total_sales ← net_sales   // used everywhere as "Total Sales"
+net_sales   ← net_sales   // unchanged
+gross_sales ← (orig gross_sales || orig total_sales)  // preserved for calcs that need it
+```
+Every page using `useKpis` (Overview, Locations, Footfall, Products, CEO Report, Customers) instantly gets the net figure in its KPI cards.
+
+**2. New `normaliseSalesRows(rows)` helper in `/app/frontend/src/lib/api.js`** applied at the `/sales-summary` fetch boundary in Overview, Locations, Footfall, CEO Report, DataQuality. Swaps `total_sales` with `net_sales` per row; keeps original gross under `gross_sales`.
+
+### Math preserved where gross is correct
+- **DataQuality return-rate** formula explicitly switched to `returns ÷ gross_sales` (so normalisation doesn't inflate the ratio). Display figures still show net.
+- **Locations enriched memo** return_rate also uses `gross_sales` as denominator.
+
+### Backend touch-ups
+- `/api/analytics/sell-through-by-location` now returns `total_sales = net_sales` per row.
+- `ask.py _fetch_stores` prefers `net_sales` when ranking stores for the "top stores by sales" NL query.
+
+### What was NOT changed (by design)
+- Style-level `total_sales` (Products, ReOrder, Pricing, Inventory SOR) — upstream `/top-skus`, `/sor` don't expose per-style returns, and these aren't channel/location totals.
+- Customer-level `total_sales` / `total_spend` (Customers page) — customer lifetime spend is a different concept; `/top-customers` field semantics unchanged.
+
+### Testing
+Iteration 30: Overview and Locations `Total Sales` KPI cards now agree (KES 3,348,314 net) — confirming the cross-page consistency goal. Zero regressions. `/app/test_reports/iteration_30.json` — 6/6 pytest green.
+
+### Files changed
+- Changed: `/app/frontend/src/lib/useKpis.js`, `/app/frontend/src/lib/api.js`
+- Changed: `/app/frontend/src/pages/{Overview,Locations,Footfall,CEOReport,DataQuality}.jsx`
+- Changed: `/app/frontend/src/components/WhatChangedBelt.jsx`
+- Changed: `/app/backend/server.py` (sell-through endpoint), `/app/backend/ask.py` (_fetch_stores)
+
