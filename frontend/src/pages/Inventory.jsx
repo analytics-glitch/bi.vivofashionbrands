@@ -44,6 +44,9 @@ const Inventory = () => {
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  // Include warehouse / wholesale / holding stock in the POS-scoped STS
+  // tables. Off by default — most users want pure shop-floor stock.
+  const [includeWarehouse, setIncludeWarehouse] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 120);
@@ -61,6 +64,7 @@ const Inventory = () => {
     const dateParams = {
       date_from: dateFrom, date_to: dateTo,
       country: countryCsv, locations: locationsCsv,
+      include_warehouse: includeWarehouse ? 1 : undefined,
     };
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
@@ -84,7 +88,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -351,16 +355,38 @@ const Inventory = () => {
         </p>
         {(countries.length > 0 || channels.length > 0) && (
           <div
-            className="mt-2 inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"
-            data-testid="inv-active-filter-banner"
+            className="mt-2 flex flex-wrap items-center gap-2"
+            data-testid="inv-filter-row"
           >
-            <span className="text-muted font-normal">Showing inventory for:</span>
-            {countries.map((c) => (
-              <span key={`c-${c}`} className="pill-neutral">{c}</span>
-            ))}
-            {channels.map((p) => (
-              <span key={`p-${p}`} className="pill-green">POS · {p}</span>
-            ))}
+            <div
+              className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"
+              data-testid="inv-active-filter-banner"
+            >
+              <span className="text-muted font-normal">Showing inventory for:</span>
+              {countries.map((c) => (
+                <span key={`c-${c}`} className="pill-neutral">{c}</span>
+              ))}
+              {channels.map((p) => (
+                <span key={`p-${p}`} className="pill-green">POS · {p}</span>
+              ))}
+            </div>
+            {channels.length > 0 && (
+              <label
+                className="inline-flex items-center gap-1.5 cursor-pointer rounded-lg border border-border bg-white px-2.5 py-1 text-[11.5px] font-semibold hover:border-brand/40 select-none"
+                data-testid="inv-include-warehouse-toggle"
+                title="When ON, the POS-scoped Stock-to-Sales tables ADD warehouse / wholesale / holding inventory on top of shop-floor stock. Useful when you need to see total allocable units, not just what's on the floor. OFF (default) = shop-floor stock only."
+              >
+                <input
+                  type="checkbox"
+                  checked={includeWarehouse}
+                  onChange={(e) => setIncludeWarehouse(e.target.checked)}
+                  className="accent-brand"
+                  data-testid="inv-include-warehouse-checkbox"
+                />
+                <span>Include warehouse stock</span>
+                {includeWarehouse && <span className="pill-amber">+ warehouse</span>}
+              </label>
+            )}
           </div>
         )}
       </div>

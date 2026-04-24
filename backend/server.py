@@ -1329,6 +1329,7 @@ async def analytics_sts_by_subcat(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     locations: Optional[str] = None,
+    include_warehouse: bool = False,
 ):
     """Derived view of /subcategory-stock-sales with a variance column
     (% of sales − % of stock). One clean row per subcategory.
@@ -1338,16 +1339,17 @@ async def analytics_sts_by_subcat(
     POS selection (upstream's `channel` param only filters the sales side).
     If no `channel` is explicitly passed but `locations` is, we forward
     `locations` as `channel` to the upstream `/subcategory-stock-sales`
-    call so both SALES and STOCK scope to the same POS."""
+    call so both SALES and STOCK scope to the same POS.
+
+    When `include_warehouse=True` AND a POS scope is active, warehouse /
+    holding inventory (Warehouse Finished Goods, Wholesale, etc.) is
+    ADDED to the POS stock so users see total allocable inventory, not
+    just shop-floor. When no POS is set, the flag is a no-op (upstream
+    already returns group-wide stock)."""
     effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
     )
-    # If either `locations` or `channel` is specified, scope stock to that POS
-    # (upstream's `channel` filters sales side only — we must recompute stock
-    # locally from location-scoped inventory). Otherwise the Inventory column
-    # would show group-wide stock next to location-scoped sales — see the
-    # "Vivo City Mall: sold=2, stock=17826" bug.
     locs = _split_csv(locations) or _split_csv(channel)
     stock_by_subcat: Optional[Dict[str, float]] = None
     if locs:
@@ -1358,6 +1360,17 @@ async def analytics_sts_by_subcat(
             if not pt:
                 continue
             stock_by_subcat[pt] += float(r.get("available") or 0)
+        if include_warehouse:
+            # Fan-out inventory for all locations in country scope and add the
+            # rows from warehouse / holding locations on top.
+            all_inv = await fetch_all_inventory(country=country)
+            for r in all_inv or []:
+                if not is_warehouse_location(r.get("location_name")):
+                    continue
+                pt = r.get("product_type")
+                if not pt:
+                    continue
+                stock_by_subcat[pt] += float(r.get("available") or 0)
         total_stock_local = sum(stock_by_subcat.values()) or 0
 
     out = []
@@ -1391,6 +1404,7 @@ async def analytics_sts_by_category(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     locations: Optional[str] = None,
+    include_warehouse: bool = False,
 ):
     """Roll subcategory-stock-sales up to CATEGORY level using subcategory
     name prefixes. "Category" is approximated as the first word of the
@@ -1399,7 +1413,9 @@ async def analytics_sts_by_category(
     stock is recomputed from location-scoped inventory.
     If no `channel` is explicitly passed but `locations` is, we forward
     `locations` as `channel` to the upstream sales call so both SALES
-    and STOCK scope to the same POS."""
+    and STOCK scope to the same POS.
+    `include_warehouse=True` ADDS warehouse / holding stock on top of the
+    POS stock (see `analytics_sts_by_subcat` for details)."""
     effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
@@ -1410,6 +1426,11 @@ async def analytics_sts_by_category(
     inv_rows: List[Dict[str, Any]] = []
     if locs:
         inv_rows = await fetch_all_inventory(country=country, locations=locs) or []
+        if include_warehouse:
+            all_inv = await fetch_all_inventory(country=country)
+            for r in all_inv or []:
+                if is_warehouse_location(r.get("location_name")):
+                    inv_rows.append(r)
 
     def category_of(sub: str) -> str:
         if not sub:
