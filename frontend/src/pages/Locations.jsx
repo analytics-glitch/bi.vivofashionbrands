@@ -209,6 +209,7 @@ const Locations = () => {
               label="Total Locations"
               value={fmtNum(enriched.length)}
               showDelta={false}
+              action={{ label: "Jump to leaderboard", onClick: () => document.querySelector('[data-testid="leaderboard-strip"]')?.scrollIntoView({ behavior: "smooth" }) }}
             />
             <KPICard
               testId="loc-kpi-sales"
@@ -218,6 +219,7 @@ const Locations = () => {
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.total_sales) : null}
               showDelta={compareMode !== "none"}
+              action={{ label: "Sales breakdown", to: "/overview" }}
             />
             <KPICard
               testId="loc-kpi-orders"
@@ -227,6 +229,7 @@ const Locations = () => {
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtNum(prevGroupTotals.total_orders) : null}
               showDelta={compareMode !== "none"}
+              action={{ label: "Order export", to: "/exports" }}
             />
             <KPICard
               testId="loc-kpi-units"
@@ -236,22 +239,29 @@ const Locations = () => {
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtNum(prevGroupTotals.total_units) : null}
               showDelta={compareMode !== "none"}
+              action={{ label: "Top styles", to: "/products" }}
             />
             <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)}
               delta={d(groupTotals.abv, prevGroupTotals?.abv)}
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.abv) : null}
-              showDelta={compareMode !== "none"} />
+              showDelta={compareMode !== "none"}
+              action={{ label: "Sort by ABV", onClick: () => { setSortKey && setSortKey("abv"); document.querySelector('[data-testid="locations-grid"]')?.scrollIntoView({ behavior: "smooth" }); } }}
+            />
             <KPICard small testId="loc-kpi-asp" label="ASP" sub="Sales ÷ Units" value={fmtKES(groupTotals.asp)}
               delta={d(groupTotals.asp, prevGroupTotals?.asp)}
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.asp) : null}
-              showDelta={compareMode !== "none"} />
+              showDelta={compareMode !== "none"}
+              action={{ label: "Sort by ASP", onClick: () => { setSortKey && setSortKey("asp"); document.querySelector('[data-testid="locations-grid"]')?.scrollIntoView({ behavior: "smooth" }); } }}
+            />
             <KPICard small testId="loc-kpi-msi" label="MSI" sub="Units ÷ Orders" value={groupTotals.msi.toFixed(2)}
               delta={d(groupTotals.msi, prevGroupTotals?.msi)}
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? prevGroupTotals.msi.toFixed(2) : null}
-              showDelta={compareMode !== "none"} />
+              showDelta={compareMode !== "none"}
+              action={{ label: "Sort by MSI", onClick: () => { setSortKey && setSortKey("msi"); document.querySelector('[data-testid="locations-grid"]')?.scrollIntoView({ behavior: "smooth" }); } }}
+            />
           </div>
 
           {!selected && (

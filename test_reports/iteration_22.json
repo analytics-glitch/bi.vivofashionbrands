@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 22 frontend-only verification. All 19 newly added KPI action pills (Products ×8, Inventory ×4, Footfall ×4, Locations ×7) render with correct data-testids and labels. Footfall outlier flagging (audit #9) works end-to-end: 1 store flagged (Vivo Junction, 53.84%), outlier-banner present with 'N stores flagged' copy, outlier-pill-Vivo Junction rendered in table, Oasis Mall (20.87%) and Zoya Sarit (5.21%) correctly NOT flagged. Vivo Junction bar is amber (#f59e0b) in conversion chart; row pill is pill-amber. ABV sort-swap test on Locations confirms active state transfers from Total Sales to ABV. Regression on Overview action pills still green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Locations → Sales breakdown action pill", "issue": "`to: \"/overview\"` lands on `/?p=this_month&d=...&t=...` (root path). The root route DOES render Overview (verified via screenshot showing DASHBOARD · OVERVIEW breadcrumb + full Overview content), so the user experience is correct. However, the URL is `/` not `/overview`. Likely a route alias or redirect. Cosmetic-only — not a functional bug.", "affected_selectors": ["[data-testid=\"loc-kpi-sales-action\"]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "verified_features": [
+    "Products (8/8): pr-kpi-{styles,units,sales,asp}-action + sor-k-{avg,hi,mid,lo}-action all render with exact expected labels ('SOR table', 'Top sellers', 'See by category', 'Export pricing CSV', 'Full SOR table', 'Re-Order list', 'See styles', 'IBT candidates').",
+    "Products nav: sor-k-hi-action → /re-order?p=this_month... (OK). sor-k-lo-action → /ibt?p=this_month... (OK).",
+    "Inventory (4/4): inv-kpi-{units,store-stock,warehouse-stock,lowstock}-action all present with correct labels. low-stock-section target element exists for Triage scroll.",
+    "Footfall KPI tiles (4/4): ff-kpi-{total,orders,conv,abv}-action all correct.",
+    "Footfall outlier flagging (audit #9): data-testid='outlier-banner' reads '⚠ 1 store flagged · conversion outside ±2σ (group avg 14.2% ± 8.2pp) — verify the footfall counter before acting on the number.' data-testid='outlier-pill-Vivo Junction' present. The Oasis Mall (20.87%) & Zoya Sarit (5.21%) correctly have NO outlier pill.",
+    "Outlier chart color: Vivo Junction bar fill = #f59e0b (amber). 1 amber / 13 green / 15 red of 29 bars — matches spec exactly.",
+    "Outlier table pill: Vivo Junction row = pill-amber (53.84%). Oasis Mall row = pill-green (20.87%). Zoya Sarit row = pill-red (5.21%). Matches spec.",
+    "Locations (7/7): loc-kpi-{count,sales,orders,units,abv,asp,msi}-action all render correct labels.",
+    "Locations nav: loc-kpi-sales-action renders Overview page (URL is `/?...`, but content is Overview). loc-kpi-orders-action → /exports, loc-kpi-units-action → /products (not retested per iteration but code inspection confirms).",
+    "ABV sort-swap: Before click — loc-sort-total_sales has 'bg-brand' (active), loc-sort-abv does NOT. After clicking loc-kpi-abv-action: loc-sort-total_sales loses 'bg-brand', loc-sort-abv gains it. ✅ Exact spec.",
+    "Overview regression (4/4 sampled): kpi-total-sales-action ('See by location'), kpi-orders-action ('Order-level export'), kpi-footfall-action ('Footfall by store'), kpi-conversion-action ('Which stores dropped?') all still render."
+  ],
+  "action_items": [
+    "OPTIONAL (cosmetic): Investigate why loc-kpi-sales-action lands on `/?...` instead of `/overview`. The Overview component renders correctly either way (root is aliased to Overview), so user sees the right page. If the team wants the canonical path, check whether filter state preservation in KPICard 'to' prop is normalising `/overview` → `/`, or whether there is a redirect in App.jsx routing. No user-facing impact."
+  ],
+  "critical_code_review_comments": [
+    "Outlier detection logic (Footfall.jsx:240-256) correctly guards against zero-sd and tiny samples (<4 physicals, <200 footfall). Physical-only filter is correct. Hard caps (≥50% / <1%) are a sensible belt-and-braces.",
+    "Footfall.jsx is now 616 lines — below the 700-line threshold, but with another growth iteration it should be split (e.g. extract outlier detection + conversion chart into sub-components).",
+    "KPICard action pill pattern is consistent across all 4 pages — good DRY discipline. Consider documenting the `action = {label, to?, onClick?}` contract in a short JSDoc comment on KPICard.jsx for future contributors.",
+    "Locations.jsx setSortKey is passed via closure to action pills (lines 249/256/263). Works but fragile — if the sort state moves to a reducer, these pills will silently no-op. Consider wrapping in a useCallback or lifting to a custom hook."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only iteration)", "frontend": "100% — 19/19 action pills verified, outlier flagging end-to-end OK, all regression checks green"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md). Login is Emergent Auth SSO on UI — for automated tests, use POST /api/auth/login to get JWT and inject into localStorage (keys: token, auth_token, access_token, vivo_token). The direct /login page redirects to auth.emergentagent.com.",
+  "seed_data_creation": "None. No writes. Read-only verification of This Month data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 22 verified all Metric-Action Contract additions for Products/Inventory/Footfall/Locations plus Footfall outlier flagging. Outlier math: group avg 14.2%, sd 8.2pp, hiCut ~30.6% — only Vivo Junction (53.84%) flags as expected. If testing with different date presets, outlier count will change — 'This Month' at 2026-04-01→2026-04-24 gives exactly 1 flagged. To bypass SSO redirect for automated tests, POST /api/auth/login and inject token into localStorage (multiple keys: token, auth_token, access_token, vivo_token) before navigating.",
+  "rca of the issue": "No bugs found. One cosmetic observation: loc-kpi-sales-action navigates to root path `/` with filter query-string instead of explicit `/overview`. Root cause is likely either (a) app router aliases `/` to Overview and normalises, or (b) a redirect in routing config. Content rendered is correct (Overview page), so functionally fine."
+}

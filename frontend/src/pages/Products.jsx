@@ -159,10 +159,14 @@ const Products = () => {
       {!loading && !kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPICard testId="pr-kpi-styles" accent label="Styles Tracked" value={fmtNum(sor.length)} icon={Tag} showDelta={false} />
-            <KPICard testId="pr-kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package} showDelta={false} />
-            <KPICard testId="pr-kpi-sales" label="Total Sales" value={fmtKES(kpis.total_sales)} icon={Coins} showDelta={false} />
-            <KPICard testId="pr-kpi-asp" label="Avg Selling Price" value={fmtKES(kpis.avg_selling_price)} showDelta={false} />
+            <KPICard testId="pr-kpi-styles" accent label="Styles Tracked" value={fmtNum(sor.length)} icon={Tag} showDelta={false}
+              action={{ label: "SOR table", onClick: () => document.querySelector('[data-testid="sor-table-card"]')?.scrollIntoView({ behavior: "smooth" }) }} />
+            <KPICard testId="pr-kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package} showDelta={false}
+              action={{ label: "Top sellers", onClick: () => document.querySelector('[data-testid="sor-table-card"]')?.scrollIntoView({ behavior: "smooth" }) }} />
+            <KPICard testId="pr-kpi-sales" label="Total Sales" value={fmtKES(kpis.total_sales)} icon={Coins} showDelta={false}
+              action={{ label: "See by category", onClick: () => document.querySelector('[data-testid="sts-category-table"]')?.scrollIntoView({ behavior: "smooth" }) }} />
+            <KPICard testId="pr-kpi-asp" label="Avg Selling Price" value={fmtKES(kpis.avg_selling_price)} showDelta={false}
+              action={{ label: "Export pricing CSV", to: "/exports" }} />
           </div>
 
           <div className="card-white p-5" data-testid="sts-category-table">
@@ -261,10 +265,14 @@ const Products = () => {
           />
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPICard testId="sor-k-avg" accent label="Avg Group SOR" value={fmtPct(avgSor)} icon={Gauge} showDelta={false} />
-            <KPICard testId="sor-k-hi" label="Styles > 60%" value={fmtNum(hi)} icon={Star} showDelta={false} />
-            <KPICard testId="sor-k-mid" label="Styles 30-60%" value={fmtNum(mid)} showDelta={false} />
-            <KPICard testId="sor-k-lo" label="Styles < 30%" value={fmtNum(lo)} icon={TrendDown} showDelta={false} higherIsBetter={false} />
+            <KPICard testId="sor-k-avg" accent label="Avg Group SOR" value={fmtPct(avgSor)} icon={Gauge} showDelta={false}
+              action={{ label: "Full SOR table", onClick: () => document.querySelector('[data-testid="sor-table-card"]')?.scrollIntoView({ behavior: "smooth" }) }} />
+            <KPICard testId="sor-k-hi" label="Styles > 60%" sub="High-velocity — check stock" value={fmtNum(hi)} icon={Star} showDelta={false}
+              action={{ label: "Re-Order list", to: "/re-order" }} />
+            <KPICard testId="sor-k-mid" label="Styles 30-60%" value={fmtNum(mid)} showDelta={false}
+              action={{ label: "See styles", onClick: () => document.querySelector('[data-testid="sor-table-card"]')?.scrollIntoView({ behavior: "smooth" }) }} />
+            <KPICard testId="sor-k-lo" label="Styles < 30%" sub="Slow movers — markdown?" value={fmtNum(lo)} icon={TrendDown} showDelta={false} higherIsBetter={false}
+              action={{ label: "IBT candidates", to: "/ibt" }} />
           </div>
 
           <div className="card-white p-5" data-testid="products-top-skus">

@@ -416,6 +416,7 @@ const Inventory = () => {
               value={fmtNum(kpiTotal)}
               icon={Package}
               showDelta={false}
+              action={{ label: "Export inventory CSV", to: "/exports" }}
             />
             <KPICard
               testId="inv-kpi-store-stock"
@@ -424,6 +425,7 @@ const Inventory = () => {
               value={fmtNum(kpiStore)}
               icon={Storefront}
               showDelta={false}
+              action={{ label: "IBT candidates", to: "/ibt" }}
             />
             <KPICard
               testId="inv-kpi-warehouse-stock"
@@ -432,13 +434,17 @@ const Inventory = () => {
               value={fmtNum(kpiWarehouse)}
               icon={Cube}
               showDelta={false}
+              action={{ label: "Plan distribution", to: "/ibt" }}
             />
             <KPICard
               testId="inv-kpi-lowstock"
               label="Low-Stock Styles (≤10)"
+              sub="Risk of stockout — act fast"
               value={fmtNum(lowStockByStyle.length)}
               icon={Warning}
               showDelta={false}
+              higherIsBetter={false}
+              action={{ label: "Triage now", onClick: () => document.querySelector('[data-testid="low-stock-section"]')?.scrollIntoView({ behavior: "smooth" }) }}
             />
           </div>
 

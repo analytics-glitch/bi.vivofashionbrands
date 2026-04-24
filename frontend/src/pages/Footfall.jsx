@@ -231,9 +231,62 @@ const Footfall = () => {
     [scopedEnriched]
   );
 
+  // Data-quality outlier detection (audit #9). Physical stores whose
+  // conversion rate falls outside ±2σ of the group mean are almost
+  // certainly a broken/miscalibrated footfall counter (the classic
+  // example: Vivo Junction showing 54% CR when the group runs ~13%).
+  // We only run this over physical stores with a minimum sample so a
+  // brand-new store with 1 day of traffic doesn't get branded an outlier.
+  const outlierStats = useMemo(() => {
+    const physicals = scopedEnriched.filter(
+      (r) => r.physical !== false && (r.total_footfall || 0) >= 200
+    );
+    if (physicals.length < 4) return { mean: 0, sd: 0, hiCut: Infinity, loCut: -Infinity };
+    const vals = physicals.map((r) => r.conversion_rate || 0);
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
+    const sd = Math.sqrt(variance);
+    return {
+      mean,
+      sd,
+      // Guard against zero-sd (all stores identical) so nothing flags.
+      hiCut: sd > 0 ? mean + 2 * sd : Infinity,
+      loCut: sd > 0 ? mean - 2 * sd : -Infinity,
+    };
+  }, [scopedEnriched]);
+
+  // Tag each row with an outlier flag so the chart + table can show a
+  // "⚠ verify counter" pill consistently. Absolute-hard caps (>50 or <1)
+  // are kept as extra belts-and-braces signals.
+  const enrichedWithFlag = useMemo(() => {
+    return scopedEnriched.map((r) => {
+      const cr = r.conversion_rate || 0;
+      const ff = r.total_footfall || 0;
+      let flag = null;
+      if (r.physical === false || ff < 200) {
+        // Don't flag online or tiny-sample stores.
+        flag = null;
+      } else if (cr >= 50) {
+        flag = { reason: "Unusually high CR (≥50%) — likely counter miscalibration", kind: "hi" };
+      } else if (cr > 0 && cr < 1) {
+        flag = { reason: "Unusually low CR (<1%) — counter may be over-counting traffic", kind: "lo" };
+      } else if (cr > outlierStats.hiCut) {
+        flag = { reason: `Above 2σ of group avg (${outlierStats.mean.toFixed(1)}%) — verify counter`, kind: "hi" };
+      } else if (cr < outlierStats.loCut && cr > 0) {
+        flag = { reason: `Below 2σ of group avg (${outlierStats.mean.toFixed(1)}%) — verify counter`, kind: "lo" };
+      }
+      return { ...r, outlier: flag };
+    });
+  }, [scopedEnriched, outlierStats]);
+
   const byConversion = useMemo(
-    () => [...scopedEnriched].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0)),
-    [scopedEnriched]
+    () => [...enrichedWithFlag].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0)),
+    [enrichedWithFlag]
+  );
+
+  const outlierCount = useMemo(
+    () => enrichedWithFlag.filter((r) => r.outlier).length,
+    [enrichedWithFlag]
   );
 
   // No excluded list — user requested we include all locations.
@@ -275,6 +328,7 @@ const Footfall = () => {
               delta={delta(totals.footfall, prevTotals.footfall)}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
+              action={{ label: "By store", onClick: () => document.querySelector('[data-testid="ff-chart-footfall"]')?.scrollIntoView({ behavior: "smooth" }) }}
             />
             <KPICard
               testId="ff-kpi-orders"
@@ -288,6 +342,7 @@ const Footfall = () => {
               )}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
+              action={{ label: "Export orders CSV", to: "/exports" }}
             />
             <KPICard
               testId="ff-kpi-conv"
@@ -298,6 +353,7 @@ const Footfall = () => {
               delta={delta(totals.conv, prevTotals.conv)}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
+              action={{ label: "Which stores dropped?", onClick: () => document.querySelector('[data-testid="ff-chart-conversion"]')?.scrollIntoView({ behavior: "smooth" }) }}
             />
             <KPICard
               testId="ff-kpi-abv"
@@ -308,6 +364,7 @@ const Footfall = () => {
               delta={delta(totals.abv, prevTotals.abv)}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
+              action={{ label: "Top ABV stores", to: "/locations" }}
             />
           </div>
 
@@ -341,13 +398,26 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-chart-conversion">
             <SectionTitle
               title={`Conversion rate by location · ${byConversion.length}`}
-              subtitle="Visitor-to-buyer conversion by location. Red = below group average (opportunity to coach staff or re-stage floor). Green = at or above (replicate what's working)."
+              subtitle="Visitor-to-buyer conversion by location. Green = at or above group average · Red = below (coach the floor) · Amber = data-quality outlier (verify counter)."
               action={
                 <span className="text-[11px] text-muted">
                   Avg: <span className="font-bold text-brand">{fmtPct(groupAvgConv, 2)}</span>
                 </span>
               }
             />
+            {outlierCount > 0 && (
+              <div
+                className="mt-1 mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-300 bg-amber-50/80 px-3 py-1.5 text-[11.5px] text-amber-900"
+                data-testid="outlier-banner"
+                title="These stores' conversion rates fall outside ±2σ of the group mean OR are structurally implausible (>50% or <1%). Investigate the footfall counter before using these numbers."
+              >
+                <span className="font-bold">⚠ {outlierCount} {outlierCount === 1 ? "store" : "stores"} flagged</span>
+                <span className="text-amber-800/90">
+                  conversion outside ±2σ (group avg {outlierStats.mean.toFixed(1)}% ± {outlierStats.sd.toFixed(1)}pp)
+                  — verify the footfall counter before acting on the number.
+                </span>
+              </div>
+            )}
             {byConversion.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: Math.max(320, 24 + byConversion.length * 20) }}>
                 <ResponsiveContainer>
@@ -362,9 +432,13 @@ const Footfall = () => {
                     } />
                     <ReferenceLine x={groupAvgConv} stroke="#9ca3af" strokeDasharray="4 4" />
                     <Bar dataKey="conversion_rate" radius={[0, 5, 5, 0]} name="Conversion rate">
-                      {byConversion.map((r, i) => (
-                        <Cell key={i} fill={(r.conversion_rate || 0) >= groupAvgConv ? "#00c853" : "#ef4444"} />
-                      ))}
+                      {byConversion.map((r, i) => {
+                        // Outliers get amber — data-quality signal trumps above/below-average.
+                        const fill = r.outlier
+                          ? "#f59e0b"
+                          : (r.conversion_rate || 0) >= groupAvgConv ? "#00c853" : "#ef4444";
+                        return <Cell key={i} fill={fill} />;
+                      })}
                       <LabelList dataKey="conversion_rate" position="right" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fontSize: 9, fill: "#4b5563" }} />
                     </Bar>
                   </BarChart>
@@ -410,11 +484,23 @@ const Footfall = () => {
                   label: "Location",
                   align: "left",
                   render: (r) => (
-                    <span className="inline-flex items-center gap-2 font-medium">
-                      <Storefront size={14} className="text-muted" />
-                      {r.location}
-                    </span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-2 font-medium">
+                        <Storefront size={14} className="text-muted" />
+                        {r.location}
+                      </span>
+                      {r.outlier && (
+                        <span
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 text-[9.5px] font-bold"
+                          title={r.outlier.reason}
+                          data-testid={`outlier-pill-${r.location}`}
+                        >
+                          ⚠ verify counter
+                        </span>
+                      )}
+                    </div>
                   ),
+                  csv: (r) => r.outlier ? `${r.location} [⚠ ${r.outlier.reason}]` : r.location,
                 },
                 { key: "total_footfall", label: "Footfall", numeric: true, render: (r) => fmtNum(r.total_footfall) },
                 ...(compareMode !== "none" ? [{
@@ -440,6 +526,7 @@ const Footfall = () => {
                   numeric: true,
                   render: (r) => {
                     const cr = r.conversion_rate || 0;
+                    if (r.outlier) return <span className="pill-amber">{fmtPct(cr, 2)}</span>;
                     const pill = cr >= groupAvgConv + 3 ? "pill-green" : cr >= groupAvgConv - 2 ? "pill-amber" : "pill-red";
                     return <span className={pill}>{fmtPct(cr, 2)}</span>;
                   },
@@ -481,7 +568,7 @@ const Footfall = () => {
                   csv: (r) => r.sales_delta == null ? "" : r.sales_delta.toFixed(2),
                 }] : []),
               ]}
-              rows={scopedEnriched}
+              rows={enrichedWithFlag}
             />
           </div>
 
