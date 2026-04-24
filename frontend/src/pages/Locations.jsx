@@ -173,6 +173,82 @@ const Locations = () => {
     });
   }, [enriched, sortKey]);
 
+  // ───────────────────────────────────────────────────────────────────────
+  // Location leaderboard — friendly, positive-only badges awarded once each.
+  // A location may win at most one badge; priority order below.
+  // Badges surface alongside the card and in a headline strip at the top.
+  //   🏆 Top Seller          — highest total_sales in the scope
+  //   💰 Highest ABV          — highest avg basket value
+  //   ⚡ Top Conversion       — highest cr (orders ÷ footfall), min 200 visits
+  //   📈 Biggest Mover        — biggest % sales growth vs compare period
+  //   ✨ Most Improved CR     — biggest pp lift in conversion vs compare
+  // Requires minimum footfall for conversion-based badges to prevent
+  // low-volume stores from winning on statistical noise.
+  // ───────────────────────────────────────────────────────────────────────
+  const leaderBadges = useMemo(() => {
+    const badges = new Map(); // channel → { icon, label, tip, tone }
+    if (enriched.length === 0) return badges;
+
+    // Index footfall by location so we can compute CR per card.
+    const ffByLoc = new Map((footfall || []).map((r) => [r.location, r.total_footfall || 0]));
+    const prevFfByLoc = new Map(); // upstream /footfall doesn't expose prev — skip Most-Improved-CR for now.
+
+    const withCR = enriched
+      .map((r) => {
+        const ff = ffByLoc.get(r.channel) || 0;
+        const cr = ff > 0 ? ((r.orders || 0) / ff) * 100 : 0;
+        return { ...r, _ff: ff, _cr: cr };
+      });
+
+    const award = (channel, badge) => {
+      if (!channel || badges.has(channel)) return;
+      badges.set(channel, badge);
+    };
+
+    // 1. Top Seller — always awarded when there's at least one row.
+    const topSales = [...withCR].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))[0];
+    if (topSales && topSales.total_sales > 0) {
+      award(topSales.channel, {
+        icon: "🏆", label: "Top Seller", tone: "gold",
+        tip: `Leading the group with ${fmtKES(topSales.total_sales)} in total sales.`,
+      });
+    }
+
+    // 2. Highest ABV — need at least 50 orders to qualify (noise filter).
+    const topAbv = [...withCR].filter((r) => (r.orders || 0) >= 50)
+      .sort((a, b) => (b.abv || 0) - (a.abv || 0))[0];
+    if (topAbv) {
+      award(topAbv.channel, {
+        icon: "💰", label: "Highest ABV", tone: "green",
+        tip: `Biggest basket in the group at ${fmtKES(topAbv.abv)} — customers here spend more per visit.`,
+      });
+    }
+
+    // 3. Top Conversion — need ≥ 200 visits (statistical floor).
+    const topCr = [...withCR].filter((r) => r._ff >= 200)
+      .sort((a, b) => b._cr - a._cr)[0];
+    if (topCr && topCr._cr > 0) {
+      award(topCr.channel, {
+        icon: "⚡", label: "Top Conversion", tone: "teal",
+        tip: `Best visitor-to-buyer rate at ${topCr._cr.toFixed(1)}% — replicate what's working.`,
+      });
+    }
+
+    // 4. Biggest Mover — only when compare is active and delta is meaningful.
+    if (compareMode !== "none") {
+      const movers = withCR.filter((r) => r.d_sales != null && (r.prev_sales || 0) > 0 && (r.total_sales || 0) > 0);
+      const topGain = [...movers].sort((a, b) => (b.d_sales || 0) - (a.d_sales || 0))[0];
+      if (topGain && (topGain.d_sales || 0) >= 10) {
+        award(topGain.channel, {
+          icon: "📈", label: "Biggest Mover", tone: "brand",
+          tip: `Sales up ${(topGain.d_sales).toFixed(0)}% ${compareLbl} — momentum leader.`,
+        });
+      }
+    }
+
+    return badges;
+  }, [enriched, footfall, compareMode, compareLbl]);
+
   return (
     <div className="space-y-6" data-testid="locations-page">
       <div>
@@ -267,6 +343,32 @@ const Locations = () => {
                 ))}
               </div>
 
+              {/* Leaderboard strip — celebrates this period's winners. */}
+              {leaderBadges.size > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-2xl bg-gradient-to-r from-amber-50 via-emerald-50 to-brand-soft/60 border border-brand/20"
+                  data-testid="locations-leaderboard"
+                >
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-brand-deep mr-1">
+                    🎉 This period's winners:
+                  </span>
+                  {Array.from(leaderBadges.entries()).map(([channel, b]) => (
+                    <button
+                      key={`lb-${channel}-${b.label}`}
+                      type="button"
+                      onClick={() => setSelected(channel)}
+                      title={b.tip}
+                      data-testid={`leader-badge-${b.label.replace(/\s+/g, "-").toLowerCase()}`}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white rounded-full border border-brand/30 shadow-sm hover:shadow-md hover:border-brand/60 transition-all text-[11.5px] font-semibold text-brand-deep"
+                    >
+                      <span aria-hidden="true">{b.icon}</span>
+                      <span>{b.label}:</span>
+                      <span className="text-foreground/90 font-bold truncate max-w-[180px]">{channel}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div
                 className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3"
                 data-testid="locations-grid"
@@ -274,16 +376,29 @@ const Locations = () => {
                 {sorted.length === 0 && <Empty />}
                 {sorted.map((l, i) => {
                   const above = (l.total_sales || 0) >= avg;
-                  const borderCls = above
+                  const badge = leaderBadges.get(l.channel);
+                  const borderCls = badge
+                    ? "border-amber-400"
+                    : above
                     ? "border-brand/40"
                     : "border-red-300";
                   return (
                     <button
                       key={`${l.channel}-${i}`}
-                      className={`card-white p-4 hover-lift text-left border-l-4 ${borderCls}`}
+                      className={`card-white p-4 hover-lift text-left border-l-4 ${borderCls} relative`}
                       data-testid={`location-card-${l.channel}`}
                       onClick={() => setSelected(l.channel)}
                     >
+                      {badge && (
+                        <div
+                          className="absolute top-2.5 right-2.5 inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 border border-amber-300 rounded-full text-[10px] font-bold text-amber-900 shadow-sm"
+                          data-testid={`card-badge-${badge.label.replace(/\s+/g, "-").toLowerCase()}`}
+                          title={badge.tip}
+                        >
+                          <span aria-hidden="true">{badge.icon}</span>
+                          <span>{badge.label}</span>
+                        </div>
+                      )}
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-2.5 min-w-0">
                           <div className="w-9 h-9 rounded-lg bg-brand-soft text-brand grid place-items-center shrink-0">

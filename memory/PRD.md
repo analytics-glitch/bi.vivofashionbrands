@@ -705,6 +705,21 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Slice 3 — Locations leaderboard & badges**. Four business-
+  aligned, positive-only badges awarded at most once each per period:
+  - 🏆 **Top Seller** — highest total_sales in the scope
+  - 💰 **Highest ABV** — highest avg basket value (≥50-order floor)
+  - ⚡ **Top Conversion** — highest orders ÷ footfall rate (≥200-
+    visit floor to avoid statistical noise)
+  - 📈 **Biggest Mover** — biggest % sales growth vs compare period
+    (≥10 pp gate, only active when compare is on)
+  Badges appear in two places: a warm-gradient "🎉 This period's
+  winners" strip above the grid (clickable, scrolls to the winner's
+  drill-down), and a small floating pill on the matching location
+  card with an amber border accent. Tooltips explain *why* each
+  location won ("Biggest basket in the group at KES …"). No shaming
+  of low performers — positive framing only, per the guiding
+  principle. File: `/app/frontend/src/pages/Locations.jsx`.
 - **Slice 2 — Purpose / "So What?" subtitle pass** across Customers,
   Inventory, Locations, Footfall, IBT and Overview. Every `SectionTitle`
   whose subtitle was mechanical ("Sorted by x descending") now
