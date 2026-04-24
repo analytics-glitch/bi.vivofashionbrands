@@ -697,7 +697,22 @@ API, (c) figure from a different source system. Pending user confirmation.
 - Optional CSV export for the footfall & new-styles tables.
 - **Persist filter state to localStorage/URL** so cross-page KPI consistency
   survives a full page reload (currently only survives SPA navigation).
-- **Refactor `/app/backend/server.py`** (1800 lines) into modular routers:
+- **Refactor `/app/backend/server.py`** (~2040 lines) into modular routers:
   `routers/sales.py`, `routers/inventory.py`, `routers/customers.py`,
   `routers/analytics.py`.
 - Fix remaining Recharts `width(-1)` ResponsiveContainer warnings.
+- **FX handling**: `dim_fx_rate` mapping for UGX/RWF → KES historical
+  conversion; KES/Local toggle for Uganda & Rwanda views.
+
+## Changelog — 2026-04-24
+- **Perf**: Added in-memory TTL (30 min) cache for upstream
+  `/churned-customers?limit=100000` used by the `/customers` churn
+  calculation. Cold-cache Customers page load went from ~38 s to ~0.3 s on
+  warm cache. Cache key = `churn_window_days`; cleared by
+  `/admin/cache-clear`. Field `churn_source` now reports
+  `upstream_90d_cached` when served from cache.
+- Verified Share-view button copies a human-readable URL
+  (`?period=…&date_from=…&pos=…&compare=…`) with the current filter state.
+- Verified Churn Rate formula = churned_in_period ÷ total_customers × 100
+  (e.g. Jan 2026 → 2,958 / 7,365 ≈ 40.16 %).
+

@@ -39,6 +39,14 @@ _client: Optional[httpx.AsyncClient] = None
 # country, channel). Value: (timestamp, data_with_stale_flag=False).
 _kpi_stale_cache: Dict[tuple, tuple] = {}
 
+# TTL cache for the full churned-customers list used by the /customers churn-
+# rate calculation. Upstream /churned-customers?limit=100000 takes ~30s which
+# blocks the Customers page for the entire duration on cold cache. A customer's
+# 90-day inactivity status changes at most once per day, so a 30-minute TTL is
+# safe. Key: churn_window_days (int). Value: (timestamp, list).
+_churn_full_cache: Dict[int, tuple] = {}
+_CHURN_FULL_TTL = 1800  # seconds
+
 
 def _client_ip(request: Request) -> Optional[str]:
     """Best-effort client IP (handles X-Forwarded-For from the ingress)."""
@@ -418,7 +426,9 @@ async def admin_cache_clear():
     _inv_cache["ts"] = 0
     _inv_cache["key"] = None
     _inv_cache["data"] = None
-    return {"ok": True, "cleared": ["inventory"]}
+    _churn_full_cache.clear()
+    _kpi_stale_cache.clear()
+    return {"ok": True, "cleared": ["inventory", "churn_full", "kpi_stale"]}
 
 
 @api_router.get("/stock-to-sales")
@@ -531,7 +541,15 @@ async def get_customers(
         try:
             # Upstream caps at ~100k rows. Full list is needed so we can
             # slice by last_purchase_date within [date_from, date_to].
-            churned_list = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 100000})
+            # Cached in-memory for 30 min — full fetch is ~30s on cold.
+            cached = _churn_full_cache.get(churn_window_days)
+            if cached and (time.time() - cached[0]) < _CHURN_FULL_TTL:
+                churned_list = cached[1]
+                churn_source = "upstream_90d_cached"
+            else:
+                churned_list = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 100000})
+                if isinstance(churned_list, list) and churned_list:
+                    _churn_full_cache[churn_window_days] = (time.time(), churned_list)
             if isinstance(churned_list, list) and date_from and date_to:
                 for c in churned_list:
                     lp = c.get("last_purchase_date") or ""
