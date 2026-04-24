@@ -95,8 +95,19 @@ const WinsThisWeekCard = () => {
           <Trophy size={16} weight="fill" className="text-amber-700" />
         </div>
         <div className="min-w-0">
-          <div className="text-[12px] font-bold uppercase tracking-wider text-emerald-900/80">
-            Wins this week
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-[12px] font-bold uppercase tracking-wider text-emerald-900/80">
+              Wins this week
+            </div>
+            {wins.action_streak >= 2 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-br from-orange-100 to-red-100 text-red-700 text-[10.5px] font-bold border border-orange-300"
+                title={`You've closed at least one recommendation ${wins.action_streak} days in a row — build the habit!`}
+                data-testid="action-streak-chip"
+              >
+                🔥 {wins.action_streak}-day close-the-loop streak
+              </span>
+            )}
           </div>
           <div className="mt-0.5 text-[14px] font-bold text-brand-deep leading-snug">
             {headline}{name ? `, ${name}` : ""}.

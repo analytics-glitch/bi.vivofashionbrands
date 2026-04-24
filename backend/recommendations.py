@@ -205,9 +205,52 @@ async def wins_this_window(
             else:
                 buckets["ibt_closed"] += n
 
+    # Closed-loop streak — consecutive trailing days with ≥ 1 action.
+    # Walks back from today (or yesterday, as a 1-day grace period so a
+    # user who hasn't acted yet today doesn't lose their streak until
+    # tomorrow — mirrors the visit-streak grace).
+    streak_lookback_days = max(45, window_days)
+    streak_since = datetime.now(timezone.utc) - timedelta(days=streak_lookback_days)
+    active_days: set[str] = set()
+    cursor = db.recommendation_state.find(
+        {
+            "user_id": user.user_id,
+            "updated_at": {"$gte": streak_since},
+            "status": {"$in": ["po_raised", "done", "dismissed"]},
+        },
+        {"_id": 0, "updated_at": 1},
+    )
+    async for doc in cursor:
+        ts = doc.get("updated_at")
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            active_days.add(ts.strftime("%Y-%m-%d"))
+
+    today = datetime.now(timezone.utc).date()
+    today_key = today.strftime("%Y-%m-%d")
+    yesterday_key = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    today_active = today_key in active_days
+    if today_active:
+        cur = today
+    elif yesterday_key in active_days:
+        cur = today - timedelta(days=1)
+    else:
+        cur = None
+
+    action_streak = 0
+    if cur is not None:
+        while cur.strftime("%Y-%m-%d") in active_days:
+            action_streak += 1
+            cur = cur - timedelta(days=1)
+            if action_streak > streak_lookback_days:
+                break
+
     return {
         "since": since.isoformat(),
         "window_days": window_days,
         **buckets,
         "total_actions": sum(buckets.values()),
+        "action_streak": action_streak,
+        "today_active": today_active,
     }
