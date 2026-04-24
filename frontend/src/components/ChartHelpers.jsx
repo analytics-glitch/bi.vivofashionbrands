@@ -1,29 +1,49 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 
-/** Custom Recharts tooltip that shows all payload values formatted */
+/** Returns true when viewport is < 768 px (Tailwind `md` breakpoint). Re-fires
+ * on window resize. Used to flip chart labels/tooltips into compact mode. */
+export const useIsMobile = () => {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false
+  );
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
+  return isMobile;
+};
+
+/** Custom Recharts tooltip that shows all payload values formatted.
+ * Formatter lookup prefers dataKey (matches chart code conventions) and
+ * falls back to name. Tooltip auto-constrains within viewport on mobile. */
 export const ChartTooltip = ({ active, payload, label, formatters = {}, labelFormat }) => {
   if (!active || !payload || !payload.length) return null;
   return (
-    <div className="rounded-lg border border-border bg-white px-3 py-2 shadow-md text-[11.5px]">
+    <div
+      className="rounded-lg border border-border bg-white px-3 py-2 shadow-lg text-[11.5px] max-w-[80vw] sm:max-w-none pointer-events-none"
+      role="tooltip"
+    >
       {label != null && (
-        <div className="font-semibold text-foreground mb-1">
+        <div className="font-semibold text-foreground mb-1 truncate">
           {labelFormat ? labelFormat(label) : label}
         </div>
       )}
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2 py-0.5">
-          <span
-            className="inline-block w-2.5 h-2.5 rounded-sm"
-            style={{ background: p.color || p.fill }}
-          />
-          <span className="text-muted">{p.name || p.dataKey}:</span>
-          <span className="font-semibold num">
-            {formatters[p.name || p.dataKey]
-              ? formatters[p.name || p.dataKey](p.value, p.payload)
-              : p.value}
-          </span>
-        </div>
-      ))}
+      {payload.map((p, i) => {
+        const fmt = formatters[p.dataKey] || formatters[p.name];
+        return (
+          <div key={i} className="flex items-center gap-2 py-0.5">
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+              style={{ background: p.color || p.fill }}
+            />
+            <span className="text-muted truncate">{p.name || p.dataKey}:</span>
+            <span className="font-semibold num whitespace-nowrap">
+              {fmt ? fmt(p.value, p.payload) : p.value}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 };

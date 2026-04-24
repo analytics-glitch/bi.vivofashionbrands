@@ -19,7 +19,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
-import { ChartTooltip } from "@/components/ChartHelpers";
+import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
   Coins,
@@ -64,6 +64,7 @@ const Overview = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
+  const isMobile = useIsMobile();
 
   // Shared KPI state — identical values on every page for the same filters.
   const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
@@ -173,12 +174,12 @@ const Overview = () => {
   const pairedBars = useMemo(() => {
     if (!pairedDays) return [];
     const rows = [
-      { key: "today", subtitle: "Today",           ...pairedDays.today },
-      { key: "sdlw",  subtitle: "Same Day Last Week",  ...pairedDays.sdlw },
-      { key: "sdlm",  subtitle: "Same Day Last Month", ...pairedDays.sdlm },
+      { key: "today", subtitle: "Today",               short: "Today",    ...pairedDays.today },
+      { key: "sdlw",  subtitle: "Same Day Last Week",  short: "SD LW",   ...pairedDays.sdlw },
+      { key: "sdlm",  subtitle: "Same Day Last Month", short: "SD LM",   ...pairedDays.sdlm },
     ];
     if (compareMode === "last_year") {
-      rows.push({ key: "sdly", subtitle: "Same Day Last Year", ...pairedDays.sdly });
+      rows.push({ key: "sdly", subtitle: "Same Day Last Year", short: "SD LY", ...pairedDays.sdly });
     }
     const t = pairedDays.today.total_sales || 0;
     return rows.map((r) => ({
@@ -565,17 +566,21 @@ const Overview = () => {
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
-                    <BarChart data={top15} layout="vertical" margin={{ left: 20, right: 110, top: 4 }}>
+                    <BarChart data={top15} layout="vertical" margin={{ left: isMobile ? 4 : 20, right: isMobile ? 64 : 110, top: 4 }}>
                       <CartesianGrid horizontal={false} />
-                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
-                      <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 11 }} />
-                      <Tooltip content={
-                        <ChartTooltip formatters={{
-                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
-                        }} />
-                      } />
+                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 11 }} />
+                      <YAxis type="category" dataKey="label" width={isMobile ? 96 : 150} tick={{ fontSize: isMobile ? 9 : 11 }} />
+                      <Tooltip
+                        allowEscapeViewBox={{ x: false, y: true }}
+                        wrapperStyle={{ outline: "none", zIndex: 20 }}
+                        content={
+                          <ChartTooltip formatters={{
+                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
+                          }} />
+                        }
+                      />
                       <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
-                        <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563" }} />
+                        <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563" }} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -588,25 +593,29 @@ const Overview = () => {
               {countryBars.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 24 + countryBars.length * 56 }}>
                   <ResponsiveContainer>
-                    <BarChart data={countryBars} layout="vertical" margin={{ left: 10, right: 110, top: 4 }}>
+                    <BarChart data={countryBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 60 : 110, top: 4 }}>
                       <CartesianGrid horizontal={false} />
-                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                      <YAxis type="category" dataKey="country" width={110}
+                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 10 }} />
+                      <YAxis type="category" dataKey="country" width={isMobile ? 90 : 110}
                         tick={({ x, y, payload }) => {
                           const row = countryBars.find((r) => r.country === payload.value);
                           return (
-                            <text x={x - 6} y={y + 4} fontSize={11} textAnchor="end">
+                            <text x={x - 6} y={y + 4} fontSize={isMobile ? 10 : 11} textAnchor="end">
                               {row?.flag} {payload.value}
                             </text>
                           );
                         }} />
-                      <Tooltip content={
-                        <ChartTooltip formatters={{
-                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
-                        }} />
-                      } />
+                      <Tooltip
+                        allowEscapeViewBox={{ x: false, y: true }}
+                        wrapperStyle={{ outline: "none", zIndex: 20 }}
+                        content={
+                          <ChartTooltip formatters={{
+                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
+                          }} />
+                        }
+                      />
                       <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
-                        <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                        <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563", fontWeight: 600 }} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -618,17 +627,21 @@ const Overview = () => {
                 {channelBars.length === 0 ? <Empty /> : (
                   <div style={{ width: "100%", height: 24 + channelBars.length * 48 }}>
                     <ResponsiveContainer>
-                      <BarChart data={channelBars} layout="vertical" margin={{ left: 10, right: 110, top: 4 }}>
+                      <BarChart data={channelBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 60 : 110, top: 4 }}>
                         <CartesianGrid horizontal={false} />
-                        <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
-                        <YAxis type="category" dataKey="channel" width={110} tick={{ fontSize: 11 }} />
-                        <Tooltip content={
-                          <ChartTooltip formatters={{
-                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
-                          }} />
-                        } />
+                        <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 10 }} />
+                        <YAxis type="category" dataKey="channel" width={isMobile ? 90 : 110} tick={{ fontSize: isMobile ? 10 : 11 }} />
+                        <Tooltip
+                          allowEscapeViewBox={{ x: false, y: true }}
+                          wrapperStyle={{ outline: "none", zIndex: 20 }}
+                          content={
+                            <ChartTooltip formatters={{
+                              total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders · ${fmtNum(p?.units_sold || 0)} units · ${(p?.pct || 0).toFixed(1)}% of group`,
+                            }} />
+                          }
+                        />
                         <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} name="Total Sales">
-                          <LabelList dataKey="total_sales" position="right" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                          <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563", fontWeight: 600 }} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -657,17 +670,30 @@ const Overview = () => {
               pairedBars.length === 0 ? (
                 <Loading label="Loading comparison days…" />
               ) : (
-                <div style={{ width: "100%", height: 280 }} data-testid="trend-paired-bars">
+                <div style={{ width: "100%", height: isMobile ? 360 : 280 }} data-testid="trend-paired-bars">
                   <ResponsiveContainer>
-                    <BarChart data={pairedBars} margin={{ top: 40, right: 20, left: 10, bottom: 36 }}>
+                    <BarChart
+                      data={pairedBars}
+                      margin={{ top: isMobile ? 64 : 40, right: isMobile ? 8 : 20, left: isMobile ? 0 : 10, bottom: isMobile ? 28 : 36 }}
+                      barCategoryGap={isMobile ? "18%" : "24%"}
+                    >
                       <CartesianGrid vertical={false} />
-                      <XAxis dataKey="subtitle" tick={{ fontSize: 11 }} />
-                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
-                      <Tooltip content={
-                        <ChartTooltip formatters={{
-                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders${p?.delta_pct != null ? ` · ${p.delta_pct >= 0 ? "+" : ""}${p.delta_pct.toFixed(1)}% vs Today` : ""}`,
-                        }} labelFormat={(l, p) => `${l} · ${p?.[0]?.payload?.label || ""}`} />
-                      } />
+                      <XAxis
+                        dataKey={isMobile ? "short" : "subtitle"}
+                        tick={{ fontSize: isMobile ? 10 : 11 }}
+                        interval={0}
+                      />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={isMobile ? 40 : 65} />
+                      <Tooltip
+                        cursor={{ fill: "rgba(26,92,56,0.06)" }}
+                        allowEscapeViewBox={{ x: false, y: true }}
+                        wrapperStyle={{ outline: "none", zIndex: 20 }}
+                        content={
+                          <ChartTooltip formatters={{
+                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders${p?.delta_pct != null ? ` · ${p.delta_pct >= 0 ? "+" : ""}${p.delta_pct.toFixed(1)}% vs Today` : ""}`,
+                          }} labelFormat={(l, p) => `${l}${p?.[0]?.payload?.subtitle && p[0].payload.subtitle !== l ? ` · ${p[0].payload.subtitle}` : ""}`} />
+                        }
+                      />
                       <Bar dataKey="total_sales" radius={[5, 5, 0, 0]} name="Total Sales">
                         {pairedBars.map((r) => (
                           <Cell key={r.key} fill={r.key === "today" ? "#1a5c38" : "#d97706"} />
@@ -675,21 +701,23 @@ const Overview = () => {
                         <LabelList
                           dataKey="total_sales"
                           position="top"
-                          formatter={(v) => fmtKES(v)}
-                          style={{ fontSize: 11, fill: "#1f2937", fontWeight: 700 }}
+                          formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))}
+                          style={{ fontSize: isMobile ? 11 : 11, fill: "#1f2937", fontWeight: 700 }}
+                          offset={isMobile ? 32 : 8}
                         />
                         <LabelList
                           dataKey="delta_pct"
-                          position="insideTop"
-                          content={({ x, y, width, value, index }) => {
-                            if (value == null || index === 0) return null;
-                            const pos = value > 0;
-                            const color = pos ? "#059669" : "#b91c1c";
-                            return (
-                              <text x={x + width / 2} y={y - 18} fill={color} fontSize={10} textAnchor="middle" fontWeight={700}>
-                                {pos ? "▲" : "▼"} {Math.abs(value).toFixed(1)}%
-                              </text>
-                            );
+                          position={isMobile ? "insideTop" : "top"}
+                          offset={isMobile ? 8 : 22}
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            fill: isMobile ? "#ffffff" : "#059669",
+                          }}
+                          formatter={(v) => {
+                            if (v == null) return "";
+                            const pos = v > 0;
+                            return `${pos ? "▲" : "▼"} ${Math.abs(v).toFixed(1)}%`;
                           }}
                         />
                       </Bar>
@@ -702,13 +730,25 @@ const Overview = () => {
               dailyTotalSeries.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 280 }} data-testid="trend-mini-bars">
                   <ResponsiveContainer>
-                    <BarChart data={dailyTotalSeries} margin={{ top: 24, right: 20, left: 10, bottom: 10 }}>
+                    <BarChart data={dailyTotalSeries} margin={{ top: 24, right: isMobile ? 8 : 20, left: isMobile ? 0 : 10, bottom: 10 }}>
                       <CartesianGrid vertical={false} />
-                      <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" })} />
-                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
-                      <Tooltip content={<ChartTooltip formatters={{ total: (v) => fmtKES(v), total_prev: (v) => fmtKES(v) }} labelFormat={(l) => fmtDate(l)} />} />
+                      <XAxis
+                        dataKey="day"
+                        tick={{ fontSize: isMobile ? 9 : 11 }}
+                        angle={isMobile ? -20 : 0}
+                        textAnchor={isMobile ? "end" : "middle"}
+                        height={isMobile ? 48 : 30}
+                        interval={0}
+                        tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", isMobile ? { day: "2-digit", month: "short" } : { weekday: "short", day: "2-digit", month: "short" })}
+                      />
+                      <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={isMobile ? 48 : 65} />
+                      <Tooltip
+                        allowEscapeViewBox={{ x: false, y: true }}
+                        wrapperStyle={{ outline: "none", zIndex: 20 }}
+                        content={<ChartTooltip formatters={{ total: (v) => fmtKES(v), total_prev: (v) => fmtKES(v) }} labelFormat={(l) => fmtDate(l)} />}
+                      />
                       <Bar dataKey="total" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
-                        <LabelList dataKey="total" position="top" formatter={(v) => fmtKES(v)} style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                        <LabelList dataKey="total" position="top" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563", fontWeight: 600 }} />
                       </Bar>
                       {compareMode !== "none" && (
                         <Bar dataKey="total_prev" fill="#d97706" radius={[5, 5, 0, 0]} name="Previous" opacity={0.7} />
