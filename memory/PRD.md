@@ -1137,3 +1137,29 @@ Frontend:
 - `/app/frontend/src/components/WhatChangedBelt.jsx`
 - `/app/memory/UX_AUDIT.md` — the full platform audit document
 
+
+
+## Session Update — 2026-04-24 (Wins This Week celebration)
+
+- **Backend**: `GET /api/recommendations/wins?window_days=7` aggregates
+  the authenticated user's resolved recommendations (po_raised, done,
+  dismissed) by item_type over the last 7 days. Returns
+  `{reorder_closed, reorder_dismissed, ibt_closed, ibt_dismissed,
+  total_actions, since, window_days}`. Uses a Mongo aggregation
+  pipeline on `recommendation_state` — cheap, no extra indexing beyond
+  the existing user_id index.
+- **Frontend**: `WinsThisWeekCard` on Overview, mounted between
+  `WhatChangedBelt` and the leaderboard. Auto-hides when
+  `total_actions === 0` so new users and quiet weeks never see a
+  demoralising "0 wins" tile. Headline copy rotates by ISO week so the
+  same sentence doesn't greet Stephen every Monday.
+- Sparkle micro-decoration on the card (two small corner sparkles),
+  amber + emerald palette so it visibly differs from the briefing card
+  above while staying in brand.
+- Seed-tested with 7 actions → card renders "You closed **7**
+  recommendations in the last 7 days — 4 re-orders raised · 2 IBT
+  moves actioned · 1 dismissed with reason." Seeds cleaned afterwards.
+
+### Files added
+- `/app/frontend/src/components/WinsThisWeekCard.jsx`
+- New endpoint in `/app/backend/recommendations.py::wins_this_window`

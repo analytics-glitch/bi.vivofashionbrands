@@ -22,6 +22,7 @@ import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WhatChangedBelt from "@/components/WhatChangedBelt";
+import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
@@ -533,6 +534,7 @@ const Overview = () => {
             compareLbl={compareLbl}
           />
           <WhatChangedBelt kpis={kpis} dateFrom={dateFrom} dateTo={dateTo} />
+          <WinsThisWeekCard />
           <OverviewLeaderboard
             sales={sales}
             salesPrev={salesPrev}
