@@ -130,6 +130,33 @@ async def _compute_winners_for_period(period: str) -> Dict[str, Optional[dict]]:
     return winners
 
 
+async def _detect_record(badge: str, period: str, value: float) -> bool:
+    """
+    True when `value` exceeds the max value seen for `badge` across the prior
+    12 complete months (excluding the period being snapshotted itself).
+    """
+    try:
+        # Build the 12 prior months we care about.
+        periods: List[str] = []
+        cur = _prev_month(period)
+        for _ in range(12):
+            periods.append(cur)
+            cur = _prev_month(cur)
+        prior_max = None
+        async for doc in db.leaderboard_snapshots.find(
+            {"badge": badge, "period": {"$in": periods}}, {"_id": 0, "value": 1}
+        ):
+            v = doc.get("value") or 0
+            if prior_max is None or v > prior_max:
+                prior_max = v
+        # No prior data ⇒ cannot claim a record (avoid month-1 artifact).
+        if prior_max is None:
+            return False
+        return value > prior_max
+    except Exception:
+        return False
+
+
 async def snapshot_period(period: str, force: bool = False) -> Dict[str, dict]:
     """
     Idempotent: if a snapshot exists for `period`, short-circuits unless force=True.
@@ -151,11 +178,13 @@ async def snapshot_period(period: str, force: bool = False) -> Dict[str, dict]:
         w = winners.get(badge)
         if not w:
             continue
+        is_record = await _detect_record(badge, period, w["value"])
         doc = {
             "period": period,
             "badge": badge,
             "winner": w["winner"],
             "value": w["value"],
+            "is_record": is_record,
             "computed_at": now,
         }
         await db.leaderboard_snapshots.update_one(
@@ -167,16 +196,24 @@ async def snapshot_period(period: str, force: bool = False) -> Dict[str, dict]:
     return out
 
 
-async def get_streaks(lookback_months: int = MAX_MONTHS_BACK) -> Dict[str, Dict[str, int]]:
+async def get_streaks(lookback_months: int = MAX_MONTHS_BACK) -> Dict[str, Dict[str, object]]:
     """
-    Returns {badge: {channel: streak_months, ...}} counting CONSECUTIVE recent
-    months ending at the previous complete month.
-    Ensures snapshots exist for the lookback window, computing missing ones.
+    Returns:
+      {
+        "top_seller":     {"Shop Zetu": 3, ...},
+        "highest_abv":    {...},
+        "top_conversion": {...},
+        "records":        {"top_seller": {"winner": "Shop Zetu", "value": 7039525},
+                           "highest_abv": null, ...},
+      }
+    `records` flags the MOST RECENT complete month only — if that month's
+    winner set an all-time high relative to the prior 12 months, we surface
+    a record badge on the strip (active only while the "current period"
+    result for that badge matches the record-setting winner).
     """
     lookback_months = max(1, min(MAX_MONTHS_BACK, int(lookback_months)))
     await _ensure_index()
 
-    # Build ordered list of periods: [prev_complete, prev-1, prev-2, ...]
     periods: List[str] = []
     cur = _previous_complete_period()
     for _ in range(lookback_months):
@@ -192,7 +229,6 @@ async def get_streaks(lookback_months: int = MAX_MONTHS_BACK) -> Dict[str, Dict[
     }
     missing = [p for p in periods if p not in existing_periods]
     if missing:
-        # Limit concurrency — upstream calls are expensive.
         sem = asyncio.Semaphore(2)
 
         async def _run(p):
@@ -210,15 +246,18 @@ async def get_streaks(lookback_months: int = MAX_MONTHS_BACK) -> Dict[str, Dict[
         by_period.setdefault(doc["period"], {})[doc["badge"]] = doc
 
     streaks: Dict[str, Dict[str, int]] = {k: {} for k in BADGE_KEYS}
+    records: Dict[str, Optional[dict]] = {k: None for k in BADGE_KEYS}
+
     for badge in BADGE_KEYS:
-        # Walk periods newest → oldest. For each channel that held the badge
-        # in the newest period, count how far back the streak extends.
         if not periods:
             continue
         newest = by_period.get(periods[0], {}).get(badge)
         if not newest:
             continue
         channel = newest["winner"]
+        # Record flag surfaces only on the most recent complete month.
+        if newest.get("is_record"):
+            records[badge] = {"winner": channel, "value": newest.get("value") or 0}
         streak = 1
         for p in periods[1:]:
             snap = by_period.get(p, {}).get(badge)
@@ -226,9 +265,9 @@ async def get_streaks(lookback_months: int = MAX_MONTHS_BACK) -> Dict[str, Dict[
                 streak += 1
             else:
                 break
-        if streak >= 2:  # only surface streaks of 2+ months
+        if streak >= 2:
             streaks[badge][channel] = streak
-    return streaks
+    return {**streaks, "records": records}
 
 
 # Simple in-memory cache for GET /api/leaderboard/streaks so we don't
