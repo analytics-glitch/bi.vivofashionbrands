@@ -1392,3 +1392,41 @@ Iteration 27: **14/14 pytest backend tests pass**, full frontend E2E green on de
 - Changed: `/app/frontend/src/components/Sidebar.jsx` (mount NotificationBell)
 - Changed: `/app/frontend/src/pages/Inventory.jsx` (aging summary, phantom card, aging column)
 - Changed: `/app/frontend/src/pages/{Products,ReOrder,IBT,Pricing}.jsx` (mobileCards enabled)
+## v29 — ⌘K Global Search + Sell-Through by Location + Daily Footfall Calendar (Feb 2026)
+
+### (a) ⌘K Global Search (Audit #11)
+Cross-entity command palette reachable anywhere via `⌘K` / `Ctrl+K` (or the visible `Search ⌘K` button in the top nav). Scopes:
+- **Pages** — static list of 12 dashboard pages with hint text.
+- **Stores** — live from `/locations` (5-min server cache). Deep-links to `/locations?focus=<name>`.
+- **Styles** — last-28-day top-skus corpus (2-min server cache).
+- **Customers** — pass-through to upstream `/customer-search`.
+
+Keyboard: `↑`/`↓` to navigate, `↵` to open, `Esc` to close. Results debounced 180ms. Mouse hover + click also supported. Backend endpoint `GET /api/search?q=&limit=5`.
+
+### (b) Sell-Through Rate by Location (Inventory, P2)
+New backend endpoint `GET /api/analytics/sell-through-by-location?date_from&date_to&country`. Sell-through = `units_sold ÷ (units_sold + current_stock)` (standard retail shortcut since upstream has no historical on-hand). Rows are classified:
+- `strong` ≥ 25%, `healthy` 12–25%, `slow` 5–12%, `stuck` < 5%.
+- Locations with 0 stock but > 0 sales (Online channels, new stores) are surfaced with `health="no_stock_data"` + null pct so users see the data without distorting rankings.
+
+Frontend: new card on Inventory between CEO KPIs and Stock Aging — sortable table with location, country, units sold, current stock, total sales, sell-through %, health. Mobile card view enabled.
+
+### (c) Daily Footfall Calendar (Audit #16, P3)
+Audit requested a "time-of-day" heatmap; upstream only exposes daily aggregates (no hour-level timestamps). Built a GitHub-style calendar heatmap with an **explicit, honest footnote** explaining the data gap.
+
+Backend: `GET /api/footfall/daily-calendar?date_from&date_to&country` — fans out `/footfall` per-day in parallel, returns `{window, max_footfall, days: [{date, weekday, footfall, orders, total_sales, conversion_rate}]}`. Max window 90 days. Cached 1h alongside the weekday-pattern cache.
+
+Frontend: `<FootfallDailyCalendar />` component on `/footfall` page — Mon..Sun × week grid, cream→brand-green gradient based on footfall intensity. Summary line (total footfall / orders / sales / avg conversion). "🔥 Busiest / 🪶 Quietest" storyteller chips. Tooltip per cell with exact numbers.
+
+### Testing
+Iteration 28: **9/9 pytest backend pass**, 8-route E2E smoke + global palette + sell-through + calendar all green. `/app/test_reports/iteration_28.json` — zero issues.
+
+### Files added / changed
+- Added: `/app/backend/search.py`
+- Added: `/app/frontend/src/components/GlobalSearch.jsx`
+- Added: `/app/frontend/src/components/FootfallDailyCalendar.jsx`
+- Changed: `/app/backend/server.py` (new sell-through and daily-calendar endpoints + search_router mount)
+- Changed: `/app/frontend/src/App.js` (`<GlobalSearch />` mounted in Shell)
+- Changed: `/app/frontend/src/components/Sidebar.jsx` (visible Search ⌘K button)
+- Changed: `/app/frontend/src/pages/Inventory.jsx` (fetch + sell-through card)
+- Changed: `/app/frontend/src/pages/Footfall.jsx` (calendar block)
+
