@@ -8,6 +8,8 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import VariantDrillDown from "@/components/VariantDrillDown";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
+import ProductThumbnail from "@/components/ProductThumbnail";
+import { useThumbnails } from "@/lib/useThumbnails";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { Package, ArrowsClockwise, Fire, TrendUp } from "@phosphor-icons/react";
 
@@ -83,6 +85,8 @@ const ReOrder = () => {
 
   const pillFor = (u) => u === "CRITICAL" ? "pill-red" : u === "HIGH" ? "pill-amber" : "pill-neutral";
 
+  const { urlFor } = useThumbnails(useMemo(() => visibleList.map((r) => r.style_name), [visibleList]));
+
   return (
     <div className="space-y-6" data-testid="reorder-page">
       <div>
@@ -147,6 +151,7 @@ const ReOrder = () => {
                 initialSort={{ key: "sor_percent", dir: "desc" }}
                 columns={[
                   { key: "urgency", label: "Urgency", align: "left", render: (r) => <span className={pillFor(r.urgency)}>{r.urgency}</span>, csv: (r) => r.urgency },
+                  { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
                   { key: "style_name", label: "Style", align: "left", render: (r) => (
                     <button
                       type="button"

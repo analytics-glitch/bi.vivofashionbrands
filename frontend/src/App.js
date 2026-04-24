@@ -13,6 +13,7 @@ import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
 import ReOrder from "@/pages/ReOrder";
 import IBT from "@/pages/IBT";
+import Pricing from "@/pages/Pricing";
 import DataQuality from "@/pages/DataQuality";
 import Login from "@/pages/Login";
 import AuthCallback from "@/pages/AuthCallback";
@@ -62,6 +63,7 @@ function App() {
               <Route path="/ceo-report" element={<ProtectedShell><CEOReport /></ProtectedShell>} />
               <Route path="/re-order" element={<ProtectedShell><ReOrder /></ProtectedShell>} />
               <Route path="/ibt" element={<ProtectedShell><IBT /></ProtectedShell>} />
+              <Route path="/pricing" element={<ProtectedShell><Pricing /></ProtectedShell>} />
               <Route path="/data-quality" element={<ProtectedShell><DataQuality /></ProtectedShell>} />
               <Route path="/admin/users" element={<ProtectedShell adminOnly><Users /></ProtectedShell>} />
               <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly><ActivityLogs /></ProtectedShell>} />

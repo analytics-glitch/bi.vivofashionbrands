@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 26: Full back+front verification of (a) Customers crosswalk ≥5 noise filter, (b) ProductThumbnail on Products/ReOrder/IBT + admin editor modal, (c) Pricing Changes page + /api/analytics/price-changes. 18/18 pytest backend tests pass. Frontend flows all green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_26_thumbnails_pricing.py",
+    "/app/test_reports/pytest/iteration_26.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L2169: `from datetime import datetime, timedelta` lives inside the handler — harmless, but the module already imports datetime at the top; move for consistency.",
+    "server.py L2271: sales_change_pct denominator uses `or 1` when prev sales is 0, which silently hides div-by-zero. Since the outer `if (p.get('total_sales') or 0)` already guards, the `or 1` is dead code — safe to drop.",
+    "thumbnails.py L128 bulk upsert loops sync upserts; fine at 500-item cap but a bulk_write would be 1 round-trip. Nice-to-have, not blocking.",
+    "Customers.jsx L1165 uses a hardcoded CROSSWALK_MIN_SHARED = 5 — acceptable but consider exposing as a config/env if business wants to tweak the threshold per market later."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_26_thumbnails_pricing.py"],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% (all 9 flows green)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 — login via POST /api/auth/login + localStorage 'vivo_bi_token' is the fastest harness.",
+  "seed_data_creation": "Test created + cleaned up TEST_STYLE_* and TEST_BULK_* thumbnails via pytest fixture — nothing persisted.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Verified endpoints: POST/GET /api/thumbnails, POST /api/thumbnails/lookup, POST /api/thumbnails/bulk, DELETE /api/thumbnails/{style}, GET /api/analytics/price-changes. Admin modal testids: thumbnail-editor-url, thumbnail-editor-save, thumbnail-editor-remove (Cancel has no testid — minor). Products page has 240 thumb elements (top20+new+SOR), ReOrder 100, IBT 100. Pricing 'Today' preset yields 1 row by design; use 'Last Month' for 97 rows. Customers crosswalk shows 'No store pairs share ≥5…' UpstreamNotReady when all pairs are below threshold, and threshold note correctly shows 'N low-overlap pairs hidden'.",
+  "rca of the issue": "n/a — no regressions found.",
+  "detailed_results": {
+    "backend": {
+      "thumbnails_auth": "anon correctly 401/403 on lookup/upsert/delete",
+      "thumbnails_crud": "create→lookup→update→list→delete→404 all pass; bad URL → 422; missing → 404",
+      "thumbnails_bulk": "upserted=2 returned; both rows cleaned up",
+      "price_changes_validation": "missing/bad/inverted dates → 400",
+      "price_changes_default": "response contains rows/current_from/current_to/previous_from/previous_to/window_days/min_units/min_change_pct/count. Window for 2026-01-01→2026-02-01 is 32 days, previous window = 2025-11-30 → 2025-12-31 (correctly inclusive)",
+      "price_changes_row_shape": "each row has style_name, brand, collection, product_type, current_avg_price, previous_avg_price, price_change_pct, direction∈{increase,decrease}, current_units, previous_units, units_change_pct, current_sales, previous_sales, sales_change_pct, price_elasticity",
+      "price_changes_filters": "min_units=50+min_change_pct=10 shrinks vs min_units=1+min_change_pct=0.5"
+    },
+    "frontend": {
+      "pricing_page": "Renders at /pricing, title 'Pricing Changes', all 4 KPI cards present, direction toggle + brand multiselect + min units + min |ASP Δ| filters all have data-testid, table with 10 required columns renders. All prices 'KES' prefixed with commas (e.g. KES 3,577, KES -3,884,596). 'Last Month' preset shows 97 styles; 'Today' shows 1 row as documented.",
+      "sidebar_nav": "data-testid='nav-pricing' present, coin icon between IBT and CEO Report as specified.",
+      "products_thumbnails": "240 product-thumbnail elements on /products (top20+new+SOR)",
+      "reorder_thumbnails": "100 thumbnail elements on /re-order with 2-letter monogram placeholders (VS, VZ, VW, VM, VD, VL, SB, VI, ...)",
+      "ibt_thumbnails": "100 thumbnail elements on /ibt with monogram placeholders",
+      "editor_modal": "Click on thumb opens modal titled 'PRODUCT THUMBNAIL' with style name, VZ placeholder, 'IMAGE URL' input (testid=thumbnail-editor-url, placeholder https://cdn.example.com/sku.jpg), Save (testid=thumbnail-editor-save), Cancel (no testid — minor nit), Remove (testid=thumbnail-editor-remove) buttons, helper text 'Must be a direct https:// link to a web-safe image (JPG/PNG/WebP).'",
+      "customers_crosswalk": "data-testid=customer-crosswalk-section + data-testid=crosswalk-threshold-note both render. Footnote reads 'Showing pairs with ≥5 shared customers to filter out statistical noise — 2 low-overlap pairs hidden.' On 'Last Month' preset the table collapses to the UpstreamNotReady empty state ('No store pairs share ≥5 customers…') because no pair cleared the threshold — which is the intended noise filter. No rows with shared_customers < 5 are shown."
+    }
+  }
+}

@@ -5,6 +5,8 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
+import ProductThumbnail from "@/components/ProductThumbnail";
+import { useThumbnails } from "@/lib/useThumbnails";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ArrowRight, Truck, Coins, Package, MagnifyingGlass } from "@phosphor-icons/react";
 
@@ -87,6 +89,8 @@ const IBT = () => {
     };
   }, [filtered, stateByKey]);
 
+  const { urlFor } = useThumbnails(useMemo(() => visible.map((r) => r.style_name), [visible]));
+
   return (
     <div className="space-y-6" data-testid="ibt-page">
       <div>
@@ -166,6 +170,14 @@ const IBT = () => {
                 pageSize={50}
                 initialSort={{ key: "estimated_uplift", dir: "desc" }}
                 columns={[
+                  {
+                    key: "thumb",
+                    label: "",
+                    align: "left",
+                    sortable: false,
+                    render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />,
+                    csv: () => "",
+                  },
                   {
                     key: "style_name",
                     label: "Style",

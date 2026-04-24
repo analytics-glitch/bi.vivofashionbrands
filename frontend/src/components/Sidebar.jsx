@@ -17,6 +17,7 @@ import {
   Truck,
   Warning,
   DownloadSimple,
+  CurrencyCircleDollar,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -32,6 +33,7 @@ const tabs = [
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
+  { to: "/pricing", label: "Pricing", icon: CurrencyCircleDollar, id: "pricing" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports" },

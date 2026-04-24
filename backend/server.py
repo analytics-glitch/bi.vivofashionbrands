@@ -2139,6 +2139,152 @@ async def analytics_new_styles(
     return out
 
 
+@api_router.get("/analytics/price-changes")
+async def analytics_price_changes(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    brand: Optional[str] = None,
+    min_units: int = Query(10, ge=1, le=500),
+    min_change_pct: float = Query(2.0, ge=0.0, le=100.0),
+    limit: int = Query(200, ge=10, le=1000),
+):
+    """Price-change tracking: styles whose average selling price has
+    shifted materially between the current window and the equal-length
+    previous window.
+
+    Derived from upstream /top-skus (which gives units_sold + total_sales
+    per style). Upstream does not yet expose a list-price history, so ASP
+    (total_sales / units_sold) is our best proxy.
+
+    Filters:
+      - `min_units`    — both windows must sell ≥ this to be statistically meaningful.
+      - `min_change_pct` — absolute ASP change must be ≥ this to be shown.
+
+    Elasticity = units_change_pct / price_change_pct. Negative elasticity
+    means volume fell when price rose (healthy demand curve). Values
+    outside [-5, 5] are returned as None (too noisy to be believed).
+    """
+    from datetime import datetime, timedelta
+
+    if not date_from or not date_to:
+        raise HTTPException(status_code=400, detail="date_from and date_to required")
+    try:
+        df = datetime.fromisoformat(date_from)
+        dt = datetime.fromisoformat(date_to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid date format")
+    if dt < df:
+        raise HTTPException(status_code=400, detail="date_to must be >= date_from")
+
+    window_days = (dt - df).days + 1
+    prev_dt = df - timedelta(days=1)
+    prev_df = prev_dt - timedelta(days=window_days - 1)
+    prev_df_iso = prev_df.date().isoformat()
+    prev_dt_iso = prev_dt.date().isoformat()
+
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def styles_for(df_s: str, dt_s: str) -> List[Dict[str, Any]]:
+        base = {"date_from": df_s, "date_to": dt_s, "limit": 10000}
+        if brand:
+            base["product"] = brand
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/top-skus", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            })
+            return data or []
+        results = await multi_fetch("/top-skus", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for row in g:
+                s = row.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**row}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
+        return list(merged.values())
+
+    cur_rows, prev_rows = await asyncio.gather(
+        styles_for(date_from, date_to),
+        styles_for(prev_df_iso, prev_dt_iso),
+    )
+
+    def asp(r: Dict[str, Any]) -> float:
+        u = r.get("units_sold") or 0
+        return (r.get("total_sales") or 0) / u if u else 0.0
+
+    prev_map: Dict[str, Dict[str, Any]] = {
+        r.get("style_name"): r for r in prev_rows if r.get("style_name")
+    }
+
+    out: List[Dict[str, Any]] = []
+    for r in cur_rows:
+        style = r.get("style_name")
+        if not style:
+            continue
+        p = prev_map.get(style)
+        if not p:
+            continue
+        cur_units = r.get("units_sold") or 0
+        prev_units = p.get("units_sold") or 0
+        if cur_units < min_units or prev_units < min_units:
+            continue
+        cur_asp = asp(r)
+        prev_asp = asp(p)
+        if cur_asp <= 0 or prev_asp <= 0:
+            continue
+        price_change_pct = (cur_asp - prev_asp) / prev_asp * 100.0
+        if abs(price_change_pct) < min_change_pct:
+            continue
+        units_change_pct = (cur_units - prev_units) / prev_units * 100.0 if prev_units else 0.0
+        elasticity: Optional[float] = None
+        if abs(price_change_pct) >= 0.5:
+            e = units_change_pct / price_change_pct
+            if -5.0 <= e <= 5.0:
+                elasticity = round(e, 2)
+        direction = "increase" if price_change_pct > 0 else "decrease"
+        out.append({
+            "style_name": style,
+            "brand": r.get("brand"),
+            "collection": r.get("collection"),
+            "product_type": r.get("product_type"),
+            "current_avg_price": round(cur_asp, 2),
+            "previous_avg_price": round(prev_asp, 2),
+            "price_change_pct": round(price_change_pct, 2),
+            "direction": direction,
+            "current_units": cur_units,
+            "previous_units": prev_units,
+            "units_change_pct": round(units_change_pct, 2),
+            "current_sales": round(r.get("total_sales") or 0, 2),
+            "previous_sales": round(p.get("total_sales") or 0, 2),
+            "sales_change_pct": round(
+                ((r.get("total_sales") or 0) - (p.get("total_sales") or 0))
+                / ((p.get("total_sales") or 0) or 1) * 100.0, 2,
+            ) if (p.get("total_sales") or 0) else None,
+            "price_elasticity": elasticity,
+        })
+    out.sort(key=lambda x: abs(x["price_change_pct"] or 0), reverse=True)
+    return {
+        "window_days": window_days,
+        "current_from": date_from,
+        "current_to": date_to,
+        "previous_from": prev_df_iso,
+        "previous_to": prev_dt_iso,
+        "min_units": min_units,
+        "min_change_pct": min_change_pct,
+        "count": len(out[:limit]),
+        "rows": out[:limit],
+    }
+
+
 @api_router.get("/analytics/low-stock")
 async def analytics_low_stock(
     threshold: int = Query(2, ge=0, le=20),
@@ -2257,6 +2403,7 @@ from leaderboard import (  # noqa: E402
 )
 from recommendations import router as recommendations_router  # noqa: E402
 from user_activity import router as user_activity_router  # noqa: E402
+from thumbnails import router as thumbnails_router  # noqa: E402
 
 
 @api_router.get("/leaderboard/streaks")
@@ -2283,6 +2430,7 @@ async def leaderboard_snapshot(period: Optional[str] = None, force: bool = False
 app.include_router(api_router)
 app.include_router(recommendations_router)
 app.include_router(user_activity_router)
+app.include_router(thumbnails_router)
 
 
 @app.get("/api/health")

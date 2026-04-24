@@ -1161,29 +1161,48 @@ const Customers = () => {
           })()}
 
           {/* ---- Store cross-shop (customer-crosswalk) ---- */}
-          <div className="card-white p-5" data-testid="customer-crosswalk-section">
-            <SectionTitle
-              title="Stores sharing customers"
-              subtitle="Which POS locations share the same shoppers. Pairs with high overlap indicate customers who shop both stores — fertile ground for cross-promotion, shared loyalty events, and joint stock planning."
-            />
-            {crosswalk.length === 0 ? <UpstreamNotReady label="No cross-shop overlap detected in the selected window." /> : (
-              <SortableTable
-                testId="crosswalk-table"
-                exportName="customer-crosswalk.csv"
-                initialSort={{ key: "shared_customers", dir: "desc" }}
-                columns={[
-                  { key: "store_a", label: "Store A", align: "left" },
-                  { key: "store_b", label: "Store B", align: "left" },
-                  { key: "shared_customers", label: "Shared Customers", numeric: true, render: (r) => <span className="font-bold text-brand">{fmtNum(r.shared_customers)}</span> },
-                  { key: "pct_overlap", label: "% Overlap", numeric: true, render: (r) => <span className="pill-neutral">{(r.pct_overlap || 0).toFixed(1)}%</span>, csv: (r) => r.pct_overlap?.toFixed(2) },
-                ]}
-                rows={crosswalk}
-              />
-            )}
-            <p className="text-[11px] text-muted italic mt-2">
-              Overlap is computed from each store's top-50 customer list — approximation (upstream doesn't expose per-customer store history yet).
-            </p>
-          </div>
+          {(() => {
+            const CROSSWALK_MIN_SHARED = 5;
+            const significantCrosswalk = (crosswalk || []).filter(
+              (r) => (r.shared_customers || 0) >= CROSSWALK_MIN_SHARED
+            );
+            const hiddenCount = (crosswalk?.length || 0) - significantCrosswalk.length;
+            return (
+              <div className="card-white p-5" data-testid="customer-crosswalk-section">
+                <SectionTitle
+                  title="Stores sharing customers"
+                  subtitle="Which POS locations share the same shoppers. Pairs with high overlap indicate customers who shop both stores — fertile ground for cross-promotion, shared loyalty events, and joint stock planning."
+                />
+                {significantCrosswalk.length === 0 ? (
+                  <UpstreamNotReady
+                    label={
+                      (crosswalk?.length || 0) > 0
+                        ? `No store pairs share ≥${CROSSWALK_MIN_SHARED} customers in the selected window — overlap below statistical significance.`
+                        : "No cross-shop overlap detected in the selected window."
+                    }
+                  />
+                ) : (
+                  <SortableTable
+                    testId="crosswalk-table"
+                    exportName="customer-crosswalk.csv"
+                    initialSort={{ key: "shared_customers", dir: "desc" }}
+                    columns={[
+                      { key: "store_a", label: "Store A", align: "left" },
+                      { key: "store_b", label: "Store B", align: "left" },
+                      { key: "shared_customers", label: "Shared Customers", numeric: true, render: (r) => <span className="font-bold text-brand">{fmtNum(r.shared_customers)}</span> },
+                      { key: "pct_overlap", label: "% Overlap", numeric: true, render: (r) => <span className="pill-neutral">{(r.pct_overlap || 0).toFixed(1)}%</span>, csv: (r) => r.pct_overlap?.toFixed(2) },
+                    ]}
+                    rows={significantCrosswalk}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2" data-testid="crosswalk-threshold-note">
+                  Showing pairs with ≥{CROSSWALK_MIN_SHARED} shared customers to filter out statistical noise
+                  {hiddenCount > 0 ? <> — <span className="font-semibold">{fmtNum(hiddenCount)}</span> low-overlap pair{hiddenCount === 1 ? "" : "s"} hidden</> : null}.
+                  Overlap is computed from each store's top-50 customer list — approximation (upstream doesn't expose per-customer store history yet).
+                </p>
+              </div>
+            );
+          })()}
 
           {/* ---- Customer Acquisition & Retention by Location ---- */}
           {(() => {

@@ -9,6 +9,8 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
+import ProductThumbnail from "@/components/ProductThumbnail";
+import { useThumbnails } from "@/lib/useThumbnails";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
 } from "@phosphor-icons/react";
@@ -131,6 +133,16 @@ const Products = () => {
   // Tornado data removed — charts replaced by sortable tables.
   const topFiltered = useMemo(() => filterByBrand(top).slice(0, 20), [top, brands]); // eslint-disable-line
   const newStylesFiltered = useMemo(() => filterByBrand(newStyles), [newStyles, brands]); // eslint-disable-line
+
+  // Batch-fetch thumbnails for every visible style across all three tables.
+  const thumbStyles = useMemo(() => {
+    const set = new Set();
+    topFiltered.forEach((r) => r.style_name && set.add(r.style_name));
+    newStylesFiltered.forEach((r) => r.style_name && set.add(r.style_name));
+    filtered.slice(0, 200).forEach((r) => r.style_name && set.add(r.style_name));
+    return Array.from(set);
+  }, [topFiltered, newStylesFiltered, filtered]);
+  const { urlFor } = useThumbnails(thumbStyles);
 
   return (
     <div className="space-y-6" data-testid="products-page">
@@ -283,6 +295,7 @@ const Products = () => {
               initialSort={{ key: "units_sold", dir: "desc" }}
               columns={[
                 { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
                 { key: "style_name", label: "Product Name", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
                 { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
                 { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
@@ -307,6 +320,7 @@ const Products = () => {
                 initialSort={{ key: "total_sales_period", dir: "desc" }}
                 columns={[
                   { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
+                  { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
                   { key: "style_name", label: "Product Name", align: "left", render: (r) => <span className="font-medium max-w-[260px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
                   { key: "collection", label: "Collection", align: "left", render: (r) => <span className="text-muted">{r.collection || "—"}</span> },
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
@@ -346,6 +360,7 @@ const Products = () => {
               pageSize={50}
               initialSort={{ key: "units_sold", dir: "desc" }}
               columns={[
+                { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
                 { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium max-w-[280px] truncate inline-block" title={r.style_name}>{r.style_name}</span> },
                 { key: "collection", label: "Collection", align: "left", render: (r) => <span className="text-muted">{r.collection || "—"}</span> },
                 { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
