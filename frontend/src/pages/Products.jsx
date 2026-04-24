@@ -3,6 +3,7 @@ import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { isMerchandise } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
+import { VarianceCell, varianceFlag } from "@/lib/variance";
 import SORHeader from "@/components/SORHeader";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -136,12 +137,12 @@ const Products = () => {
           <div className="card-white p-5" data-testid="sts-category-table">
             <SectionTitle
               title="Stock-to-Sales · by Category"
-              subtitle="Variance = % of total units sold − % of total stock. Positive variance = outpacing stock."
+              subtitle="Variance compares sales share vs stock share. Red = action needed (stockout or overstock risk). Green = healthy balance. Sorted by risk magnitude — biggest gaps at the top."
             />
             <SortableTable
               testId="sts-category"
               exportName="stock-to-sales-by-category.csv"
-              initialSort={{ key: "units_sold", dir: "desc" }}
+              initialSort={{ key: "variance", dir: "desc" }}
               columns={[
                 { key: "category", label: "Category", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
@@ -152,15 +153,16 @@ const Products = () => {
                   key: "variance",
                   label: "Variance %",
                   numeric: true,
-                  render: (r) => (
-                    <span className={
-                      r.variance >= 2 ? "pill-green" :
-                      r.variance >= -2 ? "pill-neutral" : "pill-red"
-                    }>
-                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)}%
-                    </span>
-                  ),
+                  sortValue: (r) => Math.abs(r.variance || 0),
+                  render: (r) => <VarianceCell value={r.variance} />,
                   csv: (r) => r.variance?.toFixed(2),
+                },
+                {
+                  key: "risk_flag",
+                  label: "Risk Flag",
+                  align: "left",
+                  render: (r) => <span className="text-[11px] text-muted">{varianceFlag(r.variance)}</span>,
+                  csv: (r) => varianceFlag(r.variance),
                 },
               ]}
               rows={stsByCat}
@@ -170,12 +172,12 @@ const Products = () => {
           <div className="card-white p-5" data-testid="sts-subcat-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view. Sort by Variance to surface biggest stock/sales gaps."
+              subtitle="Granular view — one row per merchandise subcategory. Red = action needed (stockout or overstock risk). Green = healthy balance. Sorted by risk magnitude."
             />
             <SortableTable
               testId="sts-subcat"
               exportName="stock-to-sales-by-subcategory.csv"
-              initialSort={{ key: "units_sold", dir: "desc" }}
+              initialSort={{ key: "variance", dir: "desc" }}
               columns={[
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
@@ -186,15 +188,16 @@ const Products = () => {
                   key: "variance",
                   label: "Variance %",
                   numeric: true,
-                  render: (r) => (
-                    <span className={
-                      r.variance >= 2 ? "pill-green" :
-                      r.variance >= -2 ? "pill-neutral" : "pill-red"
-                    }>
-                      {r.variance >= 0 ? "+" : ""}{r.variance.toFixed(2)}%
-                    </span>
-                  ),
+                  sortValue: (r) => Math.abs(r.variance || 0),
+                  render: (r) => <VarianceCell value={r.variance} />,
                   csv: (r) => r.variance?.toFixed(2),
+                },
+                {
+                  key: "risk_flag",
+                  label: "Risk Flag",
+                  align: "left",
+                  render: (r) => <span className="text-[11px] text-muted">{varianceFlag(r.variance)}</span>,
+                  csv: (r) => varianceFlag(r.variance),
                 },
               ]}
               rows={stockSales}

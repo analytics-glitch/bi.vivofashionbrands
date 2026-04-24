@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS } from "@/lib/api";
+import { varianceStyle, VarianceCell } from "@/lib/variance";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
@@ -342,36 +343,15 @@ const Inventory = () => {
     return parts.join("_");
   }, [channels, countries]);
 
-  // Variance color classifier — inverted from raw math to business-action
-  // semantics:
-  //   large +v (sales outpacing stock) → RED (stockout risk, re-order urgent)
-  //   small +v / small -v within ±2pp    → GREEN (healthy balance)
-  //   small -v beyond ±2pp to ±5pp       → AMBER (monitor)
-  //   large -v (stock outpacing sales)  → RED (overstock, markdown / IBT)
-  // Thresholds are tuned for the Vivo merchandising team; adjust here if they
-  // change. The helper also returns a risk flag text for CSV export.
-  const VAR_GREEN = 2;   // within this band = healthy
-  const VAR_AMBER = 5;   // beyond this = red
-  const varianceStyle = (v) => {
-    if (v == null || isNaN(v)) return { cls: "pill-neutral", icon: "", flag: "Unknown", tip: "No variance data" };
-    const abs = Math.abs(v);
-    if (abs <= VAR_GREEN) return { cls: "pill-green", icon: "✅", flag: "Healthy", tip: "Stock and sales in balance." };
-    if (abs <= VAR_AMBER) {
-      if (v > 0) return { cls: "pill-amber", icon: "⚠️", flag: "Monitor (Stockout watch)", tip: "Sales slightly ahead of stock — monitor, plan re-order." };
-      return { cls: "pill-amber", icon: "⚠️", flag: "Monitor (Overstock watch)", tip: "Stock slightly ahead of sales — monitor, plan promotions." };
-    }
-    if (v > 0) return { cls: "pill-red", icon: "🔴", flag: "Stockout Risk", tip: "Sales outpacing stock — stockout risk. Review re-order urgently." };
-    return { cls: "pill-red", icon: "🔴", flag: "Overstock Risk", tip: "Stock outpacing sales — overstock risk. Review markdowns or IBT." };
-  };
-  const VarianceCell = ({ value }) => {
-    const { cls, icon, tip } = varianceStyle(value);
-    return (
-      <span className={`${cls} inline-flex items-center gap-1`} title={tip} data-variance-flag={varianceStyle(value).flag}>
-        <span aria-hidden="true">{icon}</span>
-        {value >= 0 ? "+" : ""}{(value || 0).toFixed(2)} pts
-      </span>
-    );
-  };
+  // Variance classifier & cell live in `/app/frontend/src/lib/variance.jsx`
+  // so Products page and any future views (Re-Order, IBT, CEO Report) use
+  // identical thresholds and flags. Do not re-implement locally.
+  // VarianceCell renders icon + "±X.XX pts" with hover tip; varianceStyle
+  // returns { cls, icon, flag, tip } for custom layouts.
+  // Keep the "pts" suffix here (instead of "%") since Inventory displays
+  // variance in points while the page text talks "pp". Products page uses
+  // default "%" suffix.
+  const VarianceCellPts = ({ value }) => <VarianceCell value={value} suffix=" pts" />;
 
   return (
     <div className="space-y-6" data-testid="inventory-page">
@@ -597,7 +577,7 @@ const Inventory = () => {
                 {
                   key: "variance", label: "Variance", numeric: true,
                   sortValue: (r) => Math.abs(r.variance || 0), // sort by magnitude → biggest risks top
-                  render: (r) => <VarianceCell value={r.variance} />,
+                  render: (r) => <VarianceCellPts value={r.variance} />,
                   csv: (r) => r.variance?.toFixed(2),
                 },
                 {
@@ -630,7 +610,7 @@ const Inventory = () => {
                 {
                   key: "variance", label: "Variance", numeric: true,
                   sortValue: (r) => Math.abs(r.variance || 0),
-                  render: (r) => <VarianceCell value={r.variance} />,
+                  render: (r) => <VarianceCellPts value={r.variance} />,
                   csv: (r) => r.variance?.toFixed(2),
                 },
                 {

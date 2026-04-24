@@ -312,27 +312,80 @@ const Customers = () => {
               <div className="mt-2 text-[22px] sm:text-[28px] font-extrabold num leading-tight">{fmtNum(cust.total_customers)}</div>
               {compareLbl && <div className="mt-1"><Delta curr={cust.total_customers} prev={custPrev?.total_customers} /></div>}
             </div>
-            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-new">
-              <div className="flex items-center gap-2"><UserPlus size={16} className="text-brand" /><div className="eyebrow">New</div></div>
-              <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">{fmtNum(cust.new_customers)}</div>
-              {compareLbl && <div className="mt-1 flex items-center gap-1"><Delta curr={cust.new_customers} prev={custPrev?.new_customers} /><span className="text-[10px] text-muted">{compareLbl}</span></div>}
-            </div>
-            <div className="card-white p-3.5 sm:p-5" data-testid="kpi-return">
-              <div className="flex items-center gap-2"><ArrowsCounterClockwise size={16} className="text-brand" /><div className="eyebrow">Return</div></div>
-              <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
-                {fmtNum((cust.returning_customers || 0) + (cust.repeat_customers || 0))}
-              </div>
-              <div className="text-[10.5px] text-muted mt-0.5">returning + repeat (≥2 orders)</div>
-              {compareLbl && (
-                <div className="mt-1 flex items-center gap-1">
-                  <Delta
-                    curr={(cust.returning_customers || 0) + (cust.repeat_customers || 0)}
-                    prev={(custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0)}
-                  />
-                  <span className="text-[10px] text-muted">{compareLbl}</span>
-                </div>
-              )}
-            </div>
+            {(() => {
+              // Mix = New share of Active (NEW + RETURN sum to 100% of active).
+              const active = cust.total_customers || 0;
+              const newCount = cust.new_customers || 0;
+              const returningCount = (cust.returning_customers || 0) + (cust.repeat_customers || 0);
+              const newShare = active ? (newCount / active) * 100 : 0;
+              const returningShare = active ? (returningCount / active) * 100 : 0;
+              const prevActive = custPrev?.total_customers || 0;
+              const prevNewShare = prevActive ? ((custPrev?.new_customers || 0) / prevActive) * 100 : 0;
+              const prevReturningShare = prevActive ? (((custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0)) / prevActive) * 100 : 0;
+              const newSharePp = newShare - prevNewShare;
+              const returningSharePp = returningShare - prevReturningShare;
+              const ppPill = (pp, invert) => {
+                if (!compareLbl || prevActive === 0) return null;
+                const good = invert ? pp < 0 : pp > 0;
+                const neutral = Math.abs(pp) < 0.1;
+                const cls = neutral ? "text-muted" : good ? "text-brand" : "text-danger";
+                return (
+                  <span className={`text-[10.5px] font-semibold ${cls}`}>
+                    {pp >= 0 ? "▲" : "▼"} {Math.abs(pp).toFixed(1)}pp share
+                  </span>
+                );
+              };
+              return (
+                <>
+                  <div
+                    className="card-white p-3.5 sm:p-5"
+                    data-testid="kpi-new"
+                    title="First-time buyers in the selected period. Share = % of active customers who are new."
+                  >
+                    <div className="flex items-center gap-2">
+                      <UserPlus size={16} className="text-brand" />
+                      <div className="eyebrow">New</div>
+                      <span title="First-time buyers in the selected period. Share = % of active customers who are new." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                    </div>
+                    <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                      {fmtNum(newCount)}
+                      <span className="text-[13px] text-muted font-semibold ml-1">({newShare.toFixed(1)}%)</span>
+                    </div>
+                    <div className="text-[10.5px] text-muted mt-0.5">{newShare.toFixed(1)}% of active</div>
+                    {compareLbl && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <Delta curr={newCount} prev={custPrev?.new_customers} />
+                        {ppPill(newSharePp, false)}
+                        <span className="text-[10px] text-muted">{compareLbl}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    className="card-white p-3.5 sm:p-5"
+                    data-testid="kpi-return"
+                    title="Returning customers = customers with 2 or more orders. Share = % of active customers who are returning."
+                  >
+                    <div className="flex items-center gap-2">
+                      <ArrowsCounterClockwise size={16} className="text-brand" />
+                      <div className="eyebrow">Returning</div>
+                      <span title="Returning customers = customers with 2 or more orders. Share = % of active customers who are returning." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                    </div>
+                    <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                      {fmtNum(returningCount)}
+                      <span className="text-[13px] text-muted font-semibold ml-1">({returningShare.toFixed(1)}%)</span>
+                    </div>
+                    <div className="text-[10.5px] text-muted mt-0.5">customers with ≥2 orders</div>
+                    {compareLbl && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <Delta curr={returningCount} prev={(custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0)} />
+                        {ppPill(returningSharePp, false)}
+                        <span className="text-[10px] text-muted">{compareLbl}</span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
             <KPICard
               testId="kpi-churned-count"
@@ -384,7 +437,7 @@ const Customers = () => {
                     {[
                       ["Total Customers", cust.total_customers, custPrev.total_customers],
                       ["New Customers", cust.new_customers, custPrev.new_customers],
-                      ["Return (Returning + Repeat)", (cust.returning_customers || 0) + (cust.repeat_customers || 0), (custPrev.returning_customers || 0) + (custPrev.repeat_customers || 0)],
+                      ["Returning Customers (≥2 orders)", (cust.returning_customers || 0) + (cust.repeat_customers || 0), (custPrev.returning_customers || 0) + (custPrev.repeat_customers || 0)],
                       ["Avg Spend per Customer (KES)", cust.avg_customer_spend, custPrev.avg_customer_spend, "kes"],
                       ["Avg Orders per Customer", cust.avg_orders_per_customer, custPrev.avg_orders_per_customer, "dec"],
                     ].map(([label, c, p, fmt]) => {

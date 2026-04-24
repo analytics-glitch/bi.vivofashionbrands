@@ -715,4 +715,22 @@ API, (c) figure from a different source system. Pending user confirmation.
   (`?period=…&date_from=…&pos=…&compare=…`) with the current filter state.
 - Verified Churn Rate formula = churned_in_period ÷ total_customers × 100
   (e.g. Jan 2026 → 2,958 / 7,365 ≈ 40.16 %).
+- **Products page inverted variance colors**: Stock-to-Sales by Category
+  and Subcategory tables now use the same business-action classifier as
+  Inventory page — `|v|≤2`→green (Healthy), `2<|v|≤5`→amber (Monitor
+  Stockout/Overstock watch), `|v|>5`→red (Stockout/Overstock Risk). Added
+  Risk Flag column to both tables (appears in CSV export). Default sort is
+  magnitude-descending so biggest risks surface first. Subtitle copy
+  updated to action-oriented framing.
+- **Shared variance utility** at `/app/frontend/src/lib/variance.jsx` —
+  Inventory, Products, and any future product-performance view
+  (Re-Order, IBT, CEO Report) import `VarianceCell` + `varianceFlag`
+  from one source so thresholds stay consistent.
+- **Customer KPI Cards redesigned**: NEW and RETURNING cards now show
+  count + `(% share of active)` inline (e.g. `1,485 (20.2%)`). Subtitle
+  on RETURNING simplified to "customers with ≥2 orders". Added
+  pp-share delta alongside count delta when a compare window is active,
+  so both absolute count change and mix shift are visible. Tooltips
+  added. "Repeat" terminology removed everywhere in favour of
+  "Returning" (card label, period-comparison table row).
 
