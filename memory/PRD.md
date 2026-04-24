@@ -1312,3 +1312,45 @@ Today surfaces 2 flags this-month: Vivo Junction CR 52.5% (severe, 4.8σ)
 - `/app/frontend/src/components/FootfallWeekdayHeatmap.jsx`
 - `/app/frontend/src/pages/DataQuality.jsx`
 
+
+## v27 — Product thumbnails, Pricing Changes page, Crosswalk noise filter (Feb 2026)
+
+### (a) Crosswalk noise filter — Customers
+Audit leftover: "Stores sharing customers" was printing every 1-customer overlap, muddying the signal. Now filters to pairs with **≥5 shared customers** (hardcoded threshold `CROSSWALK_MIN_SHARED` in `Customers.jsx` ~L1165). Shows "N low-overlap pairs hidden" footnote and a distinct empty-state message when the threshold isn't met.
+
+### (b) Product thumbnails — Audit #8 "fashion teams cannot discuss SKUs as text"
+Upstream Vivo BI has no product images. Solution:
+- New collection `product_thumbnails { style_name, image_url, updated_at, updated_by_email }`.
+- New router `/app/backend/thumbnails.py` with endpoints:
+  - `POST /api/thumbnails/lookup` — batch fetch `{style: url}` map (any auth user)
+  - `GET /api/thumbnails` — list (any auth user)
+  - `POST /api/thumbnails`, `POST /api/thumbnails/bulk`, `DELETE /api/thumbnails/{style}` — admin only
+- New React hook `useThumbnails([styles])` — batch fetches, module-level cache, survives navigation.
+- New component `<ProductThumbnail style={...} url={...} />`:
+  - Shows image if URL stored; else renders deterministic placeholder (hashed style → brand-palette gradient + 2-letter monogram) — avoids "AI slop" grey box.
+  - Admins get hover-edit affordance that opens a modal (preview + URL input + Save/Remove/Cancel) with toasts.
+- Wired into:
+  - `Products.jsx` — Top 20 Styles, New Styles, SOR by Style (all 3 tables)
+  - `ReOrder.jsx` — Re-Order table
+  - `IBT.jsx` — IBT suggestions table
+
+### (c) Pricing Changes page (P1 original user request)
+New `/pricing` route. Computes ASP (total_sales ÷ units_sold) per style for the selected window + the equal-length prior window, diffs them, and flags material moves.
+- Backend: `GET /api/analytics/price-changes?date_from&date_to&country&channel&brand&min_units&min_change_pct&limit` — returns `{rows, window_days, current_from, current_to, previous_from, previous_to, min_units, min_change_pct, count}`. Each row: `style_name, brand, collection, product_type, current_avg_price, previous_avg_price, price_change_pct, direction, current_units, previous_units, units_change_pct, current_sales, previous_sales, sales_change_pct, price_elasticity`.
+  - Elasticity = `units_change_pct / price_change_pct`, clipped to [-5, 5] (returned as `null` outside that range).
+  - Filters: `min_units` (default 10, both windows), `min_change_pct` (default 2.0).
+- Frontend: KPI tiles (Styles with changes / Price increases / Price decreases / Net sales impact), filter bar (Direction toggle, Brand multi-select, min-units, min-|ASP Δ|), full sortable table with thumbnail column + elasticity pill (red=elastic / green=pricing power / amber=unusual-same-direction).
+- Sidebar: new **Pricing** tab with Coin icon between IBT and CEO Report.
+
+### Testing
+Iteration 26: **18/18 backend pytest pass**, full E2E frontend verification. Zero regressions. `/app/test_reports/iteration_26.json`.
+
+### Files added / changed
+- Added: `/app/backend/thumbnails.py`
+- Added: `/app/frontend/src/lib/useThumbnails.js`
+- Added: `/app/frontend/src/components/ProductThumbnail.jsx`
+- Added: `/app/frontend/src/pages/Pricing.jsx`
+- Changed: `/app/backend/server.py` (new `/analytics/price-changes` + router mount)
+- Changed: `/app/frontend/src/App.js` (new `/pricing` route)
+- Changed: `/app/frontend/src/components/Sidebar.jsx` (new Pricing tab)
+- Changed: `/app/frontend/src/pages/Products.jsx`, `ReOrder.jsx`, `IBT.jsx`, `Customers.jsx`
