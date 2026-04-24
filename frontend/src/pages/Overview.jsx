@@ -19,6 +19,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
+import DailyBriefing from "@/components/DailyBriefing";
 import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
@@ -515,6 +516,13 @@ const Overview = () => {
 
       {!loading && !kpisLoading && !error && kpis && (
         <>
+          <DailyBriefing
+            kpis={kpis}
+            prevKpis={kpisPrev}
+            sales={sales}
+            inventory={kpis}
+            compareLbl={compareLbl}
+          />
           <DataFreshness />
           <SalesProjection
             dateFrom={dateFrom}

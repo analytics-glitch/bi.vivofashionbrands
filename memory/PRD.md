@@ -705,6 +705,21 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Daily Briefing card** (new, top of Overview). Personalised greeting
+  + 2–4 narrative bullets generated from existing KPIs — no new API
+  calls. Bullets:
+  - **Sales bullet**: `Total sales {up/down X%} vs {compare} — {verdict}
+    at KES …` with qualitative verdict (holding steady / strong day /
+    big swing) and tone-appropriate emoji (🚀 📈 ⚠️ 🔴).
+  - **Location bullet**: heroes the top POS by total_sales.
+  - **Pace bullet**: activates when a monthly target is wired (currently
+    dormant — awaiting target config).
+  - **Risk bullet**: low-stock styles flag when ≥ 5 (activates when
+    `/api/kpis` surfaces `low_stock_styles`).
+  Reacts to user name from auth, time-of-day greeting (Good morning /
+  afternoon / evening / night), tone-coloured pills (emerald = good /
+  amber = watch / red = bad). Responsive: stacks on mobile. File:
+  `/app/frontend/src/components/DailyBriefing.jsx`.
 - **Fix: category taxonomy mis-bucketing.** The regex-based
   `category_of()` in `/app/backend/server.py` was leaking subcategories
   as fake categories (`Sets & Bodysuits`, `Hoodies & Sweatshirts`,
