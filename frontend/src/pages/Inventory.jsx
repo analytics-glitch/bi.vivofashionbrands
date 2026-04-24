@@ -327,6 +327,17 @@ const Inventory = () => {
   const kpiStore = filtersActive ? storeVsWarehouse.store : (summary?.store_units || 0);
   const kpiWarehouse = filtersActive ? storeVsWarehouse.warehouse : (summary?.warehouse_units || 0);
 
+  // Export filename slug reflecting the active filters — makes traceability
+  // obvious when sharing CSVs via email/chat.
+  const exportSlug = useMemo(() => {
+    const parts = [];
+    if (channels.length) parts.push(channels.map((c) => c.replace(/\s+/g, "-").toLowerCase()).join("+"));
+    else if (countries.length) parts.push(countries.map((c) => c.toLowerCase()).join("+"));
+    else parts.push("all");
+    parts.push(new Date().toISOString().slice(0, 10));
+    return parts.join("_");
+  }, [channels, countries]);
+
   return (
     <div className="space-y-6" data-testid="inventory-page">
       <div>
@@ -338,6 +349,20 @@ const Inventory = () => {
           Merchandise only — Accessories, Sample &amp; Sale Items and
           uncategorised products are excluded from every section below.
         </p>
+        {(countries.length > 0 || channels.length > 0) && (
+          <div
+            className="mt-2 inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"
+            data-testid="inv-active-filter-banner"
+          >
+            <span className="text-muted font-normal">Showing inventory for:</span>
+            {countries.map((c) => (
+              <span key={`c-${c}`} className="pill-neutral">{c}</span>
+            ))}
+            {channels.map((p) => (
+              <span key={`p-${p}`} className="pill-green">POS · {p}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && <Loading />}
@@ -497,46 +522,11 @@ const Inventory = () => {
             </div>
           </div>
 
-          <div className="card-white p-5" data-testid="weeks-of-cover">
-            <SectionTitle
-              title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
-              subtitle="Weeks = current stock ÷ (units sold in last 4 weeks ÷ 4). Red <2w · Amber 2–4w · Green >4w."
-            />
-            <SortableTable
-              testId="woc"
-              exportName="weeks-of-cover.csv"
-              pageSize={25}
-              initialSort={{ key: "weeks_of_cover", dir: "asc" }}
-              columns={[
-                { key: "style_name", label: "Style Name", align: "left" },
-                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
-                { key: "subcategory", label: "Subcategory", align: "left" },
-                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                { key: "avg_weekly_sales", label: "Avg Weekly Sales", numeric: true, render: (r) => fmtNum(Math.round(r.avg_weekly_sales)), csv: (r) => r.avg_weekly_sales?.toFixed(2) },
-                {
-                  key: "weeks_of_cover",
-                  label: "Weeks of Cover",
-                  numeric: true,
-                  sortValue: (r) => r.weeks_of_cover == null ? 9999 : r.weeks_of_cover,
-                  render: (r) => {
-                    if (r.weeks_of_cover == null) return <span className="pill-neutral">— (no sales)</span>;
-                    if (r.avg_weekly_sales === 0) return <span className="pill-neutral">∞</span>;
-                    const w = r.weeks_of_cover;
-                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
-                    return <span className={cls}>{w.toFixed(1)}w</span>;
-                  },
-                  csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
-                },
-              ]}
-              rows={filteredWeeksOfCover}
-            />
-          </div>
-
           <div className="card-white p-5" data-testid="sts-by-category-table">
             <SectionTitle title="Stock-to-Sales · by Category" subtitle="Aggregated groups (Dresses, Tops, Bottoms, …)" />
             <SortableTable
               testId="inv-sts-cat"
-              exportName="inventory-sts-by-category.csv"
+              exportName={`inventory-sts-by-category_${exportSlug}.csv`}
               initialSort={{ key: "units_sold", dir: "desc" }}
               columns={[
                 { key: "category", label: "Category", align: "left" },
@@ -562,7 +552,7 @@ const Inventory = () => {
             <SectionTitle title="Stock-to-Sales · by Subcategory" subtitle="Granular view — one row per merchandise subcategory" />
             <SortableTable
               testId="inv-sts-subcat"
-              exportName="inventory-sts-by-subcategory.csv"
+              exportName={`inventory-sts-by-subcategory_${exportSlug}.csv`}
               pageSize={15}
               initialSort={{ key: "units_sold", dir: "desc" }}
               columns={[
@@ -652,7 +642,7 @@ const Inventory = () => {
             />
             <SortableTable
               testId="sts-location"
-              exportName="stock-cover-by-location.csv"
+              exportName={`stock-cover-by-location_${exportSlug}.csv`}
               initialSort={{ key: "stock_to_sales_ratio", dir: "desc" }}
               columns={[
                 { key: "location", label: "Location", align: "left", render: (r) => <span className="font-medium">{r.location}</span> },
@@ -698,6 +688,41 @@ const Inventory = () => {
                 },
               ]}
               rows={filteredSts}
+            />
+          </div>
+
+          <div className="card-white p-5" data-testid="weeks-of-cover">
+            <SectionTitle
+              title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
+              subtitle="Weeks = current stock ÷ (units sold in last 4 weeks ÷ 4). Red <2w · Amber 2–4w · Green >4w."
+            />
+            <SortableTable
+              testId="woc"
+              exportName={`weeks-of-cover_${exportSlug}.csv`}
+              pageSize={25}
+              initialSort={{ key: "weeks_of_cover", dir: "asc" }}
+              columns={[
+                { key: "style_name", label: "Style Name", align: "left" },
+                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
+                { key: "subcategory", label: "Subcategory", align: "left" },
+                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "avg_weekly_sales", label: "Avg Weekly Sales", numeric: true, render: (r) => fmtNum(Math.round(r.avg_weekly_sales)), csv: (r) => r.avg_weekly_sales?.toFixed(2) },
+                {
+                  key: "weeks_of_cover",
+                  label: "Weeks of Cover",
+                  numeric: true,
+                  sortValue: (r) => r.weeks_of_cover == null ? 9999 : r.weeks_of_cover,
+                  render: (r) => {
+                    if (r.weeks_of_cover == null) return <span className="pill-neutral">— (no sales)</span>;
+                    if (r.avg_weekly_sales === 0) return <span className="pill-neutral">∞</span>;
+                    const w = r.weeks_of_cover;
+                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
+                    return <span className={cls}>{w.toFixed(1)}w</span>;
+                  },
+                  csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
+                },
+              ]}
+              rows={filteredWeeksOfCover}
             />
           </div>
         </>

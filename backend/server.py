@@ -1335,11 +1335,20 @@ async def analytics_sts_by_subcat(
 
     When `locations` (CSV) is given, current_stock is recomputed locally
     from the location-scoped inventory so the stock side matches the
-    POS selection (upstream's `channel` param only filters the sales side)."""
+    POS selection (upstream's `channel` param only filters the sales side).
+    If no `channel` is explicitly passed but `locations` is, we forward
+    `locations` as `channel` to the upstream `/subcategory-stock-sales`
+    call so both SALES and STOCK scope to the same POS."""
+    effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
-        date_from=date_from, date_to=date_to, country=country, channel=channel,
+        date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
     )
-    locs = _split_csv(locations)
+    # If either `locations` or `channel` is specified, scope stock to that POS
+    # (upstream's `channel` filters sales side only — we must recompute stock
+    # locally from location-scoped inventory). Otherwise the Inventory column
+    # would show group-wide stock next to location-scoped sales — see the
+    # "Vivo City Mall: sold=2, stock=17826" bug.
+    locs = _split_csv(locations) or _split_csv(channel)
     stock_by_subcat: Optional[Dict[str, float]] = None
     if locs:
         inv = await fetch_all_inventory(country=country, locations=locs)
@@ -1387,11 +1396,17 @@ async def analytics_sts_by_category(
     name prefixes. "Category" is approximated as the first word of the
     subcategory (e.g. "Knee Length Dresses" → "Dresses"). Falls back to
     the full subcategory if no mapping exists. When `locations` is given,
-    stock is recomputed from location-scoped inventory."""
+    stock is recomputed from location-scoped inventory.
+    If no `channel` is explicitly passed but `locations` is, we forward
+    `locations` as `channel` to the upstream sales call so both SALES
+    and STOCK scope to the same POS."""
+    effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
-        date_from=date_from, date_to=date_to, country=country, channel=channel,
+        date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
     )
-    locs = _split_csv(locations)
+    # See note in `analytics_sts_by_subcat` — scope stock side to the same POS
+    # whether the client sent `locations` or `channel`.
+    locs = _split_csv(locations) or _split_csv(channel)
     inv_rows: List[Dict[str, Any]] = []
     if locs:
         inv_rows = await fetch_all_inventory(country=country, locations=locs) or []
