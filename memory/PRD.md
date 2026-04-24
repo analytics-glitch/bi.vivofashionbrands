@@ -1265,3 +1265,50 @@ so any page on the platform can self-check its numbers in one line.
 ### Files added
 - `/app/frontend/src/lib/useOutliers.js`
 - `/app/frontend/src/components/DataQualityPill.jsx`
+
+## Session Update — 2026-04-24 (Weekday heatmap + Data Quality console)
+
+### Weekday footfall-pattern heatmap (Footfall page)
+Upstream has no hourly endpoint, so we fan out 28 `/footfall` calls (one
+per day over the trailing 4 weeks), aggregate by `(location, weekday)`,
+and render a 15-row × 7-column heatmap.
+
+- **Backend**: new `GET /api/footfall/weekday-pattern` with 1h in-memory
+  cache keyed on `(date_from, date_to, country)`. Concurrency-limited to
+  6 parallel upstream calls. Returns per-location series + group average
+  per weekday.
+- **Frontend**: `FootfallWeekdayHeatmap.jsx` — brand-green gradient for
+  footfall intensity, amber for conversion intensity. Mode toggle at the
+  card header. Narrative subtitle identifies group peak / softest / best-
+  CR weekday. Hover tooltip on every cell.
+- Mounted above the existing per-day footfall + conversion bar charts on
+  `/footfall`.
+
+### Data Quality console (/data-quality)
+One admin page that lists every anomaly the `useOutliers` kernel detects
+across the platform, with per-flag "mark investigated" workflow.
+
+- **Backend**: extended `recommendations.py` to accept `item_type="dq"`
+  in addition to `reorder`/`ibt` — zero new surface area, reuses the
+  same `recommendation_state` collection, auth, and toast/optimistic UX.
+- **Frontend**: new `/app/frontend/src/pages/DataQuality.jsx` — re-runs
+  `useOutliers` against `/footfall` and `/sales-summary` to surface
+  conversion-rate outliers (2σ + hard caps at ≥50%/<1%) and return-rate
+  outliers (2σ + hard cap at ≥30%). Each flag is a table row with:
+  Severity pill (severe/warn), Store, Metric, Value, Group Avg, σ
+  distance, Reason, Supporting evidence, and a `RecommendationActionPill`
+  for mark-investigated / mark-done / dismiss.
+- Added to nav (Sidebar) between CEO Report and Exports with ⚠ icon.
+
+Today surfaces 2 flags this-month: Vivo Junction CR 52.5% (severe, 4.8σ)
++ Online - Shop Zetu return rate 16.1% (warn, 5.2σ).
+
+### Testing
+- Iteration 24: 7/7 backend pytest + full E2E frontend verification,
+  zero regressions. `/app/test_reports/iteration_24.json`.
+
+### Files added
+- `/app/backend/` weekday-pattern endpoint in `server.py`
+- `/app/frontend/src/components/FootfallWeekdayHeatmap.jsx`
+- `/app/frontend/src/pages/DataQuality.jsx`
+
