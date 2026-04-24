@@ -298,11 +298,12 @@ const Pricing = () => {
                 testId="pricing-table"
                 exportName="pricing-changes.csv"
                 pageSize={50}
+                mobileCards
                 initialSort={{ key: "abs_change", dir: "desc" }}
                 columns={[
-                  { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
+                  { key: "thumb", label: "", align: "left", sortable: false, mobileHidden: true, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
                   {
-                    key: "style_name", label: "Style", align: "left",
+                    key: "style_name", label: "Style", align: "left", mobilePrimary: true,
                     render: (r) => (
                       <div className="max-w-[280px]">
                         <div className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>

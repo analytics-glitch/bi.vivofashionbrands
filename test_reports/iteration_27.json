@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 27: Full back+front verification of (a) Notifications bell (4 event types), (b) Inventory stock-aging summary + phantom flag, (c) Mobile card-view for wide tables on /inventory, /re-order, /ibt, /pricing, /products. 14/14 pytest backend tests pass. All frontend flows green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_27_notifications.py",
+    "/app/test_reports/pytest/iteration_27.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "notifications.py: /read-all iterates events one-by-one and issues an update_one per event; fine at ≤40 events but a bulk_write with UpdateOne upsert ops would be one round-trip. Nice-to-have.",
+    "notifications.py unread-count iterates all docs in python to compare against read_ids set — for scale (>1k events) consider a $lookup or $nin aggregation. Current MAX_AGE_DAYS=14 cap keeps this bounded, so not blocking.",
+    "notifications.py L281 `$setOnInsert: {}` is a no-op; safe but can be removed for clarity.",
+    "notifications.py refresh runs 4 synthesisers via asyncio.gather(return_exceptions=True) — good resilience; however exception instances are silently discarded. Consider logging them so a broken upstream is noticed.",
+    "SortableTable mobile-sort-select option children trip a React hydration warning 'span cannot be child of option' — only occurs inside the Emergent visual editor overlay (x-excluded span injection), not a real runtime bug in production builds, but worth a safeguard (e.g. wrap option text plainly).",
+    "NotificationBell.jsx: the bell's unread-count is re-fetched every 2min via setInterval but the open/close path also does a /refresh — fine, but on slow networks the first bell-open blocks up to ~3s while the 4 synthesisers run. Consider streaming: show cached list instantly, then refresh in background.",
+    "Inventory phantom-stock-card correctly does not render when phantom count is 0 — verified in our preview data (fresh 28 / healthy 65 / aging 68 / stale 37 / phantom 0). If business wants an explicit '0 phantom styles — all clear' confirmation pill on the summary card, that's a small UX add."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_27_notifications.py"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all flows green)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 — login via POST /api/auth/login + localStorage 'vivo_bi_token' works.",
+  "seed_data_creation": "No seed data created. Notifications auto-synthesise from upstream /sor, /footfall, /sales-summary, /top-customers. Events pruned at 14d by server.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Verified endpoints: POST /api/notifications/refresh (idempotent, stable event_id), GET /api/notifications?limit=N (rows with type ∈ {new_record, stockout, vip_return, anomaly}, severity ∈ {info, warn, celebrate}), GET /api/notifications/unread-count, POST /api/notifications/{event_id}/read (404 on bogus), POST /api/notifications/read-all. Anon 401/403 on all. On the preview dataset the refresh currently generates 4 events (all stockouts — warn). To test mark-all-read button visibility, the inbox must have at least 1 unread; we observed it correctly hides once all are read. Inventory page testids: stock-aging-summary + aging-bucket-{fresh,healthy,aging,stale,phantom} (counts + % rendered). phantom-stock-card only renders when phantom count > 0 (current preview has 0 phantom styles). WoC table ('woc' testid) has 'AGING' header + 39 pills (Fresh/Healthy/Aging/Stale/Phantom). Mobile card-list verified on 390×844 for /inventory, /re-order, /ibt, /pricing, /products with mobile-sort-select present. Desktop 1920×1080 keeps mobile-card-list hidden (md:hidden class works). NotificationBell mounted in Sidebar next to UserMenu on every protected page, click navigates to link (stockout → /re-order verified).",
+  "rca of the issue": "n/a — no defects found.",
+  "detailed_results": {
+    "backend": {
+      "notifications_auth": "All 5 endpoints correctly reject anon (401/403): /refresh, GET /, /unread-count, /{id}/read, /read-all",
+      "notifications_refresh": "200 {generated:int, upserted:int}; second call generates same count (idempotent via stable event_id), no dupe event_ids in list",
+      "notifications_list": "200 with rows matching NotificationRow schema; type + severity enums validated",
+      "notifications_read_flow": "read-all drops unread-count to 0; single /{id}/read returns 200 {ok:true} and subsequent list shows read=true on that event only; bogus id → 404",
+      "notifications_resilience": "Refresh still returns 200 even if a synth errors (asyncio.gather return_exceptions=True)"
+    },
+    "frontend": {
+      "notification_bell": "data-testid='notifications-bell' present in top nav, click opens data-testid='notifications-panel'. 4 items rendered (all stockout type, ⚠️ emoji). Clicking item navigates to /re-order + marks read (optimistic). Mark-all-read button correctly only shown when unread items exist. Empty state copy '🎉 Nothing new — enjoy the calm.' verified in code.",
+      "inventory_stock_aging": "data-testid='stock-aging-summary' card renders. Buckets: fresh=28 (14.1%), healthy=65 (32.8%), aging=68 (34.3%), stale=37 (18.7%), phantom=0 (0.0%). Each shows count + percentage.",
+      "inventory_phantom_card": "data-testid='phantom-stock-card' correctly NOT rendered (phantom bucket is 0 in preview data). Code branch inspected — renders RecommendationActionPill with item_type='dq' and item_key='phantom::<style>' when rows exist.",
+      "inventory_woc_aging_col": "WoC table now includes AGING column; 39 Aging pills rendered with Fresh/Healthy/Aging/Stale/Phantom labels.",
+      "mobile_cards": "Viewport 390×844: data-testid='mobile-card-list' visible on /inventory, /re-order, /ibt, /pricing, /products. data-testid='mobile-sort-select' present on each.",
+      "desktop_cards": "Viewport 1920×1080: mobile-card-list hidden (rendered but not visible via md:hidden). Regular table renders."
+    }
+  }
+}

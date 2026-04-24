@@ -23,6 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
+import NotificationBell from "@/components/NotificationBell";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
@@ -197,6 +198,7 @@ const TopNav = () => {
         >
           <ArrowClockwise size={15} weight="bold" />
         </button>
+        <NotificationBell />
         <UserMenu />
       </div>
 

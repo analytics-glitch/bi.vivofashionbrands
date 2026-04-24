@@ -148,11 +148,12 @@ const ReOrder = () => {
                 testId="reorder-table"
                 exportName="reorder-recommendations.csv"
                 pageSize={50}
+                mobileCards
                 initialSort={{ key: "sor_percent", dir: "desc" }}
                 columns={[
                   { key: "urgency", label: "Urgency", align: "left", render: (r) => <span className={pillFor(r.urgency)}>{r.urgency}</span>, csv: (r) => r.urgency },
-                  { key: "thumb", label: "", align: "left", sortable: false, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
-                  { key: "style_name", label: "Style", align: "left", render: (r) => (
+                  { key: "thumb", label: "", align: "left", sortable: false, mobileHidden: true, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
+                  { key: "style_name", label: "Style", align: "left", mobilePrimary: true, render: (r) => (
                     <button
                       type="button"
                       onClick={() => setDrillStyle(r)}

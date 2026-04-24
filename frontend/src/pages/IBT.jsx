@@ -168,6 +168,7 @@ const IBT = () => {
                 testId="ibt-table"
                 exportName="ibt-suggestions.csv"
                 pageSize={50}
+                mobileCards
                 initialSort={{ key: "estimated_uplift", dir: "desc" }}
                 columns={[
                   {
@@ -175,6 +176,7 @@ const IBT = () => {
                     label: "",
                     align: "left",
                     sortable: false,
+                    mobileHidden: true,
                     render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />,
                     csv: () => "",
                   },
@@ -182,6 +184,7 @@ const IBT = () => {
                     key: "style_name",
                     label: "Style",
                     align: "left",
+                    mobilePrimary: true,
                     render: (r) => (
                       <div className="max-w-[260px]">
                         <div className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>

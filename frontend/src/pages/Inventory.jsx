@@ -5,6 +5,8 @@ import { varianceStyle, VarianceCell } from "@/lib/variance";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import RecommendationActionPill from "@/components/RecommendationActionPill";
+import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ChartTooltip } from "@/components/ChartHelpers";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import SORHeader from "@/components/SORHeader";
@@ -30,6 +32,8 @@ import {
 const Inventory = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
+
+  const { stateByKey: dqByKey, setState: setDqState } = useRecommendationState("dq");
 
   const [summary, setSummary] = useState(null);
   const [inv, setInv] = useState([]);
@@ -308,6 +312,47 @@ const Inventory = () => {
       .filter((r) => isMerchandise(r.subcategory))
       .filter((r) => !filtersActive || visibleStyles.has(r.style_name)),
     [weeksOfCover, filtersActive, visibleStyles]
+  );
+
+  // ─── Stock aging classification ──────────────────────────────────
+  // Buckets derived from weeks_of_cover + last-28-day units:
+  //   Fresh     < 4w   (stock is flowing)
+  //   Healthy   4–8w   (normal replenishment cadence)
+  //   Aging     8–16w  (slow, keep eye)
+  //   Stale     > 16w  (markdown candidate)
+  //   Phantom   stock ≥ 30 AND zero sales in the last 4 weeks
+  //             (dead money — IBT or clearance immediately)
+  const bucketFor = (r) => {
+    const stock = r.current_stock || 0;
+    const sold28 = r.units_sold_28d || 0;
+    if (stock >= 30 && sold28 === 0) return "phantom";
+    const w = r.weeks_of_cover;
+    if (w == null) return "phantom"; // no sales but not enough stock to call phantom
+    if (w < 4)  return "fresh";
+    if (w < 8)  return "healthy";
+    if (w < 16) return "aging";
+    return "stale";
+  };
+  const agingRows = useMemo(
+    () => filteredWeeksOfCover.map((r) => ({ ...r, _bucket: bucketFor(r) })),
+    [filteredWeeksOfCover]
+  );
+  const agingSummary = useMemo(() => {
+    const init = { fresh: 0, healthy: 0, aging: 0, stale: 0, phantom: 0 };
+    const byBucket = agingRows.reduce((acc, r) => {
+      acc[r._bucket] = (acc[r._bucket] || 0) + 1;
+      return acc;
+    }, init);
+    const phantomStockUnits = agingRows
+      .filter((r) => r._bucket === "phantom")
+      .reduce((s, r) => s + (r.current_stock || 0), 0);
+    return { byBucket, phantomStockUnits };
+  }, [agingRows]);
+  const phantomRows = useMemo(
+    () => agingRows
+      .filter((r) => r._bucket === "phantom")
+      .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0)),
+    [agingRows]
   );
 
   const filteredSts = useMemo(
@@ -744,6 +789,85 @@ const Inventory = () => {
             />
           </div>
 
+          <div className="card-white p-5" data-testid="stock-aging-summary">
+            <SectionTitle
+              title="Stock Aging · buckets by weeks-on-hand"
+              subtitle="Classifies every merchandise style by how long current stock will last at the last-4-week velocity. Phantom = stock ≥ 30 with zero sales in 4 weeks — dead money, transfer or clear immediately."
+            />
+            {(() => {
+              const b = agingSummary.byBucket;
+              const total = b.fresh + b.healthy + b.aging + b.stale + b.phantom || 1;
+              const tile = (label, count, cls, sub, testId) => {
+                const pct = ((count / total) * 100).toFixed(1);
+                return (
+                  <div className={`rounded-lg p-3 ${cls}`} data-testid={testId}>
+                    <div className="text-[10.5px] uppercase tracking-wider opacity-80">{label}</div>
+                    <div className="font-extrabold text-[22px] leading-tight mt-0.5">{fmtNum(count)}</div>
+                    <div className="text-[10.5px] opacity-80 mt-0.5">{pct}% · {sub}</div>
+                  </div>
+                );
+              };
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+                  {tile("Fresh",   b.fresh,   "bg-emerald-50 text-emerald-900 border border-emerald-200", "< 4w cover",      "aging-bucket-fresh")}
+                  {tile("Healthy", b.healthy, "bg-green-50 text-green-900 border border-green-200",       "4–8w cover",      "aging-bucket-healthy")}
+                  {tile("Aging",   b.aging,   "bg-amber-50 text-amber-900 border border-amber-200",       "8–16w cover",     "aging-bucket-aging")}
+                  {tile("Stale",   b.stale,   "bg-orange-50 text-orange-900 border border-orange-200",    "> 16w cover",     "aging-bucket-stale")}
+                  {tile("Phantom", b.phantom, "bg-red-50 text-red-900 border border-red-200",             "≥30 stock · 0 sales/4w", "aging-bucket-phantom")}
+                </div>
+              );
+            })()}
+          </div>
+
+          {phantomRows.length > 0 && (
+            <div className="card-white p-5" data-testid="phantom-stock-card">
+              <SectionTitle
+                title={`👻 Phantom Stock · ${phantomRows.length} styles · ${fmtNum(agingSummary.phantomStockUnits)} units locked up`}
+                subtitle="Styles carrying ≥ 30 units with zero sales in the last 4 weeks. These are dead money — move them out or clear them. Acting on this list pays for itself within a quarter."
+                action={
+                  <button
+                    type="button"
+                    className="text-[11px] text-brand hover:text-brand-deep underline decoration-dotted"
+                    onClick={() => window.open('/ibt', '_self')}
+                    data-testid="phantom-open-ibt"
+                  >
+                    IBT candidates →
+                  </button>
+                }
+              />
+              <SortableTable
+                testId="phantom-stock-table"
+                exportName={`phantom-stock_${exportSlug}.csv`}
+                pageSize={25}
+                mobileCards
+                initialSort={{ key: "current_stock", dir: "desc" }}
+                columns={[
+                  { key: "style_name", label: "Style", align: "left", mobilePrimary: true, render: (r) => <span className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.style_name}</span> },
+                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
+                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                  { key: "current_stock", label: "Stock", numeric: true, render: (r) => <span className="pill-red">{fmtNum(r.current_stock)}</span> },
+                  { key: "units_sold_28d", label: "Sold (28d)", numeric: true, render: (r) => <span className="text-muted num">{fmtNum(r.units_sold_28d)}</span> },
+                  {
+                    key: "_action", label: "Action", align: "left", sortable: false,
+                    render: (r) => {
+                      const key = `phantom::${r.style_name}`;
+                      return (
+                        <RecommendationActionPill
+                          itemKey={key}
+                          state={dqByKey.get(key)}
+                          onChange={(status, opts) => setDqState(key, status, opts)}
+                          label="phantom"
+                        />
+                      );
+                    },
+                    csv: (r) => dqByKey.get(`phantom::${r.style_name}`)?.status || "pending",
+                  },
+                ]}
+                rows={phantomRows}
+              />
+            </div>
+          )}
+
           <div className="card-white p-5" data-testid="weeks-of-cover">
             <SectionTitle
               title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
@@ -753,9 +877,10 @@ const Inventory = () => {
               testId="woc"
               exportName={`weeks-of-cover_${exportSlug}.csv`}
               pageSize={25}
+              mobileCards
               initialSort={{ key: "weeks_of_cover", dir: "asc" }}
               columns={[
-                { key: "style_name", label: "Style Name", align: "left" },
+                { key: "style_name", label: "Style Name", align: "left", mobilePrimary: true },
                 { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
@@ -774,8 +899,25 @@ const Inventory = () => {
                   },
                   csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
                 },
+                {
+                  key: "_bucket", label: "Aging", align: "left",
+                  sortValue: (r) => ({ fresh: 1, healthy: 2, aging: 3, stale: 4, phantom: 5 }[bucketFor(r)] || 0),
+                  render: (r) => {
+                    const b = bucketFor(r);
+                    const map = {
+                      fresh:   { label: "Fresh",   cls: "pill-green" },
+                      healthy: { label: "Healthy", cls: "pill-green" },
+                      aging:   { label: "Aging",   cls: "pill-amber" },
+                      stale:   { label: "Stale",   cls: "pill-red"   },
+                      phantom: { label: "Phantom", cls: "pill-red"   },
+                    };
+                    const m = map[b];
+                    return <span className={m.cls}>{m.label}</span>;
+                  },
+                  csv: (r) => bucketFor(r),
+                },
               ]}
-              rows={filteredWeeksOfCover}
+              rows={agingRows}
             />
           </div>
         </>

@@ -36,7 +36,12 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
 
 /**
  * Reusable sortable table with CSV export.
- * columns = [{ key, label, align, sortable = true, render, csv, width, numeric }]
+ * columns = [{ key, label, align, sortable = true, render, csv, width, numeric, mobilePrimary, mobileHidden }]
+ *
+ * When `mobileCards` is true, screens < 768px render a stacked card list
+ * instead of a horizontally-scrollable table. Set `mobilePrimary: true`
+ * on the column you want to use as each card's headline, and
+ * `mobileHidden: true` on columns that should be omitted on mobile.
  */
 export const SortableTable = ({
   columns,
@@ -47,6 +52,7 @@ export const SortableTable = ({
   pageSize,
   emptyLabel = "No data",
   onRowClick,
+  mobileCards = false,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [limit, setLimit] = useState(pageSize || null);
@@ -103,7 +109,7 @@ export const SortableTable = ({
           </button>
         )}
       </div>
-      <div className="overflow-x-auto">
+      <div className={`overflow-x-auto ${mobileCards ? "hidden md:block" : ""}`}>
         <table className="w-full data">
           <thead>
             <tr>
@@ -149,8 +155,90 @@ export const SortableTable = ({
           </tbody>
         </table>
       </div>
+      {mobileCards && (
+        <MobileCardList
+          visible={visible}
+          columns={columns}
+          emptyLabel={emptyLabel}
+          onRowClick={onRowClick}
+          sort={sort}
+          setSort={setSort}
+        />
+      )}
     </div>
   );
 };
 
 export default SortableTable;
+
+/** Mobile card list — renders each row as a stacked card with the
+ * `mobilePrimary` column as headline and remaining (non-hidden) columns
+ * as label/value pairs. Only shown on screens < md (768px). Sort is
+ * controlled via a compact select so users can still pivot on the go. */
+const MobileCardList = ({ visible, columns, emptyLabel, onRowClick, sort, setSort }) => {
+  const cardCols = columns.filter((c) => !c.mobileHidden);
+  const primaryCol = cardCols.find((c) => c.mobilePrimary) || cardCols[0];
+  const detailCols = cardCols.filter((c) => c !== primaryCol);
+  const sortableCols = columns.filter((c) => c.sortable !== false && c.label);
+
+  return (
+    <div className="md:hidden" data-testid="mobile-card-list">
+      {sortableCols.length > 0 && (
+        <div className="flex items-center gap-2 mb-2 text-[11.5px]">
+          <span className="text-muted">Sort:</span>
+          <select
+            value={sort ? `${sort.key}|${sort.dir}` : ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v) { setSort(null); return; }
+              const [key, dir] = v.split("|");
+              setSort({ key, dir });
+            }}
+            className="border border-border rounded px-2 py-1 text-[12px] bg-white"
+            data-testid="mobile-sort-select"
+          >
+            <option value="">Default</option>
+            {sortableCols.map((c) => (
+              <React.Fragment key={c.key}>
+                <option value={`${c.key}|desc`}>{typeof c.label === "string" ? c.label : c.key} · high → low</option>
+                <option value={`${c.key}|asc`}>{typeof c.label === "string" ? c.label : c.key} · low → high</option>
+              </React.Fragment>
+            ))}
+          </select>
+        </div>
+      )}
+      {visible.length === 0 ? (
+        <div className="text-center text-muted py-8 text-[13px]">{emptyLabel}</div>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((r, i) => (
+            <div
+              key={i}
+              className={`card-white p-3 ${onRowClick ? "cursor-pointer active:bg-panel" : ""}`}
+              onClick={onRowClick ? () => onRowClick(r) : undefined}
+              data-testid="mobile-card"
+            >
+              <div className="font-semibold text-[13.5px] mb-1.5 break-words">
+                {primaryCol.render ? primaryCol.render(r, i) : r[primaryCol.key]}
+              </div>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px]">
+                {detailCols.map((c) => {
+                  const val = c.render ? c.render(r, i) : r[c.key];
+                  if (val == null || val === "" || val === false) return null;
+                  return (
+                    <React.Fragment key={c.key}>
+                      <dt className="text-muted uppercase tracking-wider text-[10.5px] self-center">
+                        {typeof c.label === "string" ? c.label : c.key}
+                      </dt>
+                      <dd className={`${c.numeric ? "text-right num" : "text-left"} self-center`}>{val}</dd>
+                    </React.Fragment>
+                  );
+                })}
+              </dl>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
