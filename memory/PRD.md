@@ -1430,3 +1430,43 @@ Iteration 28: **9/9 pytest backend pass**, 8-route E2E smoke + global palette + 
 - Changed: `/app/frontend/src/pages/Inventory.jsx` (fetch + sell-through card)
 - Changed: `/app/frontend/src/pages/Footfall.jsx` (calendar block)
 
+## v30 — "Ask anything" Natural-Language Search (Feb 2026)
+
+### Feature
+Promoted the ⌘K palette from substring-match to **LLM-backed natural-language search**. Users can now type questions like "stores with stuck stock", "phantom stock styles", "top 5 stores by sales", "customers absent 60 days", "styles whose price went up 10%", or "critical reorders right now" and get direct rows + an "Open →" deep-link to the right dashboard page.
+
+### Architecture
+**Integration:** Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via `emergentintegrations` library + `EMERGENT_LLM_KEY` from `.env`. No streaming, no tool-calls — single request/response returning strict JSON.
+
+**Flow:**
+1. User input → frontend debounce 180ms → `POST /api/search/ask`.
+2. Backend LLM classifier (tight system prompt, closed-set JSON) → `{intent, filters, answer, page_label}`.
+3. Backend dispatches to one of 6 data fetchers (`sell_through`, `stock_aging`, `pricing`, `customers`, `stores`, `reorder`) that call existing upstream endpoints + apply LLM-extracted filters.
+4. Returns `{answer, link, rows:[{title,sub}], count, followups}`.
+
+**Why a closed intent set?** Keeps latency <3s (single LLM hop), eliminates hallucinated endpoint names, makes it trivial to add new intents. In-memory per-question cache (cap 200) avoids re-hitting the LLM.
+
+### Data sources per intent
+- `sell_through`  — upstream `/sales-summary` + `/inventory` joined on channel.
+- `stock_aging`   — `fetch_all_inventory()` + upstream `/sor` as "has-sales" whitelist; phantom = stock≥30 and not in /sor.
+- `pricing`       — `/top-skus` current-window vs prior-window ASP delta.
+- `customers`     — `/top-customers` (already has `last_purchase_date` — no per-customer round-trips).
+- `stores`        — `/sales-summary` + `/footfall` merged on POS.
+- `reorder`       — `/sor` filtered to WoH < 4w and urgency-classified.
+
+### Frontend UX
+- **Ask toggle button** (`data-testid="global-search-ask-toggle"`) with sparkle icon; persists per session.
+- **Auto-enable heuristic** (`isQuestionLike`) flips Ask on for question-shaped input (ends with `?` OR 3+ words with retail keywords).
+- **Empty state** shows 5 clickable example queries to onboard users.
+- **Answer card** with brand-accent bg, LLM's one-line answer, intent badge, count, and "Open →" CTA.
+- **Follow-up chips** (`Try next`) let users pivot without retyping.
+- **Graceful unknown** — LLM flags out-of-scope queries with a helpful nudge toward valid examples.
+
+### Testing
+Iteration 29: all intent types verified end-to-end, auth guards + 400 edge cases correct, Ask toggle + followups + Open-CTA all work. `/app/test_reports/iteration_29.json` — zero issues.
+
+### Files added / changed
+- Added: `/app/backend/ask.py`
+- Changed: `/app/backend/server.py` (mount ask_router)
+- Changed: `/app/frontend/src/components/GlobalSearch.jsx` (Ask mode state, toggle, panel render, examples, followups)
+
