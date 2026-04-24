@@ -666,23 +666,32 @@ const CEOReport = () => {
                 </tr>
               </thead>
               <tbody>
-                {footfall
-                  .filter((r) => (r.conversion_rate || 0) <= 50)
-                  .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
-                  .slice(0, 10)
-                  .map((r, i) => {
-                    const pill = (r.conversion_rate || 0) > 15 ? "pill-green" : (r.conversion_rate || 0) >= 10 ? "pill-amber" : "pill-red";
-                    return (
-                      <tr key={r.location + i}>
-                        <td className="text-muted num">{i + 1}</td>
-                        <td className="font-medium">{r.location}</td>
-                        <td className="text-right num">{fmtNum(r.total_footfall)}</td>
-                        <td className="text-right num">{fmtNum(r.orders)}</td>
-                        <td className="text-right"><span className={pill}>{fmtPct(r.conversion_rate)}</span></td>
-                        <td className="text-right num">{fmtKES(r.sales_per_visitor)}</td>
-                      </tr>
-                    );
-                  })}
+                {(() => {
+                  // Join footfall with sales-summary (by channel ↔ location) so
+                  // we can compute Sales / Visitor = total_sales ÷ footfall.
+                  // Upstream /footfall does not expose total_sales per store.
+                  const salesByLoc = new Map((sales || []).map((s) => [s.channel, s.total_sales || 0]));
+                  return footfall
+                    .filter((r) => (r.conversion_rate || 0) <= 50)
+                    .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
+                    .slice(0, 10)
+                    .map((r, i) => {
+                      const pill = (r.conversion_rate || 0) > 15 ? "pill-green" : (r.conversion_rate || 0) >= 10 ? "pill-amber" : "pill-red";
+                      const locSales = salesByLoc.get(r.location) || 0;
+                      const ff = r.total_footfall || 0;
+                      const spv = ff > 0 ? locSales / ff : 0;
+                      return (
+                        <tr key={r.location + i}>
+                          <td className="text-muted num">{i + 1}</td>
+                          <td className="font-medium">{r.location}</td>
+                          <td className="text-right num">{fmtNum(r.total_footfall)}</td>
+                          <td className="text-right num">{fmtNum(r.orders)}</td>
+                          <td className="text-right"><span className={pill}>{fmtPct(r.conversion_rate)}</span></td>
+                          <td className="text-right num">{spv > 0 ? fmtKES(spv) : "—"}</td>
+                        </tr>
+                      );
+                    });
+                })()}
               </tbody>
             </table>
           </div>

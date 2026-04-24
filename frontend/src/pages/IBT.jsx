@@ -4,7 +4,11 @@ import { api, fmtKES, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import RecommendationActionPill from "@/components/RecommendationActionPill";
+import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ArrowRight, Truck, Coins, Package, MagnifyingGlass } from "@phosphor-icons/react";
+
+const ibtKey = (r) => `${r.style_name}||${r.from_store}||${r.to_store}`;
 
 const IBT = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -14,6 +18,8 @@ const IBT = () => {
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
+  const [showResolved, setShowResolved] = useState(false);
+  const { stateByKey, setState } = useRecommendationState("ibt");
 
   useEffect(() => {
     let cancelled = false;
@@ -54,18 +60,32 @@ const IBT = () => {
     });
   }, [rows, search, brandFilter]);
 
+  // Hide resolved moves unless the user explicitly asks to see them.
+  const visible = useMemo(() => {
+    if (showResolved) return filtered;
+    return filtered.filter((r) => {
+      const s = stateByKey.get(ibtKey(r))?.status;
+      return !s || s === "pending";
+    });
+  }, [filtered, stateByKey, showResolved]);
+
   const kpis = useMemo(() => {
     const totalUplift = filtered.reduce((s, r) => s + (r.estimated_uplift || 0), 0);
     const totalUnits = filtered.reduce((s, r) => s + (r.units_to_move || 0), 0);
     const storesInvolved = new Set();
     filtered.forEach((r) => { storesInvolved.add(r.from_store); storesInvolved.add(r.to_store); });
+    const resolved = filtered.filter((r) => {
+      const s = stateByKey.get(ibtKey(r))?.status;
+      return s && s !== "pending";
+    }).length;
     return {
       moves: filtered.length,
       totalUnits,
       totalUplift,
       storesInvolved: storesInvolved.size,
+      resolved,
     };
-  }, [filtered]);
+  }, [filtered, stateByKey]);
 
   return (
     <div className="space-y-6" data-testid="ibt-page">
@@ -89,7 +109,9 @@ const IBT = () => {
       {!loading && !error && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KPICard testId="ibt-kpi-moves" accent label="Moves Suggested" value={fmtNum(kpis.moves)} icon={Truck} showDelta={false} />
+            <KPICard testId="ibt-kpi-moves" accent label="Open moves"
+              sub={kpis.resolved > 0 ? `${kpis.resolved} already actioned` : "All pending review"}
+              value={fmtNum(kpis.moves - kpis.resolved)} icon={Truck} showDelta={false} />
             <KPICard testId="ibt-kpi-units" label="Units To Move" value={fmtNum(kpis.totalUnits)} icon={Package} showDelta={false} />
             <KPICard testId="ibt-kpi-uplift" label="Est. Revenue Uplift" value={fmtKES(kpis.totalUplift)} icon={Coins} showDelta={false} />
             <KPICard testId="ibt-kpi-stores" label="Stores Involved" value={fmtNum(kpis.storesInvolved)} showDelta={false} />
@@ -119,11 +141,24 @@ const IBT = () => {
 
           <div className="card-white p-5" data-testid="ibt-table-card">
             <SectionTitle
-              title={`Transfer list · ${filtered.length} suggested moves`}
-              subtitle="Proposed inter-branch transfers — move surplus stock from source stores to understocked destinations to prevent lost sales. Sorted by estimated revenue uplift descending. Export to your logistics workflow."
+              title={`Transfer list · ${visible.length} of ${filtered.length} suggested moves${showResolved ? "" : " pending"}`}
+              subtitle="Proposed inter-branch transfers — move surplus stock from source stores to understocked destinations. Mark each move as dispatched / dismissed so tomorrow's list only shows what's still open."
+              action={
+                <label className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-brand-deep cursor-pointer" data-testid="ibt-show-resolved">
+                  <input
+                    type="checkbox"
+                    checked={showResolved}
+                    onChange={(e) => setShowResolved(e.target.checked)}
+                    className="accent-brand"
+                  />
+                  Show resolved ({kpis.resolved})
+                </label>
+              }
             />
-            {filtered.length === 0 ? (
-              <Empty label="No transfer opportunities found for the current window. Try widening the date range." />
+            {visible.length === 0 ? (
+              <Empty label={filtered.length === 0
+                ? "No transfer opportunities found for the current window. Try widening the date range."
+                : "🎉 All transfer moves have been actioned. Toggle 'Show resolved' to review."} />
             ) : (
               <SortableTable
                 testId="ibt-table"
@@ -193,8 +228,23 @@ const IBT = () => {
                     render: (r) => <span className="text-brand font-bold">{fmtKES(r.estimated_uplift)}</span>,
                     csv: (r) => r.estimated_uplift,
                   },
+                  {
+                    key: "__action", label: "Action", align: "left", sortable: false,
+                    render: (r) => {
+                      const k = ibtKey(r);
+                      return (
+                        <RecommendationActionPill
+                          itemKey={k}
+                          state={stateByKey.get(k)}
+                          onChange={(status, opts) => setState(k, status, opts)}
+                          label="transfer"
+                        />
+                      );
+                    },
+                    csv: (r) => stateByKey.get(ibtKey(r))?.status || "pending",
+                  },
                 ]}
-                rows={filtered}
+                rows={visible}
               />
             )}
           </div>

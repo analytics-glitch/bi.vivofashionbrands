@@ -21,6 +21,7 @@ import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
+import WhatChangedBelt from "@/components/WhatChangedBelt";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
@@ -531,6 +532,7 @@ const Overview = () => {
             inventory={kpis}
             compareLbl={compareLbl}
           />
+          <WhatChangedBelt kpis={kpis} dateFrom={dateFrom} dateTo={dateTo} />
           <OverviewLeaderboard
             sales={sales}
             salesPrev={salesPrev}
@@ -550,16 +552,20 @@ const Overview = () => {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
-              delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", fmtKES)} showDelta={compareMode !== "none"} />
+              delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", fmtKES)} showDelta={compareMode !== "none"}
+              action={{ label: "See by location", to: "/locations" }} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={fmtKES(kpis.net_sales)} icon={Coins}
               formula="Net Sales = Total Sales − Returns."
-              delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", fmtKES)} showDelta={compareMode !== "none"} />
+              delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", fmtKES)} showDelta={compareMode !== "none"}
+              action={{ label: "Drill into returns", to: "/ceo-report#returns" }} />
             <KPICard testId="kpi-orders" label="Total Orders" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="Total Orders = COUNT(DISTINCT invoice_id) in scope."
-              delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"} />
+              delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
+              action={{ label: "Order-level export", to: "/exports" }} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
               formula="Total Units Sold = SUM(invoice_line_units) in scope."
-              delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"} />
+              delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
+              action={{ label: "Top styles", to: "/products" }} />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -591,21 +597,25 @@ const Overview = () => {
               value={fmtPct(kpis.return_rate, 2)} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
               prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
-              showDelta={compareMode !== "none"} />
+              showDelta={compareMode !== "none"}
+              action={{ label: "Locations w/ highest returns", to: "/locations" }} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
               formula="Returns = Refunds, attributed to the original sale date (not the refund date)."
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
               prevValue={prev("total_returns", fmtKES)}
-              showDelta={compareMode !== "none"} />
+              showDelta={compareMode !== "none"}
+              action={{ label: "Export returns CSV", to: "/exports" }} />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard small testId="kpi-footfall" label="Total Footfall" sub="Visitors to stores (excl. data-quality outliers)" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
               delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+              action={{ label: "Footfall by store", to: "/footfall" }} />
             <KPICard small testId="kpi-conversion" label="Conversion Rate" sub="Orders ÷ Footfall" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
               delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+              action={{ label: "Which stores dropped?", to: "/footfall" }} />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

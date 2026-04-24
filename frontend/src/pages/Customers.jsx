@@ -7,7 +7,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
-  MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy,
+  MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy, ArrowRight,
 } from "@phosphor-icons/react";
 import {
   BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
@@ -409,6 +409,19 @@ const Customers = () => {
                         <span className="text-[10px] text-muted">{compareLbl}</span>
                       </div>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Jump to Top 20 filtered to "New"; user can then bulk-action.
+                        setTopSegment("new");
+                        const el = document.querySelector('[data-testid="top-customers-section"]');
+                        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                      data-testid="kpi-new-action"
+                      className="mt-2.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-brand/10 hover:bg-brand/20 border border-brand/30 text-brand-deep hover:border-brand/60 transition-all"
+                    >
+                      See who's new <ArrowRight size={11} weight="bold" />
+                    </button>
                   </div>
                   <div
                     className="card-white p-3.5 sm:p-5"
@@ -432,37 +445,93 @@ const Customers = () => {
                         <span className="text-[10px] text-muted">{compareLbl}</span>
                       </div>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTopSegment("vip");
+                        const el = document.querySelector('[data-testid="top-customers-section"]');
+                        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                      data-testid="kpi-return-action"
+                      className="mt-2.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-brand/10 hover:bg-brand/20 border border-brand/30 text-brand-deep hover:border-brand/60 transition-all"
+                    >
+                      See VIPs <ArrowRight size={11} weight="bold" />
+                    </button>
                   </div>
                 </>
               );
             })()}
-            <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false} />
-            <KPICard
-              testId="kpi-churned-count"
-              label="Churned Customers"
-              sub={`no purchase in ${churnDays}+ days`}
-              formula={`Count of customers whose LAST purchase was more than ${churnDays} days ago (as of today). Source: /churned-customers?days=${churnDays}.`}
-              value={fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
-              icon={UserMinus}
-              higherIsBetter={false}
-              showDelta={false}
+            <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false}
+              action={{ label: "Top 20 customers", onClick: () => {
+                const el = document.querySelector('[data-testid="top-customers-section"]');
+                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}}
             />
-            <KPICard
-              testId="kpi-churn"
-              label="Churn Rate"
-              sub="in selected period · 90-day cutoff"
-              formula={
-                `Churn Rate = churned_in_period ÷ total_customers × 100.\n\n` +
-                `A customer is counted as CHURNED if their last purchase falls INSIDE the ` +
-                `selected date range AND they have not bought anything in the ` +
-                `${churnDays} days up to today. For an in-progress period (ends today) ` +
-                `this number is naturally near-zero; for historical periods it rises.`
+            {(() => {
+              // Hide churn tiles when the selected period is shorter than the
+              // churn cutoff. Mathematically a customer cannot both "purchase
+              // in this window" AND "have been silent for ≥ churnDays" when
+              // the window itself is < churnDays wide — the tile will always
+              // read 0 and mislead. Surface an honest reframe instead.
+              const windowDays = (dateFrom && dateTo)
+                ? Math.max(1, Math.round((new Date(dateTo) - new Date(dateFrom)) / 86400000) + 1)
+                : 0;
+              const churnMeaningful = windowDays >= churnDays;
+              if (!churnMeaningful) {
+                return (
+                  <div
+                    className="rounded-2xl border border-border bg-panel p-3 sm:p-4 min-h-[110px] flex flex-col justify-between"
+                    data-testid="churn-not-applicable"
+                    title={`Selected window is ${windowDays} days — shorter than the ${churnDays}-day churn cutoff. Churn becomes meaningful at 90+ day windows or historical periods.`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="eyebrow">Churn watchlist</div>
+                      <span className="text-muted text-[10px]">ⓘ</span>
+                    </div>
+                    <div className="mt-2">
+                      <div className="text-[13px] font-bold text-brand-deep leading-tight">
+                        N/A for {windowDays}-day window
+                      </div>
+                      <div className="text-[11px] text-muted mt-0.5 leading-snug">
+                        Churn needs ≥ {churnDays}-day window. Open{" "}
+                        <span className="font-semibold text-brand">Reactivation Opportunity</span>{" "}
+                        below to see at-risk customers.
+                      </div>
+                    </div>
+                  </div>
+                );
               }
-              value={fmtPct(cust.churn_rate, 2)}
-              icon={UserMinus}
-              higherIsBetter={false}
-              showDelta={false}
-            />
+              return (
+                <>
+                  <KPICard
+                    testId="kpi-churned-count"
+                    label="Churned Customers"
+                    sub={`no purchase in ${churnDays}+ days`}
+                    formula={`Count of customers whose LAST purchase was more than ${churnDays} days ago (as of today). Source: /churned-customers?days=${churnDays}.`}
+                    value={fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
+                    icon={UserMinus}
+                    higherIsBetter={false}
+                    showDelta={false}
+                  />
+                  <KPICard
+                    testId="kpi-churn"
+                    label="Churn Rate"
+                    sub="in selected period · 90-day cutoff"
+                    formula={
+                      `Churn Rate = churned_in_period ÷ total_customers × 100.\n\n` +
+                      `A customer is counted as CHURNED if their last purchase falls INSIDE the ` +
+                      `selected date range AND they have not bought anything in the ` +
+                      `${churnDays} days up to today. For an in-progress period (ends today) ` +
+                      `this number is naturally near-zero; for historical periods it rises.`
+                    }
+                    value={fmtPct(cust.churn_rate, 2)}
+                    icon={UserMinus}
+                    higherIsBetter={false}
+                    showDelta={false}
+                  />
+                </>
+              );
+            })()}
           </div>
 
           {/* ---- Customer Trends narrative table ---- */}

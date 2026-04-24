@@ -1,5 +1,6 @@
 import React from "react";
-import { Info } from "@phosphor-icons/react";
+import { Info, ArrowRight } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import { fmtDelta } from "@/lib/api";
 
 const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => {
@@ -57,7 +58,25 @@ export const KPICard = ({
   // appears below the delta as muted context e.g. "vs KES 2,187,340 last month".
   // Auto-hides on < sm screens.
   prevValue = null,
+  // METRIC-ACTION CONTRACT (audit recommendation #3).
+  // Every KPI card accepts an optional primary action so observation
+  // becomes action. Shape: {label, to?, onClick?, icon?, testId?}
+  //   - `to`       → internal react-router navigation (prefix with '/')
+  //   - `onClick`  → arbitrary handler (takes precedence over `to`)
+  //   - `icon`     → optional phosphor icon component (defaults to ArrowRight)
+  // Renders as a slim pill at the bottom of the card; thumb-reachable,
+  // keyboard-accessible. Passing `action={null}` or omitting keeps the
+  // card passive (back-compat with every existing call-site).
+  action = null,
 }) => {
+  const navigate = useNavigate();
+  const handleAction = (e) => {
+    if (!action) return;
+    e.stopPropagation();
+    if (typeof action.onClick === "function") return action.onClick(e);
+    if (action.to) navigate(action.to);
+  };
+  const ActionIcon = action?.icon || ArrowRight;
   const titleTip = formula || (typeof value === "string" ? value : undefined);
   return (
     <div
@@ -123,6 +142,21 @@ export const KPICard = ({
             </span>
           )}
         </div>
+      )}
+      {action && (
+        <button
+          type="button"
+          onClick={handleAction}
+          data-testid={action.testId || `${testId}-action`}
+          className={`mt-2.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all border ${
+            accent
+              ? "bg-white/10 hover:bg-white/20 border-white/20 text-white"
+              : "bg-brand/10 hover:bg-brand/20 border-brand/30 text-brand-deep hover:border-brand/60"
+          }`}
+        >
+          <span>{action.label}</span>
+          <ActionIcon size={11} weight="bold" />
+        </button>
       )}
     </div>
   );

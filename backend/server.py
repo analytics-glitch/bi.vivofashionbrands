@@ -576,6 +576,29 @@ async def get_customers(
         data["churn_window_days"] = churn_window_days
         data["churn_source"] = churn_source
         data["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
+
+        # ---- Trust-critical override: recompute avg_customer_spend locally ----
+        # Upstream /customers returns an `avg_customer_spend` that in some
+        # months is ~10× the correct value (observed: 116,887 in Apr vs
+        # 11,939 in Mar — a scale drift, not a real 880% growth). Since the
+        # defensible definition is simply `total_sales ÷ total_customers`,
+        # we recompute it here from /kpis for the exact same filter scope.
+        # If /kpis fails, we fall back to the upstream number so the tile
+        # still renders (with a flag the UI can surface).
+        try:
+            kpi_data = await get_kpis(
+                date_from=date_from, date_to=date_to,
+                country=country, channel=channel,
+            )
+            total_sales = (kpi_data or {}).get("total_sales") or 0
+            if active and total_sales:
+                data["avg_customer_spend"] = round(total_sales / active, 2)
+                data["avg_customer_spend_source"] = "recomputed_local"
+            else:
+                data["avg_customer_spend_source"] = "upstream_unverified"
+        except Exception as e:
+            logger.warning("[/customers] avg_customer_spend recompute failed: %s", e)
+            data["avg_customer_spend_source"] = "upstream_unverified"
     return data
 
 
@@ -2070,6 +2093,8 @@ from leaderboard import (  # noqa: E402
     get_streaks_cached, snapshot_period, _previous_complete_period,
     get_store_of_the_week,
 )
+from recommendations import router as recommendations_router  # noqa: E402
+from user_activity import router as user_activity_router  # noqa: E402
 
 
 @api_router.get("/leaderboard/streaks")
@@ -2094,6 +2119,8 @@ async def leaderboard_snapshot(period: Optional[str] = None, force: bool = False
 
 
 app.include_router(api_router)
+app.include_router(recommendations_router)
+app.include_router(user_activity_router)
 
 
 @app.get("/api/health")

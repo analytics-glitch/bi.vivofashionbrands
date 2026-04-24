@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 21 audit fixes verified end-to-end. 15/15 backend tests pass. P0 bugs 1-3 fixed. Metric-Action Contract, Re-Order close-the-loop workflow, and WhatChangedBelt endpoint all working. Clean auth flow, no Mongo _id leakage, KES currency consistent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_21_audit.py",
+    "/app/test_reports/pytest/pytest_iter21.xml"
+  ],
+  "verified_features": [
+    "P0 Bug 1 — /api/customers avg_customer_spend recomputed: 75,303,690 / 6,748 = 11,159.41 (not 116k+). Source flag = 'recomputed_local'. Fallback flag 'upstream_unverified' exists in code path.",
+    "P0 Bug 2 — CEO Report Sales/Visitor column shows real KES values (1,031 / 709 / 893 / 1,514 / 1,682). Zero 'KES 0' instances in footfall table.",
+    "P0 Bug 3 — Churn tiles: short window (This Month 24d) shows only 'churn-not-applicable' tile; long window (This Year >90d) shows both 'kpi-churned-count' (2,947) and 'kpi-churn' (12.20%), N/A hidden.",
+    "Metric-Action Contract — All 8 Overview KPIs (kpi-total-sales/net-sales/orders/units/rr/returns/footfall/conversion) expose data-testid suffix '-action'. 'See by location' on Total Sales navigates to /locations. Tab+Enter keyboard nav works.",
+    "Re-Order workflow — 50 pending pills render. 'Change' → 'Mark PO raised' flips pill, hides row (50→49), 'Show resolved (1)' toggle appears, toggles back (49→50). State persists after reload (row hidden by default).",
+    "WhatChangedBelt — Backend /api/user/last-visit shape is correct; returns 401 without auth. Belt correctly absent on /overview when is_warm_return=false (fresh session, as expected by spec — belt is decorative, fetch failure does not break overview).",
+    "GET /api/recommendations requires auth (401). Full CRUD flow validated: POST po_raised → GET confirms → POST pending deletes → GET confirms absent. Invalid status returns 422. Bulk DELETE works.",
+    "Regression — /api/kpis, /api/sales-summary, /api/leaderboard/streaks, /api/footfall, /api/ibt-suggestions all 200 OK. Login works. No _id leakage."
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2162 lines — approaching maintainability concerns; consider splitting by domain (customers, kpis, leaderboard) in a future refactor.",
+    "recommendation_state collection lacks TTL — stale dismissed/done rows will accumulate. Consider adding a TTL index (e.g., 180 days on updated_at) or a scheduled cleanup.",
+    "last-visit endpoint uses a 30-day warm-return window upper bound; consider exposing this as env-configurable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_21_audit.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "No permanent seed. Transient rows under user_id during recommendation test were cleaned up via DELETE /api/recommendations?item_type=reorder and ?item_type=ibt.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 21 audit-driven P0 fixes all pass. WhatChangedBelt is absent on overview for fresh logins because is_warm_return=false (user just authed, no prior activity >10 min old). To test the positive belt rendering, seed activity_logs with ts=now-30h BEFORE login, or log in once, wait 10+ min, re-open the page. Do NOT expect the belt on a fresh login + immediate visit. Re-Order rows with status 'po_raised' are hidden by default; use 'Show resolved (N)' toggle to view them. Backend returns 365d churn of 35,167 with source=upstream_90d_cached — frontend correctly gates display by window length (<90d ⇒ N/A tile, ≥90d ⇒ real tiles).",
+  "rca of the issue": "None — all verified features working as specified."
+}
