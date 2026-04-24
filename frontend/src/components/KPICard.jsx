@@ -53,6 +53,10 @@ export const KPICard = ({
   formula = null,
   // NEW — small muted suffix UNDER the value, e.g. "excl. VAT".
   suffix = null,
+  // NEW — optional previous-period value (formatted string). When supplied,
+  // appears below the delta as muted context e.g. "vs KES 2,187,340 last month".
+  // Auto-hides on < sm screens.
+  prevValue = null,
 }) => {
   const titleTip = formula || (typeof value === "string" ? value : undefined);
   return (
@@ -103,13 +107,21 @@ export const KPICard = ({
         </div>
       )}
       {showDelta && (
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <DeltaBadge
             delta={delta}
             higherIsBetter={higherIsBetter}
             label={deltaLabel}
             accent={accent}
           />
+          {prevValue != null && delta != null && (
+            <span
+              className={`text-[11px] ${accent ? "text-white/55" : "text-muted/80"} hidden sm:inline`}
+              data-testid={`${testId}-prev`}
+            >
+              vs {prevValue}
+            </span>
+          )}
         </div>
       )}
     </div>

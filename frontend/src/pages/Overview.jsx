@@ -257,6 +257,7 @@ const Overview = () => {
   }, [sales]);
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
+  const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const degraded = kpisError ? `Upstream KPIs unavailable (${kpisError}). Other sections still rendered below.` : null;
 
@@ -505,38 +506,53 @@ const Overview = () => {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
-              delta={delta("total_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", fmtKES)} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={fmtKES(kpis.net_sales)} icon={Coins}
               formula="Net Sales = Total Sales − Returns."
-              delta={delta("net_sales")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", fmtKES)} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-orders" label="Total Orders" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="Total Orders = COUNT(DISTINCT invoice_id) in scope."
-              delta={delta("total_orders")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
               formula="Total Units Sold = SUM(invoice_line_units) in scope."
-              delta={delta("total_units")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"} />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders"
               formula="Average Basket Value = Total Sales ÷ Total Orders."
               value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
-              delta={delta("avg_basket_size")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("avg_basket_size")} deltaLabel={compareLbl}
+              prevValue={prev("avg_basket_size", fmtKES)}
+              showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units"
               formula="Average Selling Price = Total Sales ÷ Units Sold."
               value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
-              delta={delta("avg_selling_price")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              delta={delta("avg_selling_price")} deltaLabel={compareLbl}
+              prevValue={prev("avg_selling_price", fmtKES)}
+              showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders"
               formula="Mean Shopping Index = Units Sold ÷ Total Orders. Proxy for basket depth."
               value={(kpis.total_orders ? kpis.total_units / kpis.total_orders : 0).toFixed(2)}
-              showDelta={false} />
+              delta={(() => {
+                const cur = kpis.total_orders ? kpis.total_units / kpis.total_orders : 0;
+                const pv = kpisPrev && kpisPrev.total_orders ? kpisPrev.total_units / kpisPrev.total_orders : null;
+                return pctDelta(cur, pv);
+              })()}
+              deltaLabel={compareLbl}
+              prevValue={kpisPrev && compareMode !== "none" && kpisPrev.total_orders ? (kpisPrev.total_units / kpisPrev.total_orders).toFixed(2) : null}
+              showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-rr" label="Return Rate"
               formula="Return Rate = Returns Value ÷ Gross Sales (currency) for the period."
               value={fmtPct(kpis.return_rate, 2)} icon={Percent}
-              higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
+              prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
+              showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
               formula="Returns = Refunds, attributed to the original sale date (not the refund date)."
-              higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl} showDelta={compareMode !== "none"} />
+              higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
+              prevValue={prev("total_returns", fmtKES)}
+              showDelta={compareMode !== "none"} />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

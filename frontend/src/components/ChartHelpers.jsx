@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { fmtDelta } from "@/lib/api";
 
 /** Returns true when viewport is < 768 px (Tailwind `md` breakpoint). Re-fires
  * on window resize. Used to flip chart labels/tooltips into compact mode. */
@@ -64,6 +65,45 @@ export const Delta = ({ value, suffix = "%", precision = 1, testId }) => {
     >
       {!isZero && <span aria-hidden="true">{isUp ? "▲" : "▼"}</span>}
       {Math.abs(value).toFixed(precision)}{suffix}
+    </span>
+  );
+};
+
+/** Inline per-metric growth/decline indicator shown below a metric value.
+ *  - delta: pct change (null → nothing, unless showNA)
+ *  - higherIsBetter: default true. For metrics where higher = worse (Returns,
+ *    Return Rate, Churn), pass `false` — arrow+color reverses so rising
+ *    Returns are red, falling Returns are green.
+ *  - prevValue + prevLabel: optionally append "vs KES 2,187,340 yesterday"
+ *    style context (auto-hidden on narrow screens to save space).
+ *  - compact: drops the prev context entirely (use in tight grids).
+ */
+export const InlineDelta = ({ delta, higherIsBetter = true, prevValue = null, prevLabel = null, showNA = false, compact = false, testId }) => {
+  if (delta === null || delta === undefined || isNaN(delta)) {
+    if (!showNA) return null;
+    return (
+      <span className="text-[11px] text-muted" data-testid={testId}>— n/a</span>
+    );
+  }
+  const pos = delta > 0.05;
+  const neg = delta < -0.05;
+  const zero = !pos && !neg;
+  const good = higherIsBetter ? pos : neg;
+  const bad = higherIsBetter ? neg : pos;
+  const cls = good ? "text-[#059669]" : bad ? "text-[#dc2626]" : "text-muted";
+  const arrow = pos ? "▲" : neg ? "▼" : "—";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[11px] font-semibold ${cls} whitespace-nowrap`}
+      data-testid={testId}
+    >
+      <span aria-hidden="true">{arrow}</span>
+      <span className="num">{zero ? "0.0%" : fmtDelta(delta)}</span>
+      {!compact && prevValue != null && (
+        <span className="text-muted font-normal hidden sm:inline">
+          {prevLabel ? prevLabel : "prev"} {prevValue}
+        </span>
+      )}
     </span>
   );
 };

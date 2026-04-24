@@ -74,6 +74,9 @@ export const fmtDate = (d) => {
 
 export const fmtDelta = (n) => {
   if (n === null || n === undefined || isNaN(n)) return "—";
+  // Cap extreme values to prevent layout breaks on narrow cards.
+  if (n > 999) return ">+999%";
+  if (n < -999) return "<-999%";
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(1)}%`;
 };

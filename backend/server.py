@@ -628,6 +628,49 @@ async def churned_customers(request: Request, days: int = 90, limit: int = 20, u
     return await mask_and_audit(rows or [], user=user, endpoint="/churned-customers", request_ip=_client_ip(request))
 
 
+@api_router.get("/orders")
+async def get_orders(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    sale_kind: Optional[str] = None,
+    limit: int = 5000,
+    user=Depends(get_current_user),
+):
+    """Order & line-level export proxy. Supports multi-value country/channel
+    (CSV) by fanning out and concatenating results. `sale_kind` filters to
+    'order' / 'return' / None (all)."""
+    base = {"date_from": date_from, "date_to": date_to, "limit": limit}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if len(cs) <= 1 and len(chs) <= 1:
+        rows = await _safe_fetch("/orders", {
+            **base,
+            "country": cs[0] if cs else None,
+            "channel": chs[0] if chs else None,
+        }) or []
+    else:
+        tasks = []
+        for c in (cs or [None]):
+            for ch in (chs or [None]):
+                params = {**base}
+                if c:
+                    params["country"] = c
+                if ch:
+                    params["channel"] = ch
+                tasks.append(_safe_fetch("/orders", params))
+        results = await asyncio.gather(*tasks)
+        rows = []
+        for r in results:
+            if r:
+                rows.extend(r)
+    if sale_kind:
+        rows = [r for r in rows if r.get("sale_kind") == sale_kind]
+    return await mask_and_audit(rows, user=user, endpoint="/orders", request_ip=_client_ip(request))
+
+
 @api_router.get("/customer-frequency")
 async def customer_frequency(
     request: Request,

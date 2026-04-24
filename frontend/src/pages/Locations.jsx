@@ -3,6 +3,7 @@ import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
+import { InlineDelta } from "@/components/ChartHelpers";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
@@ -82,18 +83,40 @@ const Locations = () => {
       const sales = r.total_sales || 0;
       const orders = r.orders || r.total_orders || 0;
       const units = r.units_sold || r.total_units_sold || 0;
+      const returns = r.returns || 0;
       const basket = orders ? sales / orders : (r.avg_basket_size || 0);
       const asp = units ? sales / units : 0;
       const msi = orders ? units / orders : 0;
-      const prevSalesAdj = prev ? (prev.total_sales || 0) : null;
+
+      // Previous-period numbers
+      const pSales = prev ? (prev.total_sales || 0) : null;
+      const pOrders = prev ? (prev.orders || prev.total_orders || 0) : null;
+      const pUnits = prev ? (prev.units_sold || prev.total_units_sold || 0) : null;
+      const pReturns = prev ? (prev.returns || 0) : null;
+      const pAbv = pOrders ? pSales / pOrders : null;
+      const pAsp = pUnits ? pSales / pUnits : null;
+      const pMsi = pOrders ? pUnits / pOrders : null;
+
       return {
         ...r,
         total_sales: sales,
+        orders,
+        units_sold: units,
+        returns,
         avg_basket: basket,
         abv: basket,
         asp,
         msi,
-        delta: prev ? pctDelta(sales, prevSalesAdj) : null,
+        // Legacy headline delta (kept for SortableTable row)
+        delta: prev ? pctDelta(sales, pSales) : null,
+        // Per-metric deltas (null when no prev data / prev is 0)
+        d_sales: prev ? pctDelta(sales, pSales) : null,
+        d_orders: prev ? pctDelta(orders, pOrders) : null,
+        d_units: prev ? pctDelta(units, pUnits) : null,
+        d_returns: prev ? pctDelta(returns, pReturns) : null,
+        d_abv: prev ? pctDelta(basket, pAbv) : null,
+        d_asp: prev ? pctDelta(asp, pAsp) : null,
+        d_msi: prev ? pctDelta(msi, pMsi) : null,
       };
     });
   }, [rows, prevMap]);
@@ -230,32 +253,36 @@ const Locations = () => {
                             </div>
                           </div>
                         </div>
-                        {compareMode !== "none" && l.delta !== null && (
-                          <span
-                            className={`text-[11px] font-bold ${
-                              l.delta > 0 ? "delta-up" : "delta-down"
-                            }`}
-                          >
-                            {l.delta > 0 ? "▲" : "▼"} {fmtDelta(l.delta)}
-                          </span>
+                      </div>
+
+                      <div className="mt-4">
+                        <div className="eyebrow">Sales</div>
+                        <div className="font-bold text-[18px] text-brand-deep num mt-0.5">
+                          {fmtKES(l.total_sales)}
+                        </div>
+                        {compareMode !== "none" && (
+                          <InlineDelta delta={l.d_sales} testId={`loc-${l.channel}-d-sales`} compact />
                         )}
                       </div>
 
-                      <div className="mt-4 font-bold text-[18px] text-brand-deep num">
-                        {fmtKES(l.total_sales)}
-                      </div>
                       <div className="grid grid-cols-3 gap-2 mt-3">
                         <div>
                           <div className="eyebrow">Orders</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
-                            {fmtNum(l.orders || l.total_orders)}
+                            {fmtNum(l.orders)}
                           </div>
+                          {compareMode !== "none" && (
+                            <InlineDelta delta={l.d_orders} testId={`loc-${l.channel}-d-orders`} compact />
+                          )}
                         </div>
                         <div>
                           <div className="eyebrow">Units</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
                             {fmtNum(l.units_sold)}
                           </div>
+                          {compareMode !== "none" && (
+                            <InlineDelta delta={l.d_units} testId={`loc-${l.channel}-d-units`} compact />
+                          )}
                         </div>
                         <div>
                           <div className="eyebrow">Returns</div>
@@ -266,24 +293,37 @@ const Locations = () => {
                           >
                             {fmtKES(l.returns || 0)}
                           </div>
+                          {compareMode !== "none" && (
+                            // Returns: rising is BAD → higherIsBetter=false
+                            <InlineDelta delta={l.d_returns} higherIsBetter={false} testId={`loc-${l.channel}-d-returns`} compact />
+                          )}
                         </div>
                         <div>
                           <div className="eyebrow">ABV</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
                             {fmtKES(l.abv)}
                           </div>
+                          {compareMode !== "none" && (
+                            <InlineDelta delta={l.d_abv} testId={`loc-${l.channel}-d-abv`} compact />
+                          )}
                         </div>
                         <div>
                           <div className="eyebrow">ASP</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
                             {fmtKES(l.asp)}
                           </div>
+                          {compareMode !== "none" && (
+                            <InlineDelta delta={l.d_asp} testId={`loc-${l.channel}-d-asp`} compact />
+                          )}
                         </div>
                         <div>
                           <div className="eyebrow">MSI</div>
                           <div className="font-semibold text-[13px] num mt-0.5">
                             {(l.msi || 0).toFixed(2)}
                           </div>
+                          {compareMode !== "none" && (
+                            <InlineDelta delta={l.d_msi} testId={`loc-${l.channel}-d-msi`} compact />
+                          )}
                         </div>
                       </div>
                     </button>

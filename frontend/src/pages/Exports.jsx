@@ -388,7 +388,7 @@ const InventoryExport = () => {
   );
 };
 
-// --- Sales Export (style-level sales + SKU-level stock context) ---
+// --- Sales Export (order- and line-level export via upstream `/orders`) ---
 const SalesExport = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
@@ -397,7 +397,7 @@ const SalesExport = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [brandSel, setBrandSel] = useState([]);
-  const [subcatSel, setSubcatSel] = useState([]);
+  const [kindSel, setKindSel] = useState([]); // sale_kind: order / return
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
 
@@ -413,16 +413,20 @@ const SalesExport = () => {
     const country = countries.length ? countries.join(",") : undefined;
     const channel = channels.length ? channels.join(",") : undefined;
     api
-      .get("/sor", {
-        params: { date_from: dateFrom, date_to: dateTo, country, channel, limit: 10000 },
+      .get("/orders", {
+        params: { date_from: dateFrom, date_to: dateTo, country, channel, limit: 5000 },
       })
       .then((r) => {
         if (cancelled) return;
         const enriched = (r.data || []).map((row) => ({
           ...row,
-          category: categoryFor(row.product_type),
-          avg_price: row.units_sold ? (row.total_sales || 0) / row.units_sold : 0,
-          _search: ((row.style_name || "") + "\t" + (row.collection || "") + "\t" + (row.brand || "")).toLowerCase(),
+          // Precomputed lowercase blob for 120 ms debounced search.
+          _search: [
+            row.order_id, row.order_name, row.pos_location_name, row.channel,
+            row.customer_id, row.customer_type, row.product_title, row.sku,
+            row.style_name, row.brand, row.collection, row.subcategory,
+            row.color, row.size,
+          ].filter(Boolean).join("\t").toLowerCase(),
         }));
         setRows(enriched);
         touchLastUpdated();
@@ -439,41 +443,60 @@ const SalesExport = () => {
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   const brandList = useMemo(() => [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort(), [rows]);
-  const subcatList = useMemo(() => [...new Set(rows.map((r) => r.product_type).filter(Boolean))].sort(), [rows]);
+  const kindList = useMemo(() => [...new Set(rows.map((r) => r.sale_kind).filter(Boolean))].sort(), [rows]);
 
   const filtered = useMemo(() => {
     const brandSet = brandSel.length ? new Set(brandSel) : null;
-    const subcatSet = subcatSel.length ? new Set(subcatSel) : null;
+    const kindSet = kindSel.length ? new Set(kindSel) : null;
     return rows.filter((r) => {
       if (brandSet && !brandSet.has(r.brand)) return false;
-      if (subcatSet && !subcatSet.has(r.product_type)) return false;
+      if (kindSet && !kindSet.has(r.sale_kind)) return false;
       if (search && !r._search.includes(search)) return false;
       return true;
     });
-  }, [rows, brandSel, subcatSel, search]);
+  }, [rows, brandSel, kindSel, search]);
 
   const totals = useMemo(() => {
-    let units = 0, sales = 0, stock = 0;
+    let qty = 0, total = 0, gross = 0, discount = 0, returns = 0, net = 0;
+    const orderSet = new Set();
     for (const r of filtered) {
-      units += r.units_sold || 0;
-      sales += r.total_sales || 0;
-      stock += r.current_stock || 0;
+      qty += r.quantity || 0;
+      total += r.total_sales_kes || 0;
+      gross += r.gross_sales_kes || 0;
+      discount += r.discount_kes || 0;
+      returns += r.returns_kes || 0;
+      net += r.net_sales_kes || 0;
+      if (r.order_id) orderSet.add(r.order_id);
     }
-    return { units, sales, stock, styles: filtered.length };
+    return { qty, total, gross, discount, returns, net, orders: orderSet.size, lines: filtered.length };
   }, [filtered]);
 
   const exportCsv = () => {
     const cols = [
+      ["order_id", "Order ID"],
+      ["order_name", "Order Name"],
+      ["order_date", "Order Date"],
+      ["pos_location_name", "POS / Location"],
+      ["channel", "Channel"],
+      ["country", "Country"],
+      ["customer_id", "Customer ID"],
+      ["customer_type", "Customer Type"],
+      ["sale_kind", "Sale Kind"],
+      ["product_title", "Product Title"],
+      ["sku", "SKU"],
       ["style_name", "Style Name"],
-      ["collection", "Collection"],
       ["brand", "Brand"],
-      ["category", "Category"],
-      ["product_type", "Subcategory"],
-      ["units_sold", "Units Sold"],
-      ["total_sales", "Total Sales (KES)"],
-      ["avg_price", "Avg Price (KES)"],
-      ["current_stock", "Current Stock"],
-      ["sor_percent", "Sell-out Rate %"],
+      ["collection", "Collection"],
+      ["subcategory", "Subcategory"],
+      ["color", "Color"],
+      ["size", "Size"],
+      ["quantity", "Quantity"],
+      ["unit_price_kes", "Unit Price (KES)"],
+      ["total_sales_kes", "Total Sales (KES)"],
+      ["gross_sales_kes", "Gross Sales (KES)"],
+      ["discount_kes", "Discount (KES)"],
+      ["returns_kes", "Returns (KES)"],
+      ["net_sales_kes", "Net Sales (KES)"],
     ];
     const esc = (v) => {
       if (v === null || v === undefined) return "";
@@ -481,11 +504,14 @@ const SalesExport = () => {
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const metaLines = [
-      `# Vivo BI · Sales Export`,
+      `# Vivo BI · Sales Export (order + line level)`,
       `# Date range: ${dateFrom} to ${dateTo}`,
       `# Country: ${countries.length ? countries.join("; ") : "All"}`,
       `# POS: ${channels.length ? channels.join("; ") : "All"}`,
+      `# Brand filter: ${brandSel.length ? brandSel.join("; ") : "All"}`,
+      `# Sale-kind filter: ${kindSel.length ? kindSel.join("; ") : "All"}`,
       `# Generated: ${new Date().toISOString()}`,
+      `# Lines: ${filtered.length}`,
       "",
     ];
     const lines = [...metaLines, cols.map(([, h]) => h).join(",")];
@@ -511,8 +537,8 @@ const SalesExport = () => {
             Sales Export
           </h2>
           <p className="text-muted text-[13px] mt-0.5">
-            Style-level sales for the period · {fmtDate(dateFrom)} → {fmtDate(dateTo)} · filtered by
-            the global Country + POS filters. Download CSV below.
+            Order- &amp; line-level detail for {fmtDate(dateFrom)} → {fmtDate(dateTo)} · filtered by
+            the global Country + POS filters. Each row is one product line on one order. Up to 5,000 lines per query.
           </p>
         </div>
         <button
@@ -523,20 +549,11 @@ const SalesExport = () => {
           className="btn-primary flex items-center gap-1.5 disabled:opacity-50"
         >
           <DownloadSimple size={14} weight="bold" />
-          Download CSV ({fmtNum(filtered.length)} styles)
+          Download CSV ({fmtNum(filtered.length)} lines)
         </button>
       </div>
 
-      <div className="rounded-xl border border-amber-300/60 bg-amber-50 px-4 py-3 text-[12px] text-amber-900" data-testid="sales-export-limitations">
-        <span className="font-semibold">Data availability note:</span> the upstream Vivo BI API
-        exposes sales aggregated at the <em>style</em> level. Order-level fields
-        (Order&nbsp;ID, Customer reference, Payment method, Order status, per-order Discount/Tax,
-        Colour, Size) are not yet published — we'll enable the richer export the moment the
-        data team ships an <code>/orders</code> endpoint. For per-style SKU variant stock, use
-        the Inventory tab or the Re-Order drill-down.
-      </div>
-
-      {loading && <Loading label="Loading style sales…" />}
+      {loading && <Loading label="Loading order lines…" />}
       {error && <ErrorBox message={error} />}
 
       {!loading && !error && (
@@ -545,7 +562,7 @@ const SalesExport = () => {
             <div className="flex items-center gap-2 input-pill">
               <MagnifyingGlass size={14} className="text-muted" />
               <input
-                placeholder="Search style, collection or brand…"
+                placeholder="Search order #, SKU, style, customer, product title…"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 data-testid="sales-export-search"
@@ -574,50 +591,60 @@ const SalesExport = () => {
                 />
               </div>
               <div>
-                <div className="eyebrow mb-1">Subcategory</div>
+                <div className="eyebrow mb-1">Sale kind</div>
                 <MultiSelect
-                  testId="sales-export-filter-subcat"
-                  options={subcatList.map((s) => ({ value: s, label: s }))}
-                  value={subcatSel}
-                  onChange={setSubcatSel}
-                  placeholder="All subcategories"
-                  width={220}
+                  testId="sales-export-filter-kind"
+                  options={kindList.map((s) => ({ value: s, label: s }))}
+                  value={kindSel}
+                  onChange={setKindSel}
+                  placeholder="Orders & returns"
+                  width={180}
                 />
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="card-white p-4"><div className="eyebrow">Styles</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.styles)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Units Sold</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.units)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Total Sales</div><div className="font-bold text-[18px] num mt-0.5 text-brand">{fmtKES(totals.sales)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Current Stock</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.stock)}</div></div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="card-white p-4"><div className="eyebrow">Lines</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.lines)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Orders</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.orders)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Quantity</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.qty)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Gross Sales</div><div className="font-bold text-[18px] num mt-0.5">{fmtKES(totals.gross)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Discount</div><div className="font-bold text-[18px] num mt-0.5 text-danger">{fmtKES(totals.discount)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Net Sales</div><div className="font-bold text-[18px] num mt-0.5 text-brand">{fmtKES(totals.net)}</div></div>
           </div>
 
           <div className="card-white p-5" data-testid="sales-export-table-card">
             <SectionTitle
-              title={`${fmtNum(filtered.length)} styles`}
-              subtitle="Click any column to sort. Pagination below the table."
+              title={`${fmtNum(filtered.length)} line items${rows.length >= 5000 ? " · capped at 5,000 — narrow date range for full detail" : ""}`}
+              subtitle="One row per product line on an order. Sort by clicking headers · paginate below."
             />
             {filtered.length === 0 ? (
-              <Empty label="No styles match the current filters." />
+              <Empty label="No order lines match the current filters." />
             ) : (
               <SortableTable
                 testId="sales-export-table"
                 exportName={`sales-export-${dateFrom}_${dateTo}.csv`}
-                initialSort={{ key: "total_sales", dir: "desc" }}
+                initialSort={{ key: "order_date", dir: "desc" }}
                 pageSize={50}
                 columns={[
-                  { key: "style_name", label: "Style Name", align: "left", render: (r) => <span className="font-medium break-words max-w-[260px] inline-block">{r.style_name || "—"}</span> },
-                  { key: "collection", label: "Collection", align: "left", render: (r) => <span className="text-muted">{r.collection || "—"}</span>, csv: (r) => r.collection },
+                  { key: "order_date", label: "Date", align: "left", render: (r) => <span className="text-muted text-[11.5px] num">{r.order_date || "—"}</span> },
+                  { key: "order_name", label: "Order", align: "left", render: (r) => <span className="font-mono text-[11px] font-semibold">{r.order_name || r.order_id || "—"}</span>, csv: (r) => r.order_name },
+                  { key: "pos_location_name", label: "POS / Location", align: "left", render: (r) => <span className="font-medium">{r.pos_location_name || "—"}</span> },
+                  { key: "country", label: "Country", align: "left", render: (r) => <span className="capitalize">{r.country || "—"}</span> },
+                  { key: "sale_kind", label: "Kind", align: "left", render: (r) => <span className={r.sale_kind === "return" ? "pill-red" : "pill-neutral"}>{r.sale_kind || "—"}</span>, csv: (r) => r.sale_kind },
+                  { key: "customer_id", label: "Customer", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.customer_id || "—"}{r.customer_type ? ` · ${r.customer_type}` : ""}</span>, csv: (r) => r.customer_id },
+                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.style_name || "—"}</span> },
+                  { key: "color", label: "Color", align: "left", render: (r) => r.color || "—" },
+                  { key: "size", label: "Size", align: "left", render: (r) => r.size || "—" },
+                  { key: "sku", label: "SKU", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.sku || "—"}</span>, csv: (r) => r.sku },
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
-                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
-                  { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
-                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
-                  { key: "avg_price", label: "Avg Price", numeric: true, render: (r) => fmtKES(r.avg_price), csv: (r) => r.avg_price },
-                  { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock), csv: (r) => r.current_stock },
-                  { key: "sor_percent", label: "Sell-out %", numeric: true, render: (r) => `${(r.sor_percent ?? 0).toFixed(1)}%`, csv: (r) => r.sor_percent },
+                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                  { key: "quantity", label: "Qty", numeric: true, render: (r) => fmtNum(r.quantity) },
+                  { key: "unit_price_kes", label: "Unit Price", numeric: true, render: (r) => fmtKES(r.unit_price_kes), csv: (r) => r.unit_price_kes },
+                  { key: "discount_kes", label: "Discount", numeric: true, render: (r) => r.discount_kes ? <span className="text-danger">{fmtKES(r.discount_kes)}</span> : fmtKES(0), csv: (r) => r.discount_kes },
+                  { key: "returns_kes", label: "Returns", numeric: true, render: (r) => r.returns_kes ? <span className="text-danger">{fmtKES(r.returns_kes)}</span> : fmtKES(0), csv: (r) => r.returns_kes },
+                  { key: "total_sales_kes", label: "Total", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales_kes)}</span>, csv: (r) => r.total_sales_kes },
+                  { key: "net_sales_kes", label: "Net Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.net_sales_kes)}</span>, csv: (r) => r.net_sales_kes },
                 ]}
                 rows={filtered}
               />
