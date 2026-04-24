@@ -93,7 +93,14 @@ const ReOrder = () => {
           <div className="card-white p-5" data-testid="reorder-table-card">
             <SectionTitle
               title={`Re-Order list · ${reorderList.length} styles`}
-              subtitle="Sorted by Sell-Out Rate descending — most urgent first. Export to PO workflow."
+              subtitle={
+                <span>
+                  Sorted by Sell-Out Rate descending — most urgent first. Export to PO workflow.
+                  <span className="block mt-1 text-[11.5px] text-muted/90" data-testid="reorder-drilldown-hint">
+                    💡 Click any style name to see SKU-level details by color, print and size.
+                  </span>
+                </span>
+              }
             />
             {reorderList.length === 0 ? (
               <Empty label="No styles currently meet the re-order criteria (new + SOR ≥ 50%)." />
@@ -109,7 +116,7 @@ const ReOrder = () => {
                     <button
                       type="button"
                       onClick={() => setDrillStyle(r)}
-                      className="font-medium break-words max-w-[280px] inline-block text-left text-brand hover:underline cursor-pointer"
+                      className="font-medium break-words max-w-[280px] inline-block text-left text-brand underline decoration-dotted decoration-brand/40 underline-offset-[3px] hover:decoration-solid hover:decoration-brand cursor-pointer transition-colors"
                       style={{ whiteSpace: "normal", wordBreak: "break-word" }}
                       title="Click to view SKU variants (color × size × location)"
                       data-testid={`reorder-style-link-${r.style_name}`}
