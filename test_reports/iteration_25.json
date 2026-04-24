@@ -1,0 +1,42 @@
+{
+  "summary": "Frontend-only testing of Store Deep-Dive slide-over on /locations. Drawer opens on card click with all required testids, renders correct header/flag/eyebrow, 4 MiniStats with delta pills (Returns correctly using higherIsBetter=false), DQ 'Returns flagged' pill on Online - Shop Zetu, cross-link CTAs, scroll lock (body.overflow=hidden), ESC/close/backdrop close all functional. One CRITICAL regression: jump-between-stores is broken because backdrop (z-40) intercepts clicks on background location cards. Also observed: weekday-pattern block did not render for Online - Shop Zetu (expected — online has no footfall), needs verification on a physical store.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "StoreDeepDive",
+        "issue": "Jump-between-stores NOT working. Backdrop div (fixed inset-0 z-40) sits above the Locations grid and swallows clicks. Clicking another location card while the drawer is open closes the drawer via the backdrop onClick={onClose} handler instead of swapping drawer content. Audit-requested UX is non-functional.",
+        "selector": "[data-testid=\"store-deepdive-backdrop\"] over [data-testid^=\"location-card-\"]",
+        "priority": "HIGH"
+      },
+      {
+        "component": "StoreDeepDive / weekday heatmap",
+        "issue": "deepdive-weekday section did not render for Online - Shop Zetu. Because weekdayData.rows likely has no entry matching the online channel name (online stores have no physical footfall). Not strictly a bug, but silently hiding with no 'No footfall data' note is UX inconsistent with other sections which show an Empty state.",
+        "selector": "[data-testid=\"deepdive-weekday\"]",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "FIX backdrop-vs-grid z-order so clicking another location card while drawer is open swaps the drawer content instead of closing it. Simplest fix: add `pointer-events-none` to the backdrop div and move the click-to-close handler onto the sheet's outside click detector, OR raise the grid cards' z-index above the backdrop (e.g. grid wrapper gets z-50 with position:relative but sheet stays on top), OR make the backdrop cover only the left gutter (e.g. right: 720px).",
+    "OPTIONAL: when weekdayData has no row for the selected channel (e.g. online), render an Empty/placeholder inside deepdive-weekday instead of hiding the section, so users understand why no heatmap appears.",
+    "Recommend main agent re-run the 'click another card to swap' flow after the z-order fix and verify that dd-stat-sales/orders/abv/returns, top-styles, top-customers all refetch and update for the newly-clicked store."
+  ],
+  "critical_code_review_comments": [
+    "StoreDeepDive.jsx L125-130: backdrop div is `fixed inset-0 z-40` and captures pointer events across the whole viewport — this is what breaks the 'jump between stores' UX. Either make the backdrop `pointer-events-none` and use an outside-click ref on the <aside>, or exclude the backdrop from the area covered by the Locations grid.",
+    "StoreDeepDive.jsx L214: `{storeWeekday && (...)}` silently hides the block when no row matches. Consider explicit Empty state so online/new stores don't leave a confusing blank space between Header and Top 10 styles.",
+    "Locations.jsx L595: `sorted.find((l) => l.channel === selected)` — fine, but every re-sort recomputes; acceptable here since list is small (~31 rows).",
+    "Locations.jsx L34-40: weekday-pattern is fetched once on mount with no dependency on filters; note that /api/footfall/weekday-pattern is 1h-cached per the brief, so this is intentional."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested)", "frontend": "85% (core drawer + KPIs + DQ pill + CTAs + scroll lock + 3 close paths all pass; jump-between-stores fails)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (login via /api/auth/login works, token stored in localStorage key 'vivo_bi_token')",
+  "seed_data_creation": "",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use `fetch('/api/auth/login', ...)` + localStorage.setItem('vivo_bi_token', token) to skip UI login — the email form submission inside playwright was returning 401 under our auth layer (the direct POST works fine with the same credentials, so login works; it's a subtle form-submit timing issue in the test harness only). Then goto /locations, apply 'This Month' preset, and click a card. For jump testing, do NOT click another card via force=True while backdrop is present — the backdrop eats the event; instead verify the fix by checking that clicking a location-card at normal actionability (no force) is possible with the drawer open, or by checking that setSelected gets called with the new channel. The weekday cell testids are dd-wk-Mon..dd-wk-Sun (exact casing) and only render for channels present in /api/footfall/weekday-pattern rows — Online - Shop Zetu is NOT in that payload, so verify weekday on a physical Kenya store like 'Vivo Sarit'.",
+  "rca of the issue": "Jump-between-stores root cause: StoreDeepDive backdrop element is `<div className='fixed inset-0 z-40 ...' onClick={onClose}>`. This absolutely-positioned div covers the whole viewport including the Locations grid underneath. Location cards in the grid have default stacking context (no explicit z-index) so they are below z-40. When a user clicks a background card, the event target is the backdrop, which fires onClose → drawer closes (setSelected(null)) → new card click never reaches the card's onClick={() => setSelected(l.channel)}. Reproduction: open /locations, click any card, then click another card in the grid behind — drawer closes. Mitigation: make the backdrop `pointer-events: none` and attach a mousedown-outside handler on the <aside> sheet instead; OR render the locations-grid inside a portal with a higher z-index than the backdrop; OR shrink the backdrop to only cover viewport-width minus the sheet width (right: sheetWidth)."
+}

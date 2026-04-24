@@ -9,7 +9,8 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
-import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
+import StoreDeepDive from "@/components/StoreDeepDive";
+import { Storefront, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -26,8 +27,17 @@ const Locations = () => {
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("total_sales");
   const [selected, setSelected] = useState(null);
-  const [selectedSkus, setSelectedSkus] = useState([]);
-  const [selectedLoading, setSelectedLoading] = useState(false);
+  const [weekdayData, setWeekdayData] = useState(null);
+
+  // Weekday pattern feeds the store deep-dive's mini-heatmap.
+  // Safe to share across all store drills since the endpoint is 1h-cached.
+  useEffect(() => {
+    let cancel = false;
+    api.get("/footfall/weekday-pattern")
+      .then((r) => { if (!cancel) setWeekdayData(r.data || null); })
+      .catch(() => { /* optional — deep-dive still renders without it */ });
+    return () => { cancel = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,18 +70,6 @@ const Locations = () => {
     };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
-
-  useEffect(() => {
-    if (!selected) return;
-    setSelectedLoading(true);
-    api
-      .get("/top-skus", {
-        params: { date_from: dateFrom, date_to: dateTo, channel: selected, limit: 10 },
-      })
-      .then((r) => setSelectedSkus(r.data || []))
-      .catch(() => setSelectedSkus([]))
-      .finally(() => setSelectedLoading(false));
-  }, [selected, dateFrom, dateTo]);
 
   const prevMap = useMemo(() => {
     const m = new Map();
@@ -287,8 +285,10 @@ const Locations = () => {
             />
           </div>
 
-          {!selected && (
-            <>
+          {/* Sort + leaderboard + grid — kept visible behind the deep-dive
+              slide-over so users can jump between stores without losing
+              context (the drill pattern the audit asked for). */}
+          <>
               <div className="card-white p-3 flex items-center gap-2 flex-wrap">
                 <ArrowsDownUp size={14} className="text-muted ml-1" />
                 <span className="text-[12px] text-muted">Sort by:</span>
@@ -586,73 +586,16 @@ const Locations = () => {
                 </div>
               </div>
             </>
-          )}
 
-          {selected && (
-            <div className="space-y-4" data-testid="location-drill">
-              <button
-                className="flex items-center gap-1 text-brand font-medium hover:underline text-[13px]"
-                onClick={() => setSelected(null)}
-                data-testid="drill-back"
-              >
-                <CaretLeft size={15} /> Back to all locations
-              </button>
-              <div className="card-white p-5">
-                <SectionTitle
-                  title={selected}
-              subtitle="Top 10 styles at this channel — the best-sellers driving this location's revenue. Protect their stock cover and feature them in local marketing."
-                  action={
-                    <button
-                      onClick={() => setSelected(null)}
-                      className="text-muted hover:text-foreground"
-                    >
-                      <X size={18} />
-                    </button>
-                  }
-                />
-                {selectedLoading ? (
-                  <Loading />
-                ) : selectedSkus.length === 0 ? (
-                  <Empty />
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full data">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Style</th>
-                          <th>Collection</th>
-                          <th>Brand</th>
-                          <th>Subcategory</th>
-                          <th className="text-right">Units</th>
-                          <th className="text-right">Total Sales</th>
-                          <th className="text-right">Avg Price</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedSkus.map((s, i) => (
-                          <tr key={(s.style_name || "") + i}>
-                            <td className="text-muted num">{i + 1}</td>
-                            <td className="font-medium max-w-[280px] truncate" title={s.style_name}>
-                              {s.style_name || "—"}
-                            </td>
-                            <td className="text-muted">{s.collection || "—"}</td>
-                            <td>
-                              <span className="pill-neutral">{s.brand || "—"}</span>
-                            </td>
-                            <td className="text-muted">{s.product_type || "—"}</td>
-                            <td className="text-right num font-semibold">{fmtNum(s.units_sold)}</td>
-                            <td className="text-right num font-bold text-brand">{fmtKES(s.total_sales)}</td>
-                            <td className="text-right num">{fmtKES(s.avg_price)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {/* Store deep-dive slide-over — the audit's "single biggest missed
+              opportunity". Renders ONLY when `selected` is set. */}
+          <StoreDeepDive
+            open={!!selected}
+            onClose={() => setSelected(null)}
+            row={selected ? sorted.find((l) => l.channel === selected) || null : null}
+            compareLbl={compareLbl}
+            weekdayData={weekdayData}
+          />
         </>
       )}
     </div>
