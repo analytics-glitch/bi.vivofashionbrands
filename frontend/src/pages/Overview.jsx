@@ -20,7 +20,7 @@ import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
-import { useLocationBadges, LocationLeaderboard } from "@/components/LocationLeaderboard";
+import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
 import {
@@ -946,10 +946,12 @@ export default Overview;
 const OverviewLeaderboard = ({ sales, salesPrev, footfall, compareMode, compareLbl }) => {
   const navigate = useNavigate();
   const badges = useLocationBadges({ sales, prevSales: salesPrev, footfall, compareMode, compareLbl });
+  const streaks = useLeaderboardStreaks();
   if (!badges || badges.size === 0) return null;
   return (
     <LocationLeaderboard
       badges={badges}
+      streaks={streaks}
       onWinnerClick={(channel) => navigate(`/locations?channel=${encodeURIComponent(channel)}`)}
     />
   );

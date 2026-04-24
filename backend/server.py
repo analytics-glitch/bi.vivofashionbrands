@@ -2060,6 +2060,32 @@ async def analytics_insights(
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(chat_router)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Leaderboard streaks — monthly badge snapshots + "🔥 3 months" longevity.
+# Kept on `api_router` so it inherits auth & the /api prefix. Routes are
+# registered BEFORE include_router to ensure Depends chain sees them.
+# ─────────────────────────────────────────────────────────────────────────────
+from leaderboard import (  # noqa: E402
+    get_streaks_cached, snapshot_period, _previous_complete_period,
+)
+
+
+@api_router.get("/leaderboard/streaks")
+async def leaderboard_streaks(lookback_months: int = 6):
+    """Return per-badge streaks for the most recent complete months."""
+    data = await get_streaks_cached(lookback_months=lookback_months)
+    return data
+
+
+@api_router.post("/admin/leaderboard/snapshot")
+async def leaderboard_snapshot(period: Optional[str] = None, force: bool = False):
+    """Compute & persist the snapshot for `period` (default = last complete month)."""
+    p = period or _previous_complete_period()
+    data = await snapshot_period(p, force=force)
+    return {"period": p, "snapshots": data}
+
+
 app.include_router(api_router)
 
 

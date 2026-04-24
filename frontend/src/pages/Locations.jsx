@@ -6,7 +6,7 @@ import { KPICard } from "@/components/KPICard";
 import { InlineDelta } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { useLocationBadges, LocationLeaderboard } from "@/components/LocationLeaderboard";
+import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { Storefront, X, CaretLeft, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -186,6 +186,7 @@ const Locations = () => {
     sales: enriched, prevSales: prevRowsForBadges, footfall,
     compareMode, compareLbl,
   });
+  const leaderStreaks = useLeaderboardStreaks();
 
   return (
     <div className="space-y-6" data-testid="locations-page">
@@ -284,6 +285,7 @@ const Locations = () => {
               {/* Leaderboard strip — celebrates this period's winners. */}
               <LocationLeaderboard
                 badges={leaderBadges}
+                streaks={leaderStreaks}
                 onWinnerClick={setSelected}
                 className="mb-3"
               />

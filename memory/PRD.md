@@ -705,6 +705,33 @@ API, (c) figure from a different source system. Pending user confirmation.
   conversion; KES/Local toggle for Uganda & Rwanda views.
 
 ## Changelog — 2026-04-24
+- **Leaderboard streaks** (new). Added persistent monthly badge
+  snapshots in Mongo (`leaderboard_snapshots`) so the dashboard can
+  surface loyalty streaks ("🏆 Top Seller: Shop Zetu · 🔥 3 months
+  running") alongside the winners strip.
+  - Backend `/app/backend/leaderboard.py`: idempotent snapshot
+    writer + derived streak reader (walks newest → oldest, breaks on
+    first miss). Computes snapshots for missing months lazily on
+    first read (capped at 6-month lookback, 2-concurrency semaphore
+    to protect upstream). 1-hour in-memory cache on streak reads.
+  - Endpoints:
+    - `GET  /api/leaderboard/streaks?lookback_months=6` — returns
+      `{badge: {channel: streak_months}}` for streaks ≥ 2 months.
+    - `POST /api/admin/leaderboard/snapshot?period=YYYY-MM&force=bool`
+      — idempotent snapshot writer for ad-hoc backfills.
+  - Biggest Mover is intrinsically compare-period dependent so it's
+    NOT persisted or streaked — the badge still appears in the
+    winners strip but never carries a 🔥 flame.
+  - Same thresholds as the frontend hook: ABV ≥ 50 orders, CR ≥ 200
+    footfall, and an added CR ≤ 50% sanity cap to exclude broken
+    footfall counters (data quality — matches Footfall page rule).
+  - **Frontend**: new `useLeaderboardStreaks` hook in the shared
+    `LocationLeaderboard` component fetches the streaks once per
+    mount; the strip renders a compact orange-red 🔥-count pill
+    next to any winner who's held the badge 2+ months. Tooltip:
+    "Leading the group with … · 🔥 3 months running".
+  - Live data (Feb 2026 window): 🏆 Shop Zetu 3mo · 💰 Vivo Acacia
+    3mo streaks; 🔥 only surfaces when earned.
 - **Slice 5 — Micro-interactions pass**:
   - **CSV export toasts**: every call to `exportCSV` (reused by every
     `SortableTable`) now raises a `sonner` success toast — e.g.
