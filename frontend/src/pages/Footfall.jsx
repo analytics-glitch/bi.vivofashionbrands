@@ -17,6 +17,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import FootfallWeekdayHeatmap from "@/components/FootfallWeekdayHeatmap";
+import FootfallDailyCalendar from "@/components/FootfallDailyCalendar";
 import {
   Footprints,
   Target,
@@ -336,6 +337,18 @@ const Footfall = () => {
           </div>
 
           <FootfallWeekdayHeatmap />
+
+          <div className="card-white p-5" data-testid="ff-daily-calendar">
+            <SectionTitle
+              title="Daily footfall calendar"
+              subtitle="Per-day group footfall (summed across locations) for the selected window. Darker green = busier day. Hover any cell for exact visitors, orders, and conversion."
+            />
+            <FootfallDailyCalendar
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              country={countries.length === 1 ? countries[0] : undefined}
+            />
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card-white p-5" data-testid="ff-chart-footfall">

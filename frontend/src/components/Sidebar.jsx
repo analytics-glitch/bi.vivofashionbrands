@@ -191,6 +191,20 @@ const TopNav = () => {
         </span>
         <button
           type="button"
+          onClick={() => {
+            // Dispatch the same keyboard shortcut the palette listens for.
+            const evt = new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true });
+            window.dispatchEvent(evt);
+          }}
+          className="hidden md:inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-brand px-2 py-1 rounded-md border border-border hover:border-brand transition-colors"
+          data-testid="open-global-search"
+          title="Open global search (⌘K)"
+        >
+          <span className="hidden lg:inline">Search</span>
+          <kbd className="bg-panel px-1 py-0.5 rounded text-[10px] border border-border">⌘K</kbd>
+        </button>
+        <button
+          type="button"
           onClick={refresh}
           data-testid="refresh-data-btn"
           className="p-1.5 rounded-lg hover:bg-panel text-foreground/70 hover:text-brand transition-colors"

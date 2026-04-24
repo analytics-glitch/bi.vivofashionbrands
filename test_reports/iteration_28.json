@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 28 (⌘K global search, sell-through-by-location, daily footfall calendar) — fully tested. Backend: 9/9 pytest pass. Frontend: global palette, Inventory sell-through card, Footfall daily calendar, and all 8 route smoke-tests pass. No issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_28_search_sellthrough_calendar.py",
+    "/app/test_reports/pytest/iteration_28.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Recharts console warnings ('width(-1) and height(-1) of chart') appear on initial render of some charts — cosmetic but logged continually on Overview; consider setting minWidth/minHeight on ResponsiveContainer (pre-existing, not introduced by iter-28).",
+    "search.py handles upstream /customer-search exceptions by swallowing silently (customer_matches = []). A log line would help observability.",
+    "sell-through-by-location early-continues when (stock<=0 AND units<=0) — correct for pure-online no-sale locations, but slightly coupled with the 'no_stock_data' branch below; a short inline comment would make the dead-row skip more obvious."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_28_search_sellthrough_calendar.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9)",
+    "frontend": "100% (14/14 verifications)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — used existing seeded upstream data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 28 is green. Backend tests live at /app/backend/tests/test_iteration_28_search_sellthrough_calendar.py (pytest, 9 tests, ~48s). Daily-calendar endpoint is slow on cold-cache (10-30s for first call), subsequent calls cached for 1h. Global palette uses document keydown for Meta+K / Control+K and data-testid='open-global-search' button. Frontend Playwright gotcha: on the no-match path, the upstream customer-search can take 3-5s, so wait up to 6s before asserting 'No matches'. Calendar weekday headers render uppercase ('MON','TUE',…) not 'Mon','Tue'.",
+  "verifications_performed": {
+    "backend": [
+      "GET /api/search → 401/403 without auth, 422 on empty q, 200 grouped payload with all groups + links, pages lookup by label returns /inventory.",
+      "GET /api/analytics/sell-through-by-location → 400 without dates; 200 returns rows with all required keys, health ∈ allowed set, real rows sorted by sell_through_pct desc, no_stock_data rows have pct=null and stock=0.",
+      "GET /api/footfall/daily-calendar → 400 on invalid date, 200 returns window+days+max_footfall; window.days==24 for 2026-04-01..2026-04-24; weekday ∈ 0..6; 180-day request clamps to 90."
+    ],
+    "frontend": [
+      "⌘K button (data-testid='open-global-search') and Meta+K shortcut both open palette.",
+      "Empty query shows 'Jump to anything'. Typing 'inventory' shows 'Pages · 2' with Inventory link. Typing gibberish shows 'No matches for <q>'.",
+      "Escape and click-outside close the palette; Meta+K reopens.",
+      "Inventory page: sell-through-by-location card + sell-through-table render 31 rows, sorted desc, KES-formatted, no '$' anywhere.",
+      "Footfall page: ff-daily-calendar card renders 31 calendar-cell-<date> elements, summary line ('Total footfall: 71,825 · Orders: 8,819 · Sales: KES 82,180,106 · Avg conversion: 12.3%'), Busiest/Quietest chips, and the honesty footnote about upstream daily-only data.",
+      "Route smoke-test: /overview /locations /customers /products /inventory /re-order /ibt /pricing all return 200 with no error banner."
+    ]
+  }
+}

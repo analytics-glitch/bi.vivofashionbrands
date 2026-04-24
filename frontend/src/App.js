@@ -23,6 +23,7 @@ import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ChatWidget from "@/components/ChatWidget";
+import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 
 const Shell = ({ children }) => (
@@ -35,6 +36,7 @@ const Shell = ({ children }) => (
       {children}
     </main>
     <ChatWidget />
+    <GlobalSearch />
   </div>
 );
 

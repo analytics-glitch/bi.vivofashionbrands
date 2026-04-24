@@ -1850,6 +1850,201 @@ async def analytics_weeks_of_cover(
 # ----- End analytics extensions -----
 
 
+@api_router.get("/analytics/sell-through-by-location")
+async def analytics_sell_through_by_location(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """Sell-through rate per location = units_sold / (units_sold + current_stock).
+
+    Upstream doesn't expose historical stock-on-hand, so we use the
+    standard retail shortcut: period sell-through = units_sold ÷
+    (current_stock + units_sold). This equals the fraction of
+    open-to-sell that actually sold, assuming no mid-period receipts.
+
+    Returns one row per POS location (excludes warehouse/holding):
+        [
+          {location, country, units_sold, current_stock, total_sales,
+           sell_through_pct, health}  # health ∈ {strong|healthy|slow|stuck}
+        ]
+    """
+    if not date_from or not date_to:
+        raise HTTPException(status_code=400, detail="date_from and date_to required")
+    cs = _split_csv(country)
+
+    # 1) Units sold per location for the period — /sales-summary gives
+    #    units_sold per channel/POS.
+    base = {"date_from": date_from, "date_to": date_to}
+    if len(cs) <= 1:
+        ss_rows = await fetch("/sales-summary", {
+            **base,
+            "country": cs[0] if cs else None,
+        })
+    else:
+        results = await multi_fetch("/sales-summary", base, cs, [])
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in g:
+                ch = r.get("channel")
+                if not ch:
+                    continue
+                if ch not in merged:
+                    merged[ch] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "orders", "net_sales"):
+                        merged[ch][f] = (merged[ch].get(f) or 0) + (r.get(f) or 0)
+        ss_rows = list(merged.values())
+
+    # 2) Current stock per location (excludes warehouse locations).
+    inv = await fetch_all_inventory(country=country) or []
+    stock_by_loc: Dict[str, float] = defaultdict(float)
+    for r in inv:
+        loc = r.get("location_name") or "Unknown"
+        if is_warehouse_location(loc):
+            continue
+        if not isinstance(r.get("product_type"), str):
+            continue  # skip rows without a subcategory
+        stock_by_loc[loc] += float(r.get("available") or 0)
+
+    out: List[Dict[str, Any]] = []
+    for r in ss_rows or []:
+        loc = r.get("channel")
+        if not loc:
+            continue
+        if is_warehouse_location(loc):
+            continue
+        units = int(r.get("units_sold") or 0)
+        stock = float(stock_by_loc.get(loc, 0))
+        if stock <= 0:
+            # Pure-online or non-inventoried channels (no stock reported)
+            # — sell-through is not meaningful. Flag them separately so
+            # the UI can surface the data without distorting rankings.
+            if units <= 0:
+                continue
+            out.append({
+                "location": loc,
+                "country": (r.get("country") or "").title() or None,
+                "units_sold": units,
+                "current_stock": 0,
+                "total_sales": float(r.get("total_sales") or 0),
+                "net_sales": float(r.get("net_sales") or 0),
+                "sell_through_pct": None,
+                "health": "no_stock_data",
+            })
+            continue
+        denom = stock + units
+        pct = (units / denom) * 100.0
+        if pct >= 25:
+            health = "strong"
+        elif pct >= 12:
+            health = "healthy"
+        elif pct >= 5:
+            health = "slow"
+        else:
+            health = "stuck"
+        out.append({
+            "location": loc,
+            "country": (r.get("country") or "").title() or None,
+            "units_sold": units,
+            "current_stock": stock,
+            "total_sales": float(r.get("total_sales") or 0),
+            "net_sales": float(r.get("net_sales") or 0),
+            "sell_through_pct": round(pct, 2),
+            "health": health,
+        })
+    # Sort: real sell-through first (desc), then no_stock_data rows last.
+    out.sort(key=lambda x: (x["sell_through_pct"] is None, -(x["sell_through_pct"] or 0)))
+    return out
+
+
+@api_router.get("/footfall/daily-calendar")
+async def get_footfall_daily_calendar(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """Per-day group-level footfall + orders + conversion for a window,
+    for rendering a calendar heatmap (rows=week, cols=Mon..Sun).
+
+    Upstream /footfall returns per-location daily aggregates — we fan out
+    once per day and sum across locations. Max window 90 days. Cached
+    for 1h alongside the weekday-pattern cache.
+    """
+    from datetime import date, timedelta
+    try:
+        today = datetime.now(timezone.utc).date()
+        end_d = date.fromisoformat(date_to) if date_to else today - timedelta(days=1)
+        start_d = date.fromisoformat(date_from) if date_from else end_d - timedelta(days=27)
+        if end_d < start_d:
+            start_d, end_d = end_d, start_d
+        if (end_d - start_d).days > 89:
+            start_d = end_d - timedelta(days=89)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date_from / date_to")
+
+    cache_key = f"cal|{start_d.isoformat()}|{end_d.isoformat()}|{country or ''}"
+    import time as _t
+    cached = _weekday_pattern_cache.get(cache_key)
+    if cached and (_t.time() - cached[0]) < _WEEKDAY_PATTERN_TTL:
+        return cached[1]
+
+    dates: List[date] = []
+    d = start_d
+    while d <= end_d:
+        dates.append(d)
+        d += timedelta(days=1)
+
+    sem = asyncio.Semaphore(6)
+
+    async def _one_day(day: date):
+        async with sem:
+            iso = day.isoformat()
+            try:
+                rows = await fetch("/footfall", {
+                    "date_from": iso, "date_to": iso,
+                    "channel": country,
+                })
+                return day, rows or []
+            except Exception as e:
+                logger.warning("[daily-calendar] %s fetch failed: %s", iso, e)
+                return day, []
+
+    results = await asyncio.gather(*(_one_day(dd) for dd in dates))
+
+    days_out: List[Dict[str, Any]] = []
+    for day, rows in results:
+        total_ff = 0
+        orders = 0
+        sales = 0.0
+        for r in rows or []:
+            total_ff += int(r.get("total_footfall") or 0)
+            orders += int(r.get("orders") or 0)
+            sales += float(r.get("total_sales") or 0)
+        cr = (orders / total_ff * 100.0) if total_ff else None
+        days_out.append({
+            "date": day.isoformat(),
+            "weekday": day.weekday(),  # 0 Mon .. 6 Sun
+            "footfall": total_ff,
+            "orders": orders,
+            "total_sales": round(sales, 2),
+            "conversion_rate": round(cr, 2) if cr is not None else None,
+        })
+
+    max_ff = max((d["footfall"] for d in days_out), default=0)
+    payload = {
+        "window": {
+            "start": start_d.isoformat(),
+            "end": end_d.isoformat(),
+            "days": len(days_out),
+        },
+        "max_footfall": max_ff,
+        "days": days_out,
+    }
+    _weekday_pattern_cache[cache_key] = (_t.time(), payload)
+    return payload
+
+
 @api_router.get("/analytics/inventory-summary")
 async def analytics_inventory_summary(
     country: Optional[str] = None,
@@ -2405,6 +2600,7 @@ from recommendations import router as recommendations_router  # noqa: E402
 from user_activity import router as user_activity_router  # noqa: E402
 from thumbnails import router as thumbnails_router  # noqa: E402
 from notifications import router as notifications_router  # noqa: E402
+from search import router as search_router  # noqa: E402
 
 
 @api_router.get("/leaderboard/streaks")
@@ -2433,6 +2629,7 @@ app.include_router(recommendations_router)
 app.include_router(user_activity_router)
 app.include_router(thumbnails_router)
 app.include_router(notifications_router)
+app.include_router(search_router)
 
 
 @app.get("/api/health")

@@ -41,6 +41,7 @@ const Inventory = () => {
   const [subcatSS, setSubcatSS] = useState([]);
   const [stsByCat, setStsByCat] = useState([]);
   const [weeksOfCover, setWeeksOfCover] = useState([]);
+  const [sellThrough, setSellThrough] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -78,8 +79,10 @@ const Inventory = () => {
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv } }),
+      api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
+        .catch(() => ({ data: [] })),
     ])
-      .then(([s, i, st, sc, cat, woc]) => {
+      .then(([s, i, st, sc, cat, woc, str]) => {
         if (cancelled) return;
         setSummary(s.data);
         setInv(i.data || []);
@@ -87,6 +90,7 @@ const Inventory = () => {
         setSubcatSS(sc.data || []);
         setStsByCat(cat.data || []);
         setWeeksOfCover(woc.data || []);
+        setSellThrough(str.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -787,6 +791,61 @@ const Inventory = () => {
               ]}
               rows={filteredSts}
             />
+          </div>
+
+          <div className="card-white p-5" data-testid="sell-through-by-location">
+            <SectionTitle
+              title={`Sell-Through Rate · by Location · ${(sellThrough || []).filter((r) => r.sell_through_pct != null).length} POS`}
+              subtitle="Sell-through % = units sold in window ÷ (units sold + current stock). Higher = stock is actually moving. 25%+ = strong · 12–25% = healthy · 5–12% = slow · <5% = stuck. Use this alongside Weeks-of-Cover to spot overstocked stores."
+            />
+            {(!sellThrough || sellThrough.length === 0) ? (
+              <Empty label="No sell-through data for the selected window." />
+            ) : (
+              <SortableTable
+                testId="sell-through-table"
+                exportName={`sell-through_${exportSlug}.csv`}
+                pageSize={25}
+                mobileCards
+                initialSort={{ key: "sell_through_pct", dir: "desc" }}
+                columns={[
+                  { key: "location", label: "Location", align: "left", mobilePrimary: true, render: (r) => <span className="font-medium">{r.location}</span> },
+                  { key: "country", label: "Country", align: "left", render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country || "—"}</span>, csv: (r) => r.country },
+                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(Math.round(r.current_stock || 0)) },
+                  { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
+                  {
+                    key: "sell_through_pct", label: "Sell-Through %", numeric: true,
+                    sortValue: (r) => r.sell_through_pct ?? -1,
+                    render: (r) => {
+                      if (r.sell_through_pct == null) return <span className="pill-neutral text-[10px]">no stock data</span>;
+                      const p = r.sell_through_pct;
+                      const cls = p >= 25 ? "pill-green" : p >= 12 ? "pill-amber" : p >= 5 ? "pill-amber" : "pill-red";
+                      return <span className={cls}>{p.toFixed(1)}%</span>;
+                    },
+                    csv: (r) => r.sell_through_pct,
+                  },
+                  {
+                    key: "health", label: "Health", align: "left",
+                    render: (r) => {
+                      const map = {
+                        strong:        { label: "Strong",  cls: "pill-green" },
+                        healthy:       { label: "Healthy", cls: "pill-green" },
+                        slow:          { label: "Slow",    cls: "pill-amber" },
+                        stuck:         { label: "Stuck",   cls: "pill-red" },
+                        no_stock_data: { label: "No stock", cls: "pill-neutral" },
+                      };
+                      const m = map[r.health] || map.stuck;
+                      return <span className={m.cls}>{m.label}</span>;
+                    },
+                    csv: (r) => r.health,
+                  },
+                ]}
+                rows={sellThrough}
+              />
+            )}
+            <p className="text-[11px] text-muted italic mt-2">
+              ℹ Stock-at-start-of-period is approximated as (current_stock + units_sold) — upstream doesn't keep historical on-hand; mid-period receipts aren't modelled yet.
+            </p>
           </div>
 
           <div className="card-white p-5" data-testid="stock-aging-summary">
