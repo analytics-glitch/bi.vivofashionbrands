@@ -1163,3 +1163,58 @@ Frontend:
 ### Files added
 - `/app/frontend/src/components/WinsThisWeekCard.jsx`
 - New endpoint in `/app/backend/recommendations.py::wins_this_window`
+
+## Session Update — 2026-04-24 (Metric-Action Contract expansion + Footfall outlier flagging)
+
+### Metric-Action Contract expansion — 19 new action pills
+Extended the "every KPI tile is a doorway" contract from Overview/Customers to
+four more pages:
+
+- **Products** (8 tiles):
+  - `pr-kpi-styles` → SOR table, `pr-kpi-units` → Top sellers,
+    `pr-kpi-sales` → See by category, `pr-kpi-asp` → Export pricing CSV.
+  - `sor-k-avg` → Full SOR table, `sor-k-hi` → **Re-Order list** (cross-page),
+    `sor-k-mid` → See styles, `sor-k-lo` → **IBT candidates** (cross-page).
+- **Inventory** (4 tiles):
+  - `inv-kpi-units` → Export inventory CSV,
+    `inv-kpi-store-stock`/`inv-kpi-warehouse-stock` → IBT / Plan distribution,
+    `inv-kpi-lowstock` → Triage now (scroll to low-stock-section).
+- **Footfall** (4 tiles): By store / Export orders CSV / Which stores dropped? /
+  Top ABV stores.
+- **Locations** (7 tiles): Jump to leaderboard / Sales breakdown /
+  Order export / Top styles / Sort by ABV / Sort by ASP / Sort by MSI
+  (the sort pills mutate the grid state AND scroll-into-view — a neat
+  two-action pill).
+
+Every pill uses the existing `KPICard.action` prop added last session, so
+zero new component surface area. Data-testid convention: `<card-testid>-action`.
+
+### Footfall data-quality outlier flagging (audit #9)
+Added a 2σ outlier-detection layer on `/footfall`. Algorithm:
+
+1. Restrict sample to physical stores (exclude Online) with ≥ 200 footfall.
+2. Compute group mean + standard deviation of conversion rate.
+3. Flag any store where `cr > mean + 2σ` or `cr < mean − 2σ`, plus hard-cap
+   belts-and-braces at `cr ≥ 50%` or `cr < 1%`.
+
+UI signals when a store is flagged:
+- Amber bar (#f59e0b) in the conversion chart (replaces green/red).
+- `outlier-pill-<Location>` `"⚠ verify counter"` chip in the breakdown
+  table next to the store name.
+- Amber CR pill in the Conversion column (replaces the green/red threshold
+  pill) so the user doesn't mistake an outlier for a winner.
+- Prominent `outlier-banner` above the chart: _"⚠ 1 store flagged ·
+  conversion outside ±2σ (group avg 14.2% ± 8.2pp) — verify the footfall
+  counter before acting on the number."_
+
+Observed this-month: **Vivo Junction (53.84%)** flags as expected; the
+Oasis Mall (20.87%) and Zoya Sarit (5.21%) both sit inside 2σ and correctly
+do NOT flag. Tooltip on each pill explains the specific reason ("Unusually
+high CR…", "Above 2σ of group avg…", etc).
+
+### Testing
+- Iteration 22 report: `/app/test_reports/iteration_22.json` — all 19 action
+  pills confirmed by data-testid, all 3 flag/no-flag cases verified, zero
+  regressions on Overview / Customers / Re-Order / IBT / Wins / WhatChanged /
+  NEW RECORD / SOTW / login / currency / _id masking.
+
