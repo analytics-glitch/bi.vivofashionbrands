@@ -13,7 +13,6 @@ import {
   comparePeriod,
   shiftISO,
   COUNTRY_FLAGS,
-  normaliseSalesRows,
 } from "@/lib/api";
 import SORHeader from "@/components/SORHeader";
 import { Loading, ErrorBox } from "@/components/common";
@@ -121,8 +120,8 @@ const CEOReport = () => {
         setCountries(cs.data || []);
         setCountriesLM(cslm.data || []);
         setCountriesLY(csly.data || []);
-        setSales(normaliseSalesRows(s.data));
-        setSalesLM(normaliseSalesRows(slm.data));
+        setSales(s.data || []);
+        setSalesLM(slm.data || []);
         setTop(t.data || []);
         setSor(r.data || []);
         setInsights(ins.data);

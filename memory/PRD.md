@@ -1509,3 +1509,17 @@ Iteration 30: Overview and Locations `Total Sales` KPI cards now agree (KES 3,34
 - Changed: `/app/frontend/src/components/WhatChangedBelt.jsx`
 - Changed: `/app/backend/server.py` (sell-through endpoint), `/app/backend/ask.py` (_fetch_stores)
 
+## v32 — Reverted v31 net_sales swap (Feb 2026)
+
+User decision — restored `total_sales` (upstream's gross-minus-discount) as the displayed sales metric across all channel/location views. The v31 net-sales normalisation was undone in:
+
+- `/app/frontend/src/lib/useKpis.js` — `fetchKpis` no longer rewrites `total_sales`
+- `/app/frontend/src/lib/api.js` — removed `normaliseSalesRows` helper
+- `/app/frontend/src/pages/{Overview,Locations,Footfall,CEOReport,DataQuality}.jsx` — removed normaliser calls; restored original sales-summary handling
+- `/app/frontend/src/pages/Locations.jsx` — restored original `enriched` memo, `groupTotals`, and Total Sales KPI card (no "Net of returns & discounts" subtitle)
+- `/app/frontend/src/components/WhatChangedBelt.jsx` — removed `kpisSince` net-swap
+- `/app/backend/server.py` `/api/analytics/sell-through-by-location` — restored separate `total_sales` and `net_sales` fields
+- `/app/backend/ask.py` `_fetch_stores` — restored `total_sales`-first preference
+
+Result: KPI cards and per-store tiles display `total_sales` exactly as the upstream API returns it. `net_sales` remains accessible to any future consumer that wants it.
+

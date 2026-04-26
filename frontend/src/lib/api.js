@@ -86,19 +86,6 @@ export const pctDelta = (current, prev) => {
   return ((Number(current) - Number(prev)) / Number(prev)) * 100;
 };
 
-// Upstream /sales-summary exposes `total_sales` as gross-minus-discount
-// (INCLUDES returns) + a separate `net_sales` column. Pages that show
-// sales totals per channel/location should use net. This helper
-// normalises an array of rows in-place-safe manner: it returns new rows
-// where `total_sales` is the net figure and the original gross is kept
-// under `gross_sales` for any return-rate math that still needs it.
-export const normaliseSalesRows = (rows) =>
-  (rows || []).map((r) => ({
-    ...r,
-    gross_sales: r.total_sales || 0,
-    total_sales: r.net_sales != null ? r.net_sales : (r.total_sales || 0),
-  }));
-
 // --- date helpers ---
 const pad = (n) => String(n).padStart(2, "0");
 const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

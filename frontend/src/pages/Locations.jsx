@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
-import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS, normaliseSalesRows } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod, COUNTRY_FLAGS } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { InlineDelta } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
@@ -58,8 +58,8 @@ const Locations = () => {
     ])
       .then(([s, ps, ff]) => {
         if (cancelled) return;
-        setRows(normaliseSalesRows(s.data));
-        setPrevRows(normaliseSalesRows(ps.data));
+        setRows(s.data || []);
+        setPrevRows(ps.data || []);
         setFootfall(ff.data || []);
         touchLastUpdated();
       })
@@ -82,11 +82,7 @@ const Locations = () => {
   const enriched = useMemo(() => {
     return rows.map((r) => {
       const prev = prevMap.get(r.channel);
-      // `total_sales` on these rows is already the net figure (the
-      // normaliseSalesRows helper at fetch-time swapped it); gross is
-      // preserved on `gross_sales` for the return-rate denominator.
       const sales = r.total_sales || 0;
-      const grossSales = r.gross_sales || sales;
       const orders = r.orders || r.total_orders || 0;
       const units = r.units_sold || r.total_units_sold || 0;
       const returns = r.returns || 0;
@@ -96,7 +92,6 @@ const Locations = () => {
 
       // Previous-period numbers
       const pSales = prev ? (prev.total_sales || 0) : null;
-      const pGross = prev ? (prev.gross_sales || pSales || 0) : null;
       const pOrders = prev ? (prev.orders || prev.total_orders || 0) : null;
       const pUnits = prev ? (prev.units_sold || prev.total_units_sold || 0) : null;
       const pReturns = prev ? (prev.returns || 0) : null;
@@ -107,7 +102,6 @@ const Locations = () => {
       return {
         ...r,
         total_sales: sales,
-        gross_sales: grossSales,
         orders,
         units_sold: units,
         returns,
@@ -115,9 +109,10 @@ const Locations = () => {
         abv: basket,
         asp,
         msi,
-        // Return rate = returns ÷ gross_sales (the denominator must be
-        // pre-return sales). Using net here would inflate the ratio.
-        return_rate: grossSales > 0 ? (returns / grossSales) * 100 : 0,
+        // Return rate = returns ÷ total_sales (fraction of sales flipped
+        // back). Exposed here so the Data-Quality layer can flag stores
+        // whose return behaviour sits outside the group norm.
+        return_rate: sales > 0 ? (returns / sales) * 100 : 0,
         // Legacy headline delta (kept for SortableTable row)
         delta: prev ? pctDelta(sales, pSales) : null,
         // Per-metric deltas (null when no prev data / prev is 0)
@@ -145,13 +140,10 @@ const Locations = () => {
 
   const groupTotals = useMemo(() => {
     // Use authoritative API KPIs — never sum per-location rows locally.
-    // Upstream /kpis.total_sales INCLUDES returns (it's gross minus
-    // discount only); /kpis.net_sales is the true net. Prefer net.
-    const sales = (kpis?.net_sales != null ? kpis.net_sales : (kpis?.total_sales || 0));
+    const sales = kpis?.total_sales || 0;
     const orders = kpis?.total_orders || 0;
     const units = kpis?.total_units || 0;
     return {
-      total_sales: sales,
       abv: orders ? sales / orders : (kpis?.avg_basket_size || 0),
       asp: units ? sales / units : (kpis?.avg_selling_price || 0),
       msi: orders ? units / orders : 0,
@@ -161,7 +153,7 @@ const Locations = () => {
   // Group-level previous-period totals (for KPI delta + prevValue).
   const prevGroupTotals = useMemo(() => {
     if (!rawKpisPrev) return null;
-    const sales = (rawKpisPrev.net_sales != null ? rawKpisPrev.net_sales : (rawKpisPrev.total_sales || 0));
+    const sales = rawKpisPrev.total_sales || 0;
     const orders = rawKpisPrev.total_orders || 0;
     const units = rawKpisPrev.total_units || 0;
     return {
@@ -243,9 +235,8 @@ const Locations = () => {
             <KPICard
               testId="loc-kpi-sales"
               label="Total Sales"
-              sub="Net of returns & discounts"
-              value={fmtKES(groupTotals.total_sales)}
-              delta={d(groupTotals.total_sales, prevGroupTotals?.total_sales)}
+              value={fmtKES(kpis.total_sales)}
+              delta={d(kpis.total_sales, prevGroupTotals?.total_sales)}
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtKES(prevGroupTotals.total_sales) : null}
               showDelta={compareMode !== "none"}
