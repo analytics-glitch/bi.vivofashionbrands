@@ -10,6 +10,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
+import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
@@ -144,6 +145,11 @@ const Products = () => {
   }, [topFiltered, newStylesFiltered, filtered]);
   const { urlFor } = useThumbnails(thumbStyles);
 
+  // Sub-tab — keeps the existing Products view intact and adds the
+  // L-10 launch-window report alongside.
+  const [tab, setTab] = useState("catalog");
+  const brandCsv = brands.length ? brands.join(",") : "";
+
   return (
     <div className="space-y-6" data-testid="products-page">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -164,6 +170,34 @@ const Products = () => {
           />
         </div>
       </div>
+
+      {/* sub-tabs */}
+      <div className="inline-flex rounded-lg border border-border overflow-hidden" role="tablist" data-testid="products-subtabs">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "catalog"}
+          onClick={() => setTab("catalog")}
+          className={`px-4 py-2 text-[12.5px] font-medium ${tab === "catalog" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-catalog"
+        >
+          Catalog
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "l10"}
+          onClick={() => setTab("l10")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "l10" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-l10"
+        >
+          SOR New Styles L-10
+        </button>
+      </div>
+
+      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} />}
+
+      {tab === "catalog" && (<>
 
       {(loading || kpisLoading) && <Loading />}
       {(error || kpisError) && <ErrorBox message={error || kpisError} />}
@@ -376,6 +410,7 @@ const Products = () => {
           </div>
         </>
       )}
+      </>)}
     </div>
   );
 };

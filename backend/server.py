@@ -2334,6 +2334,235 @@ async def analytics_new_styles(
     return out
 
 
+# In-memory cache for the L-10 report — recomputing the launch dates
+# fans out a lot of /orders chunks, so we keep results warm for 30 min.
+_l10_cache: Dict[str, tuple] = {}
+_L10_TTL = 30 * 60  # seconds
+
+
+@api_router.get("/analytics/sor-new-styles-l10")
+async def analytics_sor_new_styles_l10(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    brand: Optional[str] = None,
+    refresh: bool = False,
+):
+    """SOR New Styles L-10 — styles whose FIRST-EVER sale was 3 to 4
+    months ago (90–122 days), with a 6-month performance + sell-out
+    snapshot.
+
+    Columns returned per style:
+        style_name, brand, subcategory, style_number,
+        sales_6m, units_6m, asp_6m,
+        units_3w,
+        soh_total, soh_wh, pct_in_wh,
+        days_since_last_sale, sor_6m,
+        launch_date, weekly_avg, woc, style_age_weeks
+    """
+    import time as _time
+    cache_key = f"{country or ''}|{channel or ''}|{brand or ''}"
+    if not refresh and cache_key in _l10_cache:
+        ts, payload = _l10_cache[cache_key]
+        if _time.time() - ts < _L10_TTL:
+            return payload
+
+    today = datetime.now(timezone.utc).date()
+    launch_to = today - timedelta(days=90)    # at most 3 months ago
+    launch_from = today - timedelta(days=122)  # at most 4 months ago
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def _topskus(df: str, dt: str) -> List[Dict[str, Any]]:
+        base = {"date_from": df, "date_to": dt, "limit": 10000}
+        if brand:
+            base["product"] = brand
+        if len(cs) <= 1 and len(chs) <= 1:
+            return await fetch("/top-skus", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            }) or []
+        results = await multi_fetch("/top-skus", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in g:
+                s = r.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+        return list(merged.values())
+
+    band_skus, before_band_skus, six_m_skus, three_w_skus, inventory = await asyncio.gather(
+        _topskus(launch_from.isoformat(), launch_to.isoformat()),
+        _topskus("2020-01-01", (launch_from - timedelta(days=1)).isoformat()),
+        _topskus(six_m_from.isoformat(), today.isoformat()),
+        _topskus(three_w_from.isoformat(), today.isoformat()),
+        fetch_all_inventory(country=country),
+    )
+
+    band_set = {r.get("style_name") for r in band_skus if r.get("style_name")}
+    before_set = {r.get("style_name") for r in before_band_skus if r.get("style_name")}
+    candidates: set = band_set - before_set
+    if not candidates:
+        payload: List[Dict[str, Any]] = []
+        _l10_cache[cache_key] = (_time.time(), payload)
+        return payload
+
+    # Per-candidate maps for the 6-month and 3-week snapshots.
+    six_m_map: Dict[str, Dict[str, Any]] = {
+        r.get("style_name"): r for r in six_m_skus if r.get("style_name") in candidates
+    }
+    three_w_map: Dict[str, Dict[str, Any]] = {
+        r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates
+    }
+
+    # Inventory: split by warehouse vs store, capture a representative SKU
+    # to use as `style_number`.
+    soh_store: Dict[str, float] = defaultdict(float)
+    soh_wh: Dict[str, float] = defaultdict(float)
+    sku_for_style: Dict[str, str] = {}
+    for r in inventory or []:
+        s = r.get("style_name")
+        if s not in candidates:
+            continue
+        avail = float(r.get("available") or 0)
+        loc = r.get("location_name") or ""
+        if is_warehouse_location(loc):
+            soh_wh[s] += avail
+        else:
+            soh_store[s] += avail
+        if s not in sku_for_style and r.get("sku"):
+            sku_for_style[s] = r["sku"]
+
+    # Launch date + last-sale date — chunk /orders by ~7-day windows over
+    # the [launch_from, today] span. Upstream caps at 5000 rows/call so
+    # weekly chunks should fit comfortably.
+    chunk_starts: List[datetime] = []
+    cur = launch_from
+    while cur <= today:
+        chunk_starts.append(cur)
+        cur += timedelta(days=7)
+
+    chunk_ranges: List[tuple] = []
+    for i, st in enumerate(chunk_starts):
+        en = chunk_starts[i + 1] - timedelta(days=1) if i + 1 < len(chunk_starts) else today
+        chunk_ranges.append((st, en))
+
+    sem = asyncio.Semaphore(8)
+
+    async def _orders_chunk(df: datetime, dt: datetime) -> List[Dict[str, Any]]:
+        async with sem:
+            return await fetch("/orders", {
+                "date_from": df.isoformat(),
+                "date_to": dt.isoformat(),
+                "limit": 5000,
+                "country": cs[0] if len(cs) == 1 else None,
+                "channel": chs[0] if len(chs) == 1 else None,
+            }) or []
+
+    order_chunks = await asyncio.gather(
+        *(_orders_chunk(df, dt) for df, dt in chunk_ranges),
+        return_exceptions=True,
+    )
+
+    first_date: Dict[str, str] = {}
+    last_date: Dict[str, str] = {}
+    for chunk in order_chunks:
+        if isinstance(chunk, Exception):
+            logger.warning("[sor-new-styles-l10] orders chunk failed: %s", chunk)
+            continue
+        for o in chunk:
+            s = o.get("style_name")
+            if s not in candidates:
+                continue
+            d = (o.get("order_date") or "")[:10]
+            if not d:
+                continue
+            if s not in first_date or d < first_date[s]:
+                first_date[s] = d
+            if s not in last_date or d > last_date[s]:
+                last_date[s] = d
+            # Fallback style-number lookup — useful when a style has 0
+            # current inventory (so the inventory pass found no SKU).
+            if s not in sku_for_style and o.get("sku"):
+                sku_for_style[s] = o["sku"]
+
+    out: List[Dict[str, Any]] = []
+    for s in candidates:
+        if s not in first_date:
+            continue  # no orders found in window — skip
+        try:
+            launch_d = datetime.fromisoformat(first_date[s]).date()
+        except Exception:
+            continue
+        # Re-confirm the strict launch-window guard. The /top-skus band
+        # is week-resolution, so a few candidates can fall a day or two
+        # outside the precise [90d, 122d] band — drop those.
+        age_days = (today - launch_d).days
+        if age_days < 90 or age_days > 122:
+            continue
+
+        try:
+            last_d = datetime.fromisoformat(last_date.get(s, first_date[s])).date()
+        except Exception:
+            last_d = launch_d
+
+        store = soh_store.get(s, 0)
+        wh = soh_wh.get(s, 0)
+        soh_total = store + wh
+        pct_in_wh = (wh / soh_total * 100.0) if soh_total > 0 else 0.0
+
+        sm = six_m_map.get(s, {})
+        units_6m = float(sm.get("units_sold") or 0)
+        sales_6m = float(sm.get("total_sales") or 0)
+        asp_6m = (sales_6m / units_6m) if units_6m else 0.0
+
+        # 6-month SOR = units_sold ÷ (units_sold + current_stock)
+        denom = units_6m + soh_total
+        sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
+
+        # Weekly average — use age-of-style as the divisor instead of a
+        # flat 26 weeks, since these styles are 12–17 weeks old.
+        age_weeks = age_days / 7.0
+        weekly_avg = (units_6m / age_weeks) if age_weeks > 0 else 0.0
+        woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
+
+        units_3w = float((three_w_map.get(s) or {}).get("units_sold") or 0)
+        days_since_last = (today - last_d).days
+
+        out.append({
+            "style_name": s,
+            "brand": sm.get("brand"),
+            "collection": sm.get("collection"),
+            "subcategory": sm.get("product_type"),
+            "style_number": sku_for_style.get(s, ""),
+            "sales_6m": round(sales_6m, 2),
+            "units_6m": int(units_6m),
+            "units_3w": int(units_3w),
+            "soh_total": round(soh_total, 2),
+            "soh_wh": round(wh, 2),
+            "soh_store": round(store, 2),
+            "pct_in_wh": round(pct_in_wh, 1),
+            "asp_6m": round(asp_6m, 2),
+            "days_since_last_sale": days_since_last,
+            "sor_6m": round(sor_6m, 2),
+            "launch_date": launch_d.isoformat(),
+            "weekly_avg": round(weekly_avg, 2),
+            "woc": round(woc, 1) if woc is not None else None,
+            "style_age_weeks": round(age_weeks, 1),
+        })
+    out.sort(key=lambda r: r["sor_6m"], reverse=True)
+    _l10_cache[cache_key] = (_time.time(), out)
+    return out
+
+
 @api_router.get("/analytics/price-changes")
 async def analytics_price_changes(
     date_from: Optional[str] = None,

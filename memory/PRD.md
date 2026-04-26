@@ -1523,3 +1523,37 @@ User decision — restored `total_sales` (upstream's gross-minus-discount) as th
 
 Result: KPI cards and per-store tiles display `total_sales` exactly as the upstream API returns it. `net_sales` remains accessible to any future consumer that wants it.
 
+## v33 — SOR New Styles L-10 report (Feb 2026)
+
+### Feature
+New report that surfaces every style whose first-ever sale was 90–122 days ago (i.e. **3–4 months old**). Lives as a sub-tab inside `/products` ("Catalog" / "SOR New Styles L-10").
+
+### Backend
+**`GET /api/analytics/sor-new-styles-l10`** (`country`, `channel`, `brand` filters, `refresh=true` to bypass cache).
+
+Algorithm:
+1. `/top-skus` for the launch band `[today-122d, today-90d]` → set A
+2. `/top-skus` for `[2020-01-01, today-123d]` → set B (excludes pre-existing styles)
+3. `candidates = A − B` (styles whose first-ever sale is in the band)
+4. `/top-skus` 6-month window + 3-week window for the candidate aggregates
+5. `fetch_all_inventory()` split by warehouse vs store via existing `is_warehouse_location()` helper
+6. `/orders` chunked weekly across `[today-122d, today]` (concurrency 8) → exact `first_date` and `last_date` per candidate; SKU fallback for stock-less styles
+7. Strict re-filter: `90 ≤ age_days ≤ 122` after exact launch date is known
+8. Server-side cached **30 min** per (country|channel|brand) tuple
+
+Fields per row: `style_name, brand, collection, subcategory, style_number, sales_6m, units_6m, units_3w, soh_total, soh_wh, soh_store, pct_in_wh, asp_6m, days_since_last_sale, sor_6m, launch_date, weekly_avg, woc, style_age_weeks`.
+
+### Frontend
+- New component `/app/frontend/src/components/SorNewStylesL10.jsx` — mounted as `<SorNewStylesL10 brand={...} />` inside Products.
+- Products page now has a `data-testid="products-subtabs"` segmented control (`subtab-catalog` / `subtab-l10`); brand multi-select on the page header is forwarded to L-10 as a CSV.
+- Five summary tiles: Styles in Window, 6-Month Sales, Stock on Hand (with % in WH), Avg 6-Month SOR, Slow Burners (SOR < 25%, amber tone).
+- Sortable table (mobile-card responsive) with thumbnails, % In WH pill (red ≥50, amber ≥25, green <25), Days Since Last pill (red >21d, amber >7d, green ≤7d), 6M SOR pill (green ≥50, amber ≥25, red <25), WOC pill, launch date with calendar icon. CSV export `sor-new-styles-l10.csv`.
+
+### Live verification
+Cold cache produces 17 styles in ~30s (warm: <1s). Style ages range 13.1–17.1 weeks, all within the [90d, 122d] band. Ages, launch dates, and stock splits all line up with `/orders` and `/inventory` raw data.
+
+### Files added / changed
+- Added: `/app/backend/server.py` `/api/analytics/sor-new-styles-l10` endpoint (~190 LOC)
+- Added: `/app/frontend/src/components/SorNewStylesL10.jsx`
+- Changed: `/app/frontend/src/pages/Products.jsx` (sub-tab + import)
+
