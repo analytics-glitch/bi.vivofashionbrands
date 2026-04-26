@@ -63,7 +63,18 @@ async def get_client() -> httpx.AsyncClient:
     if _client is None:
         _client = httpx.AsyncClient(
             base_url=VIVO_API_BASE,
-            timeout=httpx.Timeout(45.0, connect=10.0),
+            # Default httpx pool (100/20) saturates under multi-country fan-out
+            # on Overview load (parallel /kpis × periods × channels + footfall +
+            # customers + notifications). Bump it so PoolTimeouts don't surface.
+            limits=httpx.Limits(
+                max_connections=200,
+                max_keepalive_connections=50,
+                keepalive_expiry=30.0,
+            ),
+            # pool=15 separates "wait for free connection" from "wait for bytes",
+            # so a saturated pool fails fast into the /kpis stale-cache fallback
+            # instead of compounding with the 45s read budget.
+            timeout=httpx.Timeout(45.0, connect=10.0, pool=15.0),
         )
     return _client
 
@@ -85,7 +96,7 @@ async def fetch(
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
     last_err: Optional[Exception] = None
     req_timeout = (
-        httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec))
+        httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec), pool=15.0)
         if timeout_sec is not None
         else None
     )
