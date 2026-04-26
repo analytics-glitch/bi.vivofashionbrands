@@ -490,6 +490,30 @@ const Overview = () => {
     });
   }, [subcats, categoryFor]);
 
+  // Responsive-safe label renderer for the Sales-by-Category bars.
+  // Renders the absolute KES on the first line and the % share on a
+  // second line so labels never overlap on narrow (mobile) bars.
+  // Recharts' LabelList `content` doesn't pass the full row, so we
+  // index back into `salesByCategory` to get `pct`.
+  const CategoryBarLabel = (props) => {
+    const { x, y, width, value, index } = props;
+    if (value == null) return null;
+    const row = salesByCategory[index] || {};
+    const sales = fmtAxisKES(row.total_sales ?? value);
+    const pct = `${(row.pct || 0).toFixed(1)}%`;
+    const cx = x + width / 2;
+    return (
+      <g style={{ pointerEvents: "none" }}>
+        <text x={cx} y={y - 14} textAnchor="middle" style={{ fontSize: 10.5, fill: "#1f2937", fontWeight: 700 }}>
+          {sales}
+        </text>
+        <text x={cx} y={y - 2} textAnchor="middle" style={{ fontSize: 10, fill: "#6b7280", fontWeight: 600 }}>
+          {pct}
+        </text>
+      </g>
+    );
+  };
+
   return (
     <div className="space-y-6" data-testid="overview-page">
       <div>
@@ -865,9 +889,21 @@ const Overview = () => {
             {salesByCategory.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
-                  <BarChart data={salesByCategory} margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
+                  <BarChart data={salesByCategory} margin={{ top: 28, right: 12, left: 0, bottom: 40 }}>
                     <CartesianGrid vertical={false} />
-                    <XAxis dataKey="category" tick={{ fontSize: 11 }} />
+                    <XAxis
+                      dataKey="category"
+                      tick={{ fontSize: 11 }}
+                      interval={0}
+                      tickFormatter={(v) => {
+                        // Truncate long category names on narrow screens
+                        // so XAxis ticks don't overlap each other.
+                        if (typeof window === "undefined") return v;
+                        const isMobile = window.innerWidth < 640;
+                        const maxLen = isMobile ? 8 : 22;
+                        return v && v.length > maxLen ? v.slice(0, maxLen - 1) + "…" : v;
+                      }}
+                    />
                     <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
                     <Tooltip content={
                       <ChartTooltip formatters={{
@@ -875,7 +911,7 @@ const Overview = () => {
                       }} />
                     } />
                     <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
-                      <LabelList dataKey="cat_label" position="top" style={{ fontSize: 11, fill: "#4b5563", fontWeight: 600 }} />
+                      <LabelList dataKey="total_sales" content={<CategoryBarLabel />} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
