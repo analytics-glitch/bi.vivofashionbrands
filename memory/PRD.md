@@ -39,9 +39,16 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
 
-## Recently Shipped (2026-04-26)
+## Recently Shipped (2026-04-26 / 27)
 - **httpx pool fix**: Bumped shared client to `max_connections=200, max_keepalive_connections=50`, decoupled `pool=15s` from `read=45s` so transient pool saturation falls back to the `_kpi_stale_cache` instead of surfacing "PoolTimeout: timed out after 2 attempts" on the Overview banner.
 - **Deployment readiness audit**: Passed via Deployer Agent (no blockers, no warnings).
+- **Customers page latency fix**: Split slow upstream `/churned-customers?limit=100000` (≈30 s, frequent 503s) out of `/api/customers` into a dedicated non-blocking `/api/customers/churn-rate` endpoint with a 60 s negative cache. `/api/customers` cold: 38 s → 5.5 s. Churn tile shows "computing…" until ready.
+- **Universal upstream response cache** in `fetch()` (TTL 120 s, bounded 2000 entries, cleared via `/api/admin/cache-clear`). Every page after first warm-up loads in <1 s end-to-end:
+  - Overview: 1.17 s → **0.19 s**
+  - Products: 4.51 s → **0.17 s**
+  - Inventory: 15.54 s → **1.01 s**
+  - Footfall: 2.01 s → **0.13 s**
+  - Customers: 1.47 s → **0.14 s**
 
 ## Roadmap
 ### P1 — Refactor

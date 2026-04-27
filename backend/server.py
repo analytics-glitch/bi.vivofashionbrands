@@ -52,6 +52,14 @@ _CHURN_FULL_TTL = 1800  # seconds
 _churn_neg_cache: Dict[int, float] = {}
 _CHURN_NEG_TTL = 60  # seconds
 
+# Universal upstream response cache. Most BI metrics refresh on the order of
+# minutes, not seconds, so a short TTL gives every endpoint a near-instant
+# warm-cache path while still respecting freshness. Bounded to keep memory
+# predictable on long-running workers.
+_FETCH_CACHE: Dict[tuple, tuple] = {}
+_FETCH_TTL = 120.0  # seconds
+_FETCH_CACHE_MAX = 2000  # entries
+
 
 def _client_ip(request: Request) -> Optional[str]:
     """Best-effort client IP (handles X-Forwarded-For from the ingress)."""
@@ -90,15 +98,23 @@ async def fetch(
     *,
     timeout_sec: Optional[float] = None,
     max_attempts: int = 3,
+    cache: bool = True,
 ) -> Any:
-    """Fetch with retries on transient network / 5xx errors.
+    """Fetch with retries on transient network / 5xx errors and a 2-min
+    response cache so repeat calls across endpoints are instant.
 
     `timeout_sec` overrides the default 45 s per-call timeout (used by the
     KPI stale-cache path to fail fast and fall back to the last good value).
     `max_attempts` caps the retry budget (default 3).
+    `cache=False` disables the response cache (e.g. for write-like upstreams).
     """
     client = await get_client()
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    cache_key = (path, tuple(sorted(clean.items()))) if cache else None
+    if cache_key is not None:
+        hit = _FETCH_CACHE.get(cache_key)
+        if hit and (time.time() - hit[0]) < _FETCH_TTL:
+            return hit[1]
     last_err: Optional[Exception] = None
     req_timeout = (
         httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec), pool=15.0)
@@ -109,7 +125,16 @@ async def fetch(
         try:
             resp = await client.get(path, params=clean, timeout=req_timeout) if req_timeout else await client.get(path, params=clean)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            if cache_key is not None:
+                _FETCH_CACHE[cache_key] = (time.time(), data)
+                # Bound cache size to avoid unbounded growth (LRU-ish eviction).
+                if len(_FETCH_CACHE) > _FETCH_CACHE_MAX:
+                    # Drop the 200 oldest entries.
+                    oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
+                    for k, _ in oldest:
+                        _FETCH_CACHE.pop(k, None)
+            return data
         except httpx.HTTPStatusError as e:
             if 500 <= e.response.status_code < 600 and attempt < max_attempts - 1:
                 await asyncio.sleep(0.4 * (attempt + 1))
@@ -443,8 +468,10 @@ async def admin_cache_clear():
     _inv_cache["key"] = None
     _inv_cache["data"] = None
     _churn_full_cache.clear()
+    _churn_neg_cache.clear()
     _kpi_stale_cache.clear()
-    return {"ok": True, "cleared": ["inventory", "churn_full", "kpi_stale"]}
+    _FETCH_CACHE.clear()
+    return {"ok": True, "cleared": ["inventory", "churn_full", "churn_neg", "kpi_stale", "fetch_cache"]}
 
 
 @api_router.get("/stock-to-sales")
