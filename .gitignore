@@ -90,10 +90,8 @@ frontend/node_modules/.cache/default-development/16.pack
 frontend/node_modules/.cache/default-development/14.pack
 frontend/node_modules/.cache/default-development/18.pack
 -e 
-# Environment and credential files
-.env
-.env.*
-*.env
+# Credential files (Emergent deployment substitutes .env during build,
+# so .env / .env.* must NOT be excluded — only secret keystores are.)
 credentials.json
 *.pem
 *.key
@@ -109,10 +107,7 @@ frontend/node_modules/.cache/default-development/31.pack
 frontend/node_modules/.cache/default-development/32.pack
 frontend/node_modules/.cache/default-development/34.pack
 -e 
-# Environment and credential files
-.env
-.env.*
-*.env
+# Credential files (duplicate block kept for editor markers — same rule)
 credentials.json
 *.pem
 *.key

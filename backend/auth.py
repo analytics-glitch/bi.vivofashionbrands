@@ -385,7 +385,7 @@ async def allowed_domains():
 # ---------- Admin routes ----------
 @admin_router.get("/users")
 async def list_users(_: User = Depends(require_admin)):
-    docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(None)
+    docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).limit(1000).to_list(1000)
     return docs
 
 
