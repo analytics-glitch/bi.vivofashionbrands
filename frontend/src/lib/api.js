@@ -31,19 +31,14 @@ api.interceptors.request.use((cfg) => {
 });
 
 // --- formatters ---
-// Currency formatter — the entire dashboard is denominated in KES (currency
-// pill in the header indicates this), so we OMIT the "KES " prefix from
-// every metric for a cleaner read. If a screen ever needs the explicit
-// currency code, use `fmtKESLong` instead.
+// Currency formatter — prefixes every value with "KES " so the unit is
+// unambiguous on screen / in exports.
 export const fmtKES = (n) => {
-  if (n === null || n === undefined || isNaN(Number(n))) return "0";
-  return Math.round(Number(n)).toLocaleString("en-US");
-};
-
-export const fmtKESLong = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
   return "KES " + Math.round(Number(n)).toLocaleString("en-US");
 };
+
+export const fmtKESLong = fmtKES;
 
 export const fmtNum = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "0";
