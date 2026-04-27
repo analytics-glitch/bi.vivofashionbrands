@@ -49,6 +49,16 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
   - Inventory: 15.54 s → **1.01 s**
   - Footfall: 2.01 s → **0.13 s**
   - Customers: 1.47 s → **0.14 s**
+- **Deployment loop fix**: `.gitignore` was excluding `.env / .env.* / *.env` (two duplicate blocks at lines 94-96 and 113-115). Removed so Emergent's deployer can pick up the env files for production substitution. Also bounded `/api/admin/users` query to `.limit(1000)`.
+- **New global filter bar**: replaced the flat preset+date row on every page with three pill buttons:
+  - **Date Range pill** — calendar icon + selected-label + chevron, opens a 640px panel with a left preset sidebar (Today, Yesterday, Last 7/30/90/365 days, Last week/month/quarter/12 months/year, Month-to-date, Quarter-to-date, Year-to-date, Custom) and a right-side dual-month `Calendar` (range mode), date inputs with → arrow, disabled time picker, Cancel + Apply buttons.
+  - **Comparison Period pill** — dropdown with `No comparison / Yesterday / Previous year / Previous year (match day of week) / Custom`. Custom reveals two date inputs + apply.
+  - **Currency pill** — KES, disabled with tooltip "Multi-currency coming soon — KES locked for now" (cosmetic only per current scope).
+  - **Mobile**: all three pills + Country/POS multi-selects collapse into a single "Filters" pill that opens a bottom-sheet.
+  - URL params persist `p, d, t, co, ch, cm, cd, ce, cu` (also accepts long names `period, date_from, date_to, country, pos, compare, compare_from, compare_to, currency` for shareable links).
+  - Default compareMode changed from `last_month` → `none`.
+- **Overview page reorder**: KPI cards / sub-KPIs / charts / location-channel breakdown table now render at the top; an "Insights & Projections" divider separates the below-the-fold section (DailyBriefing → WhatChangedBelt → WinsThisWeekCard → StoreOfTheWeek → SalesProjection → DataFreshness).
+- **"Last refreshed: HH:MM:SS"** label added to the Overview header (`data-testid="last-refreshed"`).
 
 ## Roadmap
 ### P1 — Refactor
