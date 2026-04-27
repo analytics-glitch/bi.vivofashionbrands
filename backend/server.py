@@ -682,6 +682,154 @@ async def get_customers_churn_rate(
     return out
 
 
+@api_router.get("/customers/walk-ins")
+async def get_walk_ins(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Counts anonymous (walk-in) transactions in the period.
+
+    Detection rule: an order line is a walk-in if EITHER
+      - upstream `customer_type` == 'Guest' (case-insensitive), OR
+      - upstream `customer_id` is null / empty.
+    Both flags coincide in the upstream feed, but we OR them defensively
+    so a future schema tweak (e.g. 'Walk-in' tag) is still captured.
+
+    Aggregates to UNIQUE order_ids (the upstream returns one row per order
+    line item — a single guest order with 5 SKUs would otherwise be counted
+    5×). Returns total walk-in orders, walk-in revenue, share of all orders
+    and share of all revenue, plus a per-country breakdown.
+    """
+    base = {"date_from": date_from, "date_to": date_to, "limit": 50000}
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    # Chunking — upstream /orders caps responses around 50k line items
+    # (returns 500 on limit=100000 and silently truncates at 50k). For period
+    # windows wider than ~45 days the fashion-group volumes saturate that
+    # ceiling, which would understate walk-in counts. Split into ≤30-day
+    # windows so each chunk stays well below the cap and gets cached
+    # independently.
+    def _date_chunks(df: Optional[str], dt: Optional[str]) -> List[Dict[str, str]]:
+        if not df or not dt:
+            return [{}]
+        try:
+            d_from = datetime.strptime(df, "%Y-%m-%d").date()
+            d_to = datetime.strptime(dt, "%Y-%m-%d").date()
+        except Exception:
+            return [{"date_from": df, "date_to": dt}]
+        if (d_to - d_from).days <= 30:
+            return [{"date_from": df, "date_to": dt}]
+        chunks = []
+        cur = d_from
+        while cur <= d_to:
+            end = min(cur + timedelta(days=29), d_to)
+            chunks.append({"date_from": cur.isoformat(), "date_to": end.isoformat()})
+            cur = end + timedelta(days=1)
+        return chunks
+
+    chunks = _date_chunks(date_from, date_to)
+
+    # Fan out across (date-chunk × country × channel) combos in parallel.
+    tasks = []
+    for ch_range in chunks:
+        for c in (cs or [None]):
+            for ch in (chs or [None]):
+                p = {**base, **ch_range}
+                if c:
+                    p["country"] = c
+                if ch:
+                    p["channel"] = ch
+                tasks.append(_safe_fetch("/orders", p))
+    results = await asyncio.gather(*tasks)
+    rows: List[Dict[str, Any]] = []
+    for r in results:
+        if r:
+            rows.extend(r)
+    # Mark as truncated only if any chunk hit the upstream cap.
+    truncated = any(isinstance(r, list) and len(r) >= 50000 for r in results)
+
+    # Filter to actual sales (drop returns) — walk-ins on returns are not
+    # commercially interesting and would inflate the count.
+    rows = [r for r in rows if (r.get("sale_kind") or "order") == "order"]
+
+    def _is_walk_in(r: Dict[str, Any]) -> bool:
+        cid = r.get("customer_id")
+        if cid is None or (isinstance(cid, str) and not cid.strip()):
+            return True
+        ctype = (r.get("customer_type") or "").strip().lower()
+        if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
+            return True
+        return False
+
+    # Aggregate: walk-in orders & revenue, total orders & revenue, by country.
+    walk_orders: set = set()
+    all_orders: set = set()
+    walk_units = 0
+    walk_sales = 0.0
+    total_units = 0
+    total_sales = 0.0
+    by_country: Dict[str, Dict[str, Any]] = {}
+
+    for r in rows:
+        oid = r.get("order_id")
+        units = r.get("quantity") or 0
+        sales = r.get("total_sales_kes") or 0
+        cn = r.get("country") or "Unknown"
+        all_orders.add(oid)
+        total_units += units
+        total_sales += sales
+        bucket = by_country.setdefault(cn, {
+            "country": cn,
+            "walk_in_orders_set": set(),
+            "all_orders_set": set(),
+            "walk_in_sales": 0.0,
+            "total_sales": 0.0,
+        })
+        bucket["all_orders_set"].add(oid)
+        bucket["total_sales"] += sales
+        if _is_walk_in(r):
+            walk_orders.add(oid)
+            walk_units += units
+            walk_sales += sales
+            bucket["walk_in_orders_set"].add(oid)
+            bucket["walk_in_sales"] += sales
+
+    # Resolve sets → counts and compute shares.
+    by_country_out = []
+    for b in by_country.values():
+        wo = len(b.pop("walk_in_orders_set"))
+        ao = len(b.pop("all_orders_set"))
+        ws = b["walk_in_sales"]
+        ts = b["total_sales"]
+        b["walk_in_orders"] = wo
+        b["total_orders"] = ao
+        b["walk_in_share_orders_pct"] = round((wo / ao * 100), 2) if ao else 0.0
+        b["walk_in_share_sales_pct"] = round((ws / ts * 100), 2) if ts else 0.0
+        b["walk_in_avg_basket_kes"] = round((ws / wo), 2) if wo else 0.0
+        by_country_out.append(b)
+    by_country_out.sort(key=lambda x: x.get("walk_in_orders") or 0, reverse=True)
+
+    walk_orders_n = len(walk_orders)
+    total_orders_n = len(all_orders)
+
+    return {
+        "walk_in_orders": walk_orders_n,
+        "walk_in_units": walk_units,
+        "walk_in_sales_kes": round(walk_sales, 2),
+        "walk_in_avg_basket_kes": round((walk_sales / walk_orders_n), 2) if walk_orders_n else 0.0,
+        "total_orders": total_orders_n,
+        "total_sales_kes": round(total_sales, 2),
+        "walk_in_share_orders_pct": round((walk_orders_n / total_orders_n * 100), 2) if total_orders_n else 0.0,
+        "walk_in_share_sales_pct": round((walk_sales / total_sales * 100), 2) if total_sales else 0.0,
+        "by_country": by_country_out,
+        "detection_rule": "customer_type IN (Guest/Walk-in/Anonymous) OR customer_id IS NULL",
+        "truncated": truncated,
+    }
+
+
 @api_router.get("/customer-trend")
 async def get_customer_trend(
     date_from: Optional[str] = None,
@@ -1351,6 +1499,105 @@ async def get_subcategory_sales(
                 for f in ("units_sold", "total_sales", "gross_sales", "orders"):
                     merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
     return sorted(merged.values(), key=lambda r: r.get("total_sales") or 0, reverse=True)
+
+
+# Country buckets used by the Category × Country matrix. The upstream
+# /country-summary returns physical countries plus the "Online" channel as
+# its own row, so we treat Online identically to a country here.
+_MATRIX_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"]
+
+
+@api_router.get("/analytics/category-country-matrix")
+async def get_category_country_matrix(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Subcategory × Country sales matrix.
+
+    Rows = every subcategory that sold in the period.
+    Columns = Kenya, Uganda, Rwanda, Online (fixed canonical ordering).
+    Each cell = { sales_kes, share_pct } where share_pct is the
+    subcategory's share of THAT COUNTRY's total sales (per user spec).
+    Returns row-level totals (across all 4 countries) and a column total
+    row aggregating per-country grand totals.
+    """
+    base = {"date_from": date_from, "date_to": date_to}
+    chs = _split_csv(channel)
+
+    async def _fetch_for(country: str) -> List[Dict[str, Any]]:
+        if not chs:
+            try:
+                return await fetch("/subcategory-sales", {**base, "country": country}) or []
+            except HTTPException:
+                return []
+        # Multi-channel fan-out, mirror /subcategory-sales merge semantics.
+        tasks = [
+            fetch("/subcategory-sales", {**base, "country": country, "channel": ch})
+            for ch in chs
+        ]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            return []
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            if isinstance(g, Exception) or not g:
+                continue
+            for r in g:
+                key = r.get("subcategory")
+                if not key:
+                    continue
+                if key not in merged:
+                    merged[key] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales", "orders"):
+                        merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
+        return list(merged.values())
+
+    # Parallel pull, one request per country.
+    per_country = await asyncio.gather(*[_fetch_for(c) for c in _MATRIX_COUNTRIES])
+
+    # Build the matrix: index every subcategory observed in any country.
+    country_totals: Dict[str, float] = {c: 0.0 for c in _MATRIX_COUNTRIES}
+    cells: Dict[str, Dict[str, float]] = {}  # subcat -> {country: sales}
+    for country, rows in zip(_MATRIX_COUNTRIES, per_country):
+        for r in rows or []:
+            sub = r.get("subcategory")
+            if not sub:
+                continue
+            sales = r.get("total_sales") or 0.0
+            cells.setdefault(sub, {})[country] = sales
+            country_totals[country] += sales
+
+    # Emit rows with a `cells` map per country containing both the absolute
+    # KES value and the country-share percent (% of THAT country's total).
+    matrix_rows: List[Dict[str, Any]] = []
+    for sub, country_map in cells.items():
+        row_total = sum(country_map.values())
+        row_cells = {}
+        for c in _MATRIX_COUNTRIES:
+            v = country_map.get(c, 0.0)
+            ct = country_totals.get(c, 0.0)
+            row_cells[c] = {
+                "sales_kes": round(v, 2),
+                "share_of_country_pct": round((v / ct * 100), 2) if ct else 0.0,
+            }
+        matrix_rows.append({
+            "subcategory": sub,
+            "cells": row_cells,
+            "row_total_kes": round(row_total, 2),
+        })
+
+    matrix_rows.sort(key=lambda r: r.get("row_total_kes") or 0, reverse=True)
+
+    grand_total = sum(country_totals.values())
+    return {
+        "countries": _MATRIX_COUNTRIES,
+        "rows": matrix_rows,
+        "country_totals": {c: round(country_totals[c], 2) for c in _MATRIX_COUNTRIES},
+        "grand_total_kes": round(grand_total, 2),
+    }
 
 
 @api_router.get("/subcategory-stock-sales")

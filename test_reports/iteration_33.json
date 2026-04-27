@@ -1,0 +1,63 @@
+{
+  "summary": "Iteration 33 — Walk-ins KPI endpoint + Category×Country Matrix endpoint/UI. Backend: 11/11 pytest pass. Frontend: all new UI elements render correctly and integrate with the new endpoints. No regressions on Overview/Locations/Footfall/Inventory pages.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "All pages (carry-over from iter_31/32)",
+        "issues": [
+          "Recharts emits 'width(-1) and height(-1) of chart should be greater than 0' warnings on every render — noisy in console, no functional impact."
+        ]
+      }
+    ]
+  },
+  "verifications": {
+    "backend_walk_ins_shape": "GET /api/customers/walk-ins?date_from=2026-01-01&date_to=2026-01-31 returns 200 with all required keys (walk_in_orders, walk_in_units, walk_in_sales_kes, walk_in_avg_basket_kes, total_orders, total_sales_kes, walk_in_share_orders_pct, walk_in_share_sales_pct, by_country[], detection_rule, truncated). walk_in_orders <= total_orders, share <= 100%.",
+    "backend_walk_ins_by_country": "by_country is a list of country rows containing order/sales/share/basket metrics.",
+    "backend_walk_ins_chunking": "Long window 2025-11-01 → 2026-01-31 (3 months, multiple chunks) returns 200 with consistent counts (walk_ins <= total). Cold call took ~30-45s — matches spec note about chunking.",
+    "backend_walk_ins_auth": "Unauthenticated call returns 401/403.",
+    "backend_matrix_shape": "GET /api/analytics/category-country-matrix returns 200 with countries=['Kenya','Uganda','Rwanda','Online'], rows[], country_totals, grand_total_kes.",
+    "backend_matrix_sorting": "rows are sorted DESC by row_total_kes (verified).",
+    "backend_matrix_cells": "Each row.cells[country] has {sales_kes, share_of_country_pct}. All four country keys present on every row.",
+    "backend_matrix_share_sums": "Sum of share_of_country_pct across rows for each country ≈ 100% (within 95-105% tolerance).",
+    "backend_matrix_auth": "Unauthenticated call returns 401/403.",
+    "frontend_customers_kpi_tile": "[data-testid='kpi-walk-ins'] present. Visible content example (today): 'Walk-ins · 20 (32.26%) · KES 342,201 · 61.12% of sales · ▲ 0.0% vs Last Month · By country'.",
+    "frontend_kpi_grid_columns": "Parent class = 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3' — confirms 6-column lg layout.",
+    "frontend_kpi_action_scroll": "[data-testid='kpi-walk-ins-action'] click navigates/scrolls to [data-testid='walk-ins-by-country-card'].",
+    "frontend_by_country_card": "Card renders with description 'Anonymous orders (no customer profile) per country. Detection: customer_type IN (Guest/Walk-in/Anonymous) OR customer_id IS NULL.' and Export CSV. Table has columns: Country, Walk-in Orders, Total Orders, % of orders, Walk-in Sales, % of sales, Avg Basket. Kenya/Uganda/Rwanda/Online rows all populate; Online shows 0 walk-ins (expected).",
+    "frontend_compare_delta": "With Compare=Previous Month active, the KPI tile shows delta indicator (▲/▼ or 0.0% pp) appended to the numbers ('▲ 0.0% vs Last Month' observed).",
+    "frontend_products_subtab": "[data-testid='subtab-matrix'] present next to 'SOR New Styles L-10'. Clicking renders [data-testid='category-country-matrix-card'].",
+    "frontend_matrix_columns": "Header row: ['Subcategory','Kenya','Uganda','Rwanda','Online','Row Total'] — 4 country columns + row total confirmed.",
+    "frontend_matrix_footer": "<tfoot> contains 'Country totals · KES 2,052,100 100% of Kenya · KES 201,909 100% of Uganda · KES 140,283 100% of Rwanda · KES 217,665 100% of Online · KES 2,611,957' — sticky country-totals footer confirmed; shares sum to 100% per country.",
+    "frontend_matrix_cell_format": "First row ('Maxi Dresses') cells: 'KES 298,750 14.6% of Kenya', 'KES 56,304 27.9% of Uganda', 'KES 6,211 4.4% of Rwanda', 'KES 27,650 12.7% of Online', Row total 'KES 388,915' — formatted KES + 'X.X% of {Country}' subtext exactly per spec.",
+    "frontend_matrix_sortable": "Clicking header column 2 (Kenya) triggered sort without exception; default sort shows Kenya values DESC.",
+    "frontend_regression": "Overview (/), /locations, /footfall, /inventory all load with 0 error-class elements. No broken pages."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_33_walkins_matrix.py",
+    "/app/test_reports/pytest/iter33.xml"
+  ],
+  "action_items": [
+    "None blocking. Carry-over non-blocking items from iteration 32: (1) Retail channel-group filter still identical to 'All' per iter_32 RCA — unchanged this iteration; (2) Recharts width(-1)/height(-1) console warnings persist."
+  ],
+  "critical_code_review_comments": [
+    "Walk-ins detection rule string is returned in the response — good for transparency. Confirm the backend uses the same rule ('customer_type IN (Guest/Walk-in/Anonymous) OR customer_id IS NULL') everywhere it counts walk-ins (KPI tile vs by_country breakdown) to avoid divergent numbers.",
+    "Matrix share_of_country_pct sums can drift slightly from 100% due to rounding; footer label shows '100% of {Country}' which is visually correct but is effectively a hardcoded label. Fine as-is, but if country total is 0 the label should probably hide (not observed in test data since all 4 countries have sales).",
+    "Walk-ins chunked call is slow on cold cache (~30-45s). Frontend correctly shows '…' loading placeholder on the KPI tile — good UX. Consider a skeleton/spinner on the by-country card too if it appears in <skeleton> state during long fetches.",
+    "Both new endpoints honour auth (401 without token) — good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_33_walkins_matrix.py"
+  ],
+  "success_rate": { "backend": "11/11 = 100%", "frontend": "100% of iter_33 acceptance items" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 33 acceptance fully PASS. Stable selectors to reuse: [data-testid='kpi-walk-ins'], [data-testid='kpi-walk-ins-action'], [data-testid='walk-ins-by-country-card'], [data-testid='subtab-matrix'], [data-testid='category-country-matrix-card']. Backend endpoints: GET /api/customers/walk-ins (supports date_from/date_to, chunks >30-day windows, cold ~30-45s / warm ~200ms) and GET /api/analytics/category-country-matrix (fast ~1s warm). Iter_32 bug (Retail channel toggle identical to All) is OUT OF SCOPE for this iteration and remains unresolved — flag to main agent if needed."
+}

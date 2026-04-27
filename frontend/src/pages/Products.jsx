@@ -11,6 +11,7 @@ import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
+import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
@@ -193,9 +194,20 @@ const Products = () => {
         >
           SOR New Styles L-10
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "matrix"}
+          onClick={() => setTab("matrix")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "matrix" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-matrix"
+        >
+          Country Matrix
+        </button>
       </div>
 
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} />}
+      {tab === "matrix" && <CategoryCountryMatrix />}
 
       {tab === "catalog" && (<>
 

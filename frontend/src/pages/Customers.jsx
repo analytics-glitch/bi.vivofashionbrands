@@ -77,6 +77,11 @@ const Customers = () => {
   // Shared KPIs — used to compute Top N's % share of total sales.
   const { kpis } = useKpis();
 
+  // Walk-ins (anonymous transactions) — separate fetch, slow upstream.
+  const [walkIns, setWalkIns] = useState(null);
+  const [walkInsPrev, setWalkInsPrev] = useState(null);
+  const [walkInsLoading, setWalkInsLoading] = useState(true);
+
   // primary period
   const [cust, setCust] = useState(null);
   const [top, setTop] = useState([]);
@@ -192,6 +197,23 @@ const Customers = () => {
         if (cancelled) return;
         setCust((prev) => prev ? { ...prev, churn_source: "upstream_down" } : prev);
       });
+
+    // Walk-ins (anonymous transactions) — also slow on cold cache because
+    // it fans /orders out per ≤30-day chunk. Fetch in parallel; tile shows
+    // "computing…" until ready. Compare-period payload only fetched when
+    // the user has chosen a comparison.
+    setWalkIns(null);
+    setWalkInsPrev(null);
+    setWalkInsLoading(true);
+    api.get("/customers/walk-ins", { params: dateP })
+      .then((r) => { if (!cancelled) setWalkIns(r.data || null); })
+      .catch(() => { if (!cancelled) setWalkIns({ _error: true }); })
+      .finally(() => { if (!cancelled) setWalkInsLoading(false); });
+    if (prevRange) {
+      api.get("/customers/walk-ins", { params: { ...prevRange, country, channel } })
+        .then((r) => { if (!cancelled) setWalkInsPrev(r.data || null); })
+        .catch(() => {});
+    }
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
@@ -363,7 +385,7 @@ const Customers = () => {
           )}
 
           {/* ---- KPIs with vs LM / vs LY deltas ---- */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div
               className="card-accent p-3.5 sm:p-5"
               data-testid="kpi-total"
@@ -547,7 +569,102 @@ const Customers = () => {
                 </>
               );
             })()}
+            {/* ---- Walk-ins (anonymous transactions) ---- */}
+            <div
+              className="card-white p-3.5 sm:p-5"
+              data-testid="kpi-walk-ins"
+              title="Walk-ins = orders with no customer profile attached (Guest checkout / no phone or email captured at POS). Use this as a coaching signal — every walk-in is a missed opportunity to capture a contact for re-engagement."
+            >
+              <div className="flex items-center gap-2">
+                <UserCircle size={16} className="text-brand" />
+                <div className="eyebrow">Walk-ins</div>
+                <span title="Anonymous orders. Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+              </div>
+              {walkInsLoading || !walkIns ? (
+                <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
+              ) : walkIns._error ? (
+                <div className="mt-2 text-[12px] text-danger">Upstream unavailable</div>
+              ) : (
+                <>
+                  <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                    {fmtNum(walkIns.walk_in_orders)}
+                    <span className="text-[13px] text-muted font-semibold ml-1">
+                      ({(walkIns.walk_in_share_orders_pct || 0).toFixed(2)}%)
+                    </span>
+                  </div>
+                  <div className="text-[10.5px] text-muted mt-0.5 leading-snug">
+                    {fmtKES(walkIns.walk_in_sales_kes)} · {(walkIns.walk_in_share_sales_pct || 0).toFixed(2)}% of sales
+                  </div>
+                  {compareLbl && walkInsPrev && (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <Delta curr={walkIns.walk_in_orders} prev={walkInsPrev.walk_in_orders} invert />
+                      <span className="text-[10px] text-muted">{compareLbl}</span>
+                    </div>
+                  )}
+                  {walkIns.truncated && (
+                    <div className="mt-1 text-[10px] text-amber-600" title="Upstream /orders capped at 50k rows per chunk; numbers may be slightly under-reported in this period.">
+                      ⚠ partial sample
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.querySelector('[data-testid="walk-ins-by-country-card"]');
+                      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                    data-testid="kpi-walk-ins-action"
+                    className="mt-2.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-brand/10 hover:bg-brand/20 border border-brand/30 text-brand-deep hover:border-brand/60 transition-all"
+                  >
+                    By country <ArrowRight size={11} weight="bold" />
+                  </button>
+                </>
+              )}
+            </div>
           </div>
+
+          {/* ---- Walk-ins by country breakdown ---- */}
+          {walkIns && !walkIns._error && (walkIns.by_country || []).length > 0 && (
+            <div className="card-white p-5" data-testid="walk-ins-by-country-card">
+              <SectionTitle
+                title="Walk-ins · by country"
+                subtitle={
+                  `Anonymous orders (no customer profile) per country. Detection: ${walkIns.detection_rule}. ` +
+                  `Use this to coach store teams on contact capture — every walk-in is a missed re-engagement opportunity.` +
+                  (walkIns.truncated ? " ⚠ Period exceeds upstream sample cap; counts may be slightly under-reported." : "")
+                }
+              />
+              <SortableTable
+                testId="walk-ins-by-country"
+                exportName="walk-ins-by-country.csv"
+                initialSort={{ key: "walk_in_orders", dir: "desc" }}
+                columns={[
+                  { key: "country", label: "Country", align: "left" },
+                  { key: "walk_in_orders", label: "Walk-in Orders", numeric: true,
+                    render: (r) => fmtNum(r.walk_in_orders), csv: (r) => r.walk_in_orders },
+                  { key: "total_orders", label: "Total Orders", numeric: true,
+                    render: (r) => fmtNum(r.total_orders), csv: (r) => r.total_orders },
+                  { key: "walk_in_share_orders_pct", label: "% of Orders", numeric: true,
+                    render: (r) => `${(r.walk_in_share_orders_pct || 0).toFixed(2)}%`,
+                    csv: (r) => r.walk_in_share_orders_pct?.toFixed(2) },
+                  { key: "walk_in_sales", label: "Walk-in Sales", numeric: true,
+                    render: (r) => <span className="text-brand font-bold">{fmtKES(r.walk_in_sales)}</span>,
+                    csv: (r) => r.walk_in_sales },
+                  { key: "walk_in_share_sales_pct", label: "% of Sales", numeric: true,
+                    render: (r) => `${(r.walk_in_share_sales_pct || 0).toFixed(2)}%`,
+                    csv: (r) => r.walk_in_share_sales_pct?.toFixed(2) },
+                  { key: "walk_in_avg_basket_kes", label: "Avg Basket", numeric: true,
+                    render: (r) => fmtKES(r.walk_in_avg_basket_kes),
+                    csv: (r) => r.walk_in_avg_basket_kes },
+                ]}
+                rows={walkIns.by_country}
+              />
+              <p className="text-[11px] text-muted italic mt-2">
+                Group total: {fmtNum(walkIns.walk_in_orders)} walk-in orders / {fmtKES(walkIns.walk_in_sales_kes)} ·
+                {" "}{(walkIns.walk_in_share_orders_pct || 0).toFixed(2)}% of all orders ·
+                {" "}{(walkIns.walk_in_share_sales_pct || 0).toFixed(2)}% of revenue.
+              </p>
+            </div>
+          )}
 
           {/* ---- Customer Trends narrative table ---- */}
           {compareLbl && custPrev && (() => {

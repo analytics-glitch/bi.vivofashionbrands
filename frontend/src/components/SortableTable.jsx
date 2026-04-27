@@ -62,6 +62,10 @@ export const SortableTable = ({
    * sticky thead + frozen first column. Short tables don't reach the cap
    * and render naturally. Pass `maxHeight={null}` to disable. */
   maxHeight = "70vh",
+  /** Optional <td> array rendered as a sticky bottom row (e.g. column
+   * totals). Only shown on the desktop table view. Pass an array of
+   * <td>…</td> nodes whose count matches `columns.length`. */
+  footerRow = null,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [limit, setLimit] = useState(pageSize || null);
@@ -173,6 +177,13 @@ export const SortableTable = ({
               </tr>
             ))}
           </tbody>
+          {footerRow && (
+            <tfoot className="sticky bottom-0 z-20 bg-panel border-t-2 border-brand/40">
+              <tr className="font-semibold">
+                {footerRow}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       {mobileCards && (
