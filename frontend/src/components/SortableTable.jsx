@@ -58,9 +58,10 @@ export const SortableTable = ({
    * vertically against the page scroll. */
   stickyFirstCol = true,
   /** Optional max-height for the scroll container (e.g. "60vh" or 480).
-   * When set, the container clips & enables vertical scroll inside the
-   * card so the sticky thead can hold while the rows scroll. */
-  maxHeight,
+   * Defaults to "70vh" so very long tables become inner-scrollable with a
+   * sticky thead + frozen first column. Short tables don't reach the cap
+   * and render naturally. Pass `maxHeight={null}` to disable. */
+  maxHeight = "70vh",
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [limit, setLimit] = useState(pageSize || null);
@@ -122,7 +123,9 @@ export const SortableTable = ({
         style={maxHeight ? { maxHeight: typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight } : undefined}
       >
         <table className={`w-full data ${stickyFirstCol ? "sticky-first-col" : ""}`}>
-          <thead className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+          <thead
+            className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]"
+          >
             <tr>
               {columns.map((c, ci) => {
                 const isFirst = ci === 0 && stickyFirstCol;

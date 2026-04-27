@@ -445,10 +445,12 @@ const Footfall = () => {
                         content={makePctDeltaLabel({
                           data: byConversion,
                           valueKey: "conversion_rate",
-                          // Conversion is itself a %, so the leading number is shown
-                          // as e.g. "12.5%". The (pct) middle column is hidden via
-                          // pctKey="__none__"; only the ▲/▼ pp delta is shown.
+                          // Conversion is itself a %, so suppress the (Y%) share
+                          // segment and show the delta in PERCENTAGE POINTS,
+                          // not %, so floor managers don't conflate a small CR
+                          // shift with a big sales swing.
                           pctKey: "__none__",
+                          deltaSuffix: "pp",
                           formatValue: (v) => `${Number(v).toFixed(1)}%`,
                           position: "right",
                           offset: 6,

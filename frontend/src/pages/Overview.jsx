@@ -685,9 +685,9 @@ const Overview = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <HighlightCard testId="highlight-top-country" label="Top Country"
-              name={topCountry ? `${COUNTRY_FLAGS[topCountry.country] || "🌍"} ${topCountry.country}` : "—"}
-              amount={topCountry ? fmtKES(topCountry.total_sales) : "—"} icon={Globe} />
+            <HighlightCard testId="highlight-top-subcategory" label="Top Subcategory"
+              name={subcatTop && subcatTop.length ? subcatTop[0].subcategory : "—"}
+              amount={subcatTop && subcatTop.length ? `${fmtKES(subcatTop[0].total_sales)} · ${subcatTop[0].pct.toFixed(1)}%` : "—"} icon={ChartBar} />
             <HighlightCard testId="highlight-top-location" label="Top Location"
               name={topChannel ? topChannel.channel : "—"}
               amount={topChannel ? fmtKES(topChannel.total_sales) : "—"} icon={Storefront} />

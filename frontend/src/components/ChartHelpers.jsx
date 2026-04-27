@@ -171,6 +171,10 @@ export const makePctDeltaLabel = ({
   valueKey = "total_sales",
   pctKey = "pct",
   deltaKey = "delta_pct",
+  /** Suffix appended to the delta number — defaults to "%". Pass "pp" for
+   * percentage-point deltas (e.g. on conversion rate where the underlying
+   * metric is already a %). */
+  deltaSuffix = "%",
   labelTestId,
 }) => (props) => {
   const { x = 0, y = 0, width = 0, height = 0, index } = props;
@@ -190,7 +194,10 @@ export const makePctDeltaLabel = ({
     if (dlt > 0.05) { arrow = "▲"; deltaCls = "#059669"; }
     else if (dlt < -0.05) { arrow = "▼"; deltaCls = "#dc2626"; }
     else { arrow = "—"; deltaCls = "#6b7280"; }
-    deltaStr = `${Math.abs(dlt).toFixed(1)}%`;
+    // For "pp" we keep the sign so a -0.4 pp shift still shows ▼ but the
+    // number itself reads "0.4 pp" (the arrow conveys direction). Same
+    // pattern as "%". Decimals stay at 1 for screen readability.
+    deltaStr = `${Math.abs(dlt).toFixed(deltaSuffix === "pp" ? 2 : 1)} ${deltaSuffix}`.replace(" %", "%");
   }
 
   // Position: "right" → vertical bar, paint to the right of the bar tip.

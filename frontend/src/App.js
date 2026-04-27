@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import TopNav from "@/components/Sidebar";
@@ -26,19 +26,39 @@ import ChatWidget from "@/components/ChatWidget";
 import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 
-const Shell = ({ children }) => (
-  <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
-    <div className="sticky top-0 z-40">
-      <TopNav />
-      <FilterBar />
+const Shell = ({ children }) => {
+  const navRef = useRef(null);
+  // Expose the actual rendered navbar+filter-bar height as a CSS variable so
+  // sticky table headers across the app can `top: var(--app-navbar-h)`
+  // and never slide under the navbar. Recalculates on resize and on
+  // route-change-induced reflows.
+  useEffect(() => {
+    const el = navRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const apply = () => {
+      const h = el.getBoundingClientRect().height;
+      document.documentElement.style.setProperty("--app-navbar-h", `${Math.round(h)}px`);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    window.addEventListener("resize", apply);
+    return () => { ro.disconnect(); window.removeEventListener("resize", apply); };
+  }, []);
+  return (
+    <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
+      <div ref={navRef} className="sticky top-0 z-40">
+        <TopNav />
+        <FilterBar />
+      </div>
+      <main className="px-3 sm:px-5 lg:px-10 pt-4 pb-6 max-w-[1600px] mx-auto w-full">
+        {children}
+      </main>
+      <ChatWidget />
+      <GlobalSearch />
     </div>
-    <main className="px-3 sm:px-5 lg:px-10 pt-4 pb-6 max-w-[1600px] mx-auto w-full">
-      {children}
-    </main>
-    <ChatWidget />
-    <GlobalSearch />
-  </div>
-);
+  );
+};
 
 const ProtectedShell = ({ children, adminOnly = false }) => (
   <ProtectedRoute adminOnly={adminOnly}>
