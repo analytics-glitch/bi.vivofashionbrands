@@ -39,7 +39,7 @@ import {
   Cell,
   LabelList,
 } from "recharts";
-import { ChartTooltip, Delta } from "@/components/ChartHelpers";
+import { ChartTooltip, Delta, makePctDeltaLabel } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
 
 const Footfall = () => {
@@ -231,7 +231,15 @@ const Footfall = () => {
   }, [scoped, salesMap, prevMap, prevSalesMap]);
 
   const byFootfall = useMemo(
-    () => [...scopedEnriched].sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0)),
+    () => {
+      const sorted = [...scopedEnriched].sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0));
+      const total = sorted.reduce((s, r) => s + (r.total_footfall || 0), 0) || 1;
+      return sorted.map((r) => ({
+        ...r,
+        pct: ((r.total_footfall || 0) / total) * 100,
+        delta_pct: r.footfall_delta,
+      }));
+    },
     [scopedEnriched]
   );
 
@@ -253,7 +261,12 @@ const Footfall = () => {
   );
 
   const byConversion = useMemo(
-    () => [...enrichedWithFlag].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0)),
+    () => {
+      const sorted = [...enrichedWithFlag].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0));
+      // For conversion we use the actual %-point delta (already computed
+      // as conv_delta_pp). Expose it as `delta_pct` for the standard label.
+      return sorted.map((r) => ({ ...r, delta_pct: r.conv_delta_pp }));
+    },
     [enrichedWithFlag]
   );
 
@@ -354,7 +367,7 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-chart-footfall">
             <SectionTitle
               title={`Footfall by location · ${byFootfall.length}`}
-              subtitle="All locations sorted by footfall descending — identify your busiest stores and cross-check against conversion to spot locations leaking potential sales."
+              subtitle="How many people walked into each store this period. Sorted busiest first."
             />
             {byFootfall.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: Math.max(320, 24 + byFootfall.length * 20) }}>
@@ -369,7 +382,19 @@ const Footfall = () => {
                       }} />
                     } />
                     <Bar dataKey="total_footfall" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Footfall">
-                      <LabelList dataKey="total_footfall" position="right" formatter={(v) => fmtNum(v)} style={{ fontSize: 9, fill: "#4b5563" }} />
+                      <LabelList
+                        dataKey="total_footfall"
+                        content={makePctDeltaLabel({
+                          data: byFootfall,
+                          valueKey: "total_footfall",
+                          formatValue: (v) => fmtNum(v),
+                          position: "right",
+                          offset: 6,
+                          fontSize: 9,
+                          hideDelta: compareMode === "none",
+                          labelTestId: "footfall-loc-bar-label",
+                        })}
+                      />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -380,7 +405,7 @@ const Footfall = () => {
           <div className="card-white p-5" data-testid="ff-chart-conversion">
             <SectionTitle
               title={`Conversion rate by location · ${byConversion.length}`}
-              subtitle="Visitor-to-buyer conversion by location. Green = at or above group average · Red = below (coach the floor) · Amber = data-quality outlier (verify counter)."
+              subtitle="Out of every 100 walk-ins, how many bought. Green ≥ group average · Red below it · Amber = data-quality concern (verify counter)."
               action={
                 <span className="text-[11px] text-muted">
                   Avg: <span className="font-bold text-brand">{fmtPct(groupAvgConv, 2)}</span>
@@ -415,7 +440,23 @@ const Footfall = () => {
                           : (r.conversion_rate || 0) >= groupAvgConv ? "#00c853" : "#ef4444";
                         return <Cell key={i} fill={fill} />;
                       })}
-                      <LabelList dataKey="conversion_rate" position="right" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fontSize: 9, fill: "#4b5563" }} />
+                      <LabelList
+                        dataKey="conversion_rate"
+                        content={makePctDeltaLabel({
+                          data: byConversion,
+                          valueKey: "conversion_rate",
+                          // Conversion is itself a %, so the leading number is shown
+                          // as e.g. "12.5%". The (pct) middle column is hidden via
+                          // pctKey="__none__"; only the ▲/▼ pp delta is shown.
+                          pctKey: "__none__",
+                          formatValue: (v) => `${Number(v).toFixed(1)}%`,
+                          position: "right",
+                          offset: 6,
+                          fontSize: 9,
+                          hideDelta: compareMode === "none",
+                          labelTestId: "ff-conversion-bar-label",
+                        })}
+                      />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>

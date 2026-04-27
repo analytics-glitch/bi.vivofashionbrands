@@ -7,7 +7,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import { useRecommendationState } from "@/lib/useRecommendationState";
-import { ChartTooltip } from "@/components/ChartHelpers";
+import { ChartTooltip, makePctDeltaLabel } from "@/components/ChartHelpers";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import SORHeader from "@/components/SORHeader";
 import {
@@ -571,7 +571,7 @@ const Inventory = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card-white p-5" data-testid="chart-inv-category">
-              <SectionTitle title="Inventory by Category" subtitle="Stock distribution across the 7 merchandise categories. Use to check whether your inventory mix matches the sales mix on the Products page." />
+              <SectionTitle title="Inventory by Category" subtitle="How much stock you have in each category right now." />
               {invByCategory.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
@@ -584,7 +584,19 @@ const Inventory = () => {
                         current_stock: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                       }} />} />
                       <Bar dataKey="current_stock" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Inventory">
-                        <LabelList dataKey="cat_label" position="top" style={{ fontSize: 10, fill: "#4b5563", fontWeight: 600 }} />
+                        <LabelList
+                          dataKey="current_stock"
+                          content={makePctDeltaLabel({
+                            data: invByCategory,
+                            valueKey: "current_stock",
+                            formatValue: (v) => fmtNum(v),
+                            position: "top",
+                            offset: 8,
+                            fontSize: 10,
+                            hideDelta: true, // Inventory is a snapshot — no period delta.
+                            labelTestId: "inv-cat-bar-label",
+                          })}
+                        />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -592,7 +604,7 @@ const Inventory = () => {
               )}
             </div>
             <div className="card-white p-5" data-testid="chart-inv-subcat">
-              <SectionTitle title="Inventory by Subcategory" subtitle="Top 15 subcategories by stock-on-hand. Heavy stock on low-selling subcategories is overstock; thin stock on best-sellers is stockout risk." />
+              <SectionTitle title="Inventory by Subcategory" subtitle="Stock-on-hand for the top 15 subcategories. Compare with Sales by Subcategory to spot overstock or thin cover on best-sellers." />
               {invBySubcat.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 340 }}>
                   <ResponsiveContainer>
@@ -605,7 +617,19 @@ const Inventory = () => {
                         units: (v, p) => `${fmtNum(v)} units · ${(p?.pct || 0).toFixed(1)}% of total`,
                       }} />} />
                       <Bar dataKey="units" fill="#00c853" radius={[5, 5, 0, 0]} name="Inventory">
-                        <LabelList dataKey="subcat_label" position="top" style={{ fontSize: 9, fill: "#4b5563", fontWeight: 600 }} />
+                        <LabelList
+                          dataKey="units"
+                          content={makePctDeltaLabel({
+                            data: invBySubcat,
+                            valueKey: "units",
+                            formatValue: (v) => fmtNum(v),
+                            position: "top",
+                            offset: 8,
+                            fontSize: 9,
+                            hideDelta: true, // Inventory is a snapshot — no period delta.
+                            labelTestId: "inv-subcat-bar-label",
+                          })}
+                        />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
