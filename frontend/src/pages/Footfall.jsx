@@ -299,6 +299,30 @@ const Footfall = () => {
 
       {!loading && !kpisLoading && !error && (
         <>
+          {/* Legend — sits above the KPI grid so first-time floor managers
+              know what the arrows + pp mean without hovering for a tooltip. */}
+          <div
+            className="rounded-full border border-border bg-white/70 px-3 py-1.5 text-[11.5px] text-foreground/70 inline-flex flex-wrap items-center gap-x-3 gap-y-1"
+            data-testid="ff-legend"
+          >
+            <span className="inline-flex items-center gap-1">
+              <span className="text-[#059669] font-bold">▲</span>
+              <span>improving</span>
+            </span>
+            <span className="text-border">·</span>
+            <span className="inline-flex items-center gap-1">
+              <span className="text-[#dc2626] font-bold">▼</span>
+              <span>declining</span>
+            </span>
+            <span className="text-border">·</span>
+            <span className="inline-flex items-center gap-1">
+              <span className="text-muted">—</span>
+              <span>flat</span>
+            </span>
+            <span className="text-border">·</span>
+            <span><b>pp</b> = percentage points (used for conversion-rate changes)</span>
+          </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard
               testId="ff-kpi-total"

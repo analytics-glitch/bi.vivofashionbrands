@@ -67,6 +67,23 @@ export const fmtAxisKES = (n) => {
   return String(Math.round(v));
 };
 
+/** Compact 2-decimal currency for mobile. Examples:
+ *   354_985_308  -> "KES 354.99M"
+ *   1_310_617    -> "KES 1.31M"
+ *   8_818        -> "KES 8.82K"
+ *   985          -> "KES 985"
+ * The 2-decimal precision matches the user's request for "2 decimal places"
+ * on mobile while keeping the value short enough to fit a phone screen. */
+export const fmtKESMobile = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
+  const v = Number(n);
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return "KES " + (v / 1_000_000_000).toFixed(2) + "B";
+  if (abs >= 1_000_000) return "KES " + (v / 1_000_000).toFixed(2) + "M";
+  if (abs >= 1_000) return "KES " + (v / 1_000).toFixed(2) + "K";
+  return "KES " + Math.round(v).toLocaleString("en-US");
+};
+
 export const fmtDate = (d) => {
   if (!d) return "";
   return new Date(d).toLocaleDateString("en-GB", {
