@@ -25,7 +25,7 @@ import WhatChangedBelt from "@/components/WhatChangedBelt";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
-import { ChartTooltip, useIsMobile } from "@/components/ChartHelpers";
+import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
   Coins,
@@ -76,12 +76,14 @@ const Overview = () => {
   const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
 
   const [countrySummary, setCountrySummary] = useState([]);
+  const [countrySummaryPrev, setCountrySummaryPrev] = useState([]);
   const [sales, setSales] = useState([]);
   const [salesPrev, setSalesPrev] = useState([]);
   const [dailyByCountry, setDailyByCountry] = useState({});
   const [dailyByCountryPrev, setDailyByCountryPrev] = useState({});
   const [topStyles, setTopStyles] = useState([]);
   const [subcats, setSubcats] = useState([]);
+  const [subcatsPrev, setSubcatsPrev] = useState([]);
   const [footfall, setFootfall] = useState([]);
   const [footfallPrev, setFootfallPrev] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -130,14 +132,22 @@ const Overview = () => {
       prev
         ? safe(api.get("/sales-summary", { params: { ...p, date_from: prev.date_from, date_to: prev.date_to } }))
         : Promise.resolve({ ok: true, data: [] }),
+      prev
+        ? safe(api.get("/country-summary", { params: { date_from: prev.date_from, date_to: prev.date_to } }))
+        : Promise.resolve({ ok: true, data: [] }),
+      prev
+        ? safe(api.get("/subcategory-sales", { params: { ...p, date_from: prev.date_from, date_to: prev.date_to } }))
+        : Promise.resolve({ ok: true, data: [] }),
     ])
-      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs, sp]) => {
+      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs, sp, csPrev, scPrev]) => {
         if (cancelled) return;
         setCountrySummary(cs.ok ? cs.data || [] : []);
+        setCountrySummaryPrev(csPrev?.ok ? csPrev.data || [] : []);
         setSales(s.ok ? s.data || [] : []);
         setSalesPrev(sp?.ok ? sp.data || [] : []);
         setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
         setSubcats(sc.ok ? sc.data || [] : []);
+        setSubcatsPrev(scPrev?.ok ? scPrev.data || [] : []);
         setFootfall(ff.ok ? ff.data || [] : []);
         setFootfallPrev(ffp?.ok ? ffp.data || [] : []);
         setLocations(locs?.ok ? locs.data || [] : []);
@@ -208,6 +218,10 @@ const Overview = () => {
     for (const r of countrySummary) {
       byCountry.set(r.country, r);
     }
+    const prevByCountry = new Map();
+    for (const r of countrySummaryPrev) {
+      if (r.country) prevByCountry.set(r.country, r.total_sales || 0);
+    }
     const wanted = ["Kenya", "Uganda", "Rwanda", "Online"];
     const rows = wanted.map((c) => {
       const r = byCountry.get(c) || {};
@@ -217,6 +231,7 @@ const Overview = () => {
         total_sales: adj(r.total_sales || 0),
         orders: r.orders || r.total_orders || 0,
         units_sold: r.units_sold || r.total_units || 0,
+        prev_sales: adj(prevByCountry.get(c) || 0),
       };
     });
     // Add any unexpected country we might have (e.g. legacy "Other").
@@ -228,15 +243,20 @@ const Overview = () => {
           total_sales: adj(r.total_sales || 0),
           orders: r.orders || r.total_orders || 0,
           units_sold: r.units_sold || r.total_units || 0,
+          prev_sales: adj(prevByCountry.get(r.country) || 0),
         });
       }
     }
     const total = rows.reduce((s, r) => s + r.total_sales, 0) || 1;
     return rows
-      .map((r) => ({ ...r, pct: (r.total_sales / total) * 100 }))
+      .map((r) => ({
+        ...r,
+        pct: (r.total_sales / total) * 100,
+        delta_pct: compareMode !== "none" && r.prev_sales ? pctDelta(r.total_sales, r.prev_sales) : null,
+      }))
       .sort((a, b) => b.total_sales - a.total_sales);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countrySummary]);
+  }, [countrySummary, countrySummaryPrev, compareMode]);
 
   // Channel split — derives Retail / Online / Wholesale buckets from the
   // per-POS /sales-summary rows. Mapping rule is kept simple & explicit.
@@ -247,12 +267,17 @@ const Overview = () => {
       if (s.includes("wholesale")) return "Wholesale";
       return "Retail";
     };
-    const b = { Retail: { total_sales: 0, orders: 0, units_sold: 0 }, Online: { total_sales: 0, orders: 0, units_sold: 0 }, Wholesale: { total_sales: 0, orders: 0, units_sold: 0 } };
+    const newBucket = () => ({ total_sales: 0, orders: 0, units_sold: 0, prev_sales: 0 });
+    const b = { Retail: newBucket(), Online: newBucket(), Wholesale: newBucket() };
     for (const r of sales) {
       const k = bucket(r.channel);
       b[k].total_sales += r.total_sales || 0;
       b[k].orders += r.orders || r.total_orders || 0;
       b[k].units_sold += r.units_sold || r.total_units || 0;
+    }
+    for (const r of salesPrev || []) {
+      const k = bucket(r.channel);
+      if (b[k]) b[k].prev_sales += r.total_sales || 0;
     }
     const total = Object.values(b).reduce((s, x) => s + x.total_sales, 0) || 1;
     return Object.entries(b)
@@ -261,11 +286,13 @@ const Overview = () => {
         total_sales: adj(v.total_sales),
         orders: v.orders,
         units_sold: v.units_sold,
+        prev_sales: adj(v.prev_sales),
         pct: (v.total_sales / total) * 100,
+        delta_pct: compareMode !== "none" && v.prev_sales ? pctDelta(v.total_sales, v.prev_sales) : null,
       }))
       .sort((a, b2) => b2.total_sales - a.total_sales);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sales]);
+  }, [sales, salesPrev, compareMode]);
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
@@ -312,6 +339,12 @@ const Overview = () => {
 
   const top15 = useMemo(() => {
     const sorted = [...sales].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0));
+    const total = sorted.reduce((s, r) => s + (r.total_sales || 0), 0) || 1;
+    // Build a quick lookup of previous-period sales by channel name.
+    const prevByChannel = new Map();
+    for (const r of salesPrev || []) {
+      if (r.channel) prevByChannel.set(r.channel, r.total_sales || 0);
+    }
     // Detect a common prefix shared by every non-empty channel name (e.g.
     // "Vivo ", "Safari ") so we can strip it on mobile for readability.
     // Only stripped when ALL labels share it AND it's at least 4 chars.
@@ -328,16 +361,21 @@ const Overview = () => {
     }
     return sorted.map((r) => {
       const raw = r.channel || "";
-      // Full label (desktop) — just truncate overlong names to 24 chars.
       const label = raw.length > 24 ? raw.slice(0, 23) + "…" : raw;
-      // Short label (mobile) — drop common prefix, truncate to 15 chars.
-      // 15 keeps ~all Vivo names on a single line at 10px at 120-px y-axis
-      // column; longer names fall back to ellipsis with tooltip showing full.
       const shortRaw = commonPrefix && raw.startsWith(commonPrefix) ? raw.slice(commonPrefix.length) : raw;
       const labelShort = shortRaw.length > 15 ? shortRaw.slice(0, 14) + "…" : shortRaw;
-      return { ...r, label, labelShort, labelFull: raw };
+      const cur = r.total_sales || 0;
+      const prv = prevByChannel.get(raw);
+      const delta_pct = compareMode !== "none" && prv != null ? pctDelta(cur, prv) : null;
+      return {
+        ...r,
+        label, labelShort, labelFull: raw,
+        pct: (cur / total) * 100,
+        delta_pct,
+      };
     });
-  }, [sales]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, salesPrev, compareMode]);
 
   const topCountry = useMemo(() => {
     if (!countrySummary.length) return null;
@@ -445,6 +483,13 @@ const Overview = () => {
   // Top 15 subcategories with % of total sales (across ALL subcategories).
   // Merchandise-only — Accessories/Sale/null excluded from the chart.
   const merchSubcats = useMemo(() => subcats.filter((r) => isMerchandise(r.subcategory)), [subcats]);
+  const merchSubcatsPrevByName = useMemo(() => {
+    const m = new Map();
+    for (const r of subcatsPrev || []) {
+      if (isMerchandise(r.subcategory)) m.set(r.subcategory, r.total_sales || 0);
+    }
+    return m;
+  }, [subcatsPrev]);
   const subcatTotalSales = useMemo(
     () => merchSubcats.reduce((s, r) => s + (r.total_sales || 0), 0),
     [merchSubcats]
@@ -456,13 +501,16 @@ const Overview = () => {
         .slice(0, 15)
         .map((r) => {
           const pct = subcatTotalSales ? ((r.total_sales || 0) / subcatTotalSales) * 100 : 0;
+          const prv = merchSubcatsPrevByName.get(r.subcategory);
+          const delta_pct = compareMode !== "none" && prv ? pctDelta(r.total_sales || 0, prv) : null;
           return {
             ...r,
             pct,
+            delta_pct,
             subcat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%`,
           };
         }),
-    [merchSubcats, subcatTotalSales]
+    [merchSubcats, subcatTotalSales, merchSubcatsPrevByName, compareMode]
   );
   const subcatTopTotal = useMemo(
     () => subcatTop.reduce((s, r) => s + (r.total_sales || 0), 0),
@@ -474,21 +522,33 @@ const Overview = () => {
   const categoryFor = sharedCategoryFor;
   const salesByCategory = useMemo(() => {
     const byCat = {};
+    const byCatPrev = {};
     for (const r of subcats) {
       if (!isMerchandise(r.subcategory)) continue;
       const cat = categoryFor(r.subcategory);
       if (!cat) continue;
-      if (!byCat[cat]) byCat[cat] = { category: cat, total_sales: 0, units_sold: 0 };
+      if (!byCat[cat]) byCat[cat] = { category: cat, total_sales: 0, units_sold: 0, prev_sales: 0 };
       byCat[cat].total_sales += r.total_sales || 0;
       byCat[cat].units_sold += r.units_sold || 0;
+    }
+    for (const r of subcatsPrev || []) {
+      if (!isMerchandise(r.subcategory)) continue;
+      const cat = categoryFor(r.subcategory);
+      if (!cat) continue;
+      byCatPrev[cat] = (byCatPrev[cat] || 0) + (r.total_sales || 0);
     }
     const arr = Object.values(byCat).sort((a, b) => b.total_sales - a.total_sales);
     const total = arr.reduce((s, r) => s + r.total_sales, 0) || 1;
     return arr.map((r) => {
       const pct = (r.total_sales / total) * 100;
-      return { ...r, pct, cat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%` };
+      const prv = byCatPrev[r.category];
+      const delta_pct = compareMode !== "none" && prv ? pctDelta(r.total_sales, prv) : null;
+      return {
+        ...r, pct, delta_pct,
+        cat_label: `${fmtKES(r.total_sales)} · ${pct.toFixed(1)}%`,
+      };
     });
-  }, [subcats, categoryFor]);
+  }, [subcats, subcatsPrev, categoryFor, compareMode]);
 
   // Responsive-safe label renderer for the Sales-by-Category bars.
   // Renders the absolute KES on the first line and the % share on a
@@ -559,7 +619,7 @@ const Overview = () => {
 
       {!loading && !kpisLoading && !error && kpis && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
               delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", fmtKES)} showDelta={compareMode !== "none"}
@@ -576,6 +636,14 @@ const Overview = () => {
               formula="Total Units Sold = SUM(invoice_line_units) in scope."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }} />
+            <KPICard testId="kpi-footfall" label="Total Footfall" sub="Visitors to stores (excl. data-quality outliers)" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+              delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+              action={{ label: "Footfall by store", to: "/footfall" }} />
+            <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Orders ÷ Footfall" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
+              delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
+              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+              action={{ label: "Which stores dropped?", to: "/footfall" }} />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -617,17 +685,6 @@ const Overview = () => {
               action={{ label: "Export returns CSV", to: "/exports" }} />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KPICard small testId="kpi-footfall" label="Total Footfall" sub="Visitors to stores (excl. data-quality outliers)" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
-              delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-              action={{ label: "Footfall by store", to: "/footfall" }} />
-            <KPICard small testId="kpi-conversion" label="Conversion Rate" sub="Orders ÷ Footfall" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
-              delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-              action={{ label: "Which stores dropped?", to: "/footfall" }} />
-          </div>
-
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <HighlightCard testId="highlight-top-country" label="Top Country"
               name={topCountry ? `${COUNTRY_FLAGS[topCountry.country] || "🌍"} ${topCountry.country}` : "—"}
@@ -642,11 +699,11 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title={`Top locations by Total Sales · ${top15.length}`} subtitle="All POS locations ranked by revenue — spot the volume leaders and flag any laggards that deserve a conversation with their store manager." />
+              <SectionTitle title={`Sales by Location · ${top15.length}`} subtitle="All POS locations ranked by revenue — % of total sales in brackets, arrow vs comparison period." />
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
-                    <BarChart data={top15} layout="vertical" margin={{ left: isMobile ? 2 : 20, right: isMobile ? 38 : 110, top: 4 }}>
+                    <BarChart data={top15} layout="vertical" margin={{ left: isMobile ? 2 : 20, right: isMobile ? 60 : 200, top: 4 }}>
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 11 }} />
                       <YAxis
@@ -663,13 +720,24 @@ const Overview = () => {
                           <ChartTooltip
                             labelKey="labelFull"
                             formatters={{
-                              total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold || 0)} units`,
+                              total_sales: (v, p) => `${fmtKES(v)} · ${(p?.pct || 0).toFixed(1)}% of total · ${fmtNum(p?.units_sold || 0)} units`,
                             }}
                           />
                         }
                       />
                       <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
-                        <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563" }} />
+                        <LabelList
+                          dataKey="total_sales"
+                          content={makePctDeltaLabel({
+                            data: top15,
+                            formatValue: (v) => isMobile ? fmtAxisKES(v) : fmtKES(v),
+                            position: "right",
+                            offset: 6,
+                            fontSize: isMobile ? 9 : 10,
+                            hideDelta: compareMode === "none",
+                            labelTestId: "top-locations-bar-label",
+                          })}
+                        />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -682,7 +750,7 @@ const Overview = () => {
               {countryBars.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 24 + countryBars.length * 56 }}>
                   <ResponsiveContainer>
-                    <BarChart data={countryBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 60 : 110, top: 4 }}>
+                    <BarChart data={countryBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 80 : 200, top: 4 }}>
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 10 }} />
                       <YAxis type="category" dataKey="country" width={isMobile ? 90 : 110}
@@ -704,7 +772,18 @@ const Overview = () => {
                         }
                       />
                       <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
-                        <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563", fontWeight: 600 }} />
+                        <LabelList
+                          dataKey="total_sales"
+                          content={makePctDeltaLabel({
+                            data: countryBars,
+                            formatValue: (v) => isMobile ? fmtAxisKES(v) : fmtKES(v),
+                            position: "right",
+                            offset: 6,
+                            fontSize: isMobile ? 9 : 10,
+                            hideDelta: compareMode === "none",
+                            labelTestId: "country-split-bar-label",
+                          })}
+                        />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -716,7 +795,7 @@ const Overview = () => {
                 {channelBars.length === 0 ? <Empty /> : (
                   <div style={{ width: "100%", height: 24 + channelBars.length * 48 }}>
                     <ResponsiveContainer>
-                      <BarChart data={channelBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 60 : 110, top: 4 }}>
+                      <BarChart data={channelBars} layout="vertical" margin={{ left: isMobile ? 0 : 10, right: isMobile ? 80 : 200, top: 4 }}>
                         <CartesianGrid horizontal={false} />
                         <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 10 }} />
                         <YAxis type="category" dataKey="channel" width={isMobile ? 90 : 110} tick={{ fontSize: isMobile ? 10 : 11 }} />
@@ -730,7 +809,18 @@ const Overview = () => {
                           }
                         />
                         <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} name="Total Sales">
-                          <LabelList dataKey="total_sales" position="right" formatter={(v) => (isMobile ? fmtAxisKES(v) : fmtKES(v))} style={{ fontSize: isMobile ? 9 : 10, fill: "#4b5563", fontWeight: 600 }} />
+                          <LabelList
+                            dataKey="total_sales"
+                            content={makePctDeltaLabel({
+                              data: channelBars,
+                              formatValue: (v) => isMobile ? fmtAxisKES(v) : fmtKES(v),
+                              position: "right",
+                              offset: 6,
+                              fontSize: isMobile ? 9 : 10,
+                              hideDelta: compareMode === "none",
+                              labelTestId: "channel-split-bar-label",
+                            })}
+                          />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -904,7 +994,18 @@ const Overview = () => {
                       }} />
                     } />
                     <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
-                      <LabelList dataKey="total_sales" content={<CategoryBarLabel />} />
+                      <LabelList
+                        dataKey="total_sales"
+                        content={makePctDeltaLabel({
+                          data: salesByCategory,
+                          formatValue: (v) => isMobile ? fmtAxisKES(v) : fmtKES(v),
+                          position: "top",
+                          offset: 8,
+                          fontSize: isMobile ? 9 : 10,
+                          hideDelta: compareMode === "none",
+                          labelTestId: "category-bar-label",
+                        })}
+                      />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -920,7 +1021,7 @@ const Overview = () => {
             {subcatTop.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 400 }}>
                 <ResponsiveContainer>
-                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 4, right: 100, top: 4 }}>
+                  <BarChart data={subcatTop} layout="vertical" margin={{ left: 4, right: 200, top: 4 }}>
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 10 }} />
                     <YAxis
@@ -940,9 +1041,16 @@ const Overview = () => {
                     } />
                     <Bar dataKey="total_sales" fill="#00c853" radius={[0, 5, 5, 0]} name="Total Sales">
                       <LabelList
-                        dataKey="subcat_label"
-                        position="right"
-                        style={{ fontSize: typeof window !== "undefined" && window.innerWidth < 640 ? 9 : 10, fill: "#4b5563" }}
+                        dataKey="total_sales"
+                        content={makePctDeltaLabel({
+                          data: subcatTop,
+                          formatValue: (v) => isMobile ? fmtAxisKES(v) : fmtKES(v),
+                          position: "right",
+                          offset: 6,
+                          fontSize: isMobile ? 9 : 10,
+                          hideDelta: compareMode === "none",
+                          labelTestId: "subcat-bar-label",
+                        })}
                       />
                     </Bar>
                   </BarChart>

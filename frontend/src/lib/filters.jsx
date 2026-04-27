@@ -17,6 +17,7 @@ const FiltersContext = createContext(null);
 // cd = compareDateFrom (ISO, only when cm=custom)
 // ce = compareDateTo   (ISO, only when cm=custom)
 // cu = currency code (default KES; cosmetic only for now)
+// cg = channelGroup ('all'|'retail'|'online') — segments channels NOT LIKE / LIKE '%Online%'
 const VALID_PRESETS = new Set([
   "today", "yesterday",
   "last_7d", "last_30d", "last_90d", "last_365d",
@@ -26,6 +27,7 @@ const VALID_PRESETS = new Set([
   "custom",
 ]);
 const VALID_COMPARE = new Set(["none", "yesterday", "last_month", "last_year", "last_year_dow", "custom"]);
+const VALID_CHANNEL_GROUPS = new Set(["all", "retail", "online"]);
 const ALL_COUNTRIES = new Set(["Kenya", "Uganda", "Rwanda", "Online"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const VALID_CURRENCIES = new Set(["KES", "USD", "UGX", "RWF"]);
@@ -46,6 +48,7 @@ function readUrlParams() {
   const cd = pick("cd", "compare_from");
   const ce = pick("ce", "compare_to");
   const cu = pick("cu", "currency");
+  const cg = pick("cg", "channel_group");
   if (d) out.d = d;
   if (t) out.t = t;
   if (preset) out.p = preset;
@@ -55,6 +58,7 @@ function readUrlParams() {
   if (cd) out.cd = cd;
   if (ce) out.ce = ce;
   if (cu) out.cu = cu;
+  if (cg) out.cg = cg;
   return Object.keys(out).length ? out : null;
 }
 
@@ -77,6 +81,7 @@ function writeUrlParams(state) {
   put("cd", state.compareDateFrom, state.compareMode !== "custom" || !state.compareDateFrom);
   put("ce", state.compareDateTo, state.compareMode !== "custom" || !state.compareDateTo);
   put("cu", state.currency, state.currency === "KES");
+  put("cg", state.channelGroup, state.channelGroup === "all");
   const qs = next.toString();
   const url = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
   window.history.replaceState(null, "", url);
@@ -102,6 +107,7 @@ export const FiltersProvider = ({ children }) => {
   const initialCompareFrom = urlParams?.cd && ISO_DATE.test(urlParams.cd) ? urlParams.cd : "";
   const initialCompareTo = urlParams?.ce && ISO_DATE.test(urlParams.ce) ? urlParams.ce : "";
   const initialCurrency = urlParams?.cu && VALID_CURRENCIES.has(urlParams.cu) ? urlParams.cu : "KES";
+  const initialChannelGroup = urlParams?.cg && VALID_CHANNEL_GROUPS.has(urlParams.cg) ? urlParams.cg : "all";
 
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
@@ -112,8 +118,34 @@ export const FiltersProvider = ({ children }) => {
   const [compareDateFrom, setCompareDateFrom] = useState(initialCompareFrom);
   const [compareDateTo, setCompareDateTo] = useState(initialCompareTo);
   const [currency, setCurrency] = useState(initialCurrency);
+  const [channelGroup, setChannelGroup] = useState(initialChannelGroup);
+  const [retailChannels, setRetailChannels] = useState([]);
+  const [onlineChannels, setOnlineChannels] = useState([]);
   const [dataVersion, setDataVersion] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(null);
+
+  // Fetch the master list of active POS channels once so we can resolve the
+  // channelGroup toggle (Retail = NOT LIKE '%Online%', Online = LIKE '%Online%').
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/analytics/active-pos")
+      .then((r) => {
+        if (cancelled) return;
+        const all = (r.data || []).map((l) => l.channel).filter(Boolean);
+        // Always include the well-known online channels even if upstream
+        // /analytics/active-pos hasn't returned them yet (cold start).
+        const ONLINE_FALLBACK = ["Online - Shop Zetu", "Online - Vivo", "Online - Vivo Woman", "Online - Uganda", "Online - Rwanda"];
+        const merged = Array.from(new Set([...all, ...ONLINE_FALLBACK]));
+        setRetailChannels(merged.filter((c) => !/online/i.test(c)));
+        setOnlineChannels(merged.filter((c) => /online/i.test(c)));
+      })
+      .catch(() => {
+        // Fallback to known online channels only.
+        setOnlineChannels(["Online - Shop Zetu", "Online - Vivo", "Online - Vivo Woman", "Online - Uganda", "Online - Rwanda"]);
+        setRetailChannels([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // Track which URL filters we validated-and-dropped so we toast the user
   // exactly once after the real location list comes back.
@@ -187,21 +219,39 @@ export const FiltersProvider = ({ children }) => {
     if (compareMode === "custom" && compareDateFrom) p.set("compare_from", compareDateFrom);
     if (compareMode === "custom" && compareDateTo) p.set("compare_to", compareDateTo);
     if (currency && currency !== "KES") p.set("currency", currency);
+    if (channelGroup && channelGroup !== "all") p.set("channel_group", channelGroup);
     const qs = p.toString();
     return window.location.origin + window.location.pathname + (qs ? `?${qs}` : "");
-  }, [preset, dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency]);
+  }, [preset, dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup]);
 
   // Sync state → URL on every meaningful change AND on every route change
   // (react-router's NavLink replaces the whole URL including the query
   // string, so we re-apply our params right after the pathname updates).
   const location = useLocation();
   useEffect(() => {
-    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency });
-  }, [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, location.pathname]);
+    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup });
+  }, [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, location.pathname]);
+
+  // Derive the channel list that gets sent to the API. Manual multi-select
+  // ALWAYS wins (user's explicit pick is honoured) — channelGroup only
+  // applies when the user hasn't picked any channels manually.
+  const effectiveChannels = useMemo(() => {
+    if (channels && channels.length > 0) return channels;
+    if (channelGroup === "retail") return retailChannels;
+    if (channelGroup === "online") return onlineChannels;
+    return [];
+  }, [channels, channelGroup, retailChannels, onlineChannels]);
 
   const applied = useMemo(
-    () => ({ dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion }),
-    [dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion]
+    () => ({
+      dateFrom, dateTo, countries,
+      channels: effectiveChannels,
+      manualChannels: channels,
+      channelGroup,
+      compareMode, compareDateFrom, compareDateTo,
+      currency, dataVersion,
+    }),
+    [dateFrom, dateTo, countries, effectiveChannels, channels, channelGroup, compareMode, compareDateFrom, compareDateTo, currency, dataVersion]
   );
 
   const value = useMemo(
@@ -211,6 +261,8 @@ export const FiltersProvider = ({ children }) => {
       preset, setPresetKey, setPreset,
       countries, setCountries,
       channels, setChannels,
+      channelGroup, setChannelGroup,
+      retailChannels, onlineChannels,
       compareMode, setCompareMode,
       compareDateFrom, setCompareDateFrom,
       compareDateTo, setCompareDateTo,
@@ -220,7 +272,7 @@ export const FiltersProvider = ({ children }) => {
       applied,
       buildShareableLink,
     }),
-    [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
+    [dateFrom, dateTo, preset, countries, channels, channelGroup, retailChannels, onlineChannels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };

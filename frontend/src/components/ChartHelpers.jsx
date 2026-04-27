@@ -114,4 +114,114 @@ export const InlineDelta = ({ delta, higherIsBetter = true, prevValue = null, pr
   );
 };
 
+/** Compose the standard "KES X (Y%) ▲Z%" string used on bar labels.
+ * - `value` — current period value (already in display currency).
+ * - `pct` — % share of total (0–100). If null/undefined, omitted.
+ * - `deltaPct` — % change vs comparison period. If null, arrow is hidden.
+ * - `formatValue` — formatter for the leading numeric value (e.g. fmtKES).
+ * - `compact` — when true, uses K/M abbreviations and skips delta on mobile.
+ */
+export const fmtBarLabel = (value, pct, deltaPct, formatValue, { compact = false, hideDelta = false } = {}) => {
+  const valStr = formatValue ? formatValue(value) : String(value);
+  const pctStr = pct != null && Number.isFinite(pct) ? ` (${pct.toFixed(1)}%)` : "";
+  let deltaStr = "";
+  if (!hideDelta && deltaPct != null && Number.isFinite(deltaPct)) {
+    if (compact) {
+      const a = deltaPct > 0.05 ? "▲" : deltaPct < -0.05 ? "▼" : "—";
+      deltaStr = ` ${a}${Math.abs(deltaPct).toFixed(1)}%`;
+    } else {
+      const a = deltaPct > 0.05 ? "▲" : deltaPct < -0.05 ? "▼" : "—";
+      deltaStr = ` ${a} ${Math.abs(deltaPct).toFixed(1)}%`;
+    }
+  }
+  return `${valStr}${pctStr}${deltaStr}`;
+};
+
+/** Recharts `<LabelList content={...} />` renderer that paints
+ * "KES X (Y%) ▲Z%" — with the delta segment colour-coded green/red/grey
+ * — to the right of (vertical layout) or above (horizontal layout) a bar.
+ *
+ * Looks for `pct` and `delta_pct` on the row payload. Pass `formatValue`
+ * for the numeric part. `position` defaults to "right".
+ */
+export const PctDeltaLabel = ({
+  x, y, width, height, value, payload, index, viewBox,
+  formatValue, position = "right", offset = 6, fontSize = 10, hideDelta = false,
+}) => {
+  // Recharts passes the row through `payload` only when the chart wires
+  // it explicitly via Cell; for normal cases we read from <BarChart data>.
+  // The real row sits at the rendered bar's index, but that's not directly
+  // available here — we rely on `value` being the primary metric and
+  // `payload` being supplied by caller via custom prop (we pass `data={...}`
+  // through React closure instead). To keep this self-contained we accept
+  // `pct` and `deltaPct` directly from the wrapper.
+  return null; // placeholder — see makePctDeltaLabel below for the working version.
+};
+
+/** Factory: returns a Recharts <LabelList content={…}> that has access
+ * to the full `data` array via closure. `position`: "right" (vertical
+ * layout) or "top" (horizontal). */
+export const makePctDeltaLabel = ({
+  data,
+  formatValue,
+  position = "right",
+  offset = 6,
+  fontSize = 10,
+  hideDelta = false,
+  valueKey = "total_sales",
+  pctKey = "pct",
+  deltaKey = "delta_pct",
+  labelTestId,
+}) => (props) => {
+  const { x = 0, y = 0, width = 0, height = 0, index } = props;
+  const row = (data && data[index]) || {};
+  const v = row[valueKey];
+  if (v == null) return null;
+  const pct = row[pctKey];
+  const dlt = hideDelta ? null : row[deltaKey];
+
+  const valStr = formatValue ? formatValue(v) : String(v);
+  const pctStr = pct != null && Number.isFinite(pct) ? `(${pct.toFixed(1)}%)` : "";
+
+  let arrow = "";
+  let deltaStr = "";
+  let deltaCls = "#6b7280";
+  if (dlt != null && Number.isFinite(dlt)) {
+    if (dlt > 0.05) { arrow = "▲"; deltaCls = "#059669"; }
+    else if (dlt < -0.05) { arrow = "▼"; deltaCls = "#dc2626"; }
+    else { arrow = "—"; deltaCls = "#6b7280"; }
+    deltaStr = `${Math.abs(dlt).toFixed(1)}%`;
+  }
+
+  // Position: "right" → vertical bar, paint to the right of the bar tip.
+  // "top" → horizontal bar, paint above the bar tip.
+  let tx, ty, anchor;
+  if (position === "right") {
+    tx = x + width + offset;
+    ty = y + height / 2 + fontSize / 3;
+    anchor = "start";
+  } else { // "top"
+    tx = x + width / 2;
+    ty = y - offset;
+    anchor = "middle";
+  }
+  return (
+    <g data-testid={labelTestId}>
+      <text x={tx} y={ty} fontSize={fontSize} textAnchor={anchor} fill="#374151" fontWeight={600}>
+        <tspan>{valStr}</tspan>
+        {pctStr && (
+          <tspan dx={4} fill="#6b7280" fontWeight={500}>{pctStr}</tspan>
+        )}
+        {arrow && (
+          <>
+            <tspan dx={6} fill={deltaCls} fontWeight={700}>{arrow}</tspan>
+            <tspan dx={2} fill={deltaCls} fontWeight={700}>{deltaStr}</tspan>
+          </>
+        )}
+      </text>
+    </g>
+  );
+};
+
+
 export default ChartTooltip;

@@ -276,6 +276,7 @@ const isoOf = (d) => {
 const COMPARE_OPTIONS = [
   ["none", "No comparison"],
   ["yesterday", "Yesterday"],
+  ["last_month", "Previous month"],
   ["last_year", "Previous year"],
   ["last_year_dow", "Previous year (match day of week)"],
   ["custom", "Custom"],
@@ -388,6 +389,45 @@ const CompareButton = () => {
   );
 };
 
+// ---------- Channel Group segmented control (All / Retail / Online) ----------
+const CHANNEL_GROUP_OPTIONS = [
+  ["all", "All"],
+  ["retail", "Retail"],
+  ["online", "Online"],
+];
+
+const ChannelGroupToggle = () => {
+  const f = useFilters();
+  return (
+    <div
+      className="inline-flex items-center rounded-full border border-border bg-white p-0.5 shadow-sm"
+      data-testid="channel-group-toggle"
+      role="group"
+      aria-label="Channel segment"
+    >
+      {CHANNEL_GROUP_OPTIONS.map(([k, lbl]) => {
+        const active = f.channelGroup === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            data-testid={`channel-group-${k}`}
+            onClick={() => f.setChannelGroup(k)}
+            className={`px-3 py-1 rounded-full text-[12px] font-semibold transition-colors ${
+              active
+                ? "bg-brand text-white shadow-sm"
+                : "text-foreground/70 hover:bg-brand-soft/60"
+            }`}
+            aria-pressed={active}
+          >
+            {lbl}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 // ---------- Currency Selector (cosmetic only — locked to KES for now) ----------
 const CurrencyButton = () => {
   return (
@@ -491,6 +531,7 @@ const FilterBar = () => {
   const ControlsInline = (
     <>
       <DateRangeButton />
+      <ChannelGroupToggle />
       <CompareButton />
       <CurrencyButton />
       <MultiSelect

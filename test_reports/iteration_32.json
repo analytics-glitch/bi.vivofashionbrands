@@ -1,0 +1,69 @@
+{
+  "summary": "Frontend verification of iteration 32 — Channel-Group toggle, 'Previous month' compare option, 6-tile KPI row, Sales by Location rename + delta-arrow bar labels across 5 charts, mobile collapse. Logged in as admin successfully on https://bi-platform-2.preview.emergentagent.com. 13 of 14 acceptance items PASS. ONE CRITICAL BUG: clicking the 'Retail' channel-group toggle has NO effect on KPI values (returns the same total as 'All'); only 'Online' actually applies a backend filter.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "ChannelGroupToggle (FilterBar.jsx) + filters.jsx effectiveChannels",
+        "issue": "Selecting 'Retail' produces NO change in KPI values. With cm=last_month + p=ytd, Total Sales = KES 354,560,960 for both All AND Retail; only Online (KES 28,842,135) actually filters. Channel-split chart in the same page shows Retail should be ~KES 325.6M (vs ~28.9M Online) — so the retail toggle is leaking the unfiltered total. Likely cause: /analytics/active-pos already returns ONLY retail channels, so the regex split in filters.jsx (lines 137-146) yields retailChannels === all returned channels, and the resulting CSV passed via 'channel=' is treated as 'no constraint' or matches everything (i.e., backend may be receiving 'channel=<all>' which is a no-op, OR retailChannels list ends up empty when active-pos comes back empty/late). Online works because ONLINE_FALLBACK guarantees at least 5 hardcoded channel names. Need to also fetch & merge online country/channel data into the merged set (or have backend support an explicit channel_group parameter).",
+        "selector": "[data-testid='channel-group-retail']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Channel toggle → KPI/charts API call",
+        "issue": "URL param cg=retail is correctly persisted, but the resulting effectiveChannels list does not produce a different backend response. Suggest logging the network call: open devtools, click Retail, inspect /api/kpis?...&channel=... — the channel CSV is likely either empty or contains all channels.",
+        "affected_selectors": ["[data-testid='channel-group-retail']", "[data-testid='kpi-total-sales']", "[data-testid='chart-channel-split']"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Overview charts (every page)",
+        "issues": [
+          "Recharts emits dozens of '...width(-1) and height(-1) of chart should be greater than 0...' warnings on every render — extremely noisy in console, no functional impact (carry-over from iteration_31).",
+          "Mobile filters Sheet: 'Missing Description or aria-describedby={undefined} for DialogContent' a11y warning — add SheetDescription or aria-describedby to MobileFiltersSheet."
+        ]
+      }
+    ]
+  },
+  "verifications": {
+    "login": "admin@vivofashiongroup.com / VivoAdmin!2026 logged in and landed on /",
+    "compare_previous_month": "compare-option-last_month is rendered with text 'Previous month'; clicking sets compare-pill label to 'Previous month' and KPIs gain '▼ -10.1% vs KES 394,600,553' deltas",
+    "compare_options_full": "compare panel shows 6 options [none, yesterday, last_month, last_year, last_year_dow, custom] in correct order",
+    "channel_toggle_render": "data-testid='channel-group-toggle' present with channel-group-all (default active, bg-brand class), channel-group-retail, channel-group-online — sits between Date pill and Compare pill on desktop",
+    "channel_toggle_online": "Clicking 'Online' updates KPIs (KES 354,560,960 → KES 28,842,135), URL gains cg=online — WORKS",
+    "channel_toggle_retail": "Clicking 'Retail' DOES NOT change KPI values (KES 354,560,960 → KES 354,560,960). URL gains cg=retail but backend response is identical to All — BUG",
+    "url_persistence": "?cm=last_month&p=ytd&d=2026-01-01&t=2026-04-27&cg=retail persists across pathname change (Customers page) and hard-reload",
+    "cross_page_persistence": "Navigating to /customers preserves cg=retail in URL and channel-group-retail remains visually active (has bg-brand class)",
+    "kpi_row_order": "Top KPI grid is a single row at y≈275 with x-ordered: kpi-total-sales(200) → kpi-net-sales(455) → kpi-orders(711) → kpi-units(966) → kpi-footfall(1221) → kpi-conversion(1477). All 6 cards share one parent div. The duplicated Footfall+Conversion sub-row was successfully removed.",
+    "sales_by_location_rename": "Page contains 'Sales by Location · 31'; old label 'Top locations by Total Sales' is GONE",
+    "top_locations_bar_labels": "31 [data-testid='top-locations-bar-label'] elements rendered. Examples (with cm=last_month): 'KES 28,842,135(8.1%)▼0.9%', 'KES 26,189,092(7.4%)▼10.5%', 'KES 19,398,785(5.5%)▼10.7%' — format matches spec",
+    "country_split_labels": "[data-testid='chart-country-split'] svg text samples: 'KES 286,284,696(80.7%)▼10.8%', 'KES 28,930,437(8.2%)▼1.0%', 'KES 26,332,866(7.4%)▼14.0%', 'KES 13,036,511(3.7%)▼9.5%'",
+    "channel_split_labels": "[data-testid='chart-channel-split'] svg text samples: 'KES 325,630,524(91.8%)▼10.9%', 'KES 28,930,437(8.2%)▼1.0%', 'KES 0(0.0%)' — confirms backend returns ~325M Retail and ~29M Online, which is exactly what the toggle should reproduce when Retail is clicked",
+    "category_subcategory_labels": "Sales by Category and Sales by Subcategory both show 'KES X(Y%)▲/▼Z%' labels — 10+ arrowed labels detected",
+    "compare_none_arrows_hidden": "After setting compare to 'No comparison', all 31 location bar labels show 'KES X(Y%)' WITHOUT ▲/▼ arrow segment. Verified across all SVG text nodes — 0 arrowed KES labels page-wide",
+    "mobile_collapse": "At 390x844, desktop pills hidden, mobile-filters-button visible. Sheet opens and visually contains Year-to-date / All-Retail-Online toggle / No comparison / KES / Country / POS controls (verified via screenshot)"
+  },
+  "test_report_links": [],
+  "action_items": [
+    "CRITICAL: Fix Retail channel-group filter — currently identical to 'All'. Either (a) send an explicit channel_group=retail parameter to the backend instead of expanding to a CSV list, or (b) ensure the merged channel set in filters.jsx contains BOTH retail AND online channels before splitting (currently /analytics/active-pos likely returns only retail, so retailChannels ends up == all known channels, defeating the filter). Validate by inspecting the network call's `channel` query param after clicking Retail and confirming it differs from after clicking All.",
+    "Add SheetDescription / aria-describedby to MobileFiltersSheet to silence the DialogContent a11y warning.",
+    "Non-blocking: silence Recharts width(-1)/height(-1) warnings (carry-over from iteration_31)."
+  ],
+  "critical_code_review_comments": [
+    "filters.jsx:129-148 — retailChannels/onlineChannels are computed from one /analytics/active-pos call merged with a hardcoded ONLINE_FALLBACK. There is no RETAIL_FALLBACK and no guarantee that active-pos returns online channels too. If active-pos returns only retail (which appears to be the case here), retailChannels = the entire merged retail set, sent as the `channel` CSV — which the backend should interpret as exactly that filter, but observed result shows backend returns the same total as no filter. Either the CSV exceeds a length limit, or some channel names mismatch. RECOMMEND: switch to a server-side flag (e.g., channel_group=retail|online) so the backend computes the LIKE/NOT LIKE '%Online%' filter directly instead of round-tripping a long CSV.",
+    "filters.jsx:238-243 — effectiveChannels memoization is correct, but downstream consumers (buildParams) need to actually serialise [] vs ['retailA','retailB',...] differently from undefined. Suggest a unit test asserting the final query string differs between channelGroup='all' and 'retail'.",
+    "Overview.jsx — KPI row order verified ok; consider extracting the 6-card grid into <KPIRow/> for reuse across pages.",
+    "ChartHelpers makePctDeltaLabel: format and color tri-state (green #059669 / red #dc2626 / grey #6b7280) is wired correctly per visual inspection of arrow glyphs. compareMode='none' branch hides arrows correctly.",
+    "Re-iteration of iteration_31 finding: VALID_COMPARE legacy 'last_month' is now intentionally exposed in UI (this iteration). Spec achieved."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend-only request)", "frontend": "13/14 = 93%" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iteration_32 acceptance items PASS except 'Retail toggle filters KPI values'. Reproduce: login → set Compare='Previous month' → set date='Year to date' → note Total Sales (=KES 354,560,960). Click channel-group-retail → KPI does NOT change. Click channel-group-online → KPI drops to ~KES 28.8M. The chart-channel-split chart on the same page proves the data exists (Retail=325.6M, Online=28.9M). Selectors stable: data-testid='channel-group-toggle'|'channel-group-all'|'channel-group-retail'|'channel-group-online'|'compare-option-last_month'|'kpi-total-sales..kpi-conversion'|'top-locations-bar-label'|'chart-country-split'|'chart-channel-split'. URL keys: cg=retail|online (short), channel_group=... (long alias). Recharts width(-1)/height(-1) console warning continues — non-blocking.",
+  "rca of the issue": "Likely root cause: /analytics/active-pos endpoint returns only the active RETAIL POS list (Country in {Kenya,Uganda,Rwanda}). filters.jsx merges this with ONLINE_FALLBACK and splits via /online/i regex. Result: retailChannels = full retail list, onlineChannels = ONLINE_FALLBACK list. When the user picks 'Retail', effectiveChannels CSV is sent to backend, but because that CSV already covers EVERY channel that appears in sales data outside of 'Online - *', the resulting filter is equivalent to 'no filter' (the unfiltered total ALSO does not include the Online sub-channels in the data set apparently — or backend treats unknown channel names case-insensitively and matches everything). Online works only because the hardcoded fallback names exactly match DB values. Mitigation: add a backend-side channel_group=retail|online parameter that the SQL layer translates to NOT LIKE '%Online%' / LIKE '%Online%' directly, removing dependency on a fragile CSV round-trip. Alternative: have /analytics/active-pos also return online channels with country='Online' so the regex split produces a working onlineChannels and the retail CSV genuinely excludes them."
+}
