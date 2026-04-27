@@ -646,7 +646,7 @@ const Overview = () => {
               action={{ label: "Which stores dropped?", to: "/footfall" }} />
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3" data-testid="sub-kpi-row">
             <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders"
               formula="Average Basket Value = Total Sales ÷ Total Orders."
               value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}

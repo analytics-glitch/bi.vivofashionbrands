@@ -78,7 +78,7 @@ function writeUrlParams(state) {
   put("t", state.dateTo, state.preset === "today" && state.dateTo === defaults.date_to);
   put("co", state.countries.join(","), state.countries.length === 0);
   put("ch", state.channels.join(","), state.channels.length === 0);
-  put("cm", state.compareMode, state.compareMode === "none");
+  put("cm", state.compareMode, state.compareMode === "last_month");
   put("cd", state.compareDateFrom, state.compareMode !== "custom" || !state.compareDateFrom);
   put("ce", state.compareDateTo, state.compareMode !== "custom" || !state.compareDateTo);
   put("cu", state.currency, state.currency === "KES");
@@ -104,7 +104,7 @@ export const FiltersProvider = ({ children }) => {
   const initialChannels = urlParams?.ch
     ? urlParams.ch.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
-  const initialCompare = urlParams?.cm && VALID_COMPARE.has(urlParams.cm) ? urlParams.cm : "none";
+  const initialCompare = urlParams?.cm && VALID_COMPARE.has(urlParams.cm) ? urlParams.cm : "last_month";
   const initialCompareFrom = urlParams?.cd && ISO_DATE.test(urlParams.cd) ? urlParams.cd : "";
   const initialCompareTo = urlParams?.ce && ISO_DATE.test(urlParams.ce) ? urlParams.ce : "";
   const initialCurrency = urlParams?.cu && VALID_CURRENCIES.has(urlParams.cu) ? urlParams.cu : "KES";
@@ -221,7 +221,7 @@ export const FiltersProvider = ({ children }) => {
     if (preset === "custom" || (dateTo && dateTo !== defs.date_to)) p.set("date_to", dateTo);
     if (countries.length) p.set("country", countries.join(","));
     if (channels.length) p.set("pos", channels.join(","));
-    if (compareMode && compareMode !== "none") p.set("compare", compareMode);
+    if (compareMode && compareMode !== "last_month") p.set("compare", compareMode);
     if (compareMode === "custom" && compareDateFrom) p.set("compare_from", compareDateFrom);
     if (compareMode === "custom" && compareDateTo) p.set("compare_to", compareDateTo);
     if (currency && currency !== "KES") p.set("currency", currency);

@@ -147,8 +147,16 @@ const TopNav = () => {
         >
           {mobileOpen ? <CloseIcon size={20} /> : <MenuIcon size={20} />}
         </button>
-        <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-brand text-white grid place-items-center font-extrabold text-[14px] sm:text-[15px] shadow-sm">
-          V
+        <div
+          className="flex items-center shrink-0"
+          data-testid="brand-logo"
+          aria-label="Vivo Fashion Group"
+        >
+          <img
+            src="/brand/vivo-logo.png"
+            alt="Vivo"
+            className="h-8 sm:h-9 w-auto rounded-md"
+          />
         </div>
         <div className="leading-tight min-w-0">
           <div className="text-[13px] sm:text-[14px] font-bold tracking-tight text-foreground truncate">

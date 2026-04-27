@@ -528,10 +528,11 @@ const FilterBar = () => {
   const countryOptions = COUNTRIES.map((c) => ({ value: c, label: c }));
 
   // Inner controls — used both inline (desktop) and inside the mobile sheet.
+  // Order: All/Retail/Online segment → Date Range → Compare → Currency → Country/POS
   const ControlsInline = (
     <>
-      <DateRangeButton />
       <ChannelGroupToggle />
+      <DateRangeButton />
       <CompareButton />
       <CurrencyButton />
       <MultiSelect

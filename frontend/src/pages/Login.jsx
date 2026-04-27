@@ -77,7 +77,7 @@ const Login = () => {
     <div className="min-h-screen bg-background grid place-items-center p-4" data-testid="login-page">
       <div className="w-full max-w-md card-white p-8 shadow-md">
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-11 h-11 rounded-xl bg-brand text-white grid place-items-center font-extrabold text-lg shadow-sm">V</div>
+          <img src="/brand/vivo-logo.png" alt="Vivo Fashion Group" className="h-11 w-auto rounded-md shrink-0" />
           <div>
             <div className="font-bold tracking-tight">Vivo Fashion Group</div>
             <div className="text-[11px] text-muted uppercase tracking-wider">BI · East Africa</div>
