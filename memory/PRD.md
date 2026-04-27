@@ -58,7 +58,11 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
   - URL params persist `p, d, t, co, ch, cm, cd, ce, cu` (also accepts long names `period, date_from, date_to, country, pos, compare, compare_from, compare_to, currency` for shareable links).
   - Default compareMode changed from `last_month` → `none`.
 - **Overview page reorder**: KPI cards / sub-KPIs / charts / location-channel breakdown table now render at the top; an "Insights & Projections" divider separates the below-the-fold section (DailyBriefing → WhatChangedBelt → WinsThisWeekCard → StoreOfTheWeek → SalesProjection → DataFreshness).
-- **"Last refreshed: HH:MM:SS"** label added to the Overview header (`data-testid="last-refreshed"`).
+- **Channel segmentation toggle (All / Retail / Online)** — segmented control placed right of the Date Range pill, reachable on every page. State persists in URL via `cg` (`channel_group` in shareable links) and survives refreshes / cross-page navigation. Selection drives the `effectiveChannels` derived list which flows through every API call via existing `buildParams(applied)`. **Manual channel multi-select still wins** when populated. Retail = channels NOT matching `/online/i`; Online = channels matching `/online/i`.
+- **Active POS list fetch is now auth-gated** — `/analytics/active-pos` is only requested AFTER `useAuth().user` is set, so the Retail toggle no longer shipped an empty channel list because of pre-login 401s.
+- **Bar/table chart enhancements** — five Overview charts (Sales by Location [renamed], Country Split, Channel Split, Sales by Category, Sales by Subcategory) now render `KES X (Y%) ▲▼Z%` inline labels via the new `makePctDeltaLabel` helper in `ChartHelpers.jsx`. Green for positive, red for negative, grey dash for ~zero, hidden when compareMode = `none`. Memos extended with `delta_pct` from `salesPrev` / `countrySummaryPrev` / `subcatsPrev`.
+- **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
+- **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
 ## Roadmap
 ### P1 — Refactor

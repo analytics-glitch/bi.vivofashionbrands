@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { datePresets } from "@/lib/api";
 import { api } from "@/lib/api";
 import { invalidateKpis } from "@/lib/useKpis";
+import { useAuth } from "@/lib/auth";
 
 const FiltersContext = createContext(null);
 
@@ -126,7 +127,12 @@ export const FiltersProvider = ({ children }) => {
 
   // Fetch the master list of active POS channels once so we can resolve the
   // channelGroup toggle (Retail = NOT LIKE '%Online%', Online = LIKE '%Online%').
+  // Re-runs when the user transitions from anonymous → authenticated, since
+  // /analytics/active-pos requires auth (so the initial pre-login fetch
+  // would return 401 and leave retailChannels empty).
+  const { user } = useAuth();
   useEffect(() => {
+    if (!user) return; // Wait until the user is logged in.
     let cancelled = false;
     api.get("/analytics/active-pos")
       .then((r) => {
@@ -145,7 +151,7 @@ export const FiltersProvider = ({ children }) => {
         setRetailChannels([]);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [user]);
 
   // Track which URL filters we validated-and-dropped so we toast the user
   // exactly once after the real location list comes back.
