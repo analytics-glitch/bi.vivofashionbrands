@@ -214,7 +214,7 @@ export const LocationLeaderboard = ({ badges, onWinnerClick, className = "", str
       data-testid="leaderboard-strip"
     >
       <span className="text-[11px] font-bold uppercase tracking-wider text-brand-deep mr-1">
-        🎉 This period's winners:
+        🏆 Leaders this period:
       </span>
       {Array.from(badges.entries()).map(([channel, b]) => {
         const streakKey = BADGE_STREAK_KEY[b.label];

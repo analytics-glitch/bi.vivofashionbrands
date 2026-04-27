@@ -10,6 +10,7 @@ import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@
 import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import StoreDeepDive from "@/components/StoreDeepDive";
+import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import { Storefront, ArrowsDownUp } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -77,11 +78,24 @@ const Locations = () => {
     return m;
   }, [prevRows]);
 
+  // Footfall lookup keyed by location name. The /footfall response uses
+  // `location` (the store name displayed at POS), which equals our row's
+  // `channel` field for store-level POS. Online channels won't match —
+  // they get total_footfall=0 (correct, no walk-in concept).
+  const footfallMap = useMemo(() => {
+    const m = new Map();
+    for (const r of footfall) {
+      m.set(r.location, r);
+    }
+    return m;
+  }, [footfall]);
+
   const kpis = rawKpis;
 
   const enriched = useMemo(() => {
     return rows.map((r) => {
       const prev = prevMap.get(r.channel);
+      const ff = footfallMap.get(r.channel);
       const sales = r.total_sales || 0;
       const orders = r.orders || r.total_orders || 0;
       const units = r.units_sold || r.total_units_sold || 0;
@@ -89,6 +103,14 @@ const Locations = () => {
       const basket = orders ? sales / orders : (r.avg_basket_size || 0);
       const asp = units ? sales / units : 0;
       const msi = orders ? units / orders : 0;
+
+      const ffCount = ff ? (ff.total_footfall || 0) : 0;
+      const conv = ffCount ? (orders / ffCount) * 100 : null;
+      // Previous conversion = prev orders ÷ prev footfall when both exist.
+      const pFfCount = ff ? (ff.prev_total_footfall || 0) : 0;
+      const pPrevOrders = prev ? (prev.orders || prev.total_orders || 0) : 0;
+      const pConv = pFfCount ? (pPrevOrders / pFfCount) * 100 : null;
+      const conv_delta_pp = (conv != null && pConv != null) ? +(conv - pConv).toFixed(2) : null;
 
       // Previous-period numbers
       const pSales = prev ? (prev.total_sales || 0) : null;
@@ -127,9 +149,13 @@ const Locations = () => {
         prev_abv: pAbv,
         prev_orders: pOrders,
         prev_sales: pSales,
+        // Footfall + conversion (joined from /footfall response)
+        total_footfall: ffCount,
+        conversion_rate: conv,
+        conv_delta_pp,
       };
     });
-  }, [rows, prevMap]);
+  }, [rows, prevMap, footfallMap]);
 
   const avg = useMemo(() => {
     if (!enriched.length) return 0;
@@ -194,6 +220,14 @@ const Locations = () => {
       return (b[sortKey] || 0) - (a[sortKey] || 0);
     });
   }, [enrichedWithDq, sortKey]);
+
+  // Sum of sales across all in-scope locations — used to surface a "% of
+  // total" chip on each location card AND to power the bottom-of-page
+  // "Locations needing attention" insight panel.
+  const totalSalesAll = useMemo(
+    () => enrichedWithDq.reduce((s, r) => s + (r.total_sales || 0), 0),
+    [enrichedWithDq]
+  );
 
   // Shared leaderboard badges (also used on Overview). Extracted into
   // `/app/frontend/src/components/LocationLeaderboard.jsx` so both pages
@@ -296,6 +330,7 @@ const Locations = () => {
                   ["total_sales", "Total Sales"],
                   ["total_orders", "Orders"],
                   ["units_sold", "Units"],
+                  ["total_footfall", "Footfall"],
                   ["abv", "ABV"],
                   ["asp", "ASP"],
                   ["msi", "MSI"],
@@ -347,6 +382,12 @@ const Locations = () => {
                     : above
                     ? "border-brand/40"
                     : "border-red-300";
+                  // % share of group total — surfaced inline in the card
+                  // header so users see "this store ≈ X% of all sales".
+                  const pctShare =
+                    totalSalesAll && l.total_sales != null
+                      ? (l.total_sales / totalSalesAll) * 100
+                      : null;
                   return (
                     <button
                       key={`${l.channel}-${i}`}
@@ -364,30 +405,38 @@ const Locations = () => {
                           <span>{badge.label}</span>
                         </div>
                       )}
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2.5 min-w-0">
-                          <div className="w-9 h-9 rounded-lg bg-brand-soft text-brand grid place-items-center shrink-0">
-                            <Storefront size={18} weight="duotone" />
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-lg bg-brand-soft text-brand grid place-items-center shrink-0">
+                          <Storefront size={18} weight="duotone" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-[14px] leading-tight truncate" title={l.channel}>
+                            {l.channel}
                           </div>
-                          <div className="min-w-0">
-                            <div className="font-bold text-[14px] leading-tight truncate" title={l.channel}>
-                              {l.channel}
+                          {/* Sales sits IMMEDIATELY UNDER the location name (per
+                              user request), with a % share chip. The full
+                              comparison delta appears just below in InlineDelta. */}
+                          <div className="flex items-baseline gap-2 mt-0.5">
+                            <div className="font-extrabold text-[16px] text-brand-deep num leading-tight">
+                              {fmtKES(l.total_sales)}
                             </div>
-                            <div className="text-[11.5px] text-muted mt-0.5">
-                              {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
-                            </div>
+                            {pctShare != null && (
+                              <span
+                                className="text-[10.5px] font-semibold text-muted"
+                                data-testid={`loc-${l.channel}-pct-share`}
+                                title="Share of total sales across all locations in scope"
+                              >
+                                {pctShare.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11.5px] text-muted mt-0.5 flex items-center gap-1.5">
+                            <span>{COUNTRY_FLAGS[l.country] || "🌍"} {l.country}</span>
+                            {compareMode !== "none" && (
+                              <InlineDelta delta={l.d_sales} testId={`loc-${l.channel}-d-sales`} compact />
+                            )}
                           </div>
                         </div>
-                      </div>
-
-                      <div className="mt-4">
-                        <div className="eyebrow">Sales</div>
-                        <div className="font-bold text-[18px] text-brand-deep num mt-0.5">
-                          {fmtKES(l.total_sales)}
-                        </div>
-                        {compareMode !== "none" && (
-                          <InlineDelta delta={l.d_sales} testId={`loc-${l.channel}-d-sales`} compact />
-                        )}
                       </div>
 
                       <div className="grid grid-cols-3 gap-2 mt-3">
@@ -585,6 +634,17 @@ const Locations = () => {
                   </table>
                 </div>
               </div>
+
+              {/* "Locations needing attention" — surfaces stores that look
+                  off on at least one of: sales drop, conversion drop,
+                  return-rate spike, or weak share + below-avg sales. */}
+              <LocationsAttentionPanel
+                rows={enrichedWithDq}
+                avgSales={avg}
+                totalSalesAll={totalSalesAll}
+                returnStats={returnStats}
+                compareMode={compareMode}
+              />
             </>
 
           {/* Store deep-dive slide-over — the audit's "single biggest missed

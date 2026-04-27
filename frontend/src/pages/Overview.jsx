@@ -22,7 +22,6 @@ import DataFreshness from "@/components/DataFreshness";
 import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
-import WhatChangedBelt from "@/components/WhatChangedBelt";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
