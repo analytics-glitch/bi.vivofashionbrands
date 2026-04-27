@@ -23,7 +23,7 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - `thumbnails.py`, `notifications.py`, `search.py`, `ask.py`
 
 ## Key API Endpoints
-`/api/kpis`, `/api/sales-summary`, `/api/inventory`, `/api/customers`, `/api/footfall`, `/api/data-freshness`, `/api/top-skus`, `/api/sor`, `/api/analytics/sor-new-styles-l10`, `/api/analytics/sales-projection`, `/api/analytics/ibt-suggestions`, `/api/analytics/sell-through-by-location`, `/api/analytics/weeks-of-cover`, `/api/analytics/inventory-summary`, `/api/analytics/churn`, `/api/analytics/new-styles`, `/api/notifications`, `/api/notifications/unread-count`, `/api/search`, `/api/ask`, `/api/recommendations/*`, `/api/thumbnails/*`
+`/api/kpis`, `/api/sales-summary`, `/api/inventory`, `/api/customers`, `/api/customers/walk-ins`, `/api/footfall`, `/api/data-freshness`, `/api/top-skus`, `/api/sor`, `/api/analytics/sor-new-styles-l10`, `/api/analytics/sales-projection`, `/api/analytics/ibt-suggestions`, `/api/analytics/sell-through-by-location`, `/api/analytics/weeks-of-cover`, `/api/analytics/inventory-summary`, `/api/analytics/churn`, `/api/analytics/new-styles`, `/api/analytics/category-country-matrix`, `/api/notifications`, `/api/notifications/unread-count`, `/api/search`, `/api/ask`, `/api/recommendations/*`, `/api/thumbnails/*`
 
 ## Implemented (highlights)
 - Authenticated dashboard, role-based PII masking, audit logs
@@ -40,6 +40,8 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Statistical outlier flagging (`useOutliers.js`)
 
 ## Recently Shipped (2026-04-26 / 27)
+- **Walk-ins KPI** (`/api/customers/walk-ins`): counts anonymous orders per period (detection rule = `customer_type IN ('Guest','Walk-in','Anonymous') OR customer_id IS NULL`), with a per-country breakdown. Endpoint chunks `/orders` into ≤30-day windows so long ranges don't hit the upstream's 50k row cap. Cold ~30-45 s, warm ~200 ms (cached 120 s). New `[data-testid="kpi-walk-ins"]` tile on Customers page (now 6-col KPI grid) + `Walk-ins · by country` sortable card, both honour the global `compareMode` for ▲/▼ deltas.
+- **Category × Country Matrix** (`/api/analytics/category-country-matrix`, new `Country Matrix` sub-tab inside Products): rows = subcategories, cols = Kenya / Uganda / Rwanda / Online, cells = `KES X (Y% of {country})` where Y% is the subcategory's share of THAT country's total. Sortable by any column, sticky country-totals footer row, CSV export. Built on a new `footerRow` prop in `SortableTable.jsx`.
 - **httpx pool fix**: Bumped shared client to `max_connections=200, max_keepalive_connections=50`, decoupled `pool=15s` from `read=45s` so transient pool saturation falls back to the `_kpi_stale_cache` instead of surfacing "PoolTimeout: timed out after 2 attempts" on the Overview banner.
 - **Deployment readiness audit**: Passed via Deployer Agent (no blockers, no warnings).
 - **Customers page latency fix**: Split slow upstream `/churned-customers?limit=100000` (≈30 s, frequent 503s) out of `/api/customers` into a dedicated non-blocking `/api/customers/churn-rate` endpoint with a 60 s negative cache. `/api/customers` cold: 38 s → 5.5 s. Churn tile shows "computing…" until ready.
