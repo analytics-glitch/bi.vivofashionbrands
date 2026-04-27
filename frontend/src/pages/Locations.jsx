@@ -350,13 +350,20 @@ const Locations = () => {
                 ))}
               </div>
 
-              {/* Leaderboard strip — celebrates this period's winners. */}
-              <LocationLeaderboard
-                badges={leaderBadges}
-                streaks={leaderStreaks}
-                onWinnerClick={setSelected}
-                className="mb-3"
-              />
+              {/* "Click any card to drill in" hint — communicates the deep-
+                  dive interaction to first-time users (the cards open a
+                  side panel with full store-level KPIs and history). */}
+              <div
+                className="rounded-lg bg-brand-soft/50 border border-brand/20 px-3 py-2 text-[12.5px] text-foreground/75 flex items-center gap-2"
+                data-testid="locations-deep-dive-hint"
+              >
+                <span aria-hidden="true">👆</span>
+                <span>
+                  <b className="text-brand-deep">Click any card</b> to open the
+                  store deep-dive — full KPI history, daily trend, top SKUs and
+                  return-rate context for that location.
+                </span>
+              </div>
 
               {/* Return-rate data-quality banner — reuses the platform-wide
                   outlier kernel to flag stores whose returns sit outside the
@@ -410,19 +417,23 @@ const Locations = () => {
                           <Storefront size={18} weight="duotone" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="font-bold text-[14px] leading-tight truncate" title={l.channel}>
-                            {l.channel}
-                          </div>
-                          {/* Sales sits IMMEDIATELY UNDER the location name (per
-                              user request), with a % share chip. The full
-                              comparison delta appears just below in InlineDelta. */}
-                          <div className="flex items-baseline gap-2 mt-0.5">
-                            <div className="font-extrabold text-[16px] text-brand-deep num leading-tight">
+                          {/* Name + sales sit on a SINGLE LINE so the card
+                              header reads as one phrase. The full sales
+                              value is the dominant element; the % share
+                              chip and country line follow on subsequent
+                              rows. The location name truncates rather
+                              than wrapping, with a title attribute for
+                              the full string. */}
+                          <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 leading-tight">
+                            <div className="font-bold text-[14px] truncate min-w-0" title={l.channel}>
+                              {l.channel}
+                            </div>
+                            <div className="font-extrabold text-[15px] text-brand-deep num shrink-0">
                               {fmtKES(l.total_sales)}
                             </div>
                             {pctShare != null && (
                               <span
-                                className="text-[10.5px] font-semibold text-muted"
+                                className="text-[10.5px] font-semibold text-muted shrink-0"
                                 data-testid={`loc-${l.channel}-pct-share`}
                                 title="Share of total sales across all locations in scope"
                               >
@@ -430,7 +441,7 @@ const Locations = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-[11.5px] text-muted mt-0.5 flex items-center gap-1.5">
+                          <div className="text-[11.5px] text-muted mt-1 flex items-center gap-1.5">
                             <span>{COUNTRY_FLAGS[l.country] || "🌍"} {l.country}</span>
                             {compareMode !== "none" && (
                               <InlineDelta delta={l.d_sales} testId={`loc-${l.channel}-d-sales`} compact />

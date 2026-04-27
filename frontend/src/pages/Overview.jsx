@@ -23,7 +23,7 @@ import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
-import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
+import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
 import {
@@ -962,15 +962,6 @@ const Overview = () => {
             )}
           </div>
 
-          {/* Location/channel breakdown table — user-facing performance leaderboard */}
-          <OverviewLeaderboard
-            sales={sales}
-            salesPrev={salesPrev}
-            footfall={footfall}
-            compareMode={compareMode}
-            compareLbl={compareLbl}
-          />
-
           <div className="card-white p-5" data-testid="category-chart">
             <SectionTitle title="Sales by Category" subtitle="Where the money came from this period — by clothing category." />
             {salesByCategory.length === 0 ? <Empty /> : (
@@ -1119,19 +1110,3 @@ const Overview = () => {
 };
 
 export default Overview;
-
-// Tiny wrapper so the `useLocationBadges` hook is called from a valid
-// component context. Navigates to Locations filtered by the clicked winner.
-const OverviewLeaderboard = ({ sales, salesPrev, footfall, compareMode, compareLbl }) => {
-  const navigate = useNavigate();
-  const badges = useLocationBadges({ sales, prevSales: salesPrev, footfall, compareMode, compareLbl });
-  const streaks = useLeaderboardStreaks();
-  if (!badges || badges.size === 0) return null;
-  return (
-    <LocationLeaderboard
-      badges={badges}
-      streaks={streaks}
-      onWinnerClick={(channel) => navigate(`/locations?channel=${encodeURIComponent(channel)}`)}
-    />
-  );
-};
