@@ -114,13 +114,47 @@ export const datePresets = () => {
   const yearStart = new Date(y, 0, 1);
   const yearEnd = today;
 
+  // Trailing windows (always end today, exclude today's partial when noted).
+  const minus = (days) => new Date(y, m, d - days);
+
+  // Last full week (Mon-Sun) before this week.
+  const lastWeekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 1);
+  const lastWeekStart = new Date(lastWeekEnd.getFullYear(), lastWeekEnd.getMonth(), lastWeekEnd.getDate() - 6);
+
+  // Last full quarter.
+  const curQ = Math.floor(m / 3); // 0..3
+  const lastQEndMonth = curQ * 3; // first month of current quarter
+  const lastQStart = new Date(y, lastQEndMonth - 3, 1);
+  const lastQEnd = new Date(y, lastQEndMonth, 0);
+
+  // Quarter-to-date.
+  const qtdStart = new Date(y, curQ * 3, 1);
+
+  // Last full calendar year.
+  const lastYearStart = new Date(y - 1, 0, 1);
+  const lastYearEnd = new Date(y - 1, 11, 31);
+
   return {
-    yesterday: { date_from: toISO(yesterday), date_to: toISO(yesterday), label: "Yesterday" },
+    // Spec-named presets (preferred).
     today: { date_from: toISO(today), date_to: toISO(today), label: "Today" },
-    this_week: { date_from: toISO(weekStart), date_to: toISO(weekEnd), label: "This Week" },
-    this_month: { date_from: toISO(monthStart), date_to: toISO(monthEnd), label: "This Month" },
-    last_month: { date_from: toISO(lastMonthStart), date_to: toISO(lastMonthEnd), label: "Last Month" },
-    this_year: { date_from: toISO(yearStart), date_to: toISO(yearEnd), label: "This Year" },
+    yesterday: { date_from: toISO(yesterday), date_to: toISO(yesterday), label: "Yesterday" },
+    last_7d: { date_from: toISO(minus(6)), date_to: toISO(today), label: "Last 7 days" },
+    last_30d: { date_from: toISO(minus(29)), date_to: toISO(today), label: "Last 30 days" },
+    last_90d: { date_from: toISO(minus(89)), date_to: toISO(today), label: "Last 90 days" },
+    last_365d: { date_from: toISO(minus(364)), date_to: toISO(today), label: "Last 365 days" },
+    last_week: { date_from: toISO(lastWeekStart), date_to: toISO(lastWeekEnd), label: "Last week" },
+    last_month: { date_from: toISO(lastMonthStart), date_to: toISO(lastMonthEnd), label: "Last month" },
+    last_quarter: { date_from: toISO(lastQStart), date_to: toISO(lastQEnd), label: "Last quarter" },
+    last_12_months: { date_from: toISO(new Date(y, m - 12, d + 1)), date_to: toISO(today), label: "Last 12 months" },
+    last_year: { date_from: toISO(lastYearStart), date_to: toISO(lastYearEnd), label: "Last year" },
+    // Period-to-date.
+    mtd: { date_from: toISO(monthStart), date_to: toISO(monthEnd), label: "Month to date" },
+    qtd: { date_from: toISO(qtdStart), date_to: toISO(today), label: "Quarter to date" },
+    ytd: { date_from: toISO(yearStart), date_to: toISO(yearEnd), label: "Year to date" },
+    // Legacy names kept as aliases for URL backward compatibility.
+    this_week: { date_from: toISO(weekStart), date_to: toISO(weekEnd), label: "This week" },
+    this_month: { date_from: toISO(monthStart), date_to: toISO(monthEnd), label: "This month" },
+    this_year: { date_from: toISO(yearStart), date_to: toISO(yearEnd), label: "This year" },
   };
 };
 
@@ -137,19 +171,18 @@ export const shiftISO = (iso, years, months) => {
   return `${ny}-${pad(nm)}-${pad(nd)}`;
 };
 
-export const comparePeriod = (from, to, mode) => {
+export const comparePeriod = (from, to, mode, custom) => {
   if (!mode || mode === "none") return null;
+  const shiftDays = (iso, days) => {
+    const [y, m, d] = iso.split("-").map((x) => parseInt(x, 10));
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + days);
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+  };
   if (mode === "yesterday") {
-    // Same range shifted back by 1 day — works for single and multi-day.
-    const shift = (iso) => {
-      const [y, m, d] = iso.split("-").map((x) => parseInt(x, 10));
-      const dt = new Date(y, m - 1, d);
-      dt.setDate(dt.getDate() - 1);
-      return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-    };
     return {
-      date_from: shift(from),
-      date_to: shift(to),
+      date_from: shiftDays(from, -1),
+      date_to: shiftDays(to, -1),
       label: "vs Yesterday",
     };
   }
@@ -164,7 +197,25 @@ export const comparePeriod = (from, to, mode) => {
     return {
       date_from: shiftISO(from, -1, 0),
       date_to: shiftISO(to, -1, 0),
-      label: "vs Last Year",
+      label: "vs Previous Year",
+    };
+  }
+  if (mode === "last_year_dow") {
+    // Shift back 52 weeks (364 days) so day-of-week aligns. Some calendar
+    // years require 53 weeks; we pick 52 because POS / footfall analysis
+    // is dominated by weekday rhythm — Mon-to-Mon comparison.
+    return {
+      date_from: shiftDays(from, -364),
+      date_to: shiftDays(to, -364),
+      label: "vs Prev Year (DoW aligned)",
+    };
+  }
+  if (mode === "custom") {
+    if (!custom || !custom.date_from || !custom.date_to) return null;
+    return {
+      date_from: custom.date_from,
+      date_to: custom.date_to,
+      label: "vs Custom",
     };
   }
   return null;

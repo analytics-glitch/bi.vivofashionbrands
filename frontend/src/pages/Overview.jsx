@@ -67,7 +67,7 @@ const COUNTRY_LINE_COLORS = {
 const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
-  const { applied, touchLastUpdated } = useFilters();
+  const { applied, touchLastUpdated, lastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
   const isMobile = useIsMobile();
@@ -516,17 +516,26 @@ const Overview = () => {
 
   return (
     <div className="space-y-6" data-testid="overview-page">
-      <div>
-        <div className="eyebrow">Dashboard · Overview</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Overview</h1>
-        <p className="text-muted text-[13px] mt-0.5">
-          {fmtDate(dateFrom)} → {fmtDate(dateTo)}
-          {compareMode !== "none" && (
-            <span className="ml-2 pill-neutral">
-              {compareMode === "last_month" ? "vs Last Month" : "vs Last Year"}
-            </span>
-          )}
-        </p>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <div>
+          <div className="eyebrow">Dashboard · Overview</div>
+          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Overview</h1>
+          <p className="text-muted text-[13px] mt-0.5">
+            {fmtDate(dateFrom)} → {fmtDate(dateTo)}
+            {compareMode !== "none" && compareLbl && (
+              <span className="ml-2 pill-neutral">{compareLbl}</span>
+            )}
+          </p>
+        </div>
+        {lastUpdated && (
+          <div
+            className="text-[11.5px] text-muted ml-auto"
+            data-testid="last-refreshed"
+            title={lastUpdated.toLocaleString()}
+          >
+            Last refreshed: {lastUpdated.toLocaleTimeString()}
+          </div>
+        )}
       </div>
 
       {(loading || kpisLoading) && <Loading label="Aggregating group KPIs…" />}
@@ -550,31 +559,6 @@ const Overview = () => {
 
       {!loading && !kpisLoading && !error && kpis && (
         <>
-          <DailyBriefing
-            kpis={kpis}
-            prevKpis={kpisPrev}
-            sales={sales}
-            inventory={kpis}
-            compareLbl={compareLbl}
-          />
-          <WhatChangedBelt kpis={kpis} dateFrom={dateFrom} dateTo={dateTo} />
-          <WinsThisWeekCard />
-          <OverviewLeaderboard
-            sales={sales}
-            salesPrev={salesPrev}
-            footfall={footfall}
-            compareMode={compareMode}
-            compareLbl={compareLbl}
-          />
-          <StoreOfTheWeek />
-          <DataFreshness />
-          <SalesProjection
-            dateFrom={dateFrom}
-            dateTo={dateTo}
-            country={countries.length === 1 ? countries[0] : undefined}
-            channel={channels.length ? channels.join(",") : undefined}
-            dataVersion={dataVersion}
-          />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
@@ -884,6 +868,15 @@ const Overview = () => {
             )}
           </div>
 
+          {/* Location/channel breakdown table — user-facing performance leaderboard */}
+          <OverviewLeaderboard
+            sales={sales}
+            salesPrev={salesPrev}
+            footfall={footfall}
+            compareMode={compareMode}
+            compareLbl={compareLbl}
+          />
+
           <div className="card-white p-5" data-testid="category-chart">
             <SectionTitle title="Sales by Category" subtitle="Merchandise-mix at a glance — is your revenue concentrated in one category or diversified? Compare vs previous period to spot category-level momentum." />
             {salesByCategory.length === 0 ? <Empty /> : (
@@ -982,6 +975,31 @@ const Overview = () => {
               ]}
               rows={topStyles}
             />
+          </div>
+
+          {/* ---- Below the fold: insights & projections ---- */}
+          <div className="pt-2 border-t border-border/60" data-testid="insights-section">
+            <div className="eyebrow mb-3 text-muted">Insights & Projections</div>
+            <div className="space-y-6">
+              <DailyBriefing
+                kpis={kpis}
+                prevKpis={kpisPrev}
+                sales={sales}
+                inventory={kpis}
+                compareLbl={compareLbl}
+              />
+              <WhatChangedBelt kpis={kpis} dateFrom={dateFrom} dateTo={dateTo} />
+              <WinsThisWeekCard />
+              <StoreOfTheWeek />
+              <SalesProjection
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                country={countries.length === 1 ? countries[0] : undefined}
+                channel={channels.length ? channels.join(",") : undefined}
+                dataVersion={dataVersion}
+              />
+              <DataFreshness />
+            </div>
           </div>
         </>
       )}

@@ -1,0 +1,42 @@
+{
+  "summary": "Frontend-only verification of the new pill-based FilterBar (DateRange/Compare/Currency pills + MobileFiltersSheet), URL query-param persistence, and Overview page section reordering. All 14 acceptance items from the review request passed on both desktop (1920x1080) and mobile (390x844). No regressions observed on Customers/Products/Inventory/Locations/Footfall filter bars.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview charts", "issues": ["Recharts emits 'The width(-1) and height(-1) of chart should be greater than 0' warnings at initial mount (noisy but non-breaking). Likely from chart containers measuring before layout settles — consider adding minWidth/minHeight on ResponsiveContainer parents."]}
+    ]
+  },
+  "verifications": {
+    "login": "admin@vivofashiongroup.com logged in and landed on /",
+    "pills_render": "date-range-pill, compare-pill, currency-pill all found in filter-bar with labels Today / No comparison / KES",
+    "date_range_panel": "Opens on click, data-testid='date-range-panel' visible, all 15 presets (today/yesterday/last_7d/last_30d/last_90d/last_365d/last_week/last_month/last_quarter/last_12_months/last_year/mtd/qtd/ytd/custom) present",
+    "preset_click": "Clicking preset-last_7d updated pill label to 'Last 7 days', closed panel, URL became ?p=last_7d&d=2026-04-21&t=2026-04-27, KPIs refreshed",
+    "url_persistence": "Full reload restored 'Last 7 days' preset and same URL",
+    "compare_panel": "compare-panel opens with exactly the 5 options (none, yesterday, last_year, last_year_dow, custom). Selecting custom reveals compare-custom-from, compare-custom-to, compare-custom-apply",
+    "currency_disabled": "currency-pill is disabled=True (not clickable); tooltip 'Multi-currency coming soon — KES locked for now' wired via shadcn Tooltip",
+    "last_refreshed": "'Last refreshed: 12:54:11 PM' label rendered via data-testid='last-refreshed'",
+    "section_order": "Confirmed top→bottom vertical order on Overview: Total Sales/Net Sales/Orders/Units → ABV/ASP/MSI/Return Rate/Return Amount → Total Footfall/Conversion Rate → Top Country/Top Location/Best Conversion → Top locations chart + Country split → Daily Sales Trend (between y=903 and y=2151) → Sales by Category (y=2151) → Sales by Subcategory (y=2598) → Top 20 Styles (y=3125) → 'Insights & Projections' divider (y=4331) → Daily Briefing / WhatChanged / WinsThisWeek / StoreOfTheWeek / SalesProjection / Data Freshness (y=4917)",
+    "other_pages": "Customers, Products, Inventory, Locations, Footfall all render the 3-pill FilterBar + share-filter-link correctly",
+    "mobile_viewport": "At 390x844 the three desktop pills are hidden and replaced by mobile-filters-button; clicking opens mobile-filters-sheet containing all three pills (date/compare/currency) + country/POS multiselects",
+    "share_view": "share-filter-link clickable on desktop; share-filter-link-mobile rendered on mobile"
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Non-blocking: suppress or fix Recharts 'width(-1) / height(-1)' warnings at mount — guard ResponsiveContainer with a minHeight or skip render until container has measured dimensions."
+  ],
+  "critical_code_review_comments": [
+    "FilterBar.jsx (~580 LOC) is borderline but still cohesive — fine as-is; if it grows, split DateRangeButton / CompareButton / CurrencyButton into their own files under components/filterbar/.",
+    "filters.jsx URL writer treats preset!=='today' as the emit-trigger for d/t, but also emits d/t when preset==='today' if they differ from defaults — this is correct but subtle; consider a comment or unit test to lock the behavior.",
+    "VALID_COMPARE still contains legacy 'last_month' even though the new UI no longer exposes it — harmless (URL-only backward compat) but worth a comment.",
+    "Currency button disabled state: aria-disabled/title would improve a11y in addition to the shadcn Tooltip."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (not tested — frontend-only request)", "frontend": "100%" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Filter bar refactor (iteration_31) verified end-to-end — all 14 acceptance items pass. If next iteration touches filters/URL params, regression selectors: data-testid='date-range-pill' | 'compare-pill' | 'currency-pill' | 'date-range-panel' | 'compare-panel' | 'preset-<key>' | 'compare-option-<key>' | 'compare-custom-from/to/apply' | 'mobile-filters-button' | 'mobile-filters-sheet' | 'share-filter-link' | 'last-refreshed'. URL short-key scheme: p/d/t/co/ch/cm/cd/ce/cu; long aliases period/date_from/date_to/country/pos/compare/compare_from/compare_to/currency are accepted for shared links."
+}

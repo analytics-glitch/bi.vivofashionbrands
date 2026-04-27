@@ -10,14 +10,25 @@ const FiltersContext = createContext(null);
 // ---- URL serialisation helpers (short, stable keys) ----
 // d  = date_from (ISO)
 // t  = date_to   (ISO)
-// p  = preset    (today|yesterday|this_week|this_month|last_month|this_year|custom)
+// p  = preset    (today|yesterday|last_7d|last_30d|last_90d|last_365d|last_week|last_month|last_quarter|last_12_months|last_year|mtd|qtd|ytd|this_week|this_month|this_year|custom)
 // co = countries (comma-separated)
 // ch = channels  (comma-separated, URL-encoded)
-// cm = compareMode (none|last_month|last_year)
-const VALID_PRESETS = new Set(["yesterday", "today", "this_week", "this_month", "last_month", "this_year", "custom"]);
-const VALID_COMPARE = new Set(["none", "yesterday", "last_month", "last_year"]);
+// cm = compareMode (none|yesterday|last_year|last_year_dow|last_month|custom)
+// cd = compareDateFrom (ISO, only when cm=custom)
+// ce = compareDateTo   (ISO, only when cm=custom)
+// cu = currency code (default KES; cosmetic only for now)
+const VALID_PRESETS = new Set([
+  "today", "yesterday",
+  "last_7d", "last_30d", "last_90d", "last_365d",
+  "last_week", "last_month", "last_quarter", "last_12_months", "last_year",
+  "mtd", "qtd", "ytd",
+  "this_week", "this_month", "this_year",
+  "custom",
+]);
+const VALID_COMPARE = new Set(["none", "yesterday", "last_month", "last_year", "last_year_dow", "custom"]);
 const ALL_COUNTRIES = new Set(["Kenya", "Uganda", "Rwanda", "Online"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_CURRENCIES = new Set(["KES", "USD", "UGX", "RWF"]);
 
 function readUrlParams() {
   if (typeof window === "undefined") return null;
@@ -32,12 +43,18 @@ function readUrlParams() {
   const co = pick("co", "country");
   const ch = pick("ch", "pos");
   const cm = pick("cm", "compare");
+  const cd = pick("cd", "compare_from");
+  const ce = pick("ce", "compare_to");
+  const cu = pick("cu", "currency");
   if (d) out.d = d;
   if (t) out.t = t;
   if (preset) out.p = preset;
   if (co) out.co = co;
   if (ch) out.ch = ch;
   if (cm) out.cm = cm;
+  if (cd) out.cd = cd;
+  if (ce) out.ce = ce;
+  if (cu) out.cu = cu;
   return Object.keys(out).length ? out : null;
 }
 
@@ -50,13 +67,16 @@ function writeUrlParams(state) {
     else next.delete(k);
   };
   // Only emit params that differ from defaults (today preset, no countries,
-  // no channels, compareMode=last_month).
+  // no channels, compareMode=none, currency=KES).
   put("p", state.preset, state.preset === "today");
   put("d", state.dateFrom, state.preset === "today" && state.dateFrom === defaults.date_from);
   put("t", state.dateTo, state.preset === "today" && state.dateTo === defaults.date_to);
   put("co", state.countries.join(","), state.countries.length === 0);
   put("ch", state.channels.join(","), state.channels.length === 0);
-  put("cm", state.compareMode, state.compareMode === "last_month");
+  put("cm", state.compareMode, state.compareMode === "none");
+  put("cd", state.compareDateFrom, state.compareMode !== "custom" || !state.compareDateFrom);
+  put("ce", state.compareDateTo, state.compareMode !== "custom" || !state.compareDateTo);
+  put("cu", state.currency, state.currency === "KES");
   const qs = next.toString();
   const url = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
   window.history.replaceState(null, "", url);
@@ -78,7 +98,10 @@ export const FiltersProvider = ({ children }) => {
   const initialChannels = urlParams?.ch
     ? urlParams.ch.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
-  const initialCompare = urlParams?.cm && VALID_COMPARE.has(urlParams.cm) ? urlParams.cm : "last_month";
+  const initialCompare = urlParams?.cm && VALID_COMPARE.has(urlParams.cm) ? urlParams.cm : "none";
+  const initialCompareFrom = urlParams?.cd && ISO_DATE.test(urlParams.cd) ? urlParams.cd : "";
+  const initialCompareTo = urlParams?.ce && ISO_DATE.test(urlParams.ce) ? urlParams.ce : "";
+  const initialCurrency = urlParams?.cu && VALID_CURRENCIES.has(urlParams.cu) ? urlParams.cu : "KES";
 
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
@@ -86,6 +109,9 @@ export const FiltersProvider = ({ children }) => {
   const [countries, setCountries] = useState(initialCountries);
   const [channels, setChannels] = useState(initialChannels);
   const [compareMode, setCompareMode] = useState(initialCompare);
+  const [compareDateFrom, setCompareDateFrom] = useState(initialCompareFrom);
+  const [compareDateTo, setCompareDateTo] = useState(initialCompareTo);
+  const [currency, setCurrency] = useState(initialCurrency);
   const [dataVersion, setDataVersion] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(null);
 
@@ -157,22 +183,25 @@ export const FiltersProvider = ({ children }) => {
     if (preset === "custom" || (dateTo && dateTo !== defs.date_to)) p.set("date_to", dateTo);
     if (countries.length) p.set("country", countries.join(","));
     if (channels.length) p.set("pos", channels.join(","));
-    if (compareMode && compareMode !== "last_month") p.set("compare", compareMode);
+    if (compareMode && compareMode !== "none") p.set("compare", compareMode);
+    if (compareMode === "custom" && compareDateFrom) p.set("compare_from", compareDateFrom);
+    if (compareMode === "custom" && compareDateTo) p.set("compare_to", compareDateTo);
+    if (currency && currency !== "KES") p.set("currency", currency);
     const qs = p.toString();
     return window.location.origin + window.location.pathname + (qs ? `?${qs}` : "");
-  }, [preset, dateFrom, dateTo, countries, channels, compareMode]);
+  }, [preset, dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency]);
 
   // Sync state → URL on every meaningful change AND on every route change
   // (react-router's NavLink replaces the whole URL including the query
   // string, so we re-apply our params right after the pathname updates).
   const location = useLocation();
   useEffect(() => {
-    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode });
-  }, [dateFrom, dateTo, preset, countries, channels, compareMode, location.pathname]);
+    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency });
+  }, [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, location.pathname]);
 
   const applied = useMemo(
-    () => ({ dateFrom, dateTo, countries, channels, compareMode, dataVersion }),
-    [dateFrom, dateTo, countries, channels, compareMode, dataVersion]
+    () => ({ dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion }),
+    [dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion]
   );
 
   const value = useMemo(
@@ -183,12 +212,15 @@ export const FiltersProvider = ({ children }) => {
       countries, setCountries,
       channels, setChannels,
       compareMode, setCompareMode,
+      compareDateFrom, setCompareDateFrom,
+      compareDateTo, setCompareDateTo,
+      currency, setCurrency,
       dataVersion, refresh,
       lastUpdated, touchLastUpdated,
       applied,
       buildShareableLink,
     }),
-    [dateFrom, dateTo, preset, countries, channels, compareMode, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
+    [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };
