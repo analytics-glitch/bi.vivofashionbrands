@@ -17,6 +17,7 @@ import {
   MagnifyingGlass,
   TrendDown,
   Cube,
+  Gauge,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -456,7 +457,7 @@ const Inventory = () => {
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
@@ -485,6 +486,36 @@ const Inventory = () => {
               showDelta={false}
               action={{ label: "Plan distribution", to: "/ibt" }}
             />
+            {(() => {
+              // Overall Weeks of Cover = Σ(current_stock) ÷ Σ(weekly units sold).
+              // Weekly units = Σ(units_sold_28d) ÷ 4. Computed across the
+              // current scope (filters apply via filteredWeeksOfCover).
+              const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);
+              const totalWeekly = filteredWeeksOfCover.reduce((s, r) => s + (r.units_sold_28d || 0), 0) / 4;
+              const woc = totalWeekly > 0 ? totalStock / totalWeekly : null;
+              const sub = woc == null
+                ? "Not enough sales history"
+                : woc < 4 ? "Healthy — stock is moving"
+                : woc < 8 ? "Watch — slowing"
+                : woc < 16 ? "Heavy — markdown candidates"
+                : "Stale — clearance now";
+              return (
+                <KPICard
+                  testId="inv-kpi-weeks-of-cover"
+                  label="Overall Weeks of Cover"
+                  sub={sub}
+                  formula={
+                    "Overall WoC = Σ current_stock ÷ Σ weekly_units_sold.\n" +
+                    "Weekly units = units_sold_28d ÷ 4. Lower is better — high WoC means stock is sitting too long."
+                  }
+                  value={woc == null ? "—" : `${woc.toFixed(1)} wks`}
+                  icon={Gauge}
+                  higherIsBetter={false}
+                  showDelta={false}
+                  action={{ label: "See aging buckets", onClick: () => document.querySelector('[data-testid="weeks-of-cover"]')?.scrollIntoView({ behavior: "smooth" }) }}
+                />
+              );
+            })()}
             <KPICard
               testId="inv-kpi-lowstock"
               label="Low-Stock Styles (≤10)"

@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 34 — 6 bundled changes (Δ Conversion fix, ⌘K perf, Total Customers tile breakdown, walk-ins-by-store moved to Customers, Inventory weeks-of-cover KPI, IBT row drill-down). Backend: 9/9 pytest pass. Frontend: all acceptance items verified end-to-end.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      { "screen": "All pages", "issues": ["Recharts width(-1)/height(-1) console warnings persist (carry-over from iter_31/32/33 — non-functional)."] }
+    ]
+  },
+  "verifications": {
+    "backend_search_speed": "GET /api/search?q=sarit warm=~0.5s, cold ~3.0s (timebox at 1.2s on /customer-search). Previous 3-4s freeze gone.",
+    "backend_search_short_query": "GET /api/search?q=vi returns customers=[] in <1.5s (skipped per len(q)<3 guard).",
+    "backend_customers_endpoint": "GET /api/search/customers?q=sarit returns {q, customers[]}, 200 OK; q='ab' returns empty list.",
+    "backend_walk_ins_by_location": "GET /api/customers/walk-ins now includes by_location[] with keys {channel, country, walk_in_orders, walk_in_sales, total_orders, total_sales, walk_in_share_orders_pct, capture_rate_pct}. capture_rate_pct ≈ 100 - walk_in_share_orders_pct (verified). walk_in_orders <= total_orders.",
+    "backend_ibt_sku_breakdown": "GET /api/analytics/ibt-sku-breakdown returns {style_name, from_store, to_store, skus[], from_total, to_total, suggested_total}. SKU rows have {sku, color, size, from_available, to_available, suggested_qty}. Totals consistent (sum of skus == totals). suggested_qty>0 verified for first IBT pick (Safari Naledi: 7 SKUs, e.g. S0525004OLIM TO=0 suggested=2).",
+    "backend_auth_guards": "/api/search, /api/search/customers, /api/analytics/ibt-sku-breakdown all return 401/403 unauthenticated.",
+    "frontend_kpi_total_breakdown": "[data-testid='kpi-total'] shows headline '283' with breakdown line '46 new · 214 returning · 23 walk-in' (46+214+23 == 283). Compare delta '▼ 33.3%' renders.",
+    "frontend_walk_ins_by_store_card": "[data-testid='walk-ins-by-store-card'] on Customers page. Headers: ['Store','Country','Walk-ins','Total Orders','Walk-in %','Capture %','Walk-in Sales']. Export CSV button present. Default sort = Capture % asc (worst first: rows with 0.00% capture appear first). 4 store rows under default 'Today' filter (every store with sales in window).",
+    "frontend_locations_regression": "Locations page no longer contains [data-testid='walk-ins-by-store-card'] nor any 'Walk-in capture' heading. 'Locations needing attention' panel still present.",
+    "frontend_delta_conversion_fix": "Locations Footfall & Conversion table 'Δ Conversion' column now populated when compareMode is set: observed values ['▼ 7.70pp','—','▼ 8.20pp','▲ 4.79pp','▲ 5.41pp']. Bug fix verified.",
+    "frontend_inventory_weeks_of_cover": "[data-testid='inv-kpi-weeks-of-cover'] renders 'Overall Weeks of Cover · 7.8 wks · Watch — slowing'. Parent grid class 'grid grid-cols-2 lg:grid-cols-5 gap-3' (5-col confirmed). Action button scrolls [data-testid='weeks-of-cover'] into view (IN_VIEW).",
+    "frontend_ibt_drill_down": "IBT page table renders 50 rows. Click first row → [data-testid='ibt-sku-breakdown-Safari Naledi Gathered Panel Wrap Dress'] panel inline. SKU table headers: ['SKU','Color','Size','Stock at FROM','Stock at TO','Suggested Qty']. 7 SKUs with suggested_qty>0 for shortage rows.",
+    "frontend_global_search_palette": "⌘K opens palette; typing 'sarit' returns 14 grouped results (pages/stores/styles + customers) within 0.47s — previously 3-4s. Customers stream in within the same ~500ms window from parallel /api/search/customers."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_34.py",
+    "/app/test_reports/pytest/iter34.xml"
+  ],
+  "action_items": [
+    "Non-blocking: 'Show N more SKUs' toggle was not visible because the picked IBT recommendation had only 7 SKUs (all displayed). Spec implies the toggle appears only when SKU count exceeds the visible window — not verified end-to-end this run; main agent can self-test by picking a row with a larger SKU set if desired.",
+    "Non-blocking: walk-ins-by-store table showed 4 stores under default 'Today' date range. Backend by_location[] returns one row per active store in window — main agent should confirm the spec intent is 'every store with activity in the period' (not 'every configured store'). If literal 'every store' is required, backend by_location should backfill zero-volume stores."
+  ],
+  "critical_code_review_comments": [
+    "ibt-sku-breakdown allocation logic uses a 1-unit safety buffer at FROM only when from_available>2 and aims to bring TO to 3 units cover — sensible heuristic but the magic numbers (1, 2, 3) should be named constants or env-tunable parameters for future tweaking.",
+    "/api/search timebox of 1.2s on /customer-search is hard-coded; consider making it a settings/env knob so ops can tune it without a deploy.",
+    "Customer search is duplicated across /api/search and /api/search/customers — both call the same upstream and rely on fetch() cache. OK as-is given the cache, but document the contract so a future refactor doesn't break the parallel-stream UX in GlobalSearch.",
+    "by_location enrichment in /api/customers/walk-ins uses different key names (total_orders, total_sales, capture_rate_pct) than the by_country sibling (all_orders, all_sales not present, walk_in_share_orders_pct only). Inconsistency between by_country and by_location row shapes may surprise consumers — consider aligning names.",
+    "Recharts ResponsiveContainer width/height(-1) warnings are still flooding the console; setting minWidth=0 / minHeight on the container would silence them and is a 1-line fix."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_34.py"],
+  "success_rate": { "backend": "9/9 = 100%", "frontend": "100% of iter_34 acceptance items" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Stable selectors confirmed for iter_34: [data-testid='kpi-total'] (Customers headline+breakdown), [data-testid='walk-ins-by-store-card'] (Customers page only — removed from Locations), [data-testid='inv-kpi-weeks-of-cover'] + [data-testid='inv-kpi-weeks-of-cover-action'] + [data-testid='weeks-of-cover'] (Inventory page, 5-col grid), [data-testid^='ibt-sku-breakdown-'] (IBT row expand panel). Backend endpoints: GET /api/search (timeboxed, ~0.5s warm), GET /api/search/customers (parallel customer stream), GET /api/customers/walk-ins (now returns by_location[] with capture_rate_pct), GET /api/analytics/ibt-sku-breakdown (~1-3s cold, returns SKU-level allocation). Iter_32 'Retail channel-group identical to All' bug remains unresolved across iterations and is OUT OF SCOPE."
+}

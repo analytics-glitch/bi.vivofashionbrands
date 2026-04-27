@@ -1262,6 +1262,96 @@ async def analytics_ibt_suggestions(
     return suggestions[: int(limit)]
 
 
+@api_router.get("/analytics/ibt-sku-breakdown")
+async def analytics_ibt_sku_breakdown(
+    style_name: str,
+    from_store: str,
+    to_store: str,
+    units_to_move: Optional[int] = None,
+):
+    """SKU-level (color × size) breakdown for a single IBT recommendation.
+
+    For each SKU of the style that exists at either store, returns the
+    available stock at FROM, available stock at TO, and a suggested qty
+    to transfer for that SKU. The suggested qty is allocated greedily:
+    fill SKUs that are out-of-stock at TO first, in descending FROM-stock
+    order, capped by the parent recommendation's `units_to_move` (when
+    provided) and a 1-unit safety buffer at FROM.
+    """
+    # Pull SKU-level inventory for both stores in parallel. We use the
+    # singular `location` path (not the fan-out) so each call is a single
+    # cached upstream hit.
+    from_rows, to_rows = await asyncio.gather(
+        fetch_all_inventory(location=from_store),
+        fetch_all_inventory(location=to_store),
+    )
+
+    def _is_match(r: Dict[str, Any]) -> bool:
+        return (r.get("style_name") or "").strip() == style_name.strip()
+
+    from_skus = [r for r in (from_rows or []) if _is_match(r)]
+    to_skus = [r for r in (to_rows or []) if _is_match(r)]
+
+    # Index by SKU code.
+    sku_idx: Dict[str, Dict[str, Any]] = {}
+    for r in from_skus:
+        sku = r.get("sku") or ""
+        if not sku:
+            continue
+        sku_idx.setdefault(sku, {
+            "sku": sku,
+            "color": r.get("color_print") or r.get("color") or "—",
+            "size": r.get("size") or "—",
+            "from_available": 0,
+            "to_available": 0,
+        })
+        sku_idx[sku]["from_available"] += int(r.get("available") or 0)
+    for r in to_skus:
+        sku = r.get("sku") or ""
+        if not sku:
+            continue
+        sku_idx.setdefault(sku, {
+            "sku": sku,
+            "color": r.get("color_print") or r.get("color") or "—",
+            "size": r.get("size") or "—",
+            "from_available": 0,
+            "to_available": 0,
+        })
+        sku_idx[sku]["to_available"] += int(r.get("available") or 0)
+
+    rows = list(sku_idx.values())
+
+    # Allocation: greedy fill — fix shortages at TO first (TO=0 then TO=1 …),
+    # using SKUs with the largest excess at FROM. Use a 1-unit safety buffer
+    # at FROM only when from_available > 2; otherwise the IBT was triggered
+    # because the source is slow-moving anyway, so liquidate fully.
+    budget = int(units_to_move) if units_to_move else None
+    rows.sort(key=lambda r: (r["to_available"], -r["from_available"]))
+    for r in rows:
+        buffer = 1 if r["from_available"] > 2 else 0
+        max_from_can_send = max(0, r["from_available"] - buffer)
+        # Aim to bring TO up to 3 units cover.
+        gap = max(0, 3 - r["to_available"])
+        proposed = min(max_from_can_send, gap)
+        if budget is not None:
+            proposed = min(proposed, budget)
+            budget -= proposed
+        r["suggested_qty"] = proposed
+
+    # Re-sort for display: biggest suggested first, then biggest from_stock.
+    rows.sort(key=lambda r: (r["suggested_qty"], r["from_available"]), reverse=True)
+
+    return {
+        "style_name": style_name,
+        "from_store": from_store,
+        "to_store": to_store,
+        "skus": rows,
+        "from_total": sum(r["from_available"] for r in rows),
+        "to_total": sum(r["to_available"] for r in rows),
+        "suggested_total": sum(r["suggested_qty"] for r in rows),
+    }
+
+
 # -------------------- Customer cross-shop (which stores share customers) --------------------
 @api_router.get("/analytics/customer-crosswalk")
 async def analytics_customer_crosswalk(

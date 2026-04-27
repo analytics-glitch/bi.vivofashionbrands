@@ -11,7 +11,6 @@ import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
-import LocationsCaptureRatePanel from "@/components/LocationsCaptureRatePanel";
 import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -25,6 +24,7 @@ const Locations = () => {
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
   const [footfall, setFootfall] = useState([]);
+  const [prevFootfall, setPrevFootfall] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("total_sales");
@@ -57,12 +57,16 @@ const Locations = () => {
         ? api.get("/sales-summary", { params: prevP })
         : Promise.resolve({ data: [] }),
       api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
+      prev
+        ? api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } }).catch(() => ({ data: [] }))
+        : Promise.resolve({ data: [] }),
     ])
-      .then(([s, ps, ff]) => {
+      .then(([s, ps, ff, pff]) => {
         if (cancelled) return;
         setRows(s.data || []);
         setPrevRows(ps.data || []);
         setFootfall(ff.data || []);
+        setPrevFootfall(pff.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -91,6 +95,12 @@ const Locations = () => {
     return m;
   }, [footfall]);
 
+  const prevFootfallMap = useMemo(() => {
+    const m = new Map();
+    for (const r of prevFootfall) m.set(r.location, r);
+    return m;
+  }, [prevFootfall]);
+
   const kpis = rawKpis;
 
   const enriched = useMemo(() => {
@@ -108,7 +118,11 @@ const Locations = () => {
       const ffCount = ff ? (ff.total_footfall || 0) : 0;
       const conv = ffCount ? (orders / ffCount) * 100 : null;
       // Previous conversion = prev orders ÷ prev footfall when both exist.
-      const pFfCount = ff ? (ff.prev_total_footfall || 0) : 0;
+      // Pull prev footfall from the dedicated /footfall fetch on the prev
+      // window (the upstream /footfall endpoint doesn't return previous-
+      // period totals inline, so we have to fan out a second call).
+      const pFf = prevFootfallMap.get(r.channel);
+      const pFfCount = pFf ? (pFf.total_footfall || 0) : 0;
       const pPrevOrders = prev ? (prev.orders || prev.total_orders || 0) : 0;
       const pConv = pFfCount ? (pPrevOrders / pFfCount) * 100 : null;
       const conv_delta_pp = (conv != null && pConv != null) ? +(conv - pConv).toFixed(2) : null;
@@ -156,7 +170,7 @@ const Locations = () => {
         conv_delta_pp,
       };
     });
-  }, [rows, prevMap, footfallMap]);
+  }, [rows, prevMap, footfallMap, prevFootfallMap]);
 
   const avg = useMemo(() => {
     if (!enriched.length) return 0;
@@ -658,10 +672,6 @@ const Locations = () => {
                   </table>
                 </div>
               </div>
-
-              {/* Per-store walk-in capture rate — celebrate top 3, coach
-                  bottom 3. Capture rate = inverse of walk-in share. */}
-              <LocationsCaptureRatePanel />
 
               {/* "Locations needing attention" — surfaces stores that look
                   off on at least one of: sales drop, conversion drop,

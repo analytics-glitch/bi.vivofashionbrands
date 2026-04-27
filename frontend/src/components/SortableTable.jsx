@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { CaretUp, CaretDown, Download } from "@phosphor-icons/react";
+import { CaretUp, CaretDown, CaretRight, Download } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 /** Download rows as CSV and show a success toast. */
@@ -66,8 +66,15 @@ export const SortableTable = ({
    * totals). Only shown on the desktop table view. Pass an array of
    * <td>…</td> nodes whose count matches `columns.length`. */
   footerRow = null,
+  /** When provided, each row gets a chevron column and clicking it (or
+   * the row itself) toggles an inline expanded panel that renders
+   * `renderExpanded(row)` spanning all columns. */
+  renderExpanded = null,
+  /** Stable key getter for expanded-state tracking. Defaults to row index. */
+  rowKey = null,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
+  const [expanded, setExpanded] = useState(() => new Set());
   const [limit, setLimit] = useState(pageSize || null);
 
   const sorted = useMemo(() => {
@@ -131,8 +138,9 @@ export const SortableTable = ({
             className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]"
           >
             <tr>
+              {renderExpanded && <th className="w-7" />}
               {columns.map((c, ci) => {
-                const isFirst = ci === 0 && stickyFirstCol;
+                const isFirst = ci === 0 && stickyFirstCol && !renderExpanded;
                 return (
                   <th
                     key={c.key}
@@ -152,30 +160,57 @@ export const SortableTable = ({
           <tbody>
             {visible.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="text-center text-muted py-8">
+                <td colSpan={columns.length + (renderExpanded ? 1 : 0)} className="text-center text-muted py-8">
                   {emptyLabel}
                 </td>
               </tr>
             )}
-            {visible.map((r, i) => (
-              <tr
-                key={i}
-                className={onRowClick ? "cursor-pointer hover:bg-panel" : undefined}
-                onClick={onRowClick ? () => onRowClick(r) : undefined}
-              >
-                {columns.map((c, ci) => {
-                  const isFirst = ci === 0 && stickyFirstCol;
-                  return (
-                    <td
-                      key={c.key}
-                      className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
-                    >
-                      {c.render ? c.render(r, i) : r[c.key]}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            {visible.map((r, i) => {
+              const key = rowKey ? rowKey(r) : i;
+              const isOpen = expanded.has(key);
+              return (
+                <React.Fragment key={key}>
+                  <tr
+                    className={`${onRowClick || renderExpanded ? "cursor-pointer hover:bg-panel" : ""} ${isOpen ? "bg-panel/60" : ""}`}
+                    onClick={
+                      renderExpanded
+                        ? () => setExpanded((s) => {
+                            const n = new Set(s);
+                            if (n.has(key)) n.delete(key); else n.add(key);
+                            return n;
+                          })
+                        : (onRowClick ? () => onRowClick(r) : undefined)
+                    }
+                  >
+                    {renderExpanded && (
+                      <td className="text-center text-muted">
+                        {isOpen ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+                      </td>
+                    )}
+                    {columns.map((c, ci) => {
+                      const isFirst = ci === 0 && stickyFirstCol && !renderExpanded;
+                      return (
+                        <td
+                          key={c.key}
+                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
+                        >
+                          {c.render ? c.render(r, i) : r[c.key]}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                  {renderExpanded && isOpen && (
+                    <tr className="bg-panel/40">
+                      <td colSpan={columns.length + 1} className="p-0">
+                        <div className="px-4 py-3 border-y border-brand/30">
+                          {renderExpanded(r)}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
           {footerRow && (
             <tfoot className="sticky bottom-0 z-20 bg-panel border-t-2 border-brand/40">

@@ -87,6 +87,10 @@ const GlobalSearch = () => {
 
   // Fetch results when open + query. Only runs when NOT in askMode —
   // askMode hits the LLM-backed /search/ask endpoint instead.
+  // Pages/stores/styles come back fast (~200 ms); customers (upstream
+  // /customer-search) can be 1–3 s on cold cache, so we fire it in
+  // parallel via the dedicated /search/customers endpoint and merge
+  // when ready instead of blocking the whole palette on it.
   useEffect(() => {
     if (!open || askMode) return;
     if (!debouncedQ) {
@@ -95,8 +99,12 @@ const GlobalSearch = () => {
     }
     let cancel = false;
     setLoading(true);
-    api
-      .get("/search", { params: { q: debouncedQ, limit: 5 } })
+    const fastP = api.get("/search", { params: { q: debouncedQ, limit: 5 } });
+    const custP = debouncedQ.length >= 3
+      ? api.get("/search/customers", { params: { q: debouncedQ, limit: 5 } }).catch(() => ({ data: { customers: [] } }))
+      : Promise.resolve({ data: { customers: [] } });
+
+    fastP
       .then(({ data }) => {
         if (cancel) return;
         setGroups({
@@ -112,8 +120,21 @@ const GlobalSearch = () => {
         setGroups({ pages: [], stores: [], styles: [], customers: [] });
       })
       .finally(() => !cancel && setLoading(false));
+
+    custP.then(({ data }) => {
+      if (cancel) return;
+      const cs = data?.customers || [];
+      if (cs.length) {
+        // Merge — replace customers if /search returned an empty list
+        // (likely timed out) or the parallel call returned more.
+        setGroups((g) => ({
+          ...g,
+          customers: cs.length >= (g.customers?.length || 0) ? cs : g.customers,
+        }));
+      }
+    });
     return () => { cancel = true; };
-  }, [open, debouncedQ]);
+  }, [open, debouncedQ, askMode]);
 
   // Focus the input whenever we open.
   useEffect(() => {

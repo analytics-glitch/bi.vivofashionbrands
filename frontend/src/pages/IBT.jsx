@@ -6,9 +6,10 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import ProductThumbnail from "@/components/ProductThumbnail";
+import IBTSkuBreakdown from "@/components/IBTSkuBreakdown";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useRecommendationState } from "@/lib/useRecommendationState";
-import { ArrowRight, Truck, Coins, Package, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowRight, Truck, Coins, Package, MagnifyingGlass, CaretDown, CaretRight } from "@phosphor-icons/react";
 
 const ibtKey = (r) => `${r.style_name}||${r.from_store}||${r.to_store}`;
 
@@ -170,6 +171,8 @@ const IBT = () => {
                 pageSize={50}
                 mobileCards
                 initialSort={{ key: "estimated_uplift", dir: "desc" }}
+                rowKey={(r) => ibtKey(r)}
+                renderExpanded={(r) => <IBTSkuBreakdown row={r} />}
                 columns={[
                   {
                     key: "thumb",
@@ -248,12 +251,14 @@ const IBT = () => {
                     render: (r) => {
                       const k = ibtKey(r);
                       return (
-                        <RecommendationActionPill
-                          itemKey={k}
-                          state={stateByKey.get(k)}
-                          onChange={(status, opts) => setState(k, status, opts)}
-                          label="transfer"
-                        />
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <RecommendationActionPill
+                            itemKey={k}
+                            state={stateByKey.get(k)}
+                            onChange={(status, opts) => setState(k, status, opts)}
+                            label="transfer"
+                          />
+                        </span>
                       );
                     },
                     csv: (r) => stateByKey.get(ibtKey(r))?.status || "pending",

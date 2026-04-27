@@ -159,25 +159,33 @@ async def global_search(
             if len(style_matches) >= limit:
                 break
 
-    # Customers — delegate to upstream /customer-search.
+    # Customers — delegate to upstream /customer-search. This is the
+    # slowest link in the chain (cold-cache 1.5–3 s upstream). Run in
+    # parallel with the local matchers, time-box to 1.2 s, and skip
+    # entirely for very short queries (would match too much anyway).
     customer_matches: List[Dict[str, Any]] = []
-    try:
-        from server import fetch  # late import
-        dt = datetime.now(timezone.utc).date()
-        df = dt - timedelta(days=365)
-        cust_rows = await fetch("/customer-search", {
-            "q": q, "date_from": df.isoformat(), "date_to": dt.isoformat(),
-        })
-        for c in (cust_rows or [])[:limit]:
-            customer_matches.append({
-                "customer_id": c.get("customer_id") or c.get("partner_id"),
-                "customer_name": c.get("customer_name") or c.get("name") or "—",
-                "phone": c.get("phone") or c.get("phone_masked"),
-                "total_spend": c.get("total_spend"),
-                "link": "/customers",
-            })
-    except Exception:
-        customer_matches = []
+    if len(needle) >= 3:
+        try:
+            from server import fetch  # late import
+            import asyncio as _asyncio
+            dt = datetime.now(timezone.utc).date()
+            df = dt - timedelta(days=365)
+            cust_rows = await _asyncio.wait_for(
+                fetch("/customer-search", {
+                    "q": q, "date_from": df.isoformat(), "date_to": dt.isoformat(),
+                }),
+                timeout=1.2,
+            )
+            for c in (cust_rows or [])[:limit]:
+                customer_matches.append({
+                    "customer_id": c.get("customer_id") or c.get("partner_id"),
+                    "customer_name": c.get("customer_name") or c.get("name") or "—",
+                    "phone": c.get("phone") or c.get("phone_masked"),
+                    "total_spend": c.get("total_spend"),
+                    "link": "/customers",
+                })
+        except Exception:
+            customer_matches = []
 
     return {
         "q": q,
@@ -187,3 +195,40 @@ async def global_search(
         "customers": customer_matches,
         "total": len(page_matches) + len(store_matches) + len(style_matches) + len(customer_matches),
     }
+
+
+@router.get("/customers")
+async def search_customers(
+    q: str = Query(..., min_length=1, max_length=80),
+    limit: int = Query(5, ge=1, le=20),
+    _: User = Depends(get_current_user),
+):
+    """Customer-only search. Split out of the main /search payload so
+    the frontend can render the fast (pages/stores/styles) groups in
+    ~200 ms while the slower upstream /customer-search (cold 1.5–3 s)
+    streams in separately. The same upstream call is shared so the
+    fetch() cache covers both endpoints."""
+    needle = q.strip()
+    if len(needle) < 3:
+        return {"q": q, "customers": []}
+    from server import fetch  # late import
+    dt = datetime.now(timezone.utc).date()
+    df = dt - timedelta(days=365)
+    try:
+        rows = await fetch("/customer-search", {
+            "q": needle,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception:
+        return {"q": q, "customers": []}
+    customers = []
+    for c in (rows or [])[:limit]:
+        customers.append({
+            "customer_id": c.get("customer_id") or c.get("partner_id"),
+            "customer_name": c.get("customer_name") or c.get("name") or "—",
+            "phone": c.get("phone") or c.get("phone_masked"),
+            "total_spend": c.get("total_spend"),
+            "link": "/customers",
+        })
+    return {"q": q, "customers": customers}
