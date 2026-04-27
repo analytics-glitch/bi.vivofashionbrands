@@ -257,17 +257,10 @@ const Locations = () => {
 
       {!loading && !kpisLoading && !error && kpis && (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
-            <KPICard
-              testId="loc-kpi-count"
-              accent
-              label="Total Locations"
-              value={fmtNum(enriched.length)}
-              showDelta={false}
-              action={{ label: "Jump to leaderboard", onClick: () => document.querySelector('[data-testid="leaderboard-strip"]')?.scrollIntoView({ behavior: "smooth" }) }}
-            />
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <KPICard
               testId="loc-kpi-sales"
+              accent
               label="Total Sales"
               value={fmtKES(kpis.total_sales)}
               delta={d(kpis.total_sales, prevGroupTotals?.total_sales)}
@@ -350,18 +343,27 @@ const Locations = () => {
                 ))}
               </div>
 
-              {/* "Click any card to drill in" hint — communicates the deep-
-                  dive interaction to first-time users (the cards open a
-                  side panel with full store-level KPIs and history). */}
+              {/* "Click any card to drill in" hint + legend — communicates
+                  the deep-dive interaction AND tells users how to read the
+                  blue % chip on each card. */}
               <div
-                className="rounded-lg bg-brand-soft/50 border border-brand/20 px-3 py-2 text-[12.5px] text-foreground/75 flex items-center gap-2"
+                className="rounded-lg bg-brand-soft/50 border border-brand/20 px-3 py-2 text-[12.5px] text-foreground/75 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5"
                 data-testid="locations-deep-dive-hint"
               >
-                <span aria-hidden="true">👆</span>
-                <span>
-                  <b className="text-brand-deep">Click any card</b> to open the
-                  store deep-dive — full KPI history, daily trend, top SKUs and
-                  return-rate context for that location.
+                <span className="inline-flex items-center gap-2">
+                  <span aria-hidden="true">👆</span>
+                  <span>
+                    <b className="text-brand-deep">Click any card</b> to open the
+                    store deep-dive — full KPI history, daily trend, top SKUs and
+                    return-rate context.
+                  </span>
+                </span>
+                <span
+                  className="inline-flex items-center gap-1.5 text-[11.5px] shrink-0"
+                  data-testid="pct-share-legend"
+                >
+                  <span className="font-bold text-[#1e6ad6]">12.3%</span>
+                  <span className="text-muted">= share of total sales across in-scope locations</span>
                 </span>
               </div>
 
@@ -429,7 +431,7 @@ const Locations = () => {
                             </div>
                             {pctShare != null && (
                               <span
-                                className="text-[10.5px] font-semibold text-muted shrink-0"
+                                className="text-[10.5px] font-semibold text-[#1e6ad6] shrink-0"
                                 data-testid={`loc-${l.channel}-pct-share`}
                                 title="Share of total sales across all locations in scope"
                               >
@@ -509,6 +511,20 @@ const Locations = () => {
                           )}
                         </div>
                       </div>
+                      {/* Bottom-of-card deep-dive prompt — restated per
+                          card so users mid-grid see the cue without
+                          scrolling back to the banner above. Picks up the
+                          card's hover via the parent .hover-lift. */}
+                      <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between text-[11.5px]">
+                        <span className="text-muted inline-flex items-center gap-1">
+                          <span aria-hidden="true">👆</span>
+                          <span>Click for deep dive</span>
+                        </span>
+                        <span className="font-semibold text-brand-deep inline-flex items-center gap-0.5">
+                          <span>More info</span>
+                          <ArrowUpRight size={11} weight="bold" />
+                        </span>
+                      </div>
                     </button>
                   );
                 })}
@@ -543,12 +559,6 @@ const Locations = () => {
                           {r.channel}
                         </button>
                       ),
-                    },
-                    {
-                      key: "country",
-                      label: "Country",
-                      align: "left",
-                      render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country || "—"}</span>,
                     },
                     {
                       key: "abv",
@@ -603,11 +613,11 @@ const Locations = () => {
                     <thead>
                       <tr>
                         <th>Location</th>
-                        <th className="text-right">Footfall</th>
-                        <th className="text-right">Orders</th>
-                        <th className="text-right">Conversion</th>
-                        <th className="text-right">Sales / Visitor</th>
                         <th className="text-right">Total Sales</th>
+                        <th className="text-right">Orders</th>
+                        <th className="text-right">Footfall</th>
+                        <th className="text-right">Conversion</th>
+                        <th className="text-right">Δ Conversion</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -617,22 +627,29 @@ const Locations = () => {
                       {[...footfall]
                         .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
                         .map((r, i) => {
-                          // Authoritative figures from sales-summary (matches the grid).
                           const store = enriched.find((l) => l.channel === r.location);
                           const authoritativeSales = store ? (store.total_sales || 0) : (r.total_sales || 0);
                           const authoritativeOrders = store ? (store.orders || store.total_orders || 0) : (r.orders || 0);
                           const footfallCount = r.total_footfall || 0;
-                          const salesPerVisitor = footfallCount ? authoritativeSales / footfallCount : 0;
                           const cr = footfallCount ? (authoritativeOrders / footfallCount) * 100 : 0;
+                          const convPp = store ? store.conv_delta_pp : null;
                           const pill = cr > 15 ? "pill-green" : cr >= 10 ? "pill-amber" : "pill-red";
                           return (
                             <tr key={r.location + i}>
                               <td className="font-medium">{r.location}</td>
-                              <td className="text-right num">{fmtNum(footfallCount)}</td>
+                              <td className="text-right num font-semibold">{fmtKES(authoritativeSales)}</td>
                               <td className="text-right num">{fmtNum(authoritativeOrders)}</td>
+                              <td className="text-right num">{fmtNum(footfallCount)}</td>
                               <td className="text-right"><span className={pill}>{fmtPct(cr)}</span></td>
-                              <td className="text-right num">{fmtKES(salesPerVisitor)}</td>
-                              <td className="text-right num font-bold">{fmtKES(authoritativeSales)}</td>
+                              <td className="text-right num">
+                                {compareMode === "none" || convPp == null ? (
+                                  <span className="text-muted text-[11px]">—</span>
+                                ) : (
+                                  <span className={`font-semibold ${convPp > 0.05 ? "text-emerald-700" : convPp < -0.05 ? "text-red-700" : "text-muted"}`}>
+                                    {convPp > 0.05 ? "▲" : convPp < -0.05 ? "▼" : "—"} {Math.abs(convPp).toFixed(2)}pp
+                                  </span>
+                                )}
+                              </td>
                             </tr>
                           );
                         })}

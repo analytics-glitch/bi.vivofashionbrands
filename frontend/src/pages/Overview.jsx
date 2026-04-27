@@ -965,6 +965,39 @@ const Overview = () => {
           <div className="card-white p-5" data-testid="category-chart">
             <SectionTitle title="Sales by Category" subtitle="Where the money came from this period — by clothing category." />
             {salesByCategory.length === 0 ? <Empty /> : (
+              isMobile ? (
+                // ---- Mobile layout: horizontal bars (vertical reads better on
+                // a phone — full category name fits, full inline label fits,
+                // bars auto-grow with row count, no rotated x-axis ticks).
+                <div style={{ width: "100%", height: Math.max(280, 40 + salesByCategory.length * 36) }}>
+                  <ResponsiveContainer>
+                    <BarChart data={salesByCategory} layout="vertical" margin={{ left: 0, right: 110, top: 4, bottom: 4 }}>
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 9 }} />
+                      <YAxis type="category" dataKey="category" width={92} tick={{ fontSize: 10 }} />
+                      <Tooltip content={
+                        <ChartTooltip formatters={{
+                          total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.units_sold)} units · ${(p?.pct || 0).toFixed(1)}%`,
+                        }} />
+                      } />
+                      <Bar dataKey="total_sales" fill="#1a5c38" radius={[0, 5, 5, 0]} name="Total Sales">
+                        <LabelList
+                          dataKey="total_sales"
+                          content={makePctDeltaLabel({
+                            data: salesByCategory,
+                            formatValue: (v) => fmtAxisKES(v),
+                            position: "right",
+                            offset: 5,
+                            fontSize: 9,
+                            hideDelta: compareMode === "none",
+                            labelTestId: "category-bar-label",
+                          })}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
                   <BarChart data={salesByCategory} margin={{ top: 28, right: 12, left: 0, bottom: 40 }}>
@@ -974,11 +1007,9 @@ const Overview = () => {
                       tick={{ fontSize: 11 }}
                       interval={0}
                       tickFormatter={(v) => {
-                        // Truncate long category names on narrow screens
-                        // so XAxis ticks don't overlap each other.
                         if (typeof window === "undefined") return v;
-                        const isMobile = window.innerWidth < 640;
-                        const maxLen = isMobile ? 8 : 22;
+                        const m = window.innerWidth < 640;
+                        const maxLen = m ? 8 : 22;
                         return v && v.length > maxLen ? v.slice(0, maxLen - 1) + "…" : v;
                       }}
                     />
@@ -1005,6 +1036,7 @@ const Overview = () => {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+              )
             )}
           </div>
 
