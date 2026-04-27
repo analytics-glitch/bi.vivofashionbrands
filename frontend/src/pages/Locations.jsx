@@ -11,6 +11,7 @@ import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
+import LocationsCaptureRatePanel from "@/components/LocationsCaptureRatePanel";
 import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -657,6 +658,10 @@ const Locations = () => {
                   </table>
                 </div>
               </div>
+
+              {/* Per-store walk-in capture rate — celebrate top 3, coach
+                  bottom 3. Capture rate = inverse of walk-in share. */}
+              <LocationsCaptureRatePanel />
 
               {/* "Locations needing attention" — surfaces stores that look
                   off on at least one of: sales drop, conversion drop,

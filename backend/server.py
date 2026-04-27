@@ -764,7 +764,8 @@ async def get_walk_ins(
             return True
         return False
 
-    # Aggregate: walk-in orders & revenue, total orders & revenue, by country.
+    # Aggregate: walk-in orders & revenue, total orders & revenue, by country
+    # and by store/POS channel.
     walk_orders: set = set()
     all_orders: set = set()
     walk_units = 0
@@ -772,12 +773,14 @@ async def get_walk_ins(
     total_units = 0
     total_sales = 0.0
     by_country: Dict[str, Dict[str, Any]] = {}
+    by_location: Dict[str, Dict[str, Any]] = {}
 
     for r in rows:
         oid = r.get("order_id")
         units = r.get("quantity") or 0
         sales = r.get("total_sales_kes") or 0
         cn = r.get("country") or "Unknown"
+        loc = r.get("pos_location_name") or r.get("channel") or "Unknown"
         all_orders.add(oid)
         total_units += units
         total_sales += sales
@@ -790,12 +793,24 @@ async def get_walk_ins(
         })
         bucket["all_orders_set"].add(oid)
         bucket["total_sales"] += sales
+        lbucket = by_location.setdefault(loc, {
+            "channel": loc,
+            "country": cn,
+            "walk_in_orders_set": set(),
+            "all_orders_set": set(),
+            "walk_in_sales": 0.0,
+            "total_sales": 0.0,
+        })
+        lbucket["all_orders_set"].add(oid)
+        lbucket["total_sales"] += sales
         if _is_walk_in(r):
             walk_orders.add(oid)
             walk_units += units
             walk_sales += sales
             bucket["walk_in_orders_set"].add(oid)
             bucket["walk_in_sales"] += sales
+            lbucket["walk_in_orders_set"].add(oid)
+            lbucket["walk_in_sales"] += sales
 
     # Resolve sets → counts and compute shares.
     by_country_out = []
@@ -812,6 +827,25 @@ async def get_walk_ins(
         by_country_out.append(b)
     by_country_out.sort(key=lambda x: x.get("walk_in_orders") or 0, reverse=True)
 
+    # Resolve per-location buckets — capture rate is the inverse of walk-in
+    # share (1 − walk_in_orders ÷ all_orders). Surface both so the frontend
+    # can rank either direction without re-deriving.
+    by_location_out = []
+    for b in by_location.values():
+        wo = len(b.pop("walk_in_orders_set"))
+        ao = len(b.pop("all_orders_set"))
+        ws = b["walk_in_sales"]
+        ts = b["total_sales"]
+        share = (wo / ao * 100) if ao else 0.0
+        b["walk_in_orders"] = wo
+        b["total_orders"] = ao
+        b["walk_in_sales"] = round(ws, 2)
+        b["total_sales"] = round(ts, 2)
+        b["walk_in_share_orders_pct"] = round(share, 2)
+        b["capture_rate_pct"] = round(100.0 - share, 2) if ao else None
+        by_location_out.append(b)
+    by_location_out.sort(key=lambda x: (x.get("total_orders") or 0), reverse=True)
+
     walk_orders_n = len(walk_orders)
     total_orders_n = len(all_orders)
 
@@ -825,6 +859,7 @@ async def get_walk_ins(
         "walk_in_share_orders_pct": round((walk_orders_n / total_orders_n * 100), 2) if total_orders_n else 0.0,
         "walk_in_share_sales_pct": round((walk_sales / total_sales * 100), 2) if total_sales else 0.0,
         "by_country": by_country_out,
+        "by_location": by_location_out,
         "detection_rule": "customer_type IN (Guest/Walk-in/Anonymous) OR customer_id IS NULL",
         "truncated": truncated,
     }
