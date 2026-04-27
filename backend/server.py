@@ -78,18 +78,27 @@ async def get_client() -> httpx.AsyncClient:
             base_url=VIVO_API_BASE,
             # Default httpx pool (100/20) saturates under multi-country fan-out
             # on Overview load (parallel /kpis × periods × channels + footfall +
-            # customers + notifications). Bump it so PoolTimeouts don't surface.
+            # customers + notifications). Bump it so PoolTimeouts don't surface
+            # even when 20 users are hitting the dashboard concurrently.
             limits=httpx.Limits(
-                max_connections=200,
-                max_keepalive_connections=50,
+                max_connections=400,
+                max_keepalive_connections=100,
                 keepalive_expiry=30.0,
             ),
-            # pool=15 separates "wait for free connection" from "wait for bytes",
+            # pool=25 separates "wait for free connection" from "wait for bytes",
             # so a saturated pool fails fast into the /kpis stale-cache fallback
             # instead of compounding with the 45s read budget.
-            timeout=httpx.Timeout(45.0, connect=10.0, pool=15.0),
+            timeout=httpx.Timeout(45.0, connect=10.0, pool=25.0),
         )
     return _client
+
+
+# In-flight de-dup map. When a fetch is already in progress for a given
+# (path, params) key, subsequent callers attach to the existing Future
+# instead of spawning a parallel upstream request. Single biggest perf win
+# for the dashboard: 5+ components on a page often request the same KPIs
+# concurrently — we collapse them into one upstream call.
+_INFLIGHT: Dict[tuple, asyncio.Future] = {}
 
 
 async def fetch(
@@ -115,6 +124,21 @@ async def fetch(
         hit = _FETCH_CACHE.get(cache_key)
         if hit and (time.time() - hit[0]) < _FETCH_TTL:
             return hit[1]
+        # In-flight de-dup. If another coroutine already kicked off this
+        # exact upstream call, await its Future instead of duplicating the
+        # request — collapses a burst of 5–10 concurrent /kpis hits during
+        # Overview load into a single upstream call.
+        running = _INFLIGHT.get(cache_key)
+        if running is not None:
+            try:
+                return await running
+            except Exception:
+                pass  # fall through to retry our own request
+        loop = asyncio.get_event_loop()
+        my_future: asyncio.Future = loop.create_future()
+        _INFLIGHT[cache_key] = my_future
+    else:
+        my_future = None
     last_err: Optional[Exception] = None
     req_timeout = (
         httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec), pool=15.0)
@@ -134,6 +158,9 @@ async def fetch(
                     oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
                     for k, _ in oldest:
                         _FETCH_CACHE.pop(k, None)
+            if my_future is not None and not my_future.done():
+                my_future.set_result(data)
+                _INFLIGHT.pop(cache_key, None)
             return data
         except httpx.HTTPStatusError as e:
             if 500 <= e.response.status_code < 600 and attempt < max_attempts - 1:
@@ -141,27 +168,41 @@ async def fetch(
                 last_err = e
                 continue
             logger.error(f"Upstream {path} failed: {e.response.status_code}")
-            raise HTTPException(
+            exc = HTTPException(
                 status_code=e.response.status_code,
                 detail=f"Upstream {path} returned {e.response.status_code}",
             )
+            if my_future is not None and not my_future.done():
+                my_future.set_exception(exc)
+                _INFLIGHT.pop(cache_key, None)
+            raise exc
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
             last_err = e
             if attempt < max_attempts - 1:
                 await asyncio.sleep(0.4 * (attempt + 1))
                 continue
             logger.error(f"Upstream {path} timeout/connect: {type(e).__name__}: {e}")
-            raise HTTPException(
+            exc = HTTPException(
                 status_code=504,
                 detail=f"Upstream {path} {type(e).__name__}: timed out after {max_attempts} attempts",
             )
+            if my_future is not None and not my_future.done():
+                my_future.set_exception(exc)
+                _INFLIGHT.pop(cache_key, None)
+            raise exc
         except httpx.HTTPError as e:
             logger.error(f"Upstream {path} connection error: {type(e).__name__}: {e}")
-            raise HTTPException(
+            exc = HTTPException(
                 status_code=502,
                 detail=f"Upstream {path} unreachable ({type(e).__name__}): {str(e) or 'no detail'}",
             )
+            if my_future is not None and not my_future.done():
+                my_future.set_exception(exc)
+                _INFLIGHT.pop(cache_key, None)
+            raise exc
     # Should never reach here, but be explicit.
+    if my_future is not None and not my_future.done():
+        _INFLIGHT.pop(cache_key, None)
     raise HTTPException(
         status_code=502,
         detail=f"Upstream {path} failed after retries: {last_err}",

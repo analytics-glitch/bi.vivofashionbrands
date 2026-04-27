@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { api } from "@/lib/api";
+import { api, clearApiCache } from "@/lib/api";
 
 /**
  * Auth context — session_token stored in httpOnly cookie (set by backend)
@@ -120,6 +120,11 @@ export const AuthProvider = ({ children }) => {
       await api.post("/auth/logout");
     } catch { /* ignore */ }
     setStoredToken(null);
+    // Drop ALL cached responses — otherwise the next user that logs in on
+    // this browser sees the previous user's data flash in for ~5 s while
+    // the response cache TTL expires. Also clears any stuck inflight
+    // promises so the new login starts from a clean slate.
+    clearApiCache();
     setUser(false);
   }, []);
 

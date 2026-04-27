@@ -372,7 +372,17 @@ async def logout(request: Request, response: Response):
             token = auth[7:].strip()
     if token:
         await db.user_sessions.delete_one({"session_token": token})
-    response.delete_cookie("session_token", path="/")
+    # Mirror the flags used by `_set_session_cookie` — Chrome and Safari
+    # silently drop a delete_cookie call whose attributes don't match the
+    # original Set-Cookie. Without this, the stale `session_token` cookie
+    # survives logout and the next /auth/me request after re-login can
+    # surface phantom session errors.
+    response.delete_cookie(
+        "session_token",
+        path="/",
+        secure=True,
+        samesite="none",
+    )
     return {"ok": True}
 
 

@@ -21,14 +21,90 @@ const sameOrigin = (() => {
 export const API = sameOrigin ? "/api" : `${BACKEND_URL}/api`;
 export const api = axios.create({ baseURL: API, timeout: 120000 });
 
-// Cache-busting interceptor — appends `_t` param to every GET so the
-// browser / upstream CDN can't return stale responses.
+// ---------------------------------------------------------------------------
+// Cache-busting + inflight de-dup + short-lived response cache
+// ---------------------------------------------------------------------------
+// Two effects in the same component mount, React 18 StrictMode double-fires,
+// or a parent + child both calling /kpis/data-freshness used to result in
+// 5–15 duplicate concurrent requests per page load — saturating the upstream
+// connection pool and surfacing as PoolTimeouts.
+//
+// `_inflight` collapses concurrent identical GETs into a single Promise:
+// the second caller subscribes to the first call's response.
+//
+// `_respCache` then memoises the resolved data for `RESP_TTL_MS` so a
+// component that mounts shortly after another (e.g. quick navigation back
+// to a recently-viewed page) gets an instant hit. Keep TTL short — these
+// are LIVE business numbers, not static.
+const _inflight = new Map();   // key -> Promise<resp>
+const _respCache = new Map();  // key -> { ts, data }
+const RESP_TTL_MS = 5_000;     // 5 s — long enough for StrictMode + sibling effects
+const RESP_CACHE_MAX = 300;
+
+const _cacheKey = (url, params) => {
+  const p = { ...(params || {}) };
+  delete p._t;
+  const ordered = Object.keys(p).sort().map((k) => `${k}=${p[k]}`).join("&");
+  return `get ${url}?${ordered}`;
+};
+
+// Cache-busting interceptor — appends `_t` to every GET so the browser /
+// upstream CDN can't return stale responses. Only added at the wire layer
+// (the dedup key strips `_t` before hashing).
 api.interceptors.request.use((cfg) => {
   if ((cfg.method || "get").toLowerCase() === "get") {
     cfg.params = { ...(cfg.params || {}), _t: Date.now() };
   }
   return cfg;
 });
+
+// Wrap api.get to provide inflight de-dup + a 5-s response cache. The
+// wrapper computes the key from (url, params), then short-circuits with
+// the cached value, attaches to an existing inflight Promise, or fires a
+// new request and registers it.
+const _origGet = api.get.bind(api);
+api.get = (url, config = {}) => {
+  const params = (config && config.params) || {};
+  const key = _cacheKey(url, params);
+
+  const cached = _respCache.get(key);
+  if (cached && (Date.now() - cached.ts) < RESP_TTL_MS) {
+    return Promise.resolve({
+      data: cached.data,
+      status: 200,
+      statusText: "OK (client-cache)",
+      headers: {},
+      config,
+    });
+  }
+  const existing = _inflight.get(key);
+  if (existing) return existing;
+
+  const p = _origGet(url, config)
+    .then((resp) => {
+      _respCache.set(key, { ts: Date.now(), data: resp.data });
+      // Bound the response cache size (LRU-ish — drop oldest entries).
+      if (_respCache.size > RESP_CACHE_MAX) {
+        const oldest = [..._respCache.entries()]
+          .sort((a, b) => a[1].ts - b[1].ts)
+          .slice(0, _respCache.size - RESP_CACHE_MAX);
+        for (const [k] of oldest) _respCache.delete(k);
+      }
+      return resp;
+    })
+    .finally(() => {
+      _inflight.delete(key);
+    });
+  _inflight.set(key, p);
+  return p;
+};
+
+/** Force-clear the response/inflight caches. Called on logout so the
+ * next user's session never reads the previous user's data. */
+export const clearApiCache = () => {
+  _inflight.clear();
+  _respCache.clear();
+};
 
 // --- formatters ---
 // Currency formatter — prefixes every value with "KES " so the unit is
