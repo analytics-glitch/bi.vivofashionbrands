@@ -46,6 +46,11 @@ _kpi_stale_cache: Dict[tuple, tuple] = {}
 # safe. Key: churn_window_days (int). Value: (timestamp, list).
 _churn_full_cache: Dict[int, tuple] = {}
 _CHURN_FULL_TTL = 1800  # seconds
+# Negative cache: when upstream /churned-customers fails (commonly a 503 after
+# 26 s on limit=100000), skip retrying for this many seconds so a flaky upstream
+# doesn't pin the Customers page open for every user. Key: churn_window_days.
+_churn_neg_cache: Dict[int, float] = {}
+_CHURN_NEG_TTL = 60  # seconds
 
 
 def _client_ip(request: Request) -> Optional[str]:
@@ -532,62 +537,11 @@ async def get_customers(
             total.pop(k)
         data = total
 
-    # Churn rate — FINAL business definition (user-confirmed):
-    #   A churned customer is one whose LAST purchase was more than 90 days
-    #   ago from TODAY. "Period-churned" means: their LAST purchase date
-    #   falls INSIDE the selected date range — i.e. they bought in the
-    #   period and have not returned in 90+ days.
-    #
-    #   churn_rate = churned_in_period ÷ total_customers_in_period × 100
-    #
-    # For an IN-PROGRESS period (range ends today), this number is naturally
-    # near-zero because customers can't have bought in the period AND also
-    # be 90d+ inactive. For historical ranges (e.g. Jan 2026 viewed in Apr
-    # 2026), the rate is meaningful.
+    # Churn rate — computed in a SEPARATE endpoint (/customers/churn-rate)
+    # so a flaky upstream /churned-customers (503 after 26 s on limit=100000)
+    # doesn't block the entire Customers page. The frontend fetches it in
+    # parallel and merges into the same `cust` state.
     if data:
-        active = data.get("total_customers") or 0
-        churn_window_days = 90
-        churn_source = "upstream_90d"
-        churned_in_period = 0
-        try:
-            # Upstream caps at ~100k rows. Full list is needed so we can
-            # slice by last_purchase_date within [date_from, date_to].
-            # Cached in-memory for 30 min — full fetch is ~30s on cold.
-            cached = _churn_full_cache.get(churn_window_days)
-            if cached and (time.time() - cached[0]) < _CHURN_FULL_TTL:
-                churned_list = cached[1]
-                churn_source = "upstream_90d_cached"
-            else:
-                churned_list = await _safe_fetch("/churned-customers", {"days": churn_window_days, "limit": 100000})
-                if isinstance(churned_list, list) and churned_list:
-                    _churn_full_cache[churn_window_days] = (time.time(), churned_list)
-            if isinstance(churned_list, list) and date_from and date_to:
-                for c in churned_list:
-                    lp = c.get("last_purchase_date") or ""
-                    if date_from <= lp <= date_to:
-                        churned_in_period += 1
-            elif isinstance(churned_list, list):
-                # No period filter → report the full list (all-time 90d churned).
-                churned_in_period = len(churned_list)
-        except Exception:
-            churn_source = "upstream_down"
-
-        # All-time cumulative churn (fallback / reference).
-        churned_all = data.get("churned_customers") or 0
-        denom_all = active + churned_all
-        data["churn_rate_cumulative"] = round((churned_all / denom_all * 100), 2) if denom_all else 0
-
-        if churned_in_period == 0 and (not date_from or not date_to):
-            # No period filter → fall back to all-time count.
-            churned_in_period = churned_all
-            churn_source = "cumulative_fallback"
-
-        data["churned_customers"] = churned_in_period  # override with period-scoped count
-        data["churned_last_90d"] = churned_in_period   # legacy field name kept for UI compat
-        data["churn_window_days"] = churn_window_days
-        data["churn_source"] = churn_source
-        data["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
-
         # ---- Trust-critical override: recompute avg_customer_spend locally ----
         # Upstream /customers returns an `avg_customer_spend` that in some
         # months is ~10× the correct value (observed: 116,887 in Apr vs
@@ -596,6 +550,7 @@ async def get_customers(
         # we recompute it here from /kpis for the exact same filter scope.
         # If /kpis fails, we fall back to the upstream number so the tile
         # still renders (with a flag the UI can surface).
+        active = data.get("total_customers") or 0
         try:
             kpi_data = await get_kpis(
                 date_from=date_from, date_to=date_to,
@@ -610,7 +565,94 @@ async def get_customers(
         except Exception as e:
             logger.warning("[/customers] avg_customer_spend recompute failed: %s", e)
             data["avg_customer_spend_source"] = "upstream_unverified"
+
+        # Surface a "computing" sentinel so the UI can render a spinner on the
+        # churn tile while /customers/churn-rate resolves separately.
+        data["churn_source"] = "computing"
+        data["churn_window_days"] = 90
     return data
+
+
+@api_router.get("/customers/churn-rate")
+async def get_customers_churn_rate(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Period-scoped churn calc, split out of /customers so its slow upstream
+    call (/churned-customers?limit=100000 — frequently 503s after 26 s) doesn't
+    block the rest of the Customers page.
+
+    Definition: a customer is "period-churned" if their LAST purchase date
+    falls inside [date_from, date_to] AND they have not returned in 90+ days
+    as of TODAY. Cached 30 min on success, negatively cached 60 s on failure.
+    """
+    churn_window_days = 90
+    out = {
+        "churn_window_days": churn_window_days,
+        "churned_customers": 0,
+        "churn_rate": 0,
+        "churn_source": "upstream_down",
+    }
+
+    # Negative cache short-circuit
+    neg_at = _churn_neg_cache.get(churn_window_days)
+    if neg_at and (time.time() - neg_at) < _CHURN_NEG_TTL:
+        out["churn_source"] = "upstream_down_cached"
+        return out
+
+    # Pull cached churned list (or fetch + cache)
+    churned_list: Optional[List[Dict[str, Any]]] = None
+    cached = _churn_full_cache.get(churn_window_days)
+    if cached and (time.time() - cached[0]) < _CHURN_FULL_TTL:
+        churned_list = cached[1]
+        out["churn_source"] = "upstream_90d_cached"
+    else:
+        try:
+            churned_list = await fetch(
+                "/churned-customers",
+                {"days": churn_window_days, "limit": 100000},
+                timeout_sec=20.0,
+                max_attempts=1,
+            )
+            if isinstance(churned_list, list) and churned_list:
+                _churn_full_cache[churn_window_days] = (time.time(), churned_list)
+                out["churn_source"] = "upstream_90d"
+        except HTTPException:
+            _churn_neg_cache[churn_window_days] = time.time()
+            return out
+        except Exception:
+            _churn_neg_cache[churn_window_days] = time.time()
+            return out
+
+    if not isinstance(churned_list, list):
+        return out
+
+    # Slice by period
+    churned_in_period = 0
+    if date_from and date_to:
+        for c in churned_list:
+            lp = c.get("last_purchase_date") or ""
+            if date_from <= lp <= date_to:
+                churned_in_period += 1
+    else:
+        churned_in_period = len(churned_list)
+
+    # Active customers in the same period (cheap call, ~2 s)
+    active = 0
+    try:
+        cust_data = await fetch(
+            "/customers",
+            {"date_from": date_from, "date_to": date_to},
+            timeout_sec=10.0,
+            max_attempts=2,
+        )
+        active = int((cust_data or {}).get("total_customers") or 0)
+    except Exception:
+        pass
+
+    out["churned_customers"] = churned_in_period
+    out["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
+    return out
 
 
 @api_router.get("/customer-trend")

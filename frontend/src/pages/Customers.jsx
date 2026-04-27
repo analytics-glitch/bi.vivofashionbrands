@@ -177,6 +177,21 @@ const Customers = () => {
     for (const [key, p] of rest) {
       p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
     }
+
+    // Churn rate is computed in a separate endpoint because its upstream
+    // dependency (/churned-customers?limit=100000) is slow & flaky. Fetch
+    // it in parallel and merge into the existing cust state when ready —
+    // the churn KPI tile renders a spinner via churn_source === "computing"
+    // until this resolves.
+    api.get("/customers/churn-rate", { params: { date_from: dateFrom, date_to: dateTo } })
+      .then((r) => {
+        if (cancelled || !r.data) return;
+        setCust((prev) => prev ? { ...prev, ...r.data, churned_last_90d: r.data.churned_customers } : prev);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCust((prev) => prev ? { ...prev, churn_source: "upstream_down" } : prev);
+      });
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
@@ -506,9 +521,9 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-churned-count"
                     label="Churned Customers"
-                    sub={`no purchase in ${churnDays}+ days`}
+                    sub={cust.churn_source === "computing" ? "computing…" : `no purchase in ${churnDays}+ days`}
                     formula={`Count of customers whose LAST purchase was more than ${churnDays} days ago (as of today). Source: /churned-customers?days=${churnDays}.`}
-                    value={fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
+                    value={cust.churn_source === "computing" ? "…" : fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
                     icon={UserMinus}
                     higherIsBetter={false}
                     showDelta={false}
@@ -516,7 +531,7 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-churn"
                     label="Churn Rate"
-                    sub="in selected period · 90-day cutoff"
+                    sub={cust.churn_source === "computing" ? "computing…" : "in selected period · 90-day cutoff"}
                     formula={
                       `Churn Rate = churned_in_period ÷ total_customers × 100.\n\n` +
                       `A customer is counted as CHURNED if their last purchase falls INSIDE the ` +
@@ -524,7 +539,7 @@ const Customers = () => {
                       `${churnDays} days up to today. For an in-progress period (ends today) ` +
                       `this number is naturally near-zero; for historical periods it rises.`
                     }
-                    value={fmtPct(cust.churn_rate, 2)}
+                    value={cust.churn_source === "computing" ? "…" : fmtPct(cust.churn_rate, 2)}
                     icon={UserMinus}
                     higherIsBetter={false}
                     showDelta={false}
