@@ -11,7 +11,7 @@ import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
-import { Storefront, ArrowsDownUp } from "@phosphor-icons/react";
+import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -383,12 +383,7 @@ const Locations = () => {
                 {sorted.length === 0 && <Empty />}
                 {sorted.map((l, i) => {
                   const above = (l.total_sales || 0) >= avg;
-                  const badge = leaderBadges.get(l.channel);
-                  const borderCls = badge
-                    ? "border-amber-400"
-                    : above
-                    ? "border-brand/40"
-                    : "border-red-300";
+                  const borderCls = above ? "border-brand/40" : "border-red-300";
                   // % share of group total — surfaced inline in the card
                   // header so users see "this store ≈ X% of all sales".
                   const pctShare =
@@ -402,16 +397,17 @@ const Locations = () => {
                       data-testid={`location-card-${l.channel}`}
                       onClick={() => setSelected(l.channel)}
                     >
-                      {badge && (
-                        <div
-                          className="absolute top-2.5 right-2.5 inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 border border-amber-300 rounded-full text-[10px] font-bold text-amber-900 shadow-sm"
-                          data-testid={`card-badge-${badge.label.replace(/\s+/g, "-").toLowerCase()}`}
-                          title={badge.tip}
-                        >
-                          <span aria-hidden="true">{badge.icon}</span>
-                          <span>{badge.label}</span>
-                        </div>
-                      )}
+                      {/* Deep-dive affordance — a subtle ArrowUpRight pinned
+                          to the top-right corner of every card so the user
+                          knows the card is interactive even before reading
+                          the banner above. Lights up on hover. */}
+                      <div
+                        className="absolute top-2.5 right-2.5 w-6 h-6 rounded-full grid place-items-center text-muted/70 hover:text-brand-deep hover:bg-brand-soft/60 transition-colors"
+                        aria-hidden="true"
+                        data-testid="card-deep-dive-icon"
+                      >
+                        <ArrowUpRight size={13} weight="bold" />
+                      </div>
                       <div className="flex items-start gap-2.5 min-w-0">
                         <div className="w-9 h-9 rounded-lg bg-brand-soft text-brand grid place-items-center shrink-0">
                           <Storefront size={18} weight="duotone" />
@@ -441,12 +437,14 @@ const Locations = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-[11.5px] text-muted mt-1 flex items-center gap-1.5">
-                            <span>{COUNTRY_FLAGS[l.country] || "🌍"} {l.country}</span>
-                            {compareMode !== "none" && (
+                          {/* Country line removed per spec — sales delta now
+                              sits on its own row directly under the value/share
+                              for a cleaner card. */}
+                          {compareMode !== "none" && (
+                            <div className="text-[11.5px] text-muted mt-1 flex items-center">
                               <InlineDelta delta={l.d_sales} testId={`loc-${l.channel}-d-sales`} compact />
-                            )}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -470,10 +468,7 @@ const Locations = () => {
                           )}
                         </div>
                         <div>
-                          <div className="eyebrow flex items-center gap-1">
-                            <span>Returns</span>
-                            <DataQualityPill flag={l.return_outlier} label="verify" testId={l.return_outlier ? `return-outlier-${l.channel}` : undefined} />
-                          </div>
+                          <div className="eyebrow">Returns</div>
                           <div
                             className={`font-semibold text-[13px] num mt-0.5 ${
                               (l.returns || 0) > 0 ? "text-danger" : ""
