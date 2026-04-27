@@ -68,7 +68,8 @@ const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
   const { applied, touchLastUpdated, lastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, channelGroup, dataVersion } = applied;
+  const isOnlineOnly = channelGroup === "online";
   const filters = { dateFrom, dateTo, countries, channels };
   const isMobile = useIsMobile();
   // On mobile, switch every KPI-tile currency value to a compact 2-decimal
@@ -640,14 +641,18 @@ const Overview = () => {
               formula="How many individual items left the shelves."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }} />
-            <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
-              delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-              action={{ label: "Footfall by store", to: "/footfall" }} />
-            <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
-              delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
-              deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-              action={{ label: "Which stores dropped?", to: "/footfall" }} />
+            {!isOnlineOnly && (
+              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+                delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
+                deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+                action={{ label: "Footfall by store", to: "/footfall" }} />
+            )}
+            {!isOnlineOnly && (
+              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
+                delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
+                deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+                action={{ label: "Which stores dropped?", to: "/footfall" }} />
+            )}
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3" data-testid="sub-kpi-row">
@@ -689,16 +694,20 @@ const Overview = () => {
               action={{ label: "Export returns CSV", to: "/exports" }} />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className={`grid grid-cols-1 ${isOnlineOnly ? "md:grid-cols-1" : "md:grid-cols-3"} gap-3`}>
             <HighlightCard testId="highlight-top-subcategory" label="Top Subcategory"
               name={subcatTop && subcatTop.length ? subcatTop[0].subcategory : "—"}
               amount={subcatTop && subcatTop.length ? `${fmtKES(subcatTop[0].total_sales)} · ${subcatTop[0].pct.toFixed(1)}%` : "—"} icon={ChartBar} />
-            <HighlightCard testId="highlight-top-location" label="Top Location"
-              name={topChannel ? topChannel.channel : "—"}
-              amount={topChannel ? fmtKES(topChannel.total_sales) : "—"} icon={Storefront} />
-            <HighlightCard testId="highlight-best-conversion" label="Best Conversion Rate"
-              name={bestConversionStore ? bestConversionStore.location : "—"}
-              amount={bestConversionStore ? fmtPct(bestConversionStore.conversion_rate) : "—"} icon={TrendUp} />
+            {!isOnlineOnly && (
+              <HighlightCard testId="highlight-top-location" label="Top Location"
+                name={topChannel ? topChannel.channel : "—"}
+                amount={topChannel ? fmtKES(topChannel.total_sales) : "—"} icon={Storefront} />
+            )}
+            {!isOnlineOnly && (
+              <HighlightCard testId="highlight-best-conversion" label="Best Conversion Rate"
+                name={bestConversionStore ? bestConversionStore.location : "—"}
+                amount={bestConversionStore ? fmtPct(bestConversionStore.conversion_rate) : "—"} icon={TrendUp} />
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1124,7 +1133,7 @@ const Overview = () => {
                 compareLbl={compareLbl}
               />
               <WinsThisWeekCard />
-              <StoreOfTheWeek />
+              {!isOnlineOnly && <StoreOfTheWeek />}
               <SalesProjection
                 dateFrom={dateFrom}
                 dateTo={dateTo}
