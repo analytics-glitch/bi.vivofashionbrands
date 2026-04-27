@@ -179,6 +179,12 @@ const Login = () => {
         <p className="mt-5 text-[11.5px] text-muted leading-relaxed">
           Email/password accounts are created by your administrator. Contact them if you need access.
         </p>
+
+        <div className="mt-6 pt-4 border-t border-border/60 flex items-center justify-center gap-2 text-[11px] text-muted">
+          <span>Powered by</span>
+          <img src="/brand/vivo-logo.png" alt="Vivo BI" className="h-4 w-auto rounded-sm" />
+          <span className="font-semibold text-foreground/70">BI</span>
+        </div>
       </div>
     </div>
   );

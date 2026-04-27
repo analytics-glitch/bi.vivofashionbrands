@@ -53,6 +53,14 @@ export const SortableTable = ({
   emptyLabel = "No data",
   onRowClick,
   mobileCards = false,
+  /** Freezes the LEFT-most column horizontally (always visible during
+   * horizontal scroll). Defaults to true. The header row is always sticky
+   * vertically against the page scroll. */
+  stickyFirstCol = true,
+  /** Optional max-height for the scroll container (e.g. "60vh" or 480).
+   * When set, the container clips & enables vertical scroll inside the
+   * card so the sticky thead can hold while the rows scroll. */
+  maxHeight,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [limit, setLimit] = useState(pageSize || null);
@@ -109,23 +117,29 @@ export const SortableTable = ({
           </button>
         )}
       </div>
-      <div className={`overflow-x-auto ${mobileCards ? "hidden md:block" : ""}`}>
-        <table className="w-full data">
-          <thead>
+      <div
+        className={`overflow-auto ${mobileCards ? "hidden md:block" : ""}`}
+        style={maxHeight ? { maxHeight: typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight } : undefined}
+      >
+        <table className={`w-full data ${stickyFirstCol ? "sticky-first-col" : ""}`}>
+          <thead className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]">
             <tr>
-              {columns.map((c) => (
-                <th
-                  key={c.key}
-                  className={`${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none`}
-                  onClick={() => toggleSort(c.key)}
-                  style={c.width ? { width: c.width } : undefined}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    {c.label}
-                    {sort && sort.key === c.key && (sort.dir === "asc" ? <CaretUp size={11} /> : <CaretDown size={11} />)}
-                  </span>
-                </th>
-              ))}
+              {columns.map((c, ci) => {
+                const isFirst = ci === 0 && stickyFirstCol;
+                return (
+                  <th
+                    key={c.key}
+                    className={`${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""}`}
+                    onClick={() => toggleSort(c.key)}
+                    style={c.width ? { width: c.width } : undefined}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      {c.label}
+                      {sort && sort.key === c.key && (sort.dir === "asc" ? <CaretUp size={11} /> : <CaretDown size={11} />)}
+                    </span>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -142,14 +156,17 @@ export const SortableTable = ({
                 className={onRowClick ? "cursor-pointer hover:bg-panel" : undefined}
                 onClick={onRowClick ? () => onRowClick(r) : undefined}
               >
-                {columns.map((c) => (
-                  <td
-                    key={c.key}
-                    className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""}`}
-                  >
-                    {c.render ? c.render(r, i) : r[c.key]}
-                  </td>
-                ))}
+                {columns.map((c, ci) => {
+                  const isFirst = ci === 0 && stickyFirstCol;
+                  return (
+                    <td
+                      key={c.key}
+                      className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
+                    >
+                      {c.render ? c.render(r, i) : r[c.key]}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>

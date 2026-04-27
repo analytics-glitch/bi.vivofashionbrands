@@ -546,7 +546,7 @@ const FilterBar = () => {
           f.setChannels([]);
         }}
         placeholder="All countries"
-        width={170}
+        width={210}
       />
       <MultiSelect
         testId="filter-channels"
@@ -556,7 +556,7 @@ const FilterBar = () => {
         value={f.channels}
         onChange={f.setChannels}
         placeholder="All POS"
-        width={200}
+        width={220}
       />
     </>
   );

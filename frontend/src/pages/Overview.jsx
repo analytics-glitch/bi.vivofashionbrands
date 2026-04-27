@@ -498,7 +498,6 @@ const Overview = () => {
     () =>
       [...merchSubcats]
         .sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))
-        .slice(0, 15)
         .map((r) => {
           const pct = subcatTotalSales ? ((r.total_sales || 0) / subcatTotalSales) * 100 : 0;
           const prv = merchSubcatsPrevByName.get(r.subcategory);
@@ -621,46 +620,46 @@ const Overview = () => {
         <>
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={fmtKES(kpis.total_sales)} icon={CurrencyCircleDollar}
-              formula="Total Sales = Invoiced · gross of returns.\nFormula: SUM(invoice_line_value) over the selected date range / country / POS scope."
+              formula="How much money came in this period (before subtracting returns)."
               delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", fmtKES)} showDelta={compareMode !== "none"}
               action={{ label: "See by location", to: "/locations" }} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={fmtKES(kpis.net_sales)} icon={Coins}
-              formula="Net Sales = Total Sales − Returns."
+              formula="Total Sales minus refunds. The cash you actually kept."
               delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", fmtKES)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/ceo-report#returns" }} />
             <KPICard testId="kpi-orders" label="Total Orders" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
-              formula="Total Orders = COUNT(DISTINCT invoice_id) in scope."
+              formula="How many separate purchases were made."
               delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Order-level export", to: "/exports" }} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
-              formula="Total Units Sold = SUM(invoice_line_units) in scope."
+              formula="How many individual items left the shelves."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }} />
-            <KPICard testId="kpi-footfall" label="Total Footfall" sub="Visitors to stores (excl. data-quality outliers)" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+            <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
               delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
               deltaLabel={compareLbl} showDelta={compareMode !== "none"}
               action={{ label: "Footfall by store", to: "/footfall" }} />
-            <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Orders ÷ Footfall" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
+            <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
               delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
               deltaLabel={compareLbl} showDelta={compareMode !== "none"}
               action={{ label: "Which stores dropped?", to: "/footfall" }} />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3" data-testid="sub-kpi-row">
-            <KPICard small testId="kpi-abv" label="ABV" sub="Sales ÷ Orders"
-              formula="Average Basket Value = Total Sales ÷ Total Orders."
+            <KPICard small testId="kpi-abv" label="ABV" sub="Average Basket Value"
+              formula="What a typical customer spends per visit. Higher means people are buying more in one go."
               value={fmtKES(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
               delta={delta("avg_basket_size")} deltaLabel={compareLbl}
               prevValue={prev("avg_basket_size", fmtKES)}
               showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-asp" label="ASP" sub="Sales ÷ Units"
-              formula="Average Selling Price = Total Sales ÷ Units Sold."
+            <KPICard small testId="kpi-asp" label="ASP" sub="Average Selling Price"
+              formula="The average price of every item sold. Tells you whether you're moving premium pieces or basics."
               value={fmtKES(kpis.avg_selling_price)} icon={ChartBar}
               delta={delta("avg_selling_price")} deltaLabel={compareLbl}
               prevValue={prev("avg_selling_price", fmtKES)}
               showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-msi" label="MSI" sub="Units ÷ Orders"
-              formula="Mean Shopping Index = Units Sold ÷ Total Orders. Proxy for basket depth."
+            <KPICard small testId="kpi-msi" label="MSI" sub="Items per basket"
+              formula="How many items the average customer takes home in one purchase."
               value={(kpis.total_orders ? kpis.total_units / kpis.total_orders : 0).toFixed(2)}
               delta={(() => {
                 const cur = kpis.total_orders ? kpis.total_units / kpis.total_orders : 0;
@@ -670,15 +669,15 @@ const Overview = () => {
               deltaLabel={compareLbl}
               prevValue={kpisPrev && compareMode !== "none" && kpisPrev.total_orders ? (kpisPrev.total_units / kpisPrev.total_orders).toFixed(2) : null}
               showDelta={compareMode !== "none"} />
-            <KPICard small testId="kpi-rr" label="Return Rate"
-              formula="Return Rate = Returns Value ÷ Gross Sales (currency) for the period."
+            <KPICard small testId="kpi-rr" label="Return Rate" sub="Share of sales sent back"
+              formula="Out of every 100 KES we sold, how much came back as refunds. Lower is better."
               value={fmtPct(kpis.return_rate, 2)} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
               prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
               showDelta={compareMode !== "none"}
               action={{ label: "Locations w/ highest returns", to: "/locations" }} />
-            <KPICard small testId="kpi-returns" label="Return Amount" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
-              formula="Returns = Refunds, attributed to the original sale date (not the refund date)."
+            <KPICard small testId="kpi-returns" label="Return Amount" sub="Refunds in cash" value={fmtKES(kpis.total_returns)} icon={ArrowUUpLeft}
+              formula="Total cash refunded to customers, counted on the day they originally bought it."
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
               prevValue={prev("total_returns", fmtKES)}
               showDelta={compareMode !== "none"}
@@ -699,7 +698,7 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title={`Sales by Location · ${top15.length}`} subtitle="All POS locations ranked by revenue — % of total sales in brackets, arrow vs comparison period." />
+              <SectionTitle title={`Sales by Location · ${top15.length}`} subtitle="How much each store sold this period. Numbers in brackets show that store's share of total sales." />
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
@@ -746,7 +745,7 @@ const Overview = () => {
             </div>
 
             <div className="card-white p-5" data-testid="chart-country-split">
-              <SectionTitle title="Country split" subtitle="Total sales by market — see which country is carrying the group and whether growth is balanced or concentrated." />
+              <SectionTitle title="Country split" subtitle="Sales by country. Spot which markets are pulling weight." />
               {countryBars.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: 24 + countryBars.length * 56 }}>
                   <ResponsiveContainer>
@@ -791,7 +790,7 @@ const Overview = () => {
               )}
 
               <div className="mt-6" data-testid="chart-channel-split">
-                <SectionTitle title="Channel split" subtitle="Retail · Online · Wholesale share of total sales — track whether the channel mix is shifting as planned." />
+                <SectionTitle title="Channel split" subtitle="How the Retail vs Online vs Wholesale mix is shaping up." />
                 {channelBars.length === 0 ? <Empty /> : (
                   <div style={{ width: "100%", height: 24 + channelBars.length * 48 }}>
                     <ResponsiveContainer>
@@ -968,7 +967,7 @@ const Overview = () => {
           />
 
           <div className="card-white p-5" data-testid="category-chart">
-            <SectionTitle title="Sales by Category" subtitle="Merchandise-mix at a glance — is your revenue concentrated in one category or diversified? Compare vs previous period to spot category-level momentum." />
+            <SectionTitle title="Sales by Category" subtitle="Where the money came from this period — by clothing category." />
             {salesByCategory.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
@@ -1015,11 +1014,11 @@ const Overview = () => {
 
           <div className="card-white p-5" data-testid="subcat-chart">
             <SectionTitle
-              title="Sales by Subcategory"
-              subtitle={`Total Sales per subcategory (top 15) · Total across top 15: ${fmtKES(subcatTopTotal)}`}
+              title={`Sales by Subcategory · ${subcatTop.length}`}
+              subtitle={`Sales for every subcategory, biggest first. Total: ${fmtKES(subcatTopTotal)}`}
             />
             {subcatTop.length === 0 ? <Empty /> : (
-              <div style={{ width: "100%", height: 400 }}>
+              <div style={{ width: "100%", height: Math.max(360, 40 + subcatTop.length * 22) }}>
                 <ResponsiveContainer>
                   <BarChart data={subcatTop} layout="vertical" margin={{ left: 4, right: 200, top: 4 }}>
                     <CartesianGrid horizontal={false} />
@@ -1060,7 +1059,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="top-styles-section">
-            <SectionTitle title="Top 20 Styles" subtitle="Ranked by units sold. Protect stock cover on these styles and use them as anchor pieces in the next campaign or window display. Click any column to re-sort." />
+            <SectionTitle title="Top 20 Styles" subtitle="The 20 best-selling styles this period. Click any column to sort." />
             <SortableTable
               testId="top-styles"
               exportName="top-20-styles.csv"
@@ -1096,7 +1095,6 @@ const Overview = () => {
                 inventory={kpis}
                 compareLbl={compareLbl}
               />
-              <WhatChangedBelt kpis={kpis} dateFrom={dateFrom} dateTo={dateTo} />
               <WinsThisWeekCard />
               <StoreOfTheWeek />
               <SalesProjection
