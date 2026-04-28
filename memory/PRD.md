@@ -23,7 +23,7 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - `thumbnails.py`, `notifications.py`, `search.py`, `ask.py`
 
 ## Key API Endpoints
-`/api/kpis`, `/api/sales-summary`, `/api/inventory`, `/api/customers`, `/api/customers/walk-ins`, `/api/footfall`, `/api/data-freshness`, `/api/top-skus`, `/api/sor`, `/api/analytics/sor-new-styles-l10`, `/api/analytics/sales-projection`, `/api/analytics/ibt-suggestions`, `/api/analytics/sell-through-by-location`, `/api/analytics/weeks-of-cover`, `/api/analytics/inventory-summary`, `/api/analytics/churn`, `/api/analytics/new-styles`, `/api/analytics/category-country-matrix`, `/api/notifications`, `/api/notifications/unread-count`, `/api/search`, `/api/ask`, `/api/recommendations/*`, `/api/thumbnails/*`
+`/api/kpis`, `/api/sales-summary`, `/api/inventory`, `/api/customers`, `/api/customers/walk-ins`, `/api/footfall`, `/api/data-freshness`, `/api/top-skus`, `/api/sor`, `/api/analytics/sor-new-styles-l10`, `/api/analytics/sor-all-styles`, `/api/analytics/style-sku-breakdown`, `/api/analytics/new-styles-curve`, `/api/analytics/sales-projection`, `/api/analytics/ibt-suggestions`, `/api/analytics/ibt-sku-breakdown`, `/api/analytics/sell-through-by-location`, `/api/analytics/weeks-of-cover`, `/api/analytics/inventory-summary`, `/api/analytics/churn`, `/api/analytics/new-styles`, `/api/analytics/category-country-matrix`, `/api/notifications`, `/api/notifications/unread-count`, `/api/search`, `/api/search/customers`, `/api/ask`, `/api/recommendations/*`, `/api/thumbnails/*`
 
 ## Implemented (highlights)
 - Authenticated dashboard, role-based PII masking, audit logs
@@ -38,6 +38,17 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - SOR New Styles L-10 report (3–4 month-old styles)
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
+
+## Recently Shipped (2026-04-26 / 27 / 28)
+- **Iter_36 bundle** (2026-04-28):
+  - **Phase 2a · Stock-to-Sales · by Variant (Color × Size)** [Inventory]: New `[data-testid='sts-by-variant-section']` card placed above the existing per-location stock-cover section. 5 summary tiles (Active Styles, Stock on Hand, Units 6M, Overstocked, Understocked) and a SortableTable with the SOR column shape (SOH, SOH W/H, % In WH, Units 6M / 3W, ASP, WOC, 6M SOR, etc.). Inherits the shared `SorStylesTable` so the **+ Color/Print** and **+ Size** toggles work identically — drill any style into per-SKU rows to flag understocked / overstocked variants. Initial sort = WOC desc.
+  - **Phase 2b · New Styles · Sales Curve** [Products → new sub-tab `[data-testid='subtab-sales-curve']`]: Frontend wired to the existing `/api/analytics/new-styles-curve?days=…` backend. Day-window selector (60 / 90 / 122 / 180 / 365), trend filter (All / Climbing / Plateau / Declining with live counts), live-search by style/brand/subcategory. Each row gets a 110×32 sparkline (Recharts `AreaChart`) of weekly units since launch + a trend pill. Click "Open" → larger LineChart with a peak ReferenceLine and tooltip showing units & week_start. Lets merch re-order while a style is still climbing or plateaued; markdown-flag declining ones.
+  - **Cold-start fix**: Added a 30-min in-process `_curve_cache` to `/api/analytics/new-styles-curve` and a fire-and-forget startup warmup task that pre-warms `sor-all-styles` + `new-styles-curve(days=122)` so the FIRST user click no longer crosses the 100s ingress timeout. Cached endpoint now returns in **329 ms** (was timing out cold). Trend rule was tightened to use last-2-week mean vs peak (more robust when a fresh week hasn't booked yet).
+
+- **Iter_35 bundle** (2026-04-27):
+  - **SOR All Styles** sub-tab on Products: every style with sales in the last 6 months, same column shape as L-10. Tiles: Styles in Catalog / 6M Sales / Stock on Hand / Avg SOR / Slow Burners. Backed by new `/api/analytics/sor-all-styles` (30-min cached).
+  - **Reusable `SorStylesTable`**: refactored from `SorNewStylesL10` so L-10 + All-Styles share one component. Adds **+ Color/Print** and **+ Size** toggle pills. When ON, each style row splits into one row per SKU variant via lazy `/api/analytics/style-sku-breakdown` (cached 30 min). Both ON → one row per individual SKU.
+  - **Style-name search box** on both SOR tabs (multi-word AND, case-insensitive).
 
 ## Recently Shipped (2026-04-26 / 27)
 - **Iter_34 bundle**:

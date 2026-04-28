@@ -3072,6 +3072,8 @@ _all_styles_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _ALL_STYLES_TTL = 60 * 30  # 30 minutes
 _sku_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SKU_BREAKDOWN_TTL = 60 * 30  # 30 minutes — heavy /orders chunked fetch
+_curve_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_CURVE_TTL = 60 * 30  # 30 minutes — same fan-out cost as sor-all-styles
 
 
 @api_router.get("/analytics/sor-all-styles")
@@ -3459,13 +3461,21 @@ async def analytics_new_styles_curve(
     days: int = Query(122, ge=30, le=365),
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    refresh: bool = False,
 ):
     """Weekly sales curve per new style (launched in last `days` days).
 
     Per style returns: launch_date, total_units, total_sales, weekly = [
       {week_index, week_start, units, sales}, …
     ]. Frontend draws a sparkline + flags "still climbing / plateaued / declining".
+    Cached for 30 minutes per (days, country, channel).
     """
+    import time as _time
+    cache_key = f"{days}|{country or ''}|{channel or ''}"
+    if not refresh and cache_key in _curve_cache:
+        ts, payload = _curve_cache[cache_key]
+        if _time.time() - ts < _CURVE_TTL:
+            return payload
     today = datetime.now(timezone.utc).date()
     df = today - timedelta(days=int(days))
     cs = _split_csv(country)
@@ -3540,15 +3550,16 @@ async def analytics_new_styles_curve(
             wb["units"] += agg["units"]
             wb["sales"] += agg["sales"]
         weekly_list = sorted(weekly_buckets.values(), key=lambda r: r["week_index"])
-        # Trend signal: compare last 2-week avg to peak.
+        # Trend signal: compare last-2-week mean to peak (more robust than the
+        # single-bucket comparison when a fresh week hasn't booked yet).
         units_series = [w["units"] for w in weekly_list]
         peak = max(units_series) if units_series else 0
-        last_two = sum(units_series[-2:]) / max(len(units_series[-2:]), 1) if units_series else 0
+        last_two_mean = (sum(units_series[-2:]) / max(len(units_series[-2:]), 1)) if units_series else 0
         if peak == 0:
             trend = "no-sales"
-        elif units_series[-1] >= peak * 0.85:
+        elif last_two_mean >= peak * 0.85:
             trend = "climbing"
-        elif last_two >= peak * 0.5:
+        elif last_two_mean >= peak * 0.5:
             trend = "plateau"
         else:
             trend = "declining"
@@ -3561,11 +3572,13 @@ async def analytics_new_styles_curve(
             "trend": trend,
         })
     out.sort(key=lambda r: r["total_units"], reverse=True)
-    return {
+    payload = {
         "days": days,
         "as_of": today.isoformat(),
         "rows": out,
     }
+    _curve_cache[cache_key] = (_time.time(), payload)
+    return payload
 
 
 @api_router.get("/analytics/price-changes")
@@ -4337,6 +4350,24 @@ app.add_middleware(ActivityLogMiddleware)
 @app.on_event("startup")
 async def startup():
     await seed_admin()
+    # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
+    # click never crosses the 100s ingress timeout. These are read-only and
+    # only populate in-process caches (`_all_styles_cache`, `_curve_cache`),
+    # so we run them as background tasks. Errors are swallowed because a
+    # warmup failure must NOT block boot — the endpoints will simply pay the
+    # cold cost on first user click as before.
+    async def _warm():
+        try:
+            await asyncio.sleep(8)  # let the upstream finish its own warmup
+            await asyncio.gather(
+                analytics_sor_all_styles(),
+                analytics_new_styles_curve(days=122),
+                return_exceptions=True,
+            )
+            logger.info("[warmup] sor-all-styles + new-styles-curve cache warmed")
+        except Exception as e:
+            logger.warning("[warmup] failed: %s", e)
+    asyncio.create_task(_warm())
 
 
 @app.on_event("shutdown")
