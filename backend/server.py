@@ -2253,6 +2253,169 @@ async def analytics_sts_by_category(
     return sorted(agg.values(), key=lambda x: x["units_sold"], reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Stock-to-Sales by Color / by Size — variant-level analogue of the by-Subcat
+# table. Same column shape (units_sold, current_stock, pct_of_total_sold,
+# pct_of_total_stock, variance, sor_percent). One single endpoint returns
+# BOTH groupings to amortize the /orders fan-out across one call.
+# ---------------------------------------------------------------------------
+_sts_by_attr_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_STS_BY_ATTR_TTL = 60 * 5  # 5 minutes
+
+
+@api_router.get("/analytics/stock-to-sales-by-attribute")
+async def analytics_sts_by_attribute(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    locations: Optional[str] = None,
+    include_warehouse: bool = False,
+):
+    """Returns `{by_color: [...], by_size: [...]}`. Same column shape as
+    `/analytics/stock-to-sales-by-subcat` so the frontend can drop the rows
+    straight into the existing variance table layout.
+
+    Sales side: aggregate `/orders` over [date_from, date_to] by `color_print`
+    and `size`. Chunked into ≤30-day windows to dodge the upstream's 50k row
+    cap. Stock side: live inventory snapshot (NOT period-bound, matches the
+    by-subcat semantics).
+
+    `locations` (CSV) and `country` filter both /orders and /inventory. When
+    locations is set, warehouse rows are excluded by default (shop-floor
+    only). `include_warehouse=True` adds them back on top.
+    """
+    import time as _time
+    cache_key = f"{date_from or ''}|{date_to or ''}|{country or ''}|{channel or ''}|{locations or ''}|{int(bool(include_warehouse))}"
+    if cache_key in _sts_by_attr_cache:
+        ts, payload = _sts_by_attr_cache[cache_key]
+        if _time.time() - ts < _STS_BY_ATTR_TTL:
+            return payload
+
+    # --- Resolve scope -------------------------------------------------------
+    today = datetime.now(timezone.utc).date()
+    df = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else (today - timedelta(days=30))
+    dt = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    locs = _split_csv(locations) or chs  # mirror by-subcat: locations OR channel
+
+    # --- Sales: chunk /orders by ≤30-day windows ----------------------------
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= dt:
+        end = min(cur + timedelta(days=29), dt)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(d1: date, d2: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    # Serialize chunk fan-out (parallel saturates upstream → 503s — see
+    # `style-sku-breakdown` for the same constraint).
+    chunk_rows: List[Dict[str, Any]] = []
+    for d1, d2 in chunks:
+        chunk_rows.extend(await _orders_chunk(d1, d2))
+
+    # If user passed multi-country / multi-channel, the chunked call above
+    # used `None` to fetch globally — filter client-side here.
+    cs_set = {c.lower() for c in cs}
+    chs_set = set(chs)
+    locs_set = set(locs)
+
+    sold_by_color: Dict[str, Dict[str, float]] = defaultdict(lambda: {"units": 0, "sales": 0.0})
+    sold_by_size: Dict[str, Dict[str, float]] = defaultdict(lambda: {"units": 0, "sales": 0.0})
+    for r in chunk_rows:
+        # Skip non-merchandise — keeps the table semantically consistent with
+        # by-subcat, which is also merchandise-only.
+        if is_excluded_brand(r.get("brand")):
+            continue
+        if is_excluded_product(r):
+            continue
+        if cs_set and (r.get("country") or "").lower() not in cs_set:
+            continue
+        chan = r.get("channel") or r.get("location_name") or ""
+        if locs_set and chan not in locs_set:
+            continue
+        if chs_set and chan not in chs_set:
+            continue
+        color = (r.get("color_print") or r.get("color") or "—") or "—"
+        size = (r.get("size") or "—") or "—"
+        qty = int(r.get("quantity") or 0)
+        sales = float(r.get("total_sales_kes") or 0)
+        sold_by_color[color]["units"] += qty
+        sold_by_color[color]["sales"] += sales
+        sold_by_size[size]["units"] += qty
+        sold_by_size[size]["sales"] += sales
+
+    # --- Stock: live inventory snapshot --------------------------------------
+    if locs:
+        inv = await fetch_all_inventory(country=country, locations=locs)
+        # When locs is set we already scoped to those POS. include_warehouse
+        # adds warehouse-only rows back on top.
+        if include_warehouse:
+            wh = await fetch_all_inventory(country=country)
+            wh = [r for r in (wh or []) if is_warehouse_location(r.get("location_name"))]
+            inv = (inv or []) + wh
+    else:
+        inv = await fetch_all_inventory(country=country)
+
+    stock_by_color: Dict[str, float] = defaultdict(float)
+    stock_by_size: Dict[str, float] = defaultdict(float)
+    for r in (inv or []):
+        if is_excluded_brand(r.get("brand")):
+            continue
+        if is_excluded_product(r):
+            continue
+        color = (r.get("color_print") or r.get("color") or "—") or "—"
+        size = (r.get("size") or "—") or "—"
+        avail = float(r.get("available") or 0)
+        stock_by_color[color] += avail
+        stock_by_size[size] += avail
+
+    def _build(sold_map: Dict[str, Dict[str, float]], stock_map: Dict[str, float], key_label: str) -> List[Dict[str, Any]]:
+        keys = set(sold_map.keys()) | set(stock_map.keys())
+        total_units = sum(s["units"] for s in sold_map.values())
+        total_stock = sum(stock_map.values())
+        out: List[Dict[str, Any]] = []
+        for k in keys:
+            units = sold_map.get(k, {}).get("units", 0)
+            sales = sold_map.get(k, {}).get("sales", 0.0)
+            stock = stock_map.get(k, 0.0)
+            pct_sold = (units / total_units * 100) if total_units else 0
+            pct_stock = (stock / total_stock * 100) if total_stock else 0
+            denom = units + stock
+            sor = (units / denom * 100) if denom > 0 else 0
+            out.append({
+                key_label: k,
+                "units_sold": int(units),
+                "current_stock": round(stock, 2),
+                "pct_of_total_sold": round(pct_sold, 4),
+                "pct_of_total_stock": round(pct_stock, 4),
+                "variance": round(pct_sold - pct_stock, 4),
+                "sor_percent": round(sor, 2),
+                "total_sales": round(sales, 2),
+            })
+        # Hide rows where we have no signal at all (some upstream rows have
+        # missing color/size — they all collapse to "—" which is fine to
+        # surface, but rows with 0 units AND 0 stock are noise).
+        out = [r for r in out if (r["units_sold"] > 0 or r["current_stock"] > 0)]
+        out.sort(key=lambda x: x["units_sold"], reverse=True)
+        return out
+
+    payload = {
+        "by_color": _build(sold_by_color, stock_by_color, "color"),
+        "by_size":  _build(sold_by_size,  stock_by_size,  "size"),
+    }
+    _sts_by_attr_cache[cache_key] = (_time.time(), payload)
+    return payload
+
+
 @api_router.get("/analytics/weeks-of-cover")
 async def analytics_weeks_of_cover(
     country: Optional[str] = None,

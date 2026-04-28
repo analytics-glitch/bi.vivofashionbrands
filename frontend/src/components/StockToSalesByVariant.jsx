@@ -1,28 +1,57 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtKES, fmtNum } from "@/lib/api";
+import { api, fmtNum, fmtPct } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
+import { varianceStyle } from "@/lib/variance";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { categoryFor } from "@/lib/productCategory";
-import SorStylesTable from "@/components/SorStylesTable";
+import SortableTable from "@/components/SortableTable";
 
 /**
- * Stock-to-Sales · by Variant (Color × Size)
+ * Stock-to-Sales · by Color and · by Size.
  *
- * Lives on the Inventory page. Reuses the catalog-wide `/analytics/sor-all-styles`
- * payload (cached server-side for 30 min) and renders the shared `SorStylesTable`
- * with the L-10 hidden columns toggled off. Merch users can press
- * `+ Color/Print` and/or `+ Size` to drill any style into per-SKU rows so they
- * can flag understocked / overstocked variants — the same SKU breakdown is
- * served lazily from `/analytics/style-sku-breakdown`.
- *
- * The table columns (SOH, SOH W/H, % In WH, units 6m / 3w, ASP, WOC, weekly
- * avg, 6M SOR) ARE the stock-to-sales view at the variant level. No bespoke
- * endpoint required — this composes existing primitives.
+ * Two stacked variance tables matching the column shape of
+ * `Stock-to-Sales · by Subcategory` (Inventory page) so users can switch
+ * between attribute lenses without re-learning the layout. Both tables share
+ * a single `/analytics/stock-to-sales-by-attribute` fetch (returns
+ * `{by_color, by_size}`) so we don't pay the /orders fan-out twice.
  */
-const StockToSalesByVariant = () => {
+
+const VarianceCellPts = ({ value }) => {
+  const { cls, icon, tip, flag } = varianceStyle(value);
+  return (
+    <span className={`${cls} inline-flex items-center gap-1`} title={tip} data-variance-flag={flag}>
+      <span aria-hidden="true">{icon}</span>
+      {value >= 0 ? "+" : ""}
+      {(value || 0).toFixed(2)} pp
+    </span>
+  );
+};
+
+const buildColumns = (keyLabel, keyField) => [
+  {
+    key: keyField, label: keyLabel, align: "left",
+    render: (r) => <span className="font-medium">{r[keyField] || "—"}</span>,
+  },
+  { key: "units_sold",         label: "Units Sold",          numeric: true, render: (r) => fmtNum(r.units_sold) },
+  { key: "current_stock",      label: "Inventory",           numeric: true, render: (r) => fmtNum(Math.round(r.current_stock || 0)), csv: (r) => Math.round(r.current_stock || 0) },
+  { key: "pct_of_total_sold",  label: "% of Total Sales",    numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
+  { key: "pct_of_total_stock", label: "% of Total Inventory",numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
+  {
+    key: "variance", label: "Variance", numeric: true,
+    sortValue: (r) => Math.abs(r.variance || 0),
+    render: (r) => <VarianceCellPts value={r.variance} />,
+    csv: (r) => r.variance?.toFixed(2),
+  },
+  {
+    key: "risk_flag", label: "Risk Flag", align: "left",
+    render: (r) => <span className="text-[11px] text-muted">{varianceStyle(r.variance).flag}</span>,
+    csv: (r) => varianceStyle(r.variance).flag,
+  },
+];
+
+const StockToSalesByVariant = ({ exportSlug }) => {
   const { applied } = useFilters();
-  const { countries, channels, dataVersion } = applied;
-  const [rows, setRows] = useState([]);
+  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
+  const [data, setData] = useState({ by_color: [], by_size: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -30,99 +59,77 @@ const StockToSalesByVariant = () => {
     let cancel = false;
     setLoading(true);
     setError(null);
-    const params = {};
-    if (countries && countries.length) params.country = countries.join(",");
-    if (channels && channels.length) params.channel = channels.join(",");
+    const params = { date_from: dateFrom, date_to: dateTo };
+    if (countries && countries.length) params.country = countries.map((c) => c.toLowerCase()).join(",");
+    if (channels && channels.length) params.locations = channels.join(",");
     api
-      .get("/analytics/sor-all-styles", { params, timeout: 240000 })
-      .then(({ data }) => {
+      .get("/analytics/stock-to-sales-by-attribute", { params, timeout: 240000 })
+      .then(({ data: d }) => {
         if (cancel) return;
-        setRows(Array.isArray(data) ? data : []);
+        setData(d || { by_color: [], by_size: [] });
       })
       .catch((e) => !cancel && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancel && setLoading(false));
     return () => { cancel = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
-  const enriched = useMemo(
-    () => (rows || []).map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),
-    [rows]
-  );
+  const byColor = data.by_color || [];
+  const bySize = data.by_size || [];
 
-  // Top-line tiles geared to stock-cover context (vs SOR All-Styles which leads
-  // with sales). Lead with overstock / understock counts here.
-  const summary = useMemo(() => {
-    if (!enriched.length) return null;
-    const total_stock = enriched.reduce((s, r) => s + (r.soh_total || 0), 0);
-    const total_units = enriched.reduce((s, r) => s + (r.units_6m || 0), 0);
-    const wh = enriched.reduce((s, r) => s + (r.soh_wh || 0), 0);
-    const overstocked = enriched.filter((r) => (r.woc != null && r.woc > 12) || (r.sor_6m != null && r.sor_6m < 25)).length;
-    const understocked = enriched.filter((r) => (r.woc != null && r.woc < 4) && (r.units_6m || 0) > 0).length;
-    return {
-      total_stock, total_units, wh,
-      pct_in_wh: total_stock > 0 ? (wh / total_stock) * 100 : 0,
-      overstocked, understocked,
-    };
-  }, [enriched]);
+  const colorColumns = useMemo(() => buildColumns("Color/Print", "color"), []);
+  const sizeColumns = useMemo(() => buildColumns("Size", "size"), []);
+
+  const slug = exportSlug || `${dateFrom}_${dateTo}`;
 
   return (
-    <div className="card-white p-5" data-testid="sts-by-variant-section">
-      <SectionTitle
-        title="Stock-to-Sales · by Variant (Color × Size)"
-        subtitle={
-          <span>
-            Spot understocked or overstocked SKUs at the variant level. Filter by style
-            name and toggle <b>+ Color/Print</b> or <b>+ Size</b> to split each style
-            into per-SKU rows. Look at <b>WOC</b> (weeks of cover) and <b>% In WH</b> to
-            decide whether to <b>re-order</b>, <b>IBT</b> a variant, or <b>mark down</b>.
-          </span>
-        }
-      />
-
-      {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
-
-      {!loading && !error && (
-        <>
-          {summary && (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5 mt-2 mb-4">
-              <Tile testId="sts-variant-tile-styles"   label="Active Styles"        value={fmtNum(enriched.length)}                  sub="sold ≥ 1 unit in last 6 months" />
-              <Tile testId="sts-variant-tile-stock"    label="Stock on Hand"        value={fmtNum(Math.round(summary.total_stock))} sub={`${summary.pct_in_wh.toFixed(1)}% in warehouse`} />
-              <Tile testId="sts-variant-tile-units"    label="Units Sold (6M)"      value={fmtNum(summary.total_units)}              sub="across all variants" />
-              <Tile testId="sts-variant-tile-overstock" label="Overstocked Styles"  value={fmtNum(summary.overstocked)}              sub="WOC > 12w or SOR < 25%" tone={summary.overstocked > 0 ? "warn" : "good"} />
-              <Tile testId="sts-variant-tile-understock" label="Understocked Styles" value={fmtNum(summary.understocked)}            sub="WOC < 4w with active sales" tone={summary.understocked > 0 ? "danger" : "good"} />
-            </div>
-          )}
-
-          {enriched.length === 0 ? (
-            <Empty label="No styles available." />
+    <>
+      <div className="card-white p-5" data-testid="sts-by-color-table">
+        <SectionTitle
+          title="Stock-to-Sales · by Color"
+          subtitle="One row per color/print across all merchandise. Variance = sales share − stock share. Red = action needed (stockout or overstock risk). Green = healthy balance."
+        />
+        {loading && <Loading />}
+        {error && <ErrorBox message={error} />}
+        {!loading && !error && (
+          byColor.length === 0 ? (
+            <Empty label="No color data in the selected window." />
           ) : (
-            <SorStylesTable
-              rows={enriched}
-              testId="sts-by-variant-table"
-              exportName="stock-to-sales-by-variant.csv"
-              showLaunchDate={false}
-              initialSort={{ key: "woc", dir: "desc" }}
+            <SortableTable
+              testId="inv-sts-color"
+              exportName={`inventory-sts-by-color_${slug}.csv`}
+              pageSize={15}
+              initialSort={{ key: "variance", dir: "desc" }}
+              columns={colorColumns}
+              rows={byColor}
             />
-          )}
-        </>
-      )}
-    </div>
-  );
-};
+          )
+        )}
+      </div>
 
-const Tile = ({ testId, label, value, sub, tone }) => {
-  const cls = tone === "warn"   ? "bg-amber-50 border-amber-200 text-amber-900"
-           : tone === "danger" ? "bg-red-50 border-red-200 text-red-900"
-           : tone === "good"   ? "bg-emerald-50 border-emerald-200 text-emerald-900"
-           :                      "bg-panel/60 border-border text-foreground";
-  return (
-    <div className={`rounded-lg border p-3 ${cls}`} data-testid={testId}>
-      <div className="text-[10.5px] uppercase tracking-wider opacity-80">{label}</div>
-      <div className="font-extrabold text-[20px] leading-tight mt-0.5">{value}</div>
-      {sub && <div className="text-[10.5px] opacity-80 mt-0.5">{sub}</div>}
-    </div>
+      <div className="card-white p-5" data-testid="sts-by-size-table">
+        <SectionTitle
+          title="Stock-to-Sales · by Size"
+          subtitle="One row per size across all merchandise. Spot sizes that consistently outsell their stock share (re-order) and sizes that are over-stocked (markdown / IBT)."
+        />
+        {loading && <Loading />}
+        {error && <ErrorBox message={error} />}
+        {!loading && !error && (
+          bySize.length === 0 ? (
+            <Empty label="No size data in the selected window." />
+          ) : (
+            <SortableTable
+              testId="inv-sts-size"
+              exportName={`inventory-sts-by-size_${slug}.csv`}
+              pageSize={15}
+              initialSort={{ key: "variance", dir: "desc" }}
+              columns={sizeColumns}
+              rows={bySize}
+            />
+          )
+        )}
+      </div>
+    </>
   );
 };
 

@@ -734,6 +734,8 @@ const Inventory = () => {
             />
           </div>
 
+          <StockToSalesByVariant exportSlug={exportSlug} />
+
           {understockedSubcats.length > 0 && (
             <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">
               <SectionTitle
@@ -792,8 +794,6 @@ const Inventory = () => {
               />
             </div>
           )}
-
-          <StockToSalesByVariant />
 
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
