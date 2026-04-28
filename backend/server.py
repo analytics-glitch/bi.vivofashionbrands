@@ -60,6 +60,49 @@ _FETCH_CACHE: Dict[tuple, tuple] = {}
 _FETCH_TTL = 120.0  # seconds
 _FETCH_CACHE_MAX = 2000  # entries
 
+# Official Vivo merchandise taxonomy (supplied by merchandising team on
+# 2026-04-24). Map is `product_type` (= upstream `subcategory`) → category.
+# Anything not in this map falls back to "Other" so downstream filters can
+# cleanly exclude it. Mirrors /app/frontend/src/lib/productCategory.js —
+# update both files when the merch team adds a new subcategory.
+SUBCATEGORY_TO_CATEGORY: Dict[str, str] = {
+    # Accessories
+    "Accessories": "Accessories", "Bangles & Bracelets": "Accessories",
+    "Belts": "Accessories", "Body Mists & Fragrances": "Accessories",
+    "Earrings": "Accessories", "Necklaces": "Accessories",
+    "Rings": "Accessories", "Scarves": "Accessories",
+    # Bottoms
+    "Culottes & Capri Pants": "Bottoms", "Full Length Pants": "Bottoms",
+    "Jumpsuits & Playsuits": "Bottoms", "Leggings": "Bottoms",
+    "Shorts & Skorts": "Bottoms",
+    # Dresses
+    "Knee Length Dresses": "Dresses", "Maxi Dresses": "Dresses",
+    "Midi & Capri Dresses": "Dresses", "Short & Mini Dresses": "Dresses",
+    # Mens
+    "Men's Bottoms": "Mens", "Men's Tops": "Mens",
+    # Outerwear
+    "Hoodies & Sweatshirts": "Outerwear", "Jackets & Coats": "Outerwear",
+    "Sweaters & Ponchos": "Outerwear", "Waterfalls & Kimonos": "Outerwear",
+    # Sale
+    "Sample & Sale Items": "Sale",
+    # Skirts
+    "Knee Length Skirts": "Skirts", "Maxi Skirts": "Skirts",
+    "Midi & Capri Skirts": "Skirts", "Short & Mini Skirts": "Skirts",
+    # Tops
+    "Bodysuits": "Tops", "Fitted Tops": "Tops", "Loose Tops": "Tops",
+    "Midriff & Crop Tops": "Tops", "T-shirts & Tank Tops": "Tops",
+    # Two-Piece Sets
+    "Pants & Top Set": "Two-Piece Sets", "Pants & Waterfall Set": "Two-Piece Sets",
+    "Skirts & Top Set": "Two-Piece Sets",
+}
+
+
+def category_of(sub: Optional[str]) -> str:
+    """Map a subcategory string to its merch category. Empty/unknown → 'Other'."""
+    if not sub:
+        return "Other"
+    return SUBCATEGORY_TO_CATEGORY.get(sub, "Other")
+
 
 def _client_ip(request: Request) -> Optional[str]:
     """Best-effort client IP (handles X-Forwarded-For from the ingress)."""
@@ -2161,62 +2204,9 @@ async def analytics_sts_by_category(
                 if is_warehouse_location(r.get("location_name")):
                     inv_rows.append(r)
 
-    # Official Vivo merchandise taxonomy (supplied by merchandising team on
-    # 2026-04-24). Map is product_type → category. Anything not in this map
-    # falls back to "Other" so downstream filters can cleanly exclude it
-    # instead of leaking random subcategory names as their own "category".
-    SUBCATEGORY_TO_CATEGORY = {
-        # Accessories
-        "Accessories": "Accessories",
-        "Bangles & Bracelets": "Accessories",
-        "Belts": "Accessories",
-        "Body Mists & Fragrances": "Accessories",
-        "Earrings": "Accessories",
-        "Necklaces": "Accessories",
-        "Rings": "Accessories",
-        "Scarves": "Accessories",
-        # Bottoms
-        "Culottes & Capri Pants": "Bottoms",
-        "Full Length Pants": "Bottoms",
-        "Jumpsuits & Playsuits": "Bottoms",
-        "Leggings": "Bottoms",
-        "Shorts & Skorts": "Bottoms",
-        # Dresses
-        "Knee Length Dresses": "Dresses",
-        "Maxi Dresses": "Dresses",
-        "Midi & Capri Dresses": "Dresses",
-        "Short & Mini Dresses": "Dresses",
-        # Mens
-        "Men's Bottoms": "Mens",
-        "Men's Tops": "Mens",
-        # Outerwear
-        "Hoodies & Sweatshirts": "Outerwear",
-        "Jackets & Coats": "Outerwear",
-        "Sweaters & Ponchos": "Outerwear",
-        "Waterfalls & Kimonos": "Outerwear",
-        # Sale
-        "Sample & Sale Items": "Sale",
-        # Skirts
-        "Knee Length Skirts": "Skirts",
-        "Maxi Skirts": "Skirts",
-        "Midi & Capri Skirts": "Skirts",
-        "Short & Mini Skirts": "Skirts",
-        # Tops
-        "Bodysuits": "Tops",
-        "Fitted Tops": "Tops",
-        "Loose Tops": "Tops",
-        "Midriff & Crop Tops": "Tops",
-        "T-shirts & Tank Tops": "Tops",
-        # Two-Piece Sets
-        "Pants & Top Set": "Two-Piece Sets",
-        "Pants & Waterfall Set": "Two-Piece Sets",
-        "Skirts & Top Set": "Two-Piece Sets",
-    }
-
-    def category_of(sub: str) -> str:
-        if not sub:
-            return "Other"
-        return SUBCATEGORY_TO_CATEGORY.get(sub, "Other")
+    # Reuse the module-level Vivo merch taxonomy (see SUBCATEGORY_TO_CATEGORY
+    # near the top of this file). category_of(...) returns "Other" for unknown
+    # subcategories so downstream filters can cleanly exclude them.
 
     # If locations filter is provided, rebuild current_stock per row
     # from local inventory (upstream's channel param only filters sales).
@@ -3589,17 +3579,25 @@ async def exports_period_performance(
 
 
 @api_router.get("/exports/stock-rebalancing")
-async def exports_stock_rebalancing():
+async def exports_stock_rebalancing(categories: Optional[str] = None):
     """Stock Rebalancing report — for each of the last 2 complete years:
        • Units Sold (full year) + % share within total
        • Units Sold in same calendar quarter as the CURRENT quarter
        • Stock-on-Hand (current) + % share
-    Rows = Category > Subcategory hierarchy; final 'Total' row at bottom.
-    SOH is current — upstream /inventory only exposes the live snapshot."""
+    Rows = Category > Subcategory hierarchy (category = the merchandise
+    bucket Dresses/Tops/Bottoms/Outerwear/etc, NOT the brand).
+    Each category block ends with a bold subtotal row; a Grand Total row
+    is returned separately for the table footer.
+    `categories` is an optional CSV filter (e.g. "Dresses,Tops"). All
+    percentages are recomputed against the FILTERED universe so percentages
+    still sum to 100% within the filter."""
     today = datetime.now(timezone.utc).date()
     cur_year = today.year
     cur_q = ((today.month - 1) // 3) + 1
     years = [cur_year - 2, cur_year - 1]
+    cat_filter: Optional[set] = None
+    if categories:
+        cat_filter = {c.strip() for c in categories.split(",") if c.strip()}
 
     def _quarter_window(year: int, q: int) -> Tuple[str, str]:
         start_m = (q - 1) * 3 + 1
@@ -3607,8 +3605,6 @@ async def exports_stock_rebalancing():
         last_day = (date(year, end_m + 1, 1) - timedelta(days=1)) if end_m < 12 else date(year, 12, 31)
         return f"{year:04d}-{start_m:02d}-01", last_day.isoformat()
 
-    # Fan-out: per-year subcategory-sales (full-year) + per-year same-quarter
-    # subcategory-sales. SOH is one shared upstream call.
     tasks: List[Any] = []
     for y in years:
         tasks.append(fetch("/subcategory-sales", {
@@ -3625,39 +3621,31 @@ async def exports_stock_rebalancing():
         quarter_years[y] = fetched[i * 2 + 1] if not isinstance(fetched[i * 2 + 1], Exception) else []
     inv_rows = fetched[-1] if not isinstance(fetched[-1], Exception) else []
 
-    # Subcategory → Category map. Upstream /subcategory-sales does NOT
-    # return a `category` field, so we derive it from inventory: the
-    # `brand` column is the category in the merchandising hierarchy
-    # (e.g. "Vivo Basic", "Vivo Bloom"), and `product_type` is the
-    # subcategory ("Knee Length Dresses", "Tops", …). Pick the most
-    # common brand observed for each subcategory in the live SOH feed.
-    sub_to_cat: Dict[str, str] = {}
-    sub_brand_counts: Dict[str, Dict[str, int]] = {}
-    for r in inv_rows or []:
-        sub = r.get("subcategory") or r.get("product_type") or "—"
-        brand = (r.get("brand") or "").strip() or "Other"
-        bucket = sub_brand_counts.setdefault(sub, {})
-        bucket[brand] = bucket.get(brand, 0) + int(r.get("available") or 0)
-    for sub, brands in sub_brand_counts.items():
-        sub_to_cat[sub] = max(brands.items(), key=lambda kv: kv[1])[0]
-
     def _cat_for(sub: str) -> str:
-        return sub_to_cat.get(sub) or "Uncategorised"
+        return category_of(sub)
 
-    # Build SOH per (category, subcategory). brand is the category.
+    def _passes(sub: str) -> bool:
+        if cat_filter is None:
+            return True
+        return _cat_for(sub) in cat_filter
+
+    # Build SOH per (category, subcategory).
     soh_by_cat: Dict[str, Dict[str, int]] = {}
     for r in inv_rows or []:
         sub = r.get("subcategory") or r.get("product_type") or "—"
+        if not _passes(sub):
+            continue
         cat = _cat_for(sub)
         bucket = soh_by_cat.setdefault(cat, {})
         bucket[sub] = bucket.get(sub, 0) + int(r.get("available") or 0)
     grand_soh = sum(sum(v.values()) for v in soh_by_cat.values()) or 0
 
-    # Build per-year units totals indexed by (category, subcategory).
     def _idx_by_subcat(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], int]:
         out: Dict[Tuple[str, str], int] = {}
         for r in rows or []:
             sub = r.get("subcategory") or "—"
+            if not _passes(sub):
+                continue
             cat = _cat_for(sub)
             out[(cat, sub)] = (out.get((cat, sub), 0)) + int(r.get("units_sold") or 0)
         return out
@@ -3675,30 +3663,18 @@ async def exports_stock_rebalancing():
     for cat, subs in soh_by_cat.items():
         all_cats.setdefault(cat, set()).update(subs.keys())
 
-    # Sort: categories alphabetically, then subcategories by current-year
-    # full-year units desc.
     rows_out: List[Dict[str, Any]] = []
     last_y = years[-1]
-    cat_sort_key = lambda c: -sum(full_idx[last_y].get((c, s), 0) for s in all_cats.get(c, []))  # noqa: E731
-    for cat in sorted(all_cats.keys(), key=cat_sort_key):
+    cat_order = sorted(
+        all_cats.keys(),
+        key=lambda c: -sum(full_idx[last_y].get((c, s), 0) for s in all_cats.get(c, []))
+    )
+    for cat in cat_order:
         subs = sorted(
             all_cats[cat],
             key=lambda s: -full_idx[last_y].get((cat, s), 0)
         )
-        # Category total row
-        cat_row: Dict[str, Any] = {"category": cat, "subcategory": None, "is_total": True}
-        for y in years:
-            u_full = sum(full_idx[y].get((cat, s), 0) for s in subs)
-            u_q = sum(quarter_idx[y].get((cat, s), 0) for s in subs)
-            cat_row[f"y{y}_units_sold"] = u_full
-            cat_row[f"y{y}_units_sold_pct"] = round((u_full / full_totals[y] * 100), 4) if full_totals[y] else 0
-            cat_row[f"y{y}_units_q"] = u_q
-            cat_row[f"y{y}_units_q_pct"] = round((u_q / q_totals[y] * 100), 4) if q_totals[y] else 0
-        soh = sum((soh_by_cat.get(cat, {}).get(s, 0)) for s in subs)
-        cat_row["soh"] = soh
-        cat_row["soh_pct"] = round((soh / grand_soh * 100), 4) if grand_soh else 0
-        rows_out.append(cat_row)
-        # Subcategory rows
+        # Subcategory rows FIRST.
         for s in subs:
             row: Dict[str, Any] = {"category": cat, "subcategory": s, "is_total": False}
             for y in years:
@@ -3712,8 +3688,20 @@ async def exports_stock_rebalancing():
             row["soh"] = soh_s
             row["soh_pct"] = round((soh_s / grand_soh * 100), 4) if grand_soh else 0
             rows_out.append(row)
+        # Category subtotal AFTER its subcategories (per user spec).
+        cat_row: Dict[str, Any] = {"category": cat, "subcategory": None, "is_total": True}
+        for y in years:
+            u_full = sum(full_idx[y].get((cat, s), 0) for s in subs)
+            u_q = sum(quarter_idx[y].get((cat, s), 0) for s in subs)
+            cat_row[f"y{y}_units_sold"] = u_full
+            cat_row[f"y{y}_units_sold_pct"] = round((u_full / full_totals[y] * 100), 4) if full_totals[y] else 0
+            cat_row[f"y{y}_units_q"] = u_q
+            cat_row[f"y{y}_units_q_pct"] = round((u_q / q_totals[y] * 100), 4) if q_totals[y] else 0
+        soh = sum((soh_by_cat.get(cat, {}).get(s, 0)) for s in subs)
+        cat_row["soh"] = soh
+        cat_row["soh_pct"] = round((soh / grand_soh * 100), 4) if grand_soh else 0
+        rows_out.append(cat_row)
 
-    # Grand totals
     grand: Dict[str, Any] = {"category": "Grand Total", "subcategory": None, "is_grand_total": True}
     for y in years:
         grand[f"y{y}_units_sold"] = full_totals[y]
@@ -3727,6 +3715,7 @@ async def exports_stock_rebalancing():
         "years": years,
         "rows": rows_out,
         "totals": grand,
+        "available_categories": sorted(all_cats.keys()),
     }
 
 

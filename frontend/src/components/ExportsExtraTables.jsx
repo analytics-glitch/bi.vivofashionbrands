@@ -3,6 +3,8 @@ import { useFilters } from "@/lib/filters";
 import { api, fmtNum, fmtKES } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import MultiSelect from "@/components/MultiSelect";
+import { Tag } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
 // Reusable formatters
@@ -258,23 +260,25 @@ export const StockRebalancingExport = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [catSel, setCatSel] = useState([]); // empty = all
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
+    const params = catSel.length ? { categories: catSel.join(",") } : {};
     api
-      .get("/exports/stock-rebalancing", { timeout: 60000 })
+      .get("/exports/stock-rebalancing", { params, timeout: 60000 })
       .then((r) => !cancelled && setData(r.data || null))
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, []);
+  }, [JSON.stringify(catSel)]);  // eslint-disable-line
 
-  if (loading) return <Loading />;
+  if (loading && !data) return <Loading />;
   if (error) return <ErrorBox message={error} />;
   if (!data || !data.rows?.length) return <Empty label="No data available." />;
 
-  const { years, current_quarter, rows, totals } = data;
+  const { years, current_quarter, rows, totals, available_categories } = data;
 
   // Build column groups dynamically from the years array.
   const columns = [
@@ -327,6 +331,19 @@ export const StockRebalancingExport = () => {
           `Use this to spot subcategories where SOH is over- or under-indexed vs historical run-rate.`
         }
       />
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <MultiSelect
+          testId="stock-reb-category"
+          label="Product category"
+          icon={Tag}
+          width={260}
+          value={catSel}
+          options={(available_categories || []).map((c) => ({ value: c, label: c }))}
+          onChange={setCatSel}
+          placeholder="All categories"
+        />
+        {loading && <span className="text-[12px] text-muted animate-pulse">refreshing…</span>}
+      </div>
       <SortableTable
         testId="exports-stock-rebalancing"
         exportName="stock-rebalancing.csv"

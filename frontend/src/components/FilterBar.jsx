@@ -631,29 +631,64 @@ const FilterBar = () => {
         </button>
       </div>
 
-      {/* Mobile layout — single Filters button + Share */}
-      <div className="flex md:hidden items-center gap-2">
-        <MobileFiltersSheet>{ControlsInline}</MobileFiltersSheet>
-        <button
-          type="button"
-          onClick={handleShare}
-          data-testid="share-filter-link-mobile"
-          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11.5px] font-semibold transition-all ml-auto ${
-            shareCopied
-              ? "bg-[#059669] text-white border border-[#059669]"
-              : "bg-white text-foreground/80 border border-border"
-          }`}
-        >
-          {shareCopied ? (
-            <>
-              <Check size={12} weight="bold" /> Copied
-            </>
-          ) : (
-            <>
-              <ShareNetwork size={12} weight="bold" /> Share
-            </>
-          )}
-        </button>
+      {/* Mobile layout — compact 4-row stack, always visible (no sheet
+          toggle). Each row uses a 2-col grid so the controls share the
+          same width and stay aligned. The MobileFiltersSheet is removed
+          entirely; users edit filters directly. */}
+      <div className="flex md:hidden flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 min-w-0"><ChannelGroupToggle /></div>
+          <button
+            type="button"
+            onClick={handleShare}
+            data-testid="share-filter-link-mobile"
+            className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11.5px] font-semibold transition-all ${
+              shareCopied
+                ? "bg-[#059669] text-white border border-[#059669]"
+                : "bg-white text-foreground/80 border border-border"
+            }`}
+          >
+            {shareCopied ? (
+              <>
+                <Check size={12} weight="bold" /> Copied
+              </>
+            ) : (
+              <>
+                <ShareNetwork size={12} weight="bold" /> Share
+              </>
+            )}
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <DateRangeButton />
+          <CompareButton />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <CurrencyButton />
+          <MultiSelect
+            testId="filter-countries"
+            label="Country"
+            icon={Globe}
+            options={countryOptions}
+            value={f.countries}
+            onChange={(v) => {
+              f.setCountries(v);
+              f.setChannels([]);
+            }}
+            placeholder="All countries"
+            width={210}
+          />
+        </div>
+        <MultiSelect
+          testId="filter-channels"
+          label="POS"
+          icon={Storefront}
+          options={channelOptions}
+          value={f.channels}
+          onChange={f.setChannels}
+          placeholder="All POS"
+          width={220}
+        />
       </div>
     </div>
   );
