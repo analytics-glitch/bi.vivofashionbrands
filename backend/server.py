@@ -3061,6 +3061,513 @@ async def analytics_sor_new_styles_l10(
     return out
 
 
+# ---------------------------------------------------------------------------
+# SOR — same SOR/SOH/units shape as L-10, for the ENTIRE active catalog.
+# Differs from L-10 only by skipping the launch-band (90–122 days) filter,
+# which means we operate on `six_m_skus` directly as the candidate pool.
+# Upstream /top-skus is the heavyweight call; we share it via the existing
+# response cache so two opens of the page in close succession are cheap.
+# ---------------------------------------------------------------------------
+_all_styles_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_ALL_STYLES_TTL = 60 * 30  # 30 minutes
+_sku_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SKU_BREAKDOWN_TTL = 60 * 30  # 30 minutes — heavy /orders chunked fetch
+
+
+@api_router.get("/analytics/sor-all-styles")
+async def analytics_sor_all_styles(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    brand: Optional[str] = None,
+    refresh: bool = False,
+):
+    """SOR for ALL active styles — same column shape as L-10 but covers
+    every style that sold in the last 6 months, not just 3-4-month-old
+    launches. Use this for catalog-wide SOR audits, markdown candidates,
+    and IBT shortlists.
+    """
+    import time as _time
+    cache_key = f"all|{country or ''}|{channel or ''}|{brand or ''}"
+    if not refresh and cache_key in _all_styles_cache:
+        ts, payload = _all_styles_cache[cache_key]
+        if _time.time() - ts < _ALL_STYLES_TTL:
+            return payload
+
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def _topskus(df: str, dt: str) -> List[Dict[str, Any]]:
+        # Same dedup/merge logic as `analytics_sor_new_styles_l10._topskus`
+        # — kept inline rather than refactored to keep the L-10 endpoint
+        # self-contained and avoid coupling.
+        base = {"date_from": df, "date_to": dt, "limit": 10000}
+        if brand:
+            base["product"] = brand
+        if len(cs) <= 1 and len(chs) <= 1:
+            raw = await fetch("/top-skus", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            }) or []
+            results = [raw]
+        else:
+            results = await multi_fetch("/top-skus", base, cs, chs)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in g:
+                s = r.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+                    if (len(merged[s].get("collection") or "") < len(r.get("collection") or "")):
+                        merged[s]["collection"] = r.get("collection")
+        return list(merged.values())
+
+    six_m_skus, three_w_skus, inventory = await asyncio.gather(
+        _topskus(six_m_from.isoformat(), today.isoformat()),
+        _topskus(three_w_from.isoformat(), today.isoformat()),
+        fetch_all_inventory(country=country),
+    )
+
+    candidates = {r.get("style_name") for r in six_m_skus if r.get("style_name")}
+
+    six_m_map = {r.get("style_name"): r for r in six_m_skus if r.get("style_name") in candidates}
+    three_w_map = {r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates}
+
+    soh_store: Dict[str, float] = defaultdict(float)
+    soh_wh: Dict[str, float] = defaultdict(float)
+    sku_for_style: Dict[str, str] = {}
+    for r in inventory or []:
+        s = r.get("style_name")
+        if s not in candidates:
+            continue
+        avail = float(r.get("available") or 0)
+        loc = r.get("location_name") or ""
+        if is_warehouse_location(loc):
+            soh_wh[s] += avail
+        else:
+            soh_store[s] += avail
+        if s not in sku_for_style and r.get("sku"):
+            sku_for_style[s] = r["sku"]
+
+    # First-sale + last-sale dates — for All-Styles we don't need precise
+    # launch dates (no launch-band filter), so we infer last-sale from the
+    # `three_w_map` if present, else fall back to the 6-month window.
+    out: List[Dict[str, Any]] = []
+    for s in candidates:
+        sm = six_m_map.get(s, {})
+        tw = three_w_map.get(s, {})
+        units_6m = float(sm.get("units_sold") or 0)
+        sales_6m = float(sm.get("total_sales") or 0)
+        asp_6m = (sales_6m / units_6m) if units_6m else 0.0
+        store = soh_store.get(s, 0)
+        wh = soh_wh.get(s, 0)
+        soh_total = store + wh
+        pct_in_wh = (wh / soh_total * 100.0) if soh_total > 0 else 0.0
+        denom = units_6m + soh_total
+        sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
+        # Weekly avg: divide by 26 (full window) so apples-to-apples vs L-10
+        # for styles in the launch band still aligns roughly with their age.
+        weekly_avg = units_6m / 26.0
+        woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
+        units_3w = float(tw.get("units_sold") or 0)
+        # Days since last sale: if 3W has units, last sale ≤ 21 days ago;
+        # if not, mark as 22+ (we don't fan out /orders here for perf).
+        days_since_last = 0 if units_3w > 0 else 22
+
+        out.append({
+            "style_name": s,
+            "brand": sm.get("brand"),
+            "collection": sm.get("collection"),
+            "subcategory": sm.get("product_type"),
+            "style_number": sku_for_style.get(s, ""),
+            "sales_6m": round(sales_6m, 2),
+            "units_6m": int(units_6m),
+            "units_3w": int(units_3w),
+            "soh_total": round(soh_total, 2),
+            "soh_wh": round(wh, 2),
+            "soh_store": round(store, 2),
+            "pct_in_wh": round(pct_in_wh, 1),
+            "asp_6m": round(asp_6m, 2),
+            "days_since_last_sale": days_since_last,
+            "sor_6m": round(sor_6m, 2),
+            "launch_date": None,  # not computed for All-Styles
+            "weekly_avg": round(weekly_avg, 2),
+            "woc": round(woc, 1) if woc is not None else None,
+            "style_age_weeks": 26.0,
+        })
+    out.sort(key=lambda r: r["sor_6m"], reverse=True)
+    _all_styles_cache[cache_key] = (_time.time(), out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# SKU-level breakdown for a single style — powers the "+ Color" / "+ Size"
+# drill-down toggles on both SOR tables. Returns one row per unique
+# (color_print, size, sku) variant with units sold (6m + 3w), current SOH,
+# and warehouse split. Lazy-loaded by the frontend per expanded row.
+# ---------------------------------------------------------------------------
+@api_router.get("/analytics/style-sku-breakdown")
+async def analytics_style_sku_breakdown(
+    style_name: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Per-SKU sales + SOH for one style. SKU = (color_print, size).
+
+    Output: list of rows {sku, color, size, units_6m, units_3w,
+    soh_total, soh_store, soh_wh, pct_in_wh}. Sorted by units_6m desc.
+    Cached for 30 minutes per (style_name, country, channel) — the
+    underlying /orders fan-out is the slowest call in the dashboard
+    (~30-45 s cold) so we want one cold pull then warm hits.
+    """
+    import time as _time
+    cache_key = f"{style_name}|{country or ''}|{channel or ''}"
+    if cache_key in _sku_breakdown_cache:
+        ts, payload = _sku_breakdown_cache[cache_key]
+        if _time.time() - ts < _SKU_BREAKDOWN_TTL:
+            return payload
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    # Fan out /orders by 7-day chunks to avoid the 50k cap on long windows.
+    chunks: List[Tuple[date, date]] = []
+    cur = six_m_from
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(df: date, dt: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": df.isoformat(), "date_to": dt.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    # Serialize the chunk fan-out — 6× parallel /orders calls (each pulls
+    # 30-50k rows) overwhelms the upstream and yields 503s. With a 30 s
+    # response cache (`_FETCH_CACHE`) per chunk-window, a second user
+    # opening the same drill-down hits warm cache for the ~30 s pull.
+    chunks_data: List[List[Dict[str, Any]]] = []
+    for df_, dt_ in chunks:
+        chunks_data.append(await _orders_chunk(df_, dt_))
+    inv = await fetch_all_inventory(country=country)
+
+    # Aggregate orders for THIS style only, keyed by (color, size, sku).
+    per_sku: Dict[tuple, Dict[str, Any]] = {}
+    needle = style_name.strip()
+    for chunk in chunks_data:
+        for r in (chunk or []):
+            if (r.get("style_name") or "").strip() != needle:
+                continue
+            order_date = (r.get("order_date") or "")[:10]
+            color = r.get("color_print") or r.get("color") or "—"
+            size = r.get("size") or "—"
+            sku = r.get("sku") or ""
+            key = (color, size, sku)
+            b = per_sku.setdefault(key, {
+                "sku": sku, "color": color, "size": size,
+                "units_6m": 0, "units_3w": 0,
+                "sales_6m": 0.0,
+            })
+            qty = int(r.get("quantity") or 0)
+            sales = float(r.get("total_sales_kes") or 0)
+            b["units_6m"] += qty
+            b["sales_6m"] += sales
+            if order_date and order_date >= three_w_from.isoformat():
+                b["units_3w"] += qty
+
+    # Inventory: walk inv rows for this style.
+    soh_per_sku: Dict[tuple, Dict[str, float]] = {}
+    for r in (inv or []):
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        # Channel filter (single-channel mode only — multi already passed
+        # to /orders above; SOH is global by default).
+        if len(chs) >= 1 and r.get("location_name") not in chs:
+            continue
+        color = r.get("color_print") or r.get("color") or "—"
+        size = r.get("size") or "—"
+        sku = r.get("sku") or ""
+        key = (color, size, sku)
+        avail = float(r.get("available") or 0)
+        loc = r.get("location_name") or ""
+        b = soh_per_sku.setdefault(key, {"store": 0.0, "wh": 0.0})
+        if is_warehouse_location(loc):
+            b["wh"] += avail
+        else:
+            b["store"] += avail
+
+    # Merge — emit one row per (color, size, sku) seen anywhere.
+    keys = set(per_sku.keys()) | set(soh_per_sku.keys())
+    rows: List[Dict[str, Any]] = []
+    for k in keys:
+        sales_row = per_sku.get(k, {"sku": k[2], "color": k[0], "size": k[1],
+                                     "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+        soh_row = soh_per_sku.get(k, {"store": 0.0, "wh": 0.0})
+        soh_total = soh_row["store"] + soh_row["wh"]
+        rows.append({
+            "sku": sales_row["sku"],
+            "color": sales_row["color"],
+            "size": sales_row["size"],
+            "units_6m": int(sales_row["units_6m"]),
+            "units_3w": int(sales_row["units_3w"]),
+            "sales_6m": round(sales_row["sales_6m"], 2),
+            "soh_store": round(soh_row["store"], 2),
+            "soh_wh": round(soh_row["wh"], 2),
+            "soh_total": round(soh_total, 2),
+            "pct_in_wh": round((soh_row["wh"] / soh_total * 100), 1) if soh_total else 0.0,
+        })
+    rows.sort(key=lambda r: r["units_6m"], reverse=True)
+    payload = {"style_name": style_name, "skus": rows}
+    _sku_breakdown_cache[cache_key] = (_time.time(), payload)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Stock-to-Sales by Color & Size — per (store × style × color × size).
+# Formula: stock_to_sales_ratio = soh ÷ avg weekly units sold (last 4 weeks).
+# Higher = sitting longer; lower = stockout risk. Used by store managers
+# to spot which colors/sizes to push, mark down, or transfer.
+# ---------------------------------------------------------------------------
+@api_router.get("/analytics/stock-to-sales-by-sku")
+async def analytics_stock_to_sales_by_sku(
+    style_name: str,
+    weeks: int = Query(4, ge=1, le=12),
+    country: Optional[str] = None,
+):
+    """Per-store SKU-level stock-to-sales ratio for one style.
+
+    Returns one row per (location, color, size, sku) with:
+       • soh (current)
+       • units_sold (last `weeks` weeks)
+       • weekly_velocity (units_sold ÷ weeks)
+       • stock_to_sales_ratio (soh ÷ weekly_velocity, ∞ when no sales)
+    Sorted by location then by ratio asc — so the most stockout-prone
+    SKUs at each store float to the top.
+    """
+    today = datetime.now(timezone.utc).date()
+    df = today - timedelta(days=weeks * 7)
+    needle = style_name.strip()
+
+    # Chunk /orders fetch (≤30 days each) and fetch_all_inventory in parallel.
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(d1: date, d2: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000,
+            "country": country,
+        }) or []
+
+    chunks_data: List[List[Dict[str, Any]]] = []
+    for d1, d2 in chunks:
+        chunks_data.append(await _orders_chunk(d1, d2))
+    inv = await fetch_all_inventory(country=country)
+
+    # Sales by (location × sku).
+    units_by: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for chunk in chunks_data:
+        for r in chunk:
+            if (r.get("style_name") or "").strip() != needle:
+                continue
+            loc = r.get("pos_location_name") or r.get("channel") or "—"
+            sku = r.get("sku") or ""
+            color = r.get("color_print") or r.get("color") or "—"
+            size = r.get("size") or "—"
+            key = (loc, sku)
+            b = units_by.setdefault(key, {
+                "location": loc, "sku": sku, "color": color, "size": size,
+                "units_sold": 0,
+            })
+            b["units_sold"] += int(r.get("quantity") or 0)
+
+    # SOH by (location × sku).
+    soh_by: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for r in (inv or []):
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        loc = r.get("location_name") or "—"
+        sku = r.get("sku") or ""
+        color = r.get("color_print") or r.get("color") or "—"
+        size = r.get("size") or "—"
+        key = (loc, sku)
+        b = soh_by.setdefault(key, {
+            "location": loc, "sku": sku, "color": color, "size": size,
+            "soh": 0,
+        })
+        b["soh"] += int(r.get("available") or 0)
+
+    # Merge — emit one row per union key.
+    keys = set(units_by.keys()) | set(soh_by.keys())
+    rows: List[Dict[str, Any]] = []
+    for k in keys:
+        sales = units_by.get(k, {})
+        stock = soh_by.get(k, {})
+        sample = sales or stock
+        units = sales.get("units_sold", 0)
+        soh = stock.get("soh", 0)
+        weekly_vel = units / weeks if weeks > 0 else 0
+        ratio = (soh / weekly_vel) if weekly_vel > 0 else None
+        rows.append({
+            "location": sample.get("location", "—"),
+            "sku": sample.get("sku") or k[1],
+            "color": sample.get("color", "—"),
+            "size": sample.get("size", "—"),
+            "units_sold": units,
+            "soh": soh,
+            "weekly_velocity": round(weekly_vel, 2),
+            "stock_to_sales_weeks": round(ratio, 1) if ratio is not None else None,
+        })
+    rows.sort(key=lambda r: (
+        r["location"],
+        9999 if r["stock_to_sales_weeks"] is None else r["stock_to_sales_weeks"],
+    ))
+    return {
+        "style_name": style_name,
+        "weeks_window": weeks,
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# New-styles sales curve — for every style whose first-ever sale was in
+# the last 122 days (matches L-10 launch band), return weekly units &
+# revenue since launch. Lets the buying team spot the "reorder window"
+# (sales still climbing or just plateauing) before the curve turns down.
+# ---------------------------------------------------------------------------
+@api_router.get("/analytics/new-styles-curve")
+async def analytics_new_styles_curve(
+    days: int = Query(122, ge=30, le=365),
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Weekly sales curve per new style (launched in last `days` days).
+
+    Per style returns: launch_date, total_units, total_sales, weekly = [
+      {week_index, week_start, units, sales}, …
+    ]. Frontend draws a sparkline + flags "still climbing / plateaued / declining".
+    """
+    today = datetime.now(timezone.utc).date()
+    df = today - timedelta(days=int(days))
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    # Single-channel/single-country only — multi-select would explode the
+    # /orders fan-out; the FE constrains the call to global view.
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _chunk(d1: date, d2: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    all_rows: List[Dict[str, Any]] = []
+    for d1, d2 in chunks:
+        all_rows.extend(await _chunk(d1, d2))
+
+    # Per style: first sale date + total + weekly.
+    by_style: Dict[str, Dict[str, Any]] = {}
+    for r in all_rows:
+        s = r.get("style_name")
+        if not s:
+            continue
+        d_iso = (r.get("order_date") or "")[:10]
+        if not d_iso:
+            continue
+        b = by_style.setdefault(s, {
+            "style_name": s,
+            "brand": r.get("brand"),
+            "subcategory": r.get("product_type") or r.get("subcategory"),
+            "first_sale": d_iso,
+            "weekly": {},
+            "total_units": 0,
+            "total_sales": 0.0,
+        })
+        if d_iso < b["first_sale"]:
+            b["first_sale"] = d_iso
+        units = int(r.get("quantity") or 0)
+        sales = float(r.get("total_sales_kes") or 0)
+        b["total_units"] += units
+        b["total_sales"] += sales
+        b["weekly"].setdefault(d_iso, {"units": 0, "sales": 0.0})
+        b["weekly"][d_iso]["units"] += units
+        b["weekly"][d_iso]["sales"] += sales
+
+    out: List[Dict[str, Any]] = []
+    for s, b in by_style.items():
+        first = datetime.strptime(b["first_sale"], "%Y-%m-%d").date()
+        # Only include styles where first sale is within the requested window
+        # AND ≥ 14 days ago (need at least 2 weeks of data to draw a curve).
+        if (today - first).days < 14:
+            continue
+        # Bucket by week index since launch.
+        weekly_buckets: Dict[int, Dict[str, Any]] = {}
+        for d_iso, agg in b["weekly"].items():
+            day = datetime.strptime(d_iso, "%Y-%m-%d").date()
+            wk = (day - first).days // 7
+            wb = weekly_buckets.setdefault(wk, {
+                "week_index": wk,
+                "week_start": (first + timedelta(days=wk * 7)).isoformat(),
+                "units": 0, "sales": 0.0,
+            })
+            wb["units"] += agg["units"]
+            wb["sales"] += agg["sales"]
+        weekly_list = sorted(weekly_buckets.values(), key=lambda r: r["week_index"])
+        # Trend signal: compare last 2-week avg to peak.
+        units_series = [w["units"] for w in weekly_list]
+        peak = max(units_series) if units_series else 0
+        last_two = sum(units_series[-2:]) / max(len(units_series[-2:]), 1) if units_series else 0
+        if peak == 0:
+            trend = "no-sales"
+        elif units_series[-1] >= peak * 0.85:
+            trend = "climbing"
+        elif last_two >= peak * 0.5:
+            trend = "plateau"
+        else:
+            trend = "declining"
+        out.append({
+            **{k: b[k] for k in ("style_name", "brand", "subcategory", "first_sale", "total_units")},
+            "total_sales": round(b["total_sales"], 2),
+            "weeks_since_launch": (today - first).days // 7,
+            "weekly": [{**w, "sales": round(w["sales"], 2)} for w in weekly_list],
+            "peak_weekly_units": int(peak),
+            "trend": trend,
+        })
+    out.sort(key=lambda r: r["total_units"], reverse=True)
+    return {
+        "days": days,
+        "as_of": today.isoformat(),
+        "rows": out,
+    }
+
+
 @api_router.get("/analytics/price-changes")
 async def analytics_price_changes(
     date_from: Optional[str] = None,
