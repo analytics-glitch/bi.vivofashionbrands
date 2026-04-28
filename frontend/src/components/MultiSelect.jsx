@@ -22,8 +22,17 @@ const MultiSelect = ({
     const onClick = (e) => {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     };
-    if (open) document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    if (open) {
+      // Listen for both mouse AND touch so the dropdown dismisses cleanly
+      // on iOS/Android where synthetic mousedown can arrive late or be
+      // swallowed by gesture handlers (Radix Sheet swipe-to-dismiss, etc.).
+      document.addEventListener("mousedown", onClick);
+      document.addEventListener("touchstart", onClick, { passive: true });
+    }
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("touchstart", onClick);
+    };
   }, [open]);
 
   const toggle = (v) => {
@@ -49,7 +58,14 @@ const MultiSelect = ({
       : `${value.length} selected`;
 
   return (
-    <div className="relative" ref={ref} style={{ width }}>
+    <div
+      ref={ref}
+      className="relative w-full md:w-auto"
+      // Desktop width comes from the `width` prop; mobile stays full-width
+      // so the dropdown can't overflow the Filters bottom-sheet and clip
+      // options beneath the visible sheet area.
+      style={typeof window !== "undefined" && window.innerWidth >= 768 ? { width } : undefined}
+    >
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -70,7 +86,9 @@ const MultiSelect = ({
       </button>
       {open && (
         <div
-          className="absolute z-50 mt-1 left-0 right-0 card-white shadow-lg max-h-[340px] overflow-y-auto"
+          // Mobile: inline (flows with the sheet content — no clipping).
+          // Desktop (md+): absolute so the dropdown floats above page content.
+          className="relative md:absolute z-50 mt-1 md:left-0 md:right-0 card-white shadow-lg max-h-[60vh] md:max-h-[340px] overflow-y-auto"
           data-testid={`${testId}-dropdown`}
         >
           <div className="flex items-center justify-between p-2 border-b border-border text-[11px]">
@@ -104,7 +122,8 @@ const MultiSelect = ({
                     key={o.value}
                     onClick={() => toggle(o.value)}
                     data-testid={`${testId}-opt-${o.value}`}
-                    className={`flex items-center gap-2 px-3 py-1.5 w-full text-left text-[13px] hover:bg-panel ${
+                    // Bigger tap targets on mobile (py-2.5 ≈ 40px tall).
+                    className={`flex items-center gap-2 px-3 py-2.5 md:py-1.5 w-full text-left text-[13px] hover:bg-panel active:bg-brand-soft ${
                       sel ? "text-brand-deep font-medium" : "text-foreground"
                     }`}
                   >
