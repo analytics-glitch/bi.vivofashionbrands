@@ -6,6 +6,11 @@ import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import { DownloadSimple, MagnifyingGlass, Warning } from "@phosphor-icons/react";
+import {
+  StoreKpisExport,
+  PeriodPerformanceExport,
+  StockRebalancingExport,
+} from "@/components/ExportsExtraTables";
 
 const PAGE_SIZE = 50;
 
@@ -667,7 +672,7 @@ const Exports = () => {
           Exports (Sales, Inventory)
         </h1>
       </div>
-      <div className="inline-flex rounded-xl bg-panel p-1 border border-border" data-testid="exports-tabs">
+      <div className="inline-flex flex-wrap rounded-xl bg-panel p-1 border border-border" data-testid="exports-tabs">
         <button
           type="button"
           onClick={() => setTab("sales")}
@@ -688,8 +693,42 @@ const Exports = () => {
         >
           Inventory
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("kpis")}
+          data-testid="exports-tab-kpis"
+          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
+            tab === "kpis" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
+          }`}
+        >
+          Store KPIs
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("period")}
+          data-testid="exports-tab-period"
+          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
+            tab === "period" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
+          }`}
+        >
+          Period Performance
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("stock")}
+          data-testid="exports-tab-stock"
+          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
+            tab === "stock" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
+          }`}
+        >
+          Stock Rebalancing
+        </button>
       </div>
-      {tab === "sales" ? <SalesExport /> : <InventoryExport />}
+      {tab === "sales" && <SalesExport />}
+      {tab === "inventory" && <InventoryExport />}
+      {tab === "kpis" && <StoreKpisExport />}
+      {tab === "period" && <PeriodPerformanceExport />}
+      {tab === "stock" && <StockRebalancingExport />}
     </div>
   );
 };

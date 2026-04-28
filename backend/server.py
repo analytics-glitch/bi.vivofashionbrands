@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 import httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -3345,6 +3345,389 @@ async def leaderboard_snapshot(period: Optional[str] = None, force: bool = False
     p = period or _previous_complete_period()
     data = await snapshot_period(p, force=force)
     return {"period": p, "snapshots": data}
+
+
+# ---------------------------------------------------------------------------
+# Exports — extra report tables
+# ---------------------------------------------------------------------------
+def _shift_iso_year(iso: str, years: int) -> str:
+    """Shift YYYY-MM-DD by `years`, clamping Feb-29 to Feb-28 in non-leap years."""
+    y, m, d = iso.split("-")
+    y = int(y) + years
+    m_int = int(m)
+    d_int = int(d)
+    last = (date(y, m_int, 28) if m_int == 2 else date(y, m_int + 1, 1) - timedelta(days=1)).day if m_int < 12 else 31
+    if m_int == 2:
+        # Last day of Feb in target year.
+        if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0):
+            last = 29
+        else:
+            last = 28
+    return f"{y:04d}-{m_int:02d}-{min(d_int, last):02d}"
+
+
+async def _ss_one(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    try:
+        return await fetch("/sales-summary", {"date_from": date_from, "date_to": date_to}) or []
+    except HTTPException:
+        return []
+
+
+async def _ff_one(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    try:
+        return await fetch("/footfall", {"date_from": date_from, "date_to": date_to}) or []
+    except HTTPException:
+        return []
+
+
+@api_router.get("/exports/store-kpis")
+async def exports_store_kpis(date_from: str, date_to: str):
+    """Per-store KPI table with YoY (vs same window LY) and MoM (vs prior
+    month-window) deltas. One row per POS location for the period.
+
+    Output fields per store: total_sales/_ly, units/_ly, footfall/_ly,
+    transactions/_ly, basket_value/_ly, asp/_ly, msi/_ly, conversion_rate
+    (current only — LY footfall not always available with same precision)
+    + their respective YoY % deltas, plus total_sales_lm and MoM_revenue_pct.
+    """
+    # Date math helpers.
+    df_cur = datetime.strptime(date_from, "%Y-%m-%d").date()
+    dt_cur = datetime.strptime(date_to, "%Y-%m-%d").date()
+
+    df_ly = _shift_iso_year(date_from, -1)
+    dt_ly = _shift_iso_year(date_to, -1)
+
+    span = (dt_cur - df_cur).days
+    df_lm = (df_cur - timedelta(days=span + 1)).isoformat()
+    dt_lm = (df_cur - timedelta(days=1)).isoformat()
+
+    # 6 parallel fetches: sales (cur, ly, lm) + footfall (cur, ly).
+    ss_cur, ss_ly, ss_lm, ff_cur, ff_ly = await asyncio.gather(
+        _ss_one(date_from, date_to),
+        _ss_one(df_ly, dt_ly),
+        _ss_one(df_lm, dt_lm),
+        _ff_one(date_from, date_to),
+        _ff_one(df_ly, dt_ly),
+    )
+
+    def _idx(rows: List[Dict[str, Any]], key: str = "channel") -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in rows or []:
+            k = r.get(key)
+            if k:
+                out[k] = r
+        return out
+
+    cur_idx = _idx(ss_cur, "channel")
+    ly_idx = _idx(ss_ly, "channel")
+    lm_idx = _idx(ss_lm, "channel")
+    ff_cur_idx = _idx(ff_cur, "location")
+    ff_ly_idx = _idx(ff_ly, "location")
+
+    def _yoy(curr: Optional[float], prev: Optional[float]) -> Optional[float]:
+        if prev in (None, 0) or curr is None:
+            return None
+        return round(((curr - prev) / prev) * 100, 2)
+
+    out: List[Dict[str, Any]] = []
+    locations = sorted(set(cur_idx.keys()) | set(ly_idx.keys()) | set(lm_idx.keys()))
+    for loc in locations:
+        c = cur_idx.get(loc, {})
+        ly = ly_idx.get(loc, {})
+        lm = lm_idx.get(loc, {})
+        f_cur = ff_cur_idx.get(loc, {})
+        f_ly = ff_ly_idx.get(loc, {})
+
+        sales = c.get("total_sales") or 0
+        sales_ly = ly.get("total_sales") or 0
+        sales_lm = lm.get("total_sales") or 0
+        units = c.get("units_sold") or 0
+        units_ly = ly.get("units_sold") or 0
+        orders = c.get("orders") or 0
+        orders_ly = ly.get("orders") or 0
+        footfall = f_cur.get("total_footfall") or 0
+        footfall_ly = f_ly.get("total_footfall") or 0
+        bv = (sales / orders) if orders else 0
+        bv_ly = (sales_ly / orders_ly) if orders_ly else 0
+        asp = (sales / units) if units else 0
+        asp_ly = (sales_ly / units_ly) if units_ly else 0
+        msi = (units / orders) if orders else 0
+        msi_ly = (units_ly / orders_ly) if orders_ly else 0
+        conv = (orders / footfall * 100) if footfall else None
+        conv_ly = (orders_ly / footfall_ly * 100) if footfall_ly else None
+
+        out.append({
+            "pos_location": loc,
+            "country": c.get("country") or ly.get("country") or lm.get("country") or "—",
+            "total_sales": round(sales, 2),
+            "total_sales_ly": round(sales_ly, 2),
+            "yoy_revenue_pct": _yoy(sales, sales_ly),
+            "total_sales_lm": round(sales_lm, 2),
+            "mom_revenue_pct": _yoy(sales, sales_lm),
+            "units_sold": units,
+            "units_sold_ly": units_ly,
+            "yoy_units_pct": _yoy(units, units_ly),
+            "footfall": footfall,
+            "footfall_ly": footfall_ly,
+            "yoy_footfall_pct": _yoy(footfall, footfall_ly),
+            "transactions": orders,
+            "transactions_ly": orders_ly,
+            "yoy_transactions_pct": _yoy(orders, orders_ly),
+            "basket_value": round(bv, 2),
+            "basket_value_ly": round(bv_ly, 2),
+            "yoy_basket_value_pct": _yoy(bv, bv_ly),
+            "asp": round(asp, 2),
+            "asp_ly": round(asp_ly, 2),
+            "yoy_asp_pct": _yoy(asp, asp_ly),
+            "msi": round(msi, 2),
+            "msi_ly": round(msi_ly, 2),
+            "yoy_msi_pct": _yoy(msi, msi_ly),
+            "conv_rate": round(conv, 2) if conv is not None else None,
+            "yoy_conv_pp": round(conv - conv_ly, 2) if (conv is not None and conv_ly is not None) else None,
+        })
+    out.sort(key=lambda r: r.get("total_sales") or 0, reverse=True)
+    return {
+        "rows": out,
+        "period_current": {"date_from": date_from, "date_to": date_to},
+        "period_ly": {"date_from": df_ly, "date_to": dt_ly},
+        "period_lm": {"date_from": df_lm, "date_to": dt_lm},
+    }
+
+
+def _period_window(mode: str, anchor_date: date, week_start: int = 0) -> Tuple[date, date]:
+    """Return (start, end) inclusive for mode in {wtd, mtd, ytd} relative to
+    `anchor_date`. WTD week starts Monday by default (week_start=0)."""
+    if mode == "wtd":
+        # ISO weekday: Monday=0..Sunday=6
+        wd = anchor_date.weekday()
+        start = anchor_date - timedelta(days=wd)
+        return start, anchor_date
+    if mode == "mtd":
+        return anchor_date.replace(day=1), anchor_date
+    if mode == "ytd":
+        return date(anchor_date.year, 1, 1), anchor_date
+    raise ValueError(f"unknown mode: {mode}")
+
+
+@api_router.get("/exports/period-performance")
+async def exports_period_performance(
+    mode: str = Query("wtd", pattern="^(wtd|mtd|ytd)$"),
+    anchor: Optional[str] = None,
+):
+    """Period-performance comparison: 3 years × {Units, Revenue, ASP} per
+    store, plus % contribution to current-year revenue. Mode selects the
+    window shape (WTD / MTD / YTD); `anchor` (YYYY-MM-DD, default today)
+    sets the end-of-window. Same window is replayed for last year & last-
+    last year (year-shifted, day-aligned).
+    """
+    anchor_d = (
+        datetime.strptime(anchor, "%Y-%m-%d").date()
+        if anchor else datetime.now(timezone.utc).date()
+    )
+    start_cy, end_cy = _period_window(mode, anchor_d)
+    # Year-shifted start/end. Use _shift_iso_year so leap days clamp.
+    start_ly = datetime.strptime(_shift_iso_year(start_cy.isoformat(), -1), "%Y-%m-%d").date()
+    end_ly = datetime.strptime(_shift_iso_year(end_cy.isoformat(), -1), "%Y-%m-%d").date()
+    start_lly = datetime.strptime(_shift_iso_year(start_cy.isoformat(), -2), "%Y-%m-%d").date()
+    end_lly = datetime.strptime(_shift_iso_year(end_cy.isoformat(), -2), "%Y-%m-%d").date()
+
+    cy, ly, lly = await asyncio.gather(
+        _ss_one(start_cy.isoformat(), end_cy.isoformat()),
+        _ss_one(start_ly.isoformat(), end_ly.isoformat()),
+        _ss_one(start_lly.isoformat(), end_lly.isoformat()),
+    )
+
+    def _idx(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        return {r.get("channel"): r for r in (rows or []) if r.get("channel")}
+
+    cy_idx, ly_idx, lly_idx = _idx(cy), _idx(ly), _idx(lly)
+    locations = sorted(set(cy_idx.keys()) | set(ly_idx.keys()) | set(lly_idx.keys()))
+    grand_cy_rev = sum((cy_idx.get(loc, {}).get("total_sales") or 0) for loc in locations)
+
+    def _delta(curr: Optional[float], prev: Optional[float]) -> Optional[float]:
+        if prev in (None, 0) or curr is None:
+            return None
+        return round(((curr - prev) / prev) * 100, 2)
+
+    rows: List[Dict[str, Any]] = []
+    for loc in locations:
+        c = cy_idx.get(loc, {})
+        l1 = ly_idx.get(loc, {})
+        l2 = lly_idx.get(loc, {})
+        u_cy = c.get("units_sold") or 0
+        u_ly = l1.get("units_sold") or 0
+        u_lly = l2.get("units_sold") or 0
+        r_cy = c.get("total_sales") or 0
+        r_ly = l1.get("total_sales") or 0
+        r_lly = l2.get("total_sales") or 0
+        asp_cy = (r_cy / u_cy) if u_cy else 0
+        asp_ly = (r_ly / u_ly) if u_ly else 0
+        asp_lly = (r_lly / u_lly) if u_lly else 0
+        rows.append({
+            "store_name": loc,
+            "country": c.get("country") or l1.get("country") or l2.get("country") or "—",
+            "units_lly": u_lly, "units_ly": u_ly, "units_cy": u_cy,
+            "units_yoy_pct": _delta(u_cy, u_ly),
+            "units_lly_pct": _delta(u_cy, u_lly),
+            "revenue_lly": round(r_lly, 2), "revenue_ly": round(r_ly, 2), "revenue_cy": round(r_cy, 2),
+            "revenue_yoy_pct": _delta(r_cy, r_ly),
+            "revenue_lly_pct": _delta(r_cy, r_lly),
+            "asp_lly": round(asp_lly, 2), "asp_ly": round(asp_ly, 2), "asp_cy": round(asp_cy, 2),
+            "asp_yoy_pct": _delta(asp_cy, asp_ly),
+            "asp_lly_pct": _delta(asp_cy, asp_lly),
+            "contrib_revenue_pct": round((r_cy / grand_cy_rev * 100), 2) if grand_cy_rev else 0,
+        })
+    rows.sort(key=lambda r: r.get("revenue_cy") or 0, reverse=True)
+    return {
+        "mode": mode,
+        "anchor": anchor_d.isoformat(),
+        "period_current": {"date_from": start_cy.isoformat(), "date_to": end_cy.isoformat()},
+        "period_ly": {"date_from": start_ly.isoformat(), "date_to": end_ly.isoformat()},
+        "period_lly": {"date_from": start_lly.isoformat(), "date_to": end_lly.isoformat()},
+        "rows": rows,
+    }
+
+
+@api_router.get("/exports/stock-rebalancing")
+async def exports_stock_rebalancing():
+    """Stock Rebalancing report — for each of the last 2 complete years:
+       • Units Sold (full year) + % share within total
+       • Units Sold in same calendar quarter as the CURRENT quarter
+       • Stock-on-Hand (current) + % share
+    Rows = Category > Subcategory hierarchy; final 'Total' row at bottom.
+    SOH is current — upstream /inventory only exposes the live snapshot."""
+    today = datetime.now(timezone.utc).date()
+    cur_year = today.year
+    cur_q = ((today.month - 1) // 3) + 1
+    years = [cur_year - 2, cur_year - 1]
+
+    def _quarter_window(year: int, q: int) -> Tuple[str, str]:
+        start_m = (q - 1) * 3 + 1
+        end_m = start_m + 2
+        last_day = (date(year, end_m + 1, 1) - timedelta(days=1)) if end_m < 12 else date(year, 12, 31)
+        return f"{year:04d}-{start_m:02d}-01", last_day.isoformat()
+
+    # Fan-out: per-year subcategory-sales (full-year) + per-year same-quarter
+    # subcategory-sales. SOH is one shared upstream call.
+    tasks: List[Any] = []
+    for y in years:
+        tasks.append(fetch("/subcategory-sales", {
+            "date_from": f"{y}-01-01", "date_to": f"{y}-12-31",
+        }))
+        qf, qt = _quarter_window(y, cur_q)
+        tasks.append(fetch("/subcategory-sales", {"date_from": qf, "date_to": qt}))
+    tasks.append(fetch_all_inventory())
+    fetched = await asyncio.gather(*tasks, return_exceptions=True)
+    full_years: Dict[int, List[Dict[str, Any]]] = {}
+    quarter_years: Dict[int, List[Dict[str, Any]]] = {}
+    for i, y in enumerate(years):
+        full_years[y] = fetched[i * 2] if not isinstance(fetched[i * 2], Exception) else []
+        quarter_years[y] = fetched[i * 2 + 1] if not isinstance(fetched[i * 2 + 1], Exception) else []
+    inv_rows = fetched[-1] if not isinstance(fetched[-1], Exception) else []
+
+    # Subcategory → Category map. Upstream /subcategory-sales does NOT
+    # return a `category` field, so we derive it from inventory: the
+    # `brand` column is the category in the merchandising hierarchy
+    # (e.g. "Vivo Basic", "Vivo Bloom"), and `product_type` is the
+    # subcategory ("Knee Length Dresses", "Tops", …). Pick the most
+    # common brand observed for each subcategory in the live SOH feed.
+    sub_to_cat: Dict[str, str] = {}
+    sub_brand_counts: Dict[str, Dict[str, int]] = {}
+    for r in inv_rows or []:
+        sub = r.get("subcategory") or r.get("product_type") or "—"
+        brand = (r.get("brand") or "").strip() or "Other"
+        bucket = sub_brand_counts.setdefault(sub, {})
+        bucket[brand] = bucket.get(brand, 0) + int(r.get("available") or 0)
+    for sub, brands in sub_brand_counts.items():
+        sub_to_cat[sub] = max(brands.items(), key=lambda kv: kv[1])[0]
+
+    def _cat_for(sub: str) -> str:
+        return sub_to_cat.get(sub) or "Uncategorised"
+
+    # Build SOH per (category, subcategory). brand is the category.
+    soh_by_cat: Dict[str, Dict[str, int]] = {}
+    for r in inv_rows or []:
+        sub = r.get("subcategory") or r.get("product_type") or "—"
+        cat = _cat_for(sub)
+        bucket = soh_by_cat.setdefault(cat, {})
+        bucket[sub] = bucket.get(sub, 0) + int(r.get("available") or 0)
+    grand_soh = sum(sum(v.values()) for v in soh_by_cat.values()) or 0
+
+    # Build per-year units totals indexed by (category, subcategory).
+    def _idx_by_subcat(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], int]:
+        out: Dict[Tuple[str, str], int] = {}
+        for r in rows or []:
+            sub = r.get("subcategory") or "—"
+            cat = _cat_for(sub)
+            out[(cat, sub)] = (out.get((cat, sub), 0)) + int(r.get("units_sold") or 0)
+        return out
+
+    full_idx = {y: _idx_by_subcat(full_years.get(y, [])) for y in years}
+    quarter_idx = {y: _idx_by_subcat(quarter_years.get(y, [])) for y in years}
+    full_totals = {y: sum(full_idx[y].values()) or 0 for y in years}
+    q_totals = {y: sum(quarter_idx[y].values()) or 0 for y in years}
+
+    # Union of categories/subcategories observed anywhere.
+    all_cats: Dict[str, set] = {}
+    for src in (*full_idx.values(), *quarter_idx.values()):
+        for (cat, sub) in src.keys():
+            all_cats.setdefault(cat, set()).add(sub)
+    for cat, subs in soh_by_cat.items():
+        all_cats.setdefault(cat, set()).update(subs.keys())
+
+    # Sort: categories alphabetically, then subcategories by current-year
+    # full-year units desc.
+    rows_out: List[Dict[str, Any]] = []
+    last_y = years[-1]
+    cat_sort_key = lambda c: -sum(full_idx[last_y].get((c, s), 0) for s in all_cats.get(c, []))  # noqa: E731
+    for cat in sorted(all_cats.keys(), key=cat_sort_key):
+        subs = sorted(
+            all_cats[cat],
+            key=lambda s: -full_idx[last_y].get((cat, s), 0)
+        )
+        # Category total row
+        cat_row: Dict[str, Any] = {"category": cat, "subcategory": None, "is_total": True}
+        for y in years:
+            u_full = sum(full_idx[y].get((cat, s), 0) for s in subs)
+            u_q = sum(quarter_idx[y].get((cat, s), 0) for s in subs)
+            cat_row[f"y{y}_units_sold"] = u_full
+            cat_row[f"y{y}_units_sold_pct"] = round((u_full / full_totals[y] * 100), 4) if full_totals[y] else 0
+            cat_row[f"y{y}_units_q"] = u_q
+            cat_row[f"y{y}_units_q_pct"] = round((u_q / q_totals[y] * 100), 4) if q_totals[y] else 0
+        soh = sum((soh_by_cat.get(cat, {}).get(s, 0)) for s in subs)
+        cat_row["soh"] = soh
+        cat_row["soh_pct"] = round((soh / grand_soh * 100), 4) if grand_soh else 0
+        rows_out.append(cat_row)
+        # Subcategory rows
+        for s in subs:
+            row: Dict[str, Any] = {"category": cat, "subcategory": s, "is_total": False}
+            for y in years:
+                u_full = full_idx[y].get((cat, s), 0)
+                u_q = quarter_idx[y].get((cat, s), 0)
+                row[f"y{y}_units_sold"] = u_full
+                row[f"y{y}_units_sold_pct"] = round((u_full / full_totals[y] * 100), 4) if full_totals[y] else 0
+                row[f"y{y}_units_q"] = u_q
+                row[f"y{y}_units_q_pct"] = round((u_q / q_totals[y] * 100), 4) if q_totals[y] else 0
+            soh_s = soh_by_cat.get(cat, {}).get(s, 0)
+            row["soh"] = soh_s
+            row["soh_pct"] = round((soh_s / grand_soh * 100), 4) if grand_soh else 0
+            rows_out.append(row)
+
+    # Grand totals
+    grand: Dict[str, Any] = {"category": "Grand Total", "subcategory": None, "is_grand_total": True}
+    for y in years:
+        grand[f"y{y}_units_sold"] = full_totals[y]
+        grand[f"y{y}_units_sold_pct"] = 1.0 if full_totals[y] else 0
+        grand[f"y{y}_units_q"] = q_totals[y]
+        grand[f"y{y}_units_q_pct"] = 1.0 if q_totals[y] else 0
+    grand["soh"] = grand_soh
+    grand["soh_pct"] = 1.0 if grand_soh else 0
+    return {
+        "current_quarter": cur_q,
+        "years": years,
+        "rows": rows_out,
+        "totals": grand,
+    }
 
 
 app.include_router(api_router)
