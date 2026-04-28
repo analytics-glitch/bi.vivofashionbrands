@@ -2863,12 +2863,21 @@ async def analytics_sor_new_styles_l10(
         if brand:
             base["product"] = brand
         if len(cs) <= 1 and len(chs) <= 1:
-            return await fetch("/top-skus", {
+            raw = await fetch("/top-skus", {
                 **base,
                 "country": cs[0] if cs else None,
                 "channel": chs[0] if chs else None,
             }) or []
-        results = await multi_fetch("/top-skus", base, cs, chs)
+            results = [raw]
+        else:
+            results = await multi_fetch("/top-skus", base, cs, chs)
+        # Always dedupe by style_name with summed metrics. Upstream
+        # /top-skus can emit MULTIPLE rows for the same style_name when
+        # the catalog has lingering duplicate `collection` values for the
+        # same style — without this merge the dict-comprehension below
+        # silently overwrites a row's stats with the smallest occurrence,
+        # producing nonsensical "1 unit / KES 6,800" totals on a style
+        # that actually sold 200+ units.
         merged: Dict[str, Dict[str, Any]] = {}
         for g in results:
             for r in g:
@@ -2880,6 +2889,12 @@ async def analytics_sor_new_styles_l10(
                 else:
                     for f in ("units_sold", "total_sales", "gross_sales"):
                         merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+                    # Keep the FIRST seen non-empty collection / brand
+                    # since the duplicate row often has a truncated
+                    # "Safari by" collection — prefer the longer label.
+                    if (len(merged[s].get("collection") or "")
+                            < len(r.get("collection") or "")):
+                        merged[s]["collection"] = r.get("collection")
         return list(merged.values())
 
     band_skus, before_band_skus, six_m_skus, three_w_skus, inventory = await asyncio.gather(
