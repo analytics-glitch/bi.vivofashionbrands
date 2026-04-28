@@ -134,9 +134,46 @@ const DateRangeButton = () => {
         className="p-0 w-[640px] max-w-[95vw] border border-border bg-white rounded-xl shadow-2xl overflow-hidden"
         data-testid="date-range-panel"
       >
-        <div className="flex flex-col sm:flex-row max-h-[80vh]">
-          {/* Left preset list */}
-          <div className="w-full sm:w-[200px] border-b sm:border-b-0 sm:border-r border-border bg-[#fffaf3] py-2 overflow-y-auto max-h-[300px] sm:max-h-none">
+        {/* Whole panel scrolls on mobile so the bottom Apply/Cancel and the
+            preset list stay reachable; on desktop we keep the dual-pane
+            layout where each side scrolls independently. */}
+        <div className="flex flex-col sm:flex-row max-h-[85vh] overflow-y-auto sm:overflow-visible">
+          {/* Mobile: horizontal scrollable preset chips at the top so users
+              can pick "Yesterday / Last 7 days / Last month" with one tap.
+              Desktop: vertical preset list — hidden on mobile. */}
+          <div className="sm:hidden border-b border-border bg-[#fffaf3] px-2 py-2 overflow-x-auto">
+            <div className="flex gap-1.5 whitespace-nowrap">
+              {PRESET_GROUPS.flatMap((g) => g.items).map(([k, lbl]) => (
+                <button
+                  key={k}
+                  type="button"
+                  data-testid={`preset-${k}-mobile`}
+                  onClick={() => choosePreset(k)}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+                    f.preset === k
+                      ? "bg-brand text-white"
+                      : "bg-white text-foreground/80 border border-border hover:border-brand/40"
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+              <button
+                type="button"
+                data-testid="preset-custom-mobile"
+                onClick={() => choosePreset("custom")}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+                  f.preset === "custom"
+                    ? "bg-brand text-white"
+                    : "bg-white text-foreground/80 border border-border"
+                }`}
+              >
+                Custom range
+              </button>
+            </div>
+          </div>
+          {/* Desktop preset list (hidden on mobile — replaced by horizontal pills above). */}
+          <div className="hidden sm:block sm:w-[200px] sm:border-r border-border bg-[#fffaf3] py-2 overflow-y-auto sm:max-h-none">
             {PRESET_GROUPS.map((group, gi) => (
               <div key={gi} className="py-1">
                 {group.label && (
@@ -224,10 +261,12 @@ const DateRangeButton = () => {
                 </Tooltip>
               </TooltipProvider>
             </div>
-            {/* Dual-month calendar */}
+            {/* Dual-month on desktop, single month on mobile (saves height
+                so the Apply/Cancel footer remains visible without scrolling
+                inside the popover). */}
             <Calendar
               mode="range"
-              numberOfMonths={2}
+              numberOfMonths={typeof window !== "undefined" && window.innerWidth >= 640 ? 2 : 1}
               selected={draftRange}
               defaultMonth={lastMonth}
               onSelect={(r) => {
