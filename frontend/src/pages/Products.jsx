@@ -12,6 +12,7 @@ import SortableTable from "@/components/SortableTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import SorAllStyles from "@/components/SorAllStyles";
+import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
 import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
@@ -208,6 +209,16 @@ const Products = () => {
         <button
           type="button"
           role="tab"
+          aria-selected={tab === "sales-curve"}
+          onClick={() => setTab("sales-curve")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "sales-curve" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-sales-curve"
+        >
+          New Styles Curve
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === "matrix"}
           onClick={() => setTab("matrix")}
           className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "matrix" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
@@ -219,6 +230,7 @@ const Products = () => {
 
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} />}
       {tab === "all-styles" && <SorAllStyles brand={brandCsv} />}
+      {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
 
       {tab === "catalog" && (<>

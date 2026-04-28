@@ -10,6 +10,7 @@ import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ChartTooltip, makePctDeltaLabel } from "@/components/ChartHelpers";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import SORHeader from "@/components/SORHeader";
+import StockToSalesByVariant from "@/components/StockToSalesByVariant";
 import {
   Package,
   Warning,
@@ -791,6 +792,8 @@ const Inventory = () => {
               />
             </div>
           )}
+
+          <StockToSalesByVariant />
 
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
