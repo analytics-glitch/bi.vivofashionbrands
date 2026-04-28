@@ -3579,18 +3579,25 @@ async def exports_period_performance(
 
 
 @api_router.get("/exports/stock-rebalancing")
-async def exports_stock_rebalancing(categories: Optional[str] = None):
+async def exports_stock_rebalancing(
+    categories: Optional[str] = None,
+    channel: Optional[str] = None,
+    country: Optional[str] = None,
+):
     """Stock Rebalancing report — for each of the last 2 complete years:
        • Units Sold (full year) + % share within total
        • Units Sold in same calendar quarter as the CURRENT quarter
        • Stock-on-Hand (current) + % share
-    Rows = Category > Subcategory hierarchy (category = the merchandise
-    bucket Dresses/Tops/Bottoms/Outerwear/etc, NOT the brand).
-    Each category block ends with a bold subtotal row; a Grand Total row
-    is returned separately for the table footer.
-    `categories` is an optional CSV filter (e.g. "Dresses,Tops"). All
-    percentages are recomputed against the FILTERED universe so percentages
-    still sum to 100% within the filter."""
+
+    Optional filters:
+      • `categories` — CSV of merch buckets (e.g. "Dresses,Tops"). Recomputes
+        all totals so percentages still sum to 100% within the filter.
+      • `channel`    — CSV of POS locations to scope BOTH SOH and units-sold
+        to (e.g. "Vivo Sarit,Vivo Junction"). Online channels are valid too.
+      • `country`    — CSV of countries (Kenya/Uganda/Rwanda/Online).
+    Rows = Category > Subcategory hierarchy (subcategories first, category
+    subtotal at the bottom of each block, Grand Total returned separately).
+    """
     today = datetime.now(timezone.utc).date()
     cur_year = today.year
     cur_q = ((today.month - 1) // 3) + 1
@@ -3599,20 +3606,67 @@ async def exports_stock_rebalancing(categories: Optional[str] = None):
     if categories:
         cat_filter = {c.strip() for c in categories.split(",") if c.strip()}
 
+    chs = _split_csv(channel)
+    cs = _split_csv(country)
+
     def _quarter_window(year: int, q: int) -> Tuple[str, str]:
         start_m = (q - 1) * 3 + 1
         end_m = start_m + 2
         last_day = (date(year, end_m + 1, 1) - timedelta(days=1)) if end_m < 12 else date(year, 12, 31)
         return f"{year:04d}-{start_m:02d}-01", last_day.isoformat()
 
+    # Sales fan-out: upstream /subcategory-sales takes a single channel and
+    # a single country. To honour multi-select we fan-out across the cross
+    # product and merge per-subcategory units. No filter ⇒ one call.
+    async def _fetch_subcat(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+        if not chs and not cs:
+            try:
+                return await fetch("/subcategory-sales", {
+                    "date_from": date_from, "date_to": date_to,
+                }) or []
+            except HTTPException:
+                return []
+        tasks = []
+        for c_ in (cs or [None]):
+            for ch_ in (chs or [None]):
+                params = {"date_from": date_from, "date_to": date_to}
+                if c_:
+                    params["country"] = c_
+                if ch_:
+                    params["channel"] = ch_
+                tasks.append(fetch("/subcategory-sales", params))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            if isinstance(g, Exception) or not g:
+                continue
+            for r in g:
+                key = r.get("subcategory")
+                if not key:
+                    continue
+                if key not in merged:
+                    merged[key] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales", "orders"):
+                        merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
+        return list(merged.values())
+
     tasks: List[Any] = []
     for y in years:
-        tasks.append(fetch("/subcategory-sales", {
-            "date_from": f"{y}-01-01", "date_to": f"{y}-12-31",
-        }))
+        tasks.append(_fetch_subcat(f"{y}-01-01", f"{y}-12-31"))
         qf, qt = _quarter_window(y, cur_q)
-        tasks.append(fetch("/subcategory-sales", {"date_from": qf, "date_to": qt}))
-    tasks.append(fetch_all_inventory())
+        tasks.append(_fetch_subcat(qf, qt))
+    # Inventory: scope to the chosen locations / country if provided. With
+    # no filter, fall back to the full fan-out (cached at the upstream).
+    if chs:
+        tasks.append(fetch_all_inventory(
+            country=(cs[0] if len(cs) == 1 else None),
+            locations=chs,
+        ))
+    elif len(cs) == 1:
+        tasks.append(fetch_all_inventory(country=cs[0]))
+    else:
+        tasks.append(fetch_all_inventory())
     fetched = await asyncio.gather(*tasks, return_exceptions=True)
     full_years: Dict[int, List[Dict[str, Any]]] = {}
     quarter_years: Dict[int, List[Dict[str, Any]]] = {}
@@ -3620,6 +3674,11 @@ async def exports_stock_rebalancing(categories: Optional[str] = None):
         full_years[y] = fetched[i * 2] if not isinstance(fetched[i * 2], Exception) else []
         quarter_years[y] = fetched[i * 2 + 1] if not isinstance(fetched[i * 2 + 1], Exception) else []
     inv_rows = fetched[-1] if not isinstance(fetched[-1], Exception) else []
+    # Multi-country (>1) inventory filter: fetch_all_inventory doesn't take
+    # a CSV country list, so post-filter here.
+    if len(cs) > 1:
+        cs_low = {c.lower() for c in cs}
+        inv_rows = [r for r in (inv_rows or []) if (r.get("country") or "").lower() in cs_low]
 
     def _cat_for(sub: str) -> str:
         return category_of(sub)

@@ -257,6 +257,11 @@ export const PeriodPerformanceExport = () => {
 // Table 3 — Stock Rebalancing
 // ---------------------------------------------------------------------------
 export const StockRebalancingExport = () => {
+  // Reuse the global FilterBar's POS/country selection so the user doesn't
+  // have to re-pick them inside this card. The product-category slicer
+  // stays local because it's specific to this report.
+  const { applied } = useFilters();
+  const { countries, channels, dataVersion } = applied;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -265,14 +270,18 @@ export const StockRebalancingExport = () => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
-    const params = catSel.length ? { categories: catSel.join(",") } : {};
+    const params = {};
+    if (catSel.length) params.categories = catSel.join(",");
+    if (channels && channels.length) params.channel = channels.join(",");
+    if (countries && countries.length) params.country = countries.join(",");
     api
       .get("/exports/stock-rebalancing", { params, timeout: 60000 })
       .then((r) => !cancelled && setData(r.data || null))
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [JSON.stringify(catSel)]);  // eslint-disable-line
+    // eslint-disable-next-line
+  }, [JSON.stringify(catSel), JSON.stringify(channels), JSON.stringify(countries), dataVersion]);
 
   if (loading && !data) return <Loading />;
   if (error) return <ErrorBox message={error} />;
@@ -328,6 +337,7 @@ export const StockRebalancingExport = () => {
         title={`Stock Rebalancing · Q${current_quarter} comparison`}
         subtitle={
           `Per category × subcategory: full-year units sold (${years.join(", ")}) and units in the same calendar quarter (Q${current_quarter}) for each year, alongside live Stock-on-Hand. ` +
+          `Honours the global Country and POS filters at the top of the page — totals recompute against the chosen scope. ` +
           `Use this to spot subcategories where SOH is over- or under-indexed vs historical run-rate.`
         }
       />
