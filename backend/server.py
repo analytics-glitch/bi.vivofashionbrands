@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Body
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
@@ -20,7 +20,7 @@ VIVO_API_BASE = os.environ.get(
 
 from auth import (  # noqa: E402
     auth_router, admin_router, ActivityLogMiddleware,
-    get_current_user, seed_admin,
+    get_current_user, seed_admin, db,
 )
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
@@ -3786,106 +3786,131 @@ _PERF_RANK_TTL = 60 * 60 * 4  # 4 hours — store performance is slow-changing
 
 @api_router.get("/analytics/replenishment-report")
 async def analytics_replenishment_report(
-    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    date: Optional[str] = None,  # legacy single-day param, kept for back-compat
     country: Optional[str] = None,
 ):
     """Daily replenishment report — returns rows that need a top-up today.
 
-    `date` defaults to yesterday (the reporting convention: by morning the
-    units sold "yesterday" are settled). For each row we resolve the bin
-    from the cached Google-Sheet stock take and skip H-prefixed bins.
+    Window: `date_from`/`date_to` (inclusive). For back-compat, the legacy
+    `date` param is honoured as both ends. When all are unset the window
+    defaults to yesterday only. Bins resolved from the cached Google-Sheet
+    stock take and H-prefixed bins are excluded. Each row carries a
+    `replenished` boolean fetched from `replenishment_state` (toggled via
+    /analytics/replenishment-report/mark).
     """
     import time as _time
     today = datetime.now(timezone.utc).date()
-    target_date = (
-        datetime.strptime(date, "%Y-%m-%d").date() if date else (today - timedelta(days=1))
+    if date and not (date_from or date_to):
+        date_from = date_to = date
+    df = (
+        datetime.strptime(date_from, "%Y-%m-%d").date()
+        if date_from else (today - timedelta(days=1))
     )
-    cache_key = f"{target_date.isoformat()}|{country or ''}"
+    dt = (
+        datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else df
+    )
+    if dt < df:
+        df, dt = dt, df
+    cache_key = f"{df.isoformat()}|{dt.isoformat()}|{country or ''}"
     if cache_key in _repl_cache:
         ts, payload = _repl_cache[cache_key]
         if _time.time() - ts < _REPL_TTL:
+            # Re-overlay the latest replenished state (the cache is computed
+            # rows; the state can change minute-by-minute as owners pick).
+            await _overlay_repl_state(payload, df, dt)
             return payload
 
-    # 1) Yesterday's units sold: orders on `target_date`, grouped by (location, barcode).
-    orders = await _safe_fetch("/orders", {
-        "date_from": target_date.isoformat(), "date_to": target_date.isoformat(),
-        "limit": 50000, "country": country,
-    }) or []
-
-    # Skip excluded brands / dummy products so the merch team sees real merch.
+    # 1) Units sold over [df, dt]: orders chunked into ≤30-day windows
+    # (upstream caps at 50k rows per call). Group by (location, SKU) — the
+    # /orders endpoint exposes `sku` but not `barcode`; we look up the
+    # barcode via the inventory snapshot in step 2.
     sold_units: Dict[Tuple[str, str], int] = {}
     sku_meta: Dict[str, Dict[str, Any]] = {}
-    for r in orders:
-        if (r.get("sale_kind") or "order") != "order":
-            continue
-        if is_excluded_brand(r.get("brand")):
-            continue
-        if is_excluded_product(r):
-            continue
-        loc = r.get("pos_location_name") or r.get("channel") or ""
-        if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
-            continue
-        bc = (r.get("barcode") or "").strip()
-        if not bc:
-            continue
-        qty = int(r.get("quantity") or 0)
-        if qty <= 0:
-            continue
-        sold_units[(loc, bc)] = sold_units.get((loc, bc), 0) + qty
-        sku_meta.setdefault(bc, {
-            "product_name": r.get("product_name") or r.get("style_name") or "",
-            "size": r.get("size") or "",
-            "barcode": bc,
-        })
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= dt:
+        end = min(cur + timedelta(days=29), dt)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+    for d1, d2 in chunks:
+        orders = await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000, "country": country,
+        }) or []
+        for r in orders:
+            if (r.get("sale_kind") or "order") != "order":
+                continue
+            if is_excluded_brand(r.get("brand")):
+                continue
+            if is_excluded_product(r):
+                continue
+            loc = r.get("pos_location_name") or r.get("channel") or ""
+            if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
+                continue
+            sku = (r.get("sku") or "").strip()
+            if not sku:
+                continue
+            qty = int(r.get("quantity") or 0)
+            if qty <= 0:
+                continue
+            sold_units[(loc, sku)] = sold_units.get((loc, sku), 0) + qty
+            sku_meta.setdefault(sku, {
+                "sku": sku,
+                "product_name": r.get("product_title") or r.get("product_name") or r.get("style_name") or "",
+                "size": r.get("size") or "",
+                "barcode": "",  # filled from inventory in step 2
+            })
 
     # 2) Live inventory snapshot — split into POS stock vs WH-finished-goods.
+    # Keyed by SKU (matches the orders side) and we pick up the barcode here
+    # to resolve the bin and surface it in the report.
     inv = await fetch_all_inventory(country=country) or []
     pos_stock: Dict[Tuple[str, str], float] = {}
     wh_stock: Dict[str, float] = {}
+    sku_to_barcode: Dict[str, str] = {}
     for r in inv:
         if is_excluded_brand(r.get("brand")):
             continue
         if is_excluded_product(r):
             continue
         loc = r.get("location_name") or ""
-        bc = (r.get("barcode") or "").strip()
-        if not bc:
+        sku = (r.get("sku") or "").strip()
+        if not sku:
             continue
         avail = float(r.get("available") or 0)
+        bc = (r.get("barcode") or "").strip()
+        if bc and sku not in sku_to_barcode:
+            sku_to_barcode[sku] = bc
         # Capture meta when we don't have it from sales side.
-        sku_meta.setdefault(bc, {
+        sku_meta.setdefault(sku, {
+            "sku": sku,
             "product_name": r.get("product_name") or r.get("style_name") or "",
             "size": r.get("size") or "",
-            "barcode": bc,
+            "barcode": "",
         })
         if is_warehouse_location(loc):
-            # We treat all warehouse rows as the unified "WH FG" pool — the
-            # upstream tags physical FG warehouses as warehouse locations.
-            wh_stock[bc] = wh_stock.get(bc, 0.0) + avail
+            wh_stock[sku] = wh_stock.get(sku, 0.0) + avail
         elif not is_excluded_location(loc):
-            pos_stock[(loc, bc)] = pos_stock.get((loc, bc), 0.0) + avail
+            pos_stock[(loc, sku)] = pos_stock.get((loc, sku), 0.0) + avail
+    # Stamp the resolved barcode onto every meta entry now.
+    for sku, m in sku_meta.items():
+        if not m.get("barcode"):
+            m["barcode"] = sku_to_barcode.get(sku, "")
 
-    # 3) Build candidate replenishment lines: every (POS, barcode) currently
-    # selling at that POS where pos_stock < trigger.
-    # Note: we ALSO include lines where the SKU sold yesterday but is no
-    # longer on the floor (stock 0) — that's the most urgent replenishment.
+    # 3) Build candidate replenishment lines. Per spec: ONLY emit rows where
+    # the SKU sold AT LEAST ONE unit at that POS in the window AND current
+    # shop-floor stock < 2. This drops dormant variants and avoids bothering
+    # the team with SKUs that aren't actually moving.
     candidates: List[Dict[str, Any]] = []
-    seen: set = set()
-    for (loc, bc), sold in sold_units.items():
-        ps = pos_stock.get((loc, bc), 0.0)
+    for (loc, sku), sold in sold_units.items():
+        if sold <= 0:
+            continue
+        ps = pos_stock.get((loc, sku), 0.0)
         if ps >= REPL_TRIGGER:
             continue
-        candidates.append({"loc": loc, "bc": bc, "pos": ps, "sold": sold})
-        seen.add((loc, bc))
-    # Also include POS positions that have stock < 2 even if they didn't sell
-    # yesterday — they still need a top-up to reach the target of 2. Skip
-    # zero-stock-no-sale lines to avoid flooding the report with churn.
-    for (loc, bc), ps in pos_stock.items():
-        if (loc, bc) in seen:
-            continue
-        if ps == 0 or ps >= REPL_TRIGGER:
-            continue
-        candidates.append({"loc": loc, "bc": bc, "pos": ps, "sold": 0})
+        candidates.append({"loc": loc, "sku": sku, "pos": ps, "sold": sold})
 
     # 4) Store performance rank — used as priority when WH supply is short.
     # Best-performing store (most units last 6 months) wins ties. Cached
@@ -3921,14 +3946,14 @@ async def analytics_replenishment_report(
     # candidates by (store rank asc, pos stock asc, sold desc) so the
     # neediest line at the best store wins when WH is constrained.
     candidates.sort(key=lambda c: (
-        rank.get(c["loc"], 10_000), c["pos"], -c["sold"], c["loc"], c["bc"]
+        rank.get(c["loc"], 10_000), c["pos"], -c["sold"], c["loc"], c["sku"]
     ))
 
     wh_remaining = dict(wh_stock)  # mutated as we allocate
     rows: List[Dict[str, Any]] = []
     for c in candidates:
-        bc = c["bc"]
-        wh_avail = wh_remaining.get(bc, 0.0)
+        sku = c["sku"]
+        wh_avail = wh_remaining.get(sku, 0.0)
         if wh_avail <= REPL_WH_FLOOR:
             # Insufficient WH stock — skip; never strip the WH below floor.
             continue
@@ -3939,19 +3964,20 @@ async def analytics_replenishment_report(
         take = min(deficit, int(wh_avail) - REPL_WH_FLOOR)
         if take <= 0:
             continue
-        wh_remaining[bc] = wh_avail - take
-        meta = sku_meta.get(bc, {})
+        wh_remaining[sku] = wh_avail - take
+        meta = sku_meta.get(sku, {})
         rows.append({
             "owner": "",  # filled in step 6
             "pos_location": c["loc"],
             "product_name": meta.get("product_name") or "",
             "size": meta.get("size") or "",
-            "barcode": bc,
+            "barcode": meta.get("barcode") or "",
+            "sku": sku,
             "bin": "",  # filled in step 7
             "units_sold": int(c["sold"]),
             "soh_wh": int(wh_avail),  # snapshot value BEFORE allocation
             "replenish": take,
-            "replenished": "",  # operator-filled in the spreadsheet
+            "replenished": False,  # filled in by _overlay_repl_state
         })
 
     # 6) Owner assignment — greedy bin-pack stores onto owners so each owner
@@ -3983,7 +4009,9 @@ async def analytics_replenishment_report(
     rows.sort(key=lambda r: (r["owner"], r["pos_location"], r["product_name"], r["size"]))
 
     payload = {
-        "date": target_date.isoformat(),
+        "date_from": df.isoformat(),
+        "date_to": dt.isoformat(),
+        "date": dt.isoformat(),  # legacy alias
         "rows": rows,
         "summary": {
             "total_rows": len(rows),
@@ -3996,7 +4024,74 @@ async def analytics_replenishment_report(
         },
     }
     _repl_cache[cache_key] = (_time.time(), payload)
+    await _overlay_repl_state(payload, df, dt)
     return payload
+
+
+def _repl_state_key(date_from: str, date_to: str, pos: str, barcode: str) -> str:
+    return f"{date_from}|{date_to}|{pos}|{barcode}"
+
+
+async def _overlay_repl_state(payload: Dict[str, Any], df: date, dt: date):
+    """Stamp `replenished: bool` on every row from the `replenishment_state`
+    Mongo collection. Cheap — one indexed find with a key set."""
+    try:
+        keys = [
+            _repl_state_key(df.isoformat(), dt.isoformat(), r["pos_location"], r["barcode"])
+            for r in payload.get("rows", [])
+        ]
+        if not keys:
+            if "summary" in payload:
+                payload["summary"]["completed"] = 0
+            return
+        docs = await db.replenishment_state.find(
+            {"key": {"$in": keys}, "replenished": True},
+            {"_id": 0, "key": 1},
+        ).to_list(length=None)
+        marked = {doc["key"] for doc in docs}
+        completed = 0
+        for r in payload["rows"]:
+            k = _repl_state_key(df.isoformat(), dt.isoformat(), r["pos_location"], r["barcode"])
+            on = k in marked
+            r["replenished"] = on
+            if on:
+                completed += 1
+        if "summary" in payload:
+            payload["summary"]["completed"] = completed
+    except Exception as e:
+        logger.warning("[replen] overlay state failed: %s", e)
+        if "summary" in payload:
+            payload["summary"]["completed"] = 0
+
+
+@api_router.post("/analytics/replenishment-report/mark")
+async def replenishment_mark(
+    payload: Dict[str, Any] = Body(...),
+    user=Depends(get_current_user),
+):
+    """Toggle a single replenishment row to replenished=true|false. Body:
+    {date_from, date_to, pos_location, barcode, replenished}."""
+    df_str = payload.get("date_from")
+    dt_str = payload.get("date_to") or df_str
+    pos = (payload.get("pos_location") or "").strip()
+    bc = (payload.get("barcode") or "").strip()
+    state = bool(payload.get("replenished"))
+    if not (df_str and dt_str and pos and bc):
+        raise HTTPException(status_code=400, detail="date_from, date_to, pos_location, barcode are required")
+    key = _repl_state_key(df_str, dt_str, pos, bc)
+    await db.replenishment_state.update_one(
+        {"key": key},
+        {"$set": {
+            "key": key,
+            "date_from": df_str, "date_to": dt_str,
+            "pos_location": pos, "barcode": bc,
+            "replenished": state,
+            "updated_by": user.email if user else None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "key": key, "replenished": state}
 
 
 @admin_router.post("/refresh-bins")
