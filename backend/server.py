@@ -3778,6 +3778,15 @@ REPL_TARGET = 2  # max units we want at a POS for any SKU
 REPL_TRIGGER = 2  # replenish only if POS stock < this
 REPL_WH_FLOOR = 1  # WH must have > REPL_WH_FLOOR units to qualify
 
+
+def _is_online_channel(name: Optional[str]) -> bool:
+    """True for any online / e-com channel — those don't need physical
+    replenishment from the warehouse to a shop floor."""
+    if not name:
+        return False
+    n = name.lower()
+    return ("online" in n) or ("ecom" in n) or ("e-com" in n) or ("shop-zetu" in n) or ("shopify" in n)
+
 _repl_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _REPL_TTL = 60 * 30  # 30 minutes
 _perf_rank_cache: Dict[str, Tuple[float, Dict[str, int]]] = {}
@@ -3849,6 +3858,10 @@ async def analytics_replenishment_report(
             loc = r.get("pos_location_name") or r.get("channel") or ""
             if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
                 continue
+            if _is_online_channel(loc):
+                # Replenishment is a physical pick-and-pack operation — online
+                # has no shop-floor stock and doesn't fit this report.
+                continue
             sku = (r.get("sku") or "").strip()
             if not sku:
                 continue
@@ -3892,7 +3905,7 @@ async def analytics_replenishment_report(
         })
         if is_warehouse_location(loc):
             wh_stock[sku] = wh_stock.get(sku, 0.0) + avail
-        elif not is_excluded_location(loc):
+        elif not is_excluded_location(loc) and not _is_online_channel(loc):
             pos_stock[(loc, sku)] = pos_stock.get((loc, sku), 0.0) + avail
     # Stamp the resolved barcode onto every meta entry now.
     for sku, m in sku_meta.items():
@@ -3900,12 +3913,12 @@ async def analytics_replenishment_report(
             m["barcode"] = sku_to_barcode.get(sku, "")
 
     # 3) Build candidate replenishment lines. Per spec: ONLY emit rows where
-    # the SKU sold AT LEAST ONE unit at that POS in the window AND current
-    # shop-floor stock < 2. This drops dormant variants and avoids bothering
-    # the team with SKUs that aren't actually moving.
+    # the SKU sold MORE THAN ONE unit at that POS in the window AND current
+    # shop-floor stock < 2. This drops one-off sales that don't justify a
+    # warehouse pick.
     candidates: List[Dict[str, Any]] = []
     for (loc, sku), sold in sold_units.items():
-        if sold <= 0:
+        if sold <= 1:
             continue
         ps = pos_stock.get((loc, sku), 0.0)
         if ps >= REPL_TRIGGER:
@@ -3980,23 +3993,24 @@ async def analytics_replenishment_report(
             "replenished": False,  # filled in by _overlay_repl_state
         })
 
-    # 6) Owner assignment — greedy bin-pack stores onto owners so each owner
-    # carries near-equal total replenish units. Stickiness across days is
-    # not required (per spec: redistribute daily for balance).
-    units_per_store: Dict[str, int] = {}
-    for r in rows:
-        units_per_store[r["pos_location"]] = (
-            units_per_store.get(r["pos_location"], 0) + r["replenish"]
-        )
-    # Big stores first → tighter packing.
-    owners_load = {o: 0 for o in OWNERS}
-    store_owner: Dict[str, str] = {}
-    for store, _u in sorted(units_per_store.items(), key=lambda x: (-x[1], x[0])):
+    # 6) Owner assignment — balance per-LINE so each owner ends up with
+    # near-equal total replenish units, even when one store dominates daily
+    # volume. A single store can be co-owned by 2 or 3 owners, and one
+    # owner can carry multiple stores. Greedy: walk lines from largest to
+    # smallest and drop each onto the owner with the lowest current load
+    # (ties broken by the canonical OWNERS order for determinism).
+    owners_load: Dict[str, int] = {o: 0 for o in OWNERS}
+    # Iterate by descending replenish so big lines anchor early — leaves
+    # the small ones to fine-tune balance.
+    for r in sorted(rows, key=lambda x: (-x["replenish"], x["pos_location"], x["barcode"])):
         owner = min(owners_load, key=lambda o: (owners_load[o], OWNERS.index(o)))
-        store_owner[store] = owner
-        owners_load[owner] += _u
+        r["owner"] = owner
+        owners_load[owner] += r["replenish"]
+    # Per-store ownership becomes a SET (a store may have multiple owners
+    # for the day). Used in the by_owner summary below.
+    store_owners: Dict[str, set] = {}
     for r in rows:
-        r["owner"] = store_owner.get(r["pos_location"], OWNERS[0])
+        store_owners.setdefault(r["pos_location"], set()).add(r["owner"])
 
     # 7) Bin lookup — strip H-prefixed bins (the loader already filters them
     # out, so an empty result here means "no bin recorded in last stock take"
@@ -4017,7 +4031,8 @@ async def analytics_replenishment_report(
             "total_rows": len(rows),
             "total_units": sum(r["replenish"] for r in rows),
             "by_owner": [
-                {"owner": o, "stores": sum(1 for s, ow in store_owner.items() if ow == o),
+                {"owner": o,
+                 "stores": sum(1 for s, ows in store_owners.items() if o in ows),
                  "units": owners_load[o]}
                 for o in OWNERS
             ],

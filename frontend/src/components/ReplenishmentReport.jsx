@@ -143,11 +143,13 @@ const ReplenishmentReport = () => {
         subtitle={
           <span>
             For each POS where stock &lt; 2 AND units sold &gt; 1 in the window we recommend
-            a top-up to <b>2</b> units, drawn from warehouse finished-goods (only when
-            WH stock &gt; 1). Stores are split across four owners with equal-or-near-equal
-            pick volume. Bins resolved from the latest Stock-take sheet (H-bins excluded).
-            Default window = <b>yesterday</b>. Tap <b>Mark</b> to record a pick — state
-            persists across users and refreshes.
+            a top-up to <b>2</b> units per SKU, drawn from warehouse finished-goods (only
+            when WH stock &gt; 1). <b>Online channels are excluded.</b> Lines are
+            distributed across four owners with equal-or-near-equal pick volume — a
+            single store can be co-owned by multiple operators when needed. Bins
+            resolved from the latest Stock-take sheet (H-bins excluded). Default window
+            = <b>yesterday</b>. Tap <b>Mark</b> to record a pick — state persists across
+            users and refreshes.
           </span>
         }
       />
@@ -202,7 +204,7 @@ const ReplenishmentReport = () => {
 
       {!loading && !error && (
         rows.length === 0 ? (
-          <Empty label="Nothing to replenish — no SKU sold > 1 unit at any POS with stock < 2 in this window." />
+          <Empty label="Nothing to replenish — no in-store SKU sold > 1 unit with stock < 2 in this window (online excluded)." />
         ) : (
           <SortableTable
             testId="replen-table"
