@@ -41,6 +41,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
 ## Recently Shipped
+- **Iter_39e** (2026-04-29):
+  - **Critical fix — Kenya was being silently dropped**. Kenya orders use `sale_kind = "sale"` but Uganda/Rwanda use `sale_kind = "order"`. The previous filter `(r.get("sale_kind") or "order") != "order"` rejected ALL 4,600+ Kenya orders. Now accepts any kind that isn't a return/exchange/refund. Result: 7-day report jumped from **72 rows / 99 units (Uganda+Rwanda only)** → **1,274 rows / 1,817 units across 29 stores in all 3 countries**.
+  - **Country fan-out fixed**: upstream `/orders` defaults to Uganda when country is omitted. Backend now explicitly fans out across `["Kenya", "Uganda", "Rwanda"]` (Title-cased per upstream contract, was lowercase which silently 0'd) with a 4-call concurrency cap to dodge upstream 503 rate limits.
+  - **`Country` column** added to the report (per-POS, sourced from a `loc_country` map, NOT per-SKU — fixes a bug where shared SKUs gave wrong country labels). Pill-styled, matches the Country filter look.
+  - **`SOH Store` column** added (current shop-floor stock for that SKU at that POS); 0-stock rows render in red bold so urgent picks pop.
+  - **Filter**: `units_sold > 0` per (POS, SKU) — confirmed.
+
 - **Iter_39d** (2026-04-29):
   - Filter restored to **units sold > 0** per (POS, SKU) (was > 1). Subtitle + empty-state copy updated.
   - 502 root cause: backend hot-reload had cleared the in-memory cache; the startup warmup populates it within ~90 s — verified post-warmup. 7-day window: 72 rows / 99 units · owner balance 25/25/25/24 across 3 stores (Oasis Mall, Vivo Acacia, Vivo Kigali Heights).

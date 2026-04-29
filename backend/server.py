@@ -3832,24 +3832,59 @@ async def analytics_replenishment_report(
             return payload
 
     # 1) Units sold over [df, dt]: orders chunked into ≤30-day windows
-    # (upstream caps at 50k rows per call). Group by (location, SKU) — the
-    # /orders endpoint exposes `sku` but not `barcode`; we look up the
+    # (upstream caps at 50k rows per call) AND fanned-out per country so a
+    # single 50k-row chunk doesn't accidentally bias the report toward
+    # whichever country the upstream returns first. Group by (location, SKU)
+    # — the /orders endpoint exposes `sku` but not `barcode`; we look up the
     # barcode via the inventory snapshot in step 2.
     sold_units: Dict[Tuple[str, str], int] = {}
     sku_meta: Dict[str, Dict[str, Any]] = {}
+    loc_country: Dict[str, str] = {}  # POS location → country (canonical)
     chunks: List[Tuple[date, date]] = []
     cur = df
     while cur <= dt:
         end = min(cur + timedelta(days=29), dt)
         chunks.append((cur, end))
         cur = end + timedelta(days=1)
-    for d1, d2 in chunks:
-        orders = await _safe_fetch("/orders", {
-            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
-            "limit": 50000, "country": country,
-        }) or []
-        for r in orders:
-            if (r.get("sale_kind") or "order") != "order":
+
+    if country:
+        country_list = [country]
+    else:
+        # Fan out across all 3 countries — keeps chunks well under the
+        # upstream 50k cap and guarantees no country is silently dropped
+        # (the upstream defaults to Uganda when country is omitted, which
+        # is why earlier versions of this report appeared Uganda-only).
+        # Title-cased per upstream contract.
+        country_list = ["Kenya", "Uganda", "Rwanda"]
+
+    # Cap concurrency at 4 — upstream /orders 503s when we fan out 9-21
+    # simultaneous calls (3 chunks × 3 countries for 7-day window, or 21 for
+    # 6-month perf rank). 4 keeps total wall time low while staying under
+    # upstream rate limits.
+    _orders_sem = asyncio.Semaphore(4)
+
+    async def _orders_chunk(d1: date, d2: date, ctry: str) -> List[Dict[str, Any]]:
+        async with _orders_sem:
+            return await _safe_fetch("/orders", {
+                "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+                "limit": 50000, "country": ctry,
+            }) or []
+
+    fetch_jobs = [
+        _orders_chunk(d1, d2, ctry)
+        for (d1, d2) in chunks
+        for ctry in country_list
+    ]
+    chunk_results = await asyncio.gather(*fetch_jobs, return_exceptions=True)
+    for chunk in chunk_results:
+        if isinstance(chunk, Exception) or not chunk:
+            continue
+        for r in chunk:
+            # Accept any non-return sale kind. Upstream uses 'order' for
+            # Uganda/Rwanda and 'sale' for Kenya — both represent a
+            # genuine outbound unit and should drive replenishment.
+            sk = (r.get("sale_kind") or "order").lower()
+            if sk in ("return", "exchange", "refund"):
                 continue
             if is_excluded_brand(r.get("brand")):
                 continue
@@ -3869,6 +3904,9 @@ async def analytics_replenishment_report(
             if qty <= 0:
                 continue
             sold_units[(loc, sku)] = sold_units.get((loc, sku), 0) + qty
+            ctry = (r.get("country") or "").title()
+            if ctry and loc not in loc_country:
+                loc_country[loc] = ctry
             sku_meta.setdefault(sku, {
                 "sku": sku,
                 "product_name": r.get("product_title") or r.get("product_name") or r.get("style_name") or "",
@@ -3903,6 +3941,12 @@ async def analytics_replenishment_report(
             "size": r.get("size") or "",
             "barcode": "",
         })
+        # Track POS country from inventory too — covers stores that haven't
+        # had any orders in the window but may still appear via the
+        # zero-stock-no-sale path (none today, but defensive).
+        ctry = (r.get("country") or "").title()
+        if ctry and loc and loc not in loc_country and not is_warehouse_location(loc):
+            loc_country[loc] = ctry
         if is_warehouse_location(loc):
             wh_stock[sku] = wh_stock.get(sku, 0.0) + avail
         elif not is_excluded_location(loc) and not _is_online_channel(loc):
@@ -3931,22 +3975,33 @@ async def analytics_replenishment_report(
     if perf_key in _perf_rank_cache and _time.time() - _perf_rank_cache[perf_key][0] < _PERF_RANK_TTL:
         rank = _perf_rank_cache[perf_key][1]
     else:
+        # Fan out per (chunk × country) so we never hit the upstream 50k cap.
         perf_orders: List[Dict[str, Any]] = []
+        perf_chunks: List[Tuple[date, date]] = []
         cur = today - timedelta(days=180)
         while cur <= today:
             end = min(cur + timedelta(days=29), today)
-            chunk = await _safe_fetch("/orders", {
-                "date_from": cur.isoformat(), "date_to": end.isoformat(),
-                "limit": 50000, "country": country,
-            }) or []
-            perf_orders.extend(chunk)
+            perf_chunks.append((cur, end))
             cur = end + timedelta(days=1)
+        perf_jobs = [
+            _orders_chunk(c1, c2, ctry)
+            for (c1, c2) in perf_chunks
+            for ctry in country_list
+        ]
+        perf_results = await asyncio.gather(*perf_jobs, return_exceptions=True)
+        for chunk in perf_results:
+            if isinstance(chunk, Exception) or not chunk:
+                continue
+            perf_orders.extend(chunk)
         perf: Dict[str, int] = {}
         for r in perf_orders:
-            if (r.get("sale_kind") or "order") != "order":
+            sk = (r.get("sale_kind") or "order").lower()
+            if sk in ("return", "exchange", "refund"):
                 continue
             loc = r.get("pos_location_name") or r.get("channel") or ""
             if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
+                continue
+            if _is_online_channel(loc):
                 continue
             perf[loc] = perf.get(loc, 0) + int(r.get("quantity") or 0)
         rank = {loc: i for i, (loc, _) in enumerate(
@@ -3981,12 +4036,14 @@ async def analytics_replenishment_report(
         rows.append({
             "owner": "",  # filled in step 6
             "pos_location": c["loc"],
+            "country": loc_country.get(c["loc"], ""),
             "product_name": meta.get("product_name") or "",
             "size": meta.get("size") or "",
             "barcode": meta.get("barcode") or "",
             "sku": sku,
             "bin": "",  # filled in step 7
             "units_sold": int(c["sold"]),
+            "soh_store": int(c["pos"]),  # current shop-floor stock for this SKU
             "soh_wh": int(wh_avail),  # snapshot value BEFORE allocation
             "replenish": take,
             "replenished": False,  # filled in by _overlay_repl_state
@@ -4018,8 +4075,12 @@ async def analytics_replenishment_report(
     for r in rows:
         r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
 
-    # 8) Final sort: owner → POS → product_name (matches the user's mock-up).
-    rows.sort(key=lambda r: (r["owner"], r["pos_location"], r["product_name"], r["size"]))
+    # 8) Final sort: country → owner → POS → product (so each owner can
+    # walk one country at a time when needed).
+    rows.sort(key=lambda r: (
+        r.get("country") or "", r["owner"], r["pos_location"],
+        r["product_name"], r["size"]
+    ))
 
     payload = {
         "date_from": df.isoformat(),

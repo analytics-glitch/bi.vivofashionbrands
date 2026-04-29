@@ -96,6 +96,11 @@ const ReplenishmentReport = () => {
   const columns = useMemo(() => [
     { key: "owner", label: "Owner", align: "left",
       render: (r) => <span className="pill-neutral">{r.owner}</span>, csv: (r) => r.owner },
+    { key: "country", label: "Country", align: "left",
+      render: (r) => r.country
+        ? <span className="pill-amber">{r.country}</span>
+        : <span className="text-muted text-[11px]">—</span>,
+      csv: (r) => r.country || "" },
     { key: "pos_location", label: "POS Location", align: "left" },
     { key: "product_name", label: `Product Name (${dateLabel})`, align: "left",
       render: (r) => <span className="break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.product_name}</span> },
@@ -105,6 +110,12 @@ const ReplenishmentReport = () => {
       render: (r) => r.bin ? <span className="pill-amber">{r.bin}</span> : <span className="text-muted text-[11px]">—</span>,
       csv: (r) => r.bin || "" },
     { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+    { key: "soh_store", label: "SOH Store", numeric: true,
+      render: (r) => (
+        <span className={r.soh_store === 0 ? "text-red-700 font-bold" : ""}>
+          {fmtNum(r.soh_store)}
+        </span>
+      ) },
     { key: "soh_wh", label: "SOH WH", numeric: true, render: (r) => fmtNum(r.soh_wh) },
     { key: "replenish", label: "Replenish", numeric: true,
       render: (r) => <span className="font-bold text-emerald-700">{fmtNum(r.replenish)}</span> },
