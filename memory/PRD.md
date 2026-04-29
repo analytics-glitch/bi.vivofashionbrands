@@ -39,7 +39,18 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
 
-## Recently Shipped (2026-04-26 / 27 / 28)
+## Recently Shipped (2026-04-26 / 27 / 28 / 29)
+- **Iter_37 bundle** (2026-04-29):
+  - **CSV %**: `SortableTable.exportCSV` now auto-detects percentage columns by sampling the first row's rendered text against `/(%|\bpp|\bpts?)\s*$/i`. When matched, the cell value is normalised to `XX.XX%` — `pp` and `pts` are stripped and `%` is appended, including when the column has a legacy explicit `csv: (r) => r.x?.toFixed(2)` callback returning a bare number. Verified end-to-end via the testing agent (5/5 backend pass, all main % columns and Variance columns now export with `%`).
+  - **`% Understocked Subcats` KPI** [Inventory]: New `[data-testid='inv-kpi-understocked-pct']` tile in the top KPI grid (widened lg:grid-cols-5 → grid-cols-6). `(count where pct_of_total_sold − pct_of_total_stock > 3) / total subcats`. Sub-text shows `X of Y subcats · variance > 3 pp`. Action button scrolls to the existing `understocked-subcats` table.
+  - **Role-based page access**: New `/app/frontend/src/lib/permissions.js` mirrors `auth.py::ROLE_PAGES`. Maps roles → page IDs:
+    - `viewer` → Overview, Locations, Footfall, Customers
+    - `store_manager` → above + Inventory, Re-Order, IBT
+    - `analyst` → above + Products, Pricing, Data Quality
+    - `exec` → above + CEO Report, Exports
+    - `admin` → everything + Users + Activity Logs
+    `Sidebar` filters its tabs via `canAccessPage(user, t.id)`. `ProtectedRoute` accepts a `pageId` prop and redirects unauthorised hits to `homePageFor(user)` — so a viewer hitting `/inventory` lands back on `/`. `/api/auth/login` and `/api/auth/me` both echo `allowed_pages` so the frontend has the canonical list on first hit. Test viewer seeded: `viewer@vivofashiongroup.com / Viewer!2026`.
+
 - **Iter_36 bundle** (2026-04-28):
   - **Phase 2a · Stock-to-Sales · by Color & by Size** [Inventory]: TWO new variance tables (`[data-testid='sts-by-color-table']` + `[data-testid='sts-by-size-table']`) placed right under the existing `Stock-to-Sales · by Subcategory` table. Identical column shape (Units Sold · Inventory · % of Total Sales · % of Total Inventory · Variance · Risk Flag) and identical pill colour-coding via `varianceStyle`. Sorted by variance magnitude desc so the worst stockout / overstock risks surface at the top. Backed by ONE shared call to the new `/api/analytics/stock-to-sales-by-attribute` endpoint (returns `{by_color, by_size}`) with a 5-min cache.
   - **Phase 2b · New Styles · Sales Curve** [Products → new sub-tab `[data-testid='subtab-sales-curve']`]: Frontend wired to the existing `/api/analytics/new-styles-curve?days=…` backend. Day-window selector (60 / 90 / 122 / 180 / 365), trend filter (All / Climbing / Plateau / Declining with live counts), live-search by style/brand/subcategory. Each row gets a 110×32 sparkline (Recharts `AreaChart`) of weekly units since launch + a trend pill. Click "Open" → larger LineChart with a peak ReferenceLine and tooltip showing units & week_start. Lets merch re-order while a style is still climbing or plateaued; markdown-flag declining ones.

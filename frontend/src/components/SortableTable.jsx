@@ -23,9 +23,9 @@ const _flattenToText = (node) => {
 export const exportCSV = (rows, columns, filename = "export.csv") => {
   const header = columns.map((c) => `"${(c.label || c.key).replace(/"/g, '""')}"`).join(",");
   // Auto-detect percentage columns by checking the rendered text of the first
-  // row. Any column whose render output ends with `%` or ` pp` is treated as
-  // a percentage and gets a `%` suffix in CSV (variance "pp" gets normalised
-  // to "%" too — keeps the export uniform).
+  // row. Any column whose render output ends with `%`, ` pp`, ` pts`, or ` pt`
+  // is treated as a percentage and gets a `%` suffix in CSV (variance
+  // "pp"/"pts" gets normalised to "%" too — keeps the export uniform).
   const sample = rows[0];
   const pctCols = new Set();
   if (sample) {
@@ -35,7 +35,7 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
       if (typeof c.render !== "function") return;
       try {
         const txt = _flattenToText(c.render(sample, 0)).trim();
-        if (/(%|\bpp)\s*$/i.test(txt)) pctCols.add(i);
+        if (/(%|\bpp|\bpts?)\s*$/i.test(txt)) pctCols.add(i);
       } catch (_e) { /* ignore */ }
     });
   }
@@ -60,10 +60,10 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
         if (v == null) return "";
         let s = String(v);
         if (pctCols.has(ci)) {
-          // Normalise variance "pp" → "%" and add "%" if a bare number snuck
-          // through (typical of legacy explicit csv callbacks like
-          // `r.x?.toFixed(2)`).
-          s = s.replace(/\s*pp\s*$/i, "%").trim();
+          // Normalise variance "pp" / "pts" / "pt" → "%" and add "%" if a
+          // bare number snuck through (typical of legacy explicit csv
+          // callbacks like `r.x?.toFixed(2)`).
+          s = s.replace(/\s*(pp|pts?)\s*$/i, "%").trim();
           if (s && !/%\s*$/.test(s)) {
             const n = Number(s);
             if (!Number.isNaN(n)) s = `${n.toFixed(2)}%`;
