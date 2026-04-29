@@ -3913,12 +3913,11 @@ async def analytics_replenishment_report(
             m["barcode"] = sku_to_barcode.get(sku, "")
 
     # 3) Build candidate replenishment lines. Per spec: ONLY emit rows where
-    # the SKU sold MORE THAN ONE unit at that POS in the window AND current
-    # shop-floor stock < 2. This drops one-off sales that don't justify a
-    # warehouse pick.
+    # the SKU sold AT LEAST ONE unit at that POS in the window AND current
+    # shop-floor stock < 2.
     candidates: List[Dict[str, Any]] = []
     for (loc, sku), sold in sold_units.items():
-        if sold <= 1:
+        if sold <= 0:
             continue
         ps = pos_stock.get((loc, sku), 0.0)
         if ps >= REPL_TRIGGER:

@@ -41,6 +41,10 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
 ## Recently Shipped
+- **Iter_39d** (2026-04-29):
+  - Filter restored to **units sold > 0** per (POS, SKU) (was > 1). Subtitle + empty-state copy updated.
+  - 502 root cause: backend hot-reload had cleared the in-memory cache; the startup warmup populates it within ~90 s — verified post-warmup. 7-day window: 72 rows / 99 units · owner balance 25/25/25/24 across 3 stores (Oasis Mall, Vivo Acacia, Vivo Kigali Heights).
+
 - **Iter_39c bundle** (2026-04-29):
   - **Replenishment v3 — fixed scope & balance**: (1) **Online channels excluded** entirely (`_is_online_channel` matches "online", "ecom", "shop-zetu", "shopify") — replenishment is a physical pick-and-pack op, online has no shop floor. (2) Filter restored to **units sold > 1** per (POS, SKU). (3) **Owner balancing now per-LINE** (not per-store): a single store can be co-owned by 2-3 owners; one owner can carry multiple stores. Greedy bin-packing assigns each line to the lowest-load owner, anchoring on biggest lines first. Verified: 7-day window at Vivo Acacia → 5 lines / 9 units → Matthew 3 / Teddy 2 / Alvi 2 / Emma 2 (1-unit spread, vs the previous 68 / 7 / 2 / 0 single-store skew).
 
