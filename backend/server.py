@@ -766,6 +766,52 @@ async def get_customers_churn_rate(
     out["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
     return out
 
+_customer_names_cache: Tuple[float, Dict[str, str]] = (0.0, {})
+_CUSTOMER_NAMES_TTL = 60 * 60 * 6  # 6 hours
+
+
+async def _get_customer_name_lookup() -> Dict[str, str]:
+    """Returns customer_id → customer_name. Cached for 6h. Pulled from
+    /top-customers (the only upstream endpoint that exposes both the id and
+    the human name in bulk). The roster is ~7,800 customers today — fits
+    comfortably in memory in a single 1-call fetch.
+
+    A SENTINEL of empty-string is recorded for known customer_ids whose
+    name in the upstream database is blank — that's the actual walk-in
+    marker in the dataset (~379 such IDs vs 2 IDs whose name contains
+    "walk"). The walk-in detector relies on this distinction to distinguish
+    "anonymous walk-in customer" from "customer not yet loaded".
+    """
+    import time as _time
+    global _customer_names_cache
+    ts, cache = _customer_names_cache
+    if cache and _time.time() - ts < _CUSTOMER_NAMES_TTL:
+        return cache
+    try:
+        rows = await _safe_fetch("/top-customers", {"limit": 20000}) or []
+    except Exception as e:
+        logger.warning("[customer-names] /top-customers failed: %s", e)
+        return cache or {}
+    out: Dict[str, str] = {}
+    blanks = 0
+    for r in rows:
+        cid = r.get("customer_id")
+        cname = r.get("customer_name")
+        if not cid:
+            continue
+        cid_s = str(cid).strip()
+        if cname and str(cname).strip():
+            out[cid_s] = str(cname).strip()
+        else:
+            # Empty-name customers — the walk-in roster.
+            out[cid_s] = ""
+            blanks += 1
+    logger.info("[customer-names] loaded %d names (%d are walk-in blanks)", len(out), blanks)
+    _customer_names_cache = (_time.time(), out)
+    return out
+
+
+
 
 @api_router.get("/customers/walk-ins")
 async def get_walk_ins(
@@ -836,31 +882,57 @@ async def get_walk_ins(
     # Mark as truncated only if any chunk hit the upstream cap.
     truncated = any(isinstance(r, list) and len(r) >= 50000 for r in results)
 
-    # Filter to actual sales (drop returns) — walk-ins on returns are not
-    # commercially interesting and would inflate the count.
-    rows = [r for r in rows if (r.get("sale_kind") or "order") == "order"]
+    # Filter to actual sales (drop returns/exchanges/refunds). Note: Kenya
+    # uses sale_kind="sale", Uganda/Rwanda use "order" — we keep both.
+    rows = [r for r in rows if (r.get("sale_kind") or "order").lower() not in ("return", "exchange", "refund")]
+
+    # /orders doesn't expose customer_name — pull a single bulk roster from
+    # /top-customers so the name-pattern rules below can actually fire.
+    # Cached for 6h in `_customer_names_cache`.
+    name_lookup = await _get_customer_name_lookup()
 
     def _is_walk_in(r: Dict[str, Any]) -> bool:
         # Walk-in rules (any one match):
         #   1. No customer_id (null / empty) — anonymous transaction.
         #   2. customer_type tagged guest / walk-in / anonymous in upstream.
-        #   3. customer_name contains "walk in" / "walkin" / "walk-in".
-        #   4. customer_name matches a POS / store / location name verbatim
-        #      (cashier scans without picking a customer; the upstream then
-        #      back-fills the location's name as the customer).
+        #   3. customer_id resolves to a customer with EMPTY name in the
+        #      upstream customer database — that IS the walk-in roster
+        #      (~379 such IDs vs 2 named "walker"). Most reliable signal.
+        #   4. customer_name contains "walk" — covers "walk in", "walkin",
+        #      "walk-in".
+        #   5. customer_name contains "vivo" / "safari" — staff sometimes
+        #      enter the brand or store name when no real customer is
+        #      present.
+        #   6. customer_name matches the POS / store / location name.
         cid = r.get("customer_id")
         if cid is None or (isinstance(cid, str) and not cid.strip()):
             return True
         ctype = (r.get("customer_type") or "").strip().lower()
         if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
             return True
-        cname = (r.get("customer_name") or "").strip().lower()
-        if cname:
-            cname_clean = cname.replace("-", " ").replace("_", " ")
-            if "walk in" in cname_clean or "walkin" in cname_clean:
+        cid_s = str(cid).strip()
+        if cid_s in name_lookup and not name_lookup[cid_s]:
+            # Known customer in the roster but with blank name = walk-in.
+            return True
+        cname = (r.get("customer_name") or name_lookup.get(cid_s, "") or "").strip().lower()
+        if not cname:
+            # cid is in the roster with a real name → genuine identified
+            # customer, not a walk-in. (If cid is NOT in the roster we
+            # treat it as identified too — safer to under-count walk-ins
+            # than over-count.)
+            return False
+        cname_clean = cname.replace("-", " ").replace("_", " ")
+        if "walk" in cname_clean:
+            return True
+        if "vivo" in cname_clean or "safari" in cname_clean:
+            return True
+        loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
+        if loc:
+            loc_clean = loc.replace("-", " ").replace("_", " ")
+            if cname_clean == loc_clean:
                 return True
-            loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
-            if loc and cname == loc:
+            tokens = [t for t in loc_clean.split() if len(t) >= 4 and t not in ("vivo", "safari", "mall", "shop", "store")]
+            if any(t in cname_clean for t in tokens):
                 return True
         return False
 
@@ -960,7 +1032,7 @@ async def get_walk_ins(
         "walk_in_share_sales_pct": round((walk_sales / total_sales * 100), 2) if total_sales else 0.0,
         "by_country": by_country_out,
         "by_location": by_location_out,
-        "detection_rule": "customer_type IN (Guest/Walk-in/Anonymous) OR customer_id IS NULL",
+        "detection_rule": "customer_id NULL · customer_type Guest/Walk-in/Anonymous · customer in roster with BLANK name (~379 IDs) · customer_name contains 'walk'/'vivo'/'safari'/store name",
         "truncated": truncated,
     }
 
@@ -4049,24 +4121,45 @@ async def analytics_replenishment_report(
             "replenished": False,  # filled in by _overlay_repl_state
         })
 
-    # 6) Owner assignment — balance per-LINE so each owner ends up with
-    # near-equal total replenish units, even when one store dominates daily
-    # volume. A single store can be co-owned by 2 or 3 owners, and one
-    # owner can carry multiple stores. Greedy: walk lines from largest to
-    # smallest and drop each onto the owner with the lowest current load
-    # (ties broken by the canonical OWNERS order for determinism).
-    owners_load: Dict[str, int] = {o: 0 for o in OWNERS}
-    # Iterate by descending replenish so big lines anchor early — leaves
-    # the small ones to fine-tune balance.
-    for r in sorted(rows, key=lambda x: (-x["replenish"], x["pos_location"], x["barcode"])):
-        owner = min(owners_load, key=lambda o: (owners_load[o], OWNERS.index(o)))
-        r["owner"] = owner
-        owners_load[owner] += r["replenish"]
-    # Per-store ownership becomes a SET (a store may have multiple owners
-    # for the day). Used in the by_owner summary below.
-    store_owners: Dict[str, set] = {}
+    # 6) Owner assignment — each owner picks a CONTIGUOUS block of POS
+    # locations (alphabetised) up to roughly an equal share of the total
+    # replenish volume. This guarantees one operator's pick path stays in a
+    # single store cluster — no zig-zagging across the warehouse.
+    units_per_store: Dict[str, int] = {}
     for r in rows:
-        store_owners.setdefault(r["pos_location"], set()).add(r["owner"])
+        units_per_store[r["pos_location"]] = (
+            units_per_store.get(r["pos_location"], 0) + r["replenish"]
+        )
+    total_units = sum(units_per_store.values())
+    target = total_units / len(OWNERS) if OWNERS else 0
+    # Walk stores in alphabetical order — natural dispatch path. Each owner
+    # absorbs stores until their load reaches `target * (idx+1)`. The last
+    # owner picks up whatever's left so we never under-assign at the end.
+    store_owner: Dict[str, str] = {}
+    owners_load: Dict[str, int] = {o: 0 for o in OWNERS}
+    cumulative = 0
+    owner_idx = 0
+    for store in sorted(units_per_store.keys()):
+        u = units_per_store[store]
+        # If adding this store to the current owner would push us > 1.5×
+        # the target AND we still have owners left, move on. The 1.5×
+        # tolerance keeps a single big store with one owner instead of
+        # chopping it apart — preserves the "contiguous block" intent.
+        while (
+            owner_idx < len(OWNERS) - 1
+            and cumulative + u > target * (owner_idx + 1) + max(0.5 * target, 1)
+            and owners_load[OWNERS[owner_idx]] > 0
+        ):
+            owner_idx += 1
+        owner = OWNERS[owner_idx]
+        store_owner[store] = owner
+        owners_load[owner] += u
+        cumulative += u
+    for r in rows:
+        r["owner"] = store_owner.get(r["pos_location"], OWNERS[0])
+    # store_owners as set (one owner per store now, but keeps the by_owner
+    # summary contract uniform across iterations).
+    store_owners: Dict[str, set] = {s: {o} for s, o in store_owner.items()}
 
     # 7) Bin lookup — strip H-prefixed bins (the loader already filters them
     # out, so an empty result here means "no bin recorded in last stock take"
@@ -4075,11 +4168,10 @@ async def analytics_replenishment_report(
     for r in rows:
         r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
 
-    # 8) Final sort: country → owner → POS → product (so each owner can
-    # walk one country at a time when needed).
+    # 8) Final sort: POS location → product → size. Owner is now a function
+    # of POS so this also keeps owners contiguous in the table.
     rows.sort(key=lambda r: (
-        r.get("country") or "", r["owner"], r["pos_location"],
-        r["product_name"], r["size"]
+        r["pos_location"], r["product_name"], r["size"]
     ))
 
     payload = {

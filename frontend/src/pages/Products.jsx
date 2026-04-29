@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
-import { isMerchandise } from "@/lib/productCategory";
+import { isMerchandise, categoryFor } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
 import SORHeader from "@/components/SORHeader";
@@ -296,6 +296,9 @@ const Products = () => {
               exportName="stock-to-sales-by-subcategory.csv"
               initialSort={{ key: "variance", dir: "desc" }}
               columns={[
+                { key: "category", label: "Category", align: "left",
+                  render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>,
+                  csv: (r) => categoryFor(r.subcategory) || "" },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
                 { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock), csv: (r) => r.current_stock },

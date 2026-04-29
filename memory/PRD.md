@@ -41,6 +41,12 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
 ## Recently Shipped
+- **Iter_39f** (2026-04-29):
+  - **sale_kind audit complete** — Walk-in endpoint was the only other `sale_kind == "order"` consumer that silently dropped Kenya rows. Fixed; full audit (`grep sale_kind`) shows no remaining strict filters.
+  - **Walk-in detection rebuilt around the real signal**: customer_name is NOT exposed by `/orders` and customer_id is never null in the data. Built `_get_customer_name_lookup` that pulls `/top-customers` (~7,800 rows, 6h cache) and discovered the actual walk-in marker: **379 customer IDs with BLANK names**. Including these jumped detection from 2 / 2,819 (0.07%) → **232 / 2,819 (8.23%)** with a realistic per-store distribution. Detection now layers: null cid · type=guest/walk-in · roster-blank-name · name contains walk/vivo/safari/store-name.
+  - **Replenishment owner re-sort**: now contiguous-block per store (alphabetical) — each owner gets a continuous walk through their store cluster instead of zig-zagging. Matthew 12 stores / 668u, Teddy 9 stores / 427u, Alvi 5 stores / 455u, Emma 3 stores / 267u (some imbalance preserved to keep stores intact for one operator).
+  - **Cat column on Products → Stock-to-Sales by Subcategory**: added as the leading column, matching the Inventory page version.
+
 - **Iter_39e** (2026-04-29):
   - **Critical fix — Kenya was being silently dropped**. Kenya orders use `sale_kind = "sale"` but Uganda/Rwanda use `sale_kind = "order"`. The previous filter `(r.get("sale_kind") or "order") != "order"` rejected ALL 4,600+ Kenya orders. Now accepts any kind that isn't a return/exchange/refund. Result: 7-day report jumped from **72 rows / 99 units (Uganda+Rwanda only)** → **1,274 rows / 1,817 units across 29 stores in all 3 countries**.
   - **Country fan-out fixed**: upstream `/orders` defaults to Uganda when country is omitted. Backend now explicitly fans out across `["Kenya", "Uganda", "Rwanda"]` (Title-cased per upstream contract, was lowercase which silently 0'd) with a 4-call concurrency cap to dodge upstream 503 rate limits.
