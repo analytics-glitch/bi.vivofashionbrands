@@ -4121,45 +4121,26 @@ async def analytics_replenishment_report(
             "replenished": False,  # filled in by _overlay_repl_state
         })
 
-    # 6) Owner assignment — each owner picks a CONTIGUOUS block of POS
-    # locations (alphabetised) up to roughly an equal share of the total
-    # replenish volume. This guarantees one operator's pick path stays in a
-    # single store cluster — no zig-zagging across the warehouse.
-    units_per_store: Dict[str, int] = {}
-    for r in rows:
-        units_per_store[r["pos_location"]] = (
-            units_per_store.get(r["pos_location"], 0) + r["replenish"]
-        )
-    total_units = sum(units_per_store.values())
-    target = total_units / len(OWNERS) if OWNERS else 0
-    # Walk stores in alphabetical order — natural dispatch path. Each owner
-    # absorbs stores until their load reaches `target * (idx+1)`. The last
-    # owner picks up whatever's left so we never under-assign at the end.
-    store_owner: Dict[str, str] = {}
+    # 6) Owner assignment — sort all lines alphabetically by POS, then split
+    # into 4 equal slices. Each owner gets exactly N/4 rows; one owner may
+    # span the boundary between two stores (acceptable per spec). Simple
+    # row-count division — equal pick volume by lines, not by units.
+    rows.sort(key=lambda r: (r["pos_location"], r["product_name"], r["size"]))
+    n = len(rows)
+    n_owners = max(len(OWNERS), 1)
+    base = n // n_owners
+    extra = n % n_owners
+    cursor = 0
+    store_owners: Dict[str, set] = {}
     owners_load: Dict[str, int] = {o: 0 for o in OWNERS}
-    cumulative = 0
-    owner_idx = 0
-    for store in sorted(units_per_store.keys()):
-        u = units_per_store[store]
-        # If adding this store to the current owner would push us > 1.5×
-        # the target AND we still have owners left, move on. The 1.5×
-        # tolerance keeps a single big store with one owner instead of
-        # chopping it apart — preserves the "contiguous block" intent.
-        while (
-            owner_idx < len(OWNERS) - 1
-            and cumulative + u > target * (owner_idx + 1) + max(0.5 * target, 1)
-            and owners_load[OWNERS[owner_idx]] > 0
-        ):
-            owner_idx += 1
-        owner = OWNERS[owner_idx]
-        store_owner[store] = owner
-        owners_load[owner] += u
-        cumulative += u
-    for r in rows:
-        r["owner"] = store_owner.get(r["pos_location"], OWNERS[0])
-    # store_owners as set (one owner per store now, but keeps the by_owner
-    # summary contract uniform across iterations).
-    store_owners: Dict[str, set] = {s: {o} for s, o in store_owner.items()}
+    for i, owner in enumerate(OWNERS):
+        # First `extra` owners absorb the remainder so the totals add up.
+        slice_len = base + (1 if i < extra else 0)
+        for r in rows[cursor:cursor + slice_len]:
+            r["owner"] = owner
+            store_owners.setdefault(r["pos_location"], set()).add(owner)
+            owners_load[owner] += r["replenish"]
+        cursor += slice_len
 
     # 7) Bin lookup — strip H-prefixed bins (the loader already filters them
     # out, so an empty result here means "no bin recorded in last stock take"
@@ -4168,11 +4149,8 @@ async def analytics_replenishment_report(
     for r in rows:
         r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
 
-    # 8) Final sort: POS location → product → size. Owner is now a function
-    # of POS so this also keeps owners contiguous in the table.
-    rows.sort(key=lambda r: (
-        r["pos_location"], r["product_name"], r["size"]
-    ))
+    # 8) Rows already sorted by POS in step 6 — leave order intact so each
+    # owner's slice is contiguous in the table.
 
     payload = {
         "date_from": df.isoformat(),
@@ -4185,6 +4163,7 @@ async def analytics_replenishment_report(
             "by_owner": [
                 {"owner": o,
                  "stores": sum(1 for s, ows in store_owners.items() if o in ows),
+                 "lines": sum(1 for r in rows if r["owner"] == o),
                  "units": owners_load[o]}
                 for o in OWNERS
             ],

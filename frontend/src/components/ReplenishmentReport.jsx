@@ -194,7 +194,7 @@ const ReplenishmentReport = () => {
           <div className="flex flex-wrap gap-1.5 text-[11px]" data-testid="replen-summary">
             {summary.by_owner.map((o) => (
               <span key={o.owner} className="pill-green" data-testid={`replen-owner-${o.owner.toLowerCase()}`}>
-                {o.owner}: <b>{fmtNum(o.units)}</b> units · {fmtNum(o.stores)} stores
+                {o.owner}: <b>{fmtNum(o.lines ?? o.units)}</b> lines · {fmtNum(o.units)} units · {fmtNum(o.stores)} stores
               </span>
             ))}
             <span className="pill-neutral">
