@@ -24,6 +24,7 @@ from auth import (  # noqa: E402
 )
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
+import bins_lookup  # noqa: E402
 
 app = FastAPI(title="Vivo BI Dashboard API")
 # NB: all business endpoints live under this router and require auth.
@@ -840,12 +841,27 @@ async def get_walk_ins(
     rows = [r for r in rows if (r.get("sale_kind") or "order") == "order"]
 
     def _is_walk_in(r: Dict[str, Any]) -> bool:
+        # Walk-in rules (any one match):
+        #   1. No customer_id (null / empty) — anonymous transaction.
+        #   2. customer_type tagged guest / walk-in / anonymous in upstream.
+        #   3. customer_name contains "walk in" / "walkin" / "walk-in".
+        #   4. customer_name matches a POS / store / location name verbatim
+        #      (cashier scans without picking a customer; the upstream then
+        #      back-fills the location's name as the customer).
         cid = r.get("customer_id")
         if cid is None or (isinstance(cid, str) and not cid.strip()):
             return True
         ctype = (r.get("customer_type") or "").strip().lower()
         if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
             return True
+        cname = (r.get("customer_name") or "").strip().lower()
+        if cname:
+            cname_clean = cname.replace("-", " ").replace("_", " ")
+            if "walk in" in cname_clean or "walkin" in cname_clean:
+                return True
+            loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
+            if loc and cname == loc:
+                return True
         return False
 
     # Aggregate: walk-in orders & revenue, total orders & revenue, by country
@@ -3744,6 +3760,252 @@ async def analytics_new_styles_curve(
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Daily Replenishment Report
+# ---------------------------------------------------------------------------
+# For each (POS, SKU) pair where current shop-floor stock < 2 we emit one
+# row recommending replenishment up to a target of 2, IF the warehouse has
+# the SKU available with stock > 1 (per business rule: never strip the WH).
+# When demand from multiple stores exceeds WH supply the priority falls to
+# stores ranked highest by 6-month sell-through (best-performing wins).
+#
+# Owners (Matthew, Teddy, Alvi, Emma) are assigned per-store via greedy
+# load-balancing on total replenish units so each owner has equal-or-near-
+# equal pick volume each day.
+# ---------------------------------------------------------------------------
+OWNERS = ["Matthew", "Teddy", "Alvi", "Emma"]
+REPL_TARGET = 2  # max units we want at a POS for any SKU
+REPL_TRIGGER = 2  # replenish only if POS stock < this
+REPL_WH_FLOOR = 1  # WH must have > REPL_WH_FLOOR units to qualify
+
+_repl_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_REPL_TTL = 60 * 30  # 30 minutes
+_perf_rank_cache: Dict[str, Tuple[float, Dict[str, int]]] = {}
+_PERF_RANK_TTL = 60 * 60 * 4  # 4 hours — store performance is slow-changing
+
+
+@api_router.get("/analytics/replenishment-report")
+async def analytics_replenishment_report(
+    date: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """Daily replenishment report — returns rows that need a top-up today.
+
+    `date` defaults to yesterday (the reporting convention: by morning the
+    units sold "yesterday" are settled). For each row we resolve the bin
+    from the cached Google-Sheet stock take and skip H-prefixed bins.
+    """
+    import time as _time
+    today = datetime.now(timezone.utc).date()
+    target_date = (
+        datetime.strptime(date, "%Y-%m-%d").date() if date else (today - timedelta(days=1))
+    )
+    cache_key = f"{target_date.isoformat()}|{country or ''}"
+    if cache_key in _repl_cache:
+        ts, payload = _repl_cache[cache_key]
+        if _time.time() - ts < _REPL_TTL:
+            return payload
+
+    # 1) Yesterday's units sold: orders on `target_date`, grouped by (location, barcode).
+    orders = await _safe_fetch("/orders", {
+        "date_from": target_date.isoformat(), "date_to": target_date.isoformat(),
+        "limit": 50000, "country": country,
+    }) or []
+
+    # Skip excluded brands / dummy products so the merch team sees real merch.
+    sold_units: Dict[Tuple[str, str], int] = {}
+    sku_meta: Dict[str, Dict[str, Any]] = {}
+    for r in orders:
+        if (r.get("sale_kind") or "order") != "order":
+            continue
+        if is_excluded_brand(r.get("brand")):
+            continue
+        if is_excluded_product(r):
+            continue
+        loc = r.get("pos_location_name") or r.get("channel") or ""
+        if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
+            continue
+        bc = (r.get("barcode") or "").strip()
+        if not bc:
+            continue
+        qty = int(r.get("quantity") or 0)
+        if qty <= 0:
+            continue
+        sold_units[(loc, bc)] = sold_units.get((loc, bc), 0) + qty
+        sku_meta.setdefault(bc, {
+            "product_name": r.get("product_name") or r.get("style_name") or "",
+            "size": r.get("size") or "",
+            "barcode": bc,
+        })
+
+    # 2) Live inventory snapshot — split into POS stock vs WH-finished-goods.
+    inv = await fetch_all_inventory(country=country) or []
+    pos_stock: Dict[Tuple[str, str], float] = {}
+    wh_stock: Dict[str, float] = {}
+    for r in inv:
+        if is_excluded_brand(r.get("brand")):
+            continue
+        if is_excluded_product(r):
+            continue
+        loc = r.get("location_name") or ""
+        bc = (r.get("barcode") or "").strip()
+        if not bc:
+            continue
+        avail = float(r.get("available") or 0)
+        # Capture meta when we don't have it from sales side.
+        sku_meta.setdefault(bc, {
+            "product_name": r.get("product_name") or r.get("style_name") or "",
+            "size": r.get("size") or "",
+            "barcode": bc,
+        })
+        if is_warehouse_location(loc):
+            # We treat all warehouse rows as the unified "WH FG" pool — the
+            # upstream tags physical FG warehouses as warehouse locations.
+            wh_stock[bc] = wh_stock.get(bc, 0.0) + avail
+        elif not is_excluded_location(loc):
+            pos_stock[(loc, bc)] = pos_stock.get((loc, bc), 0.0) + avail
+
+    # 3) Build candidate replenishment lines: every (POS, barcode) currently
+    # selling at that POS where pos_stock < trigger.
+    # Note: we ALSO include lines where the SKU sold yesterday but is no
+    # longer on the floor (stock 0) — that's the most urgent replenishment.
+    candidates: List[Dict[str, Any]] = []
+    seen: set = set()
+    for (loc, bc), sold in sold_units.items():
+        ps = pos_stock.get((loc, bc), 0.0)
+        if ps >= REPL_TRIGGER:
+            continue
+        candidates.append({"loc": loc, "bc": bc, "pos": ps, "sold": sold})
+        seen.add((loc, bc))
+    # Also include POS positions that have stock < 2 even if they didn't sell
+    # yesterday — they still need a top-up to reach the target of 2. Skip
+    # zero-stock-no-sale lines to avoid flooding the report with churn.
+    for (loc, bc), ps in pos_stock.items():
+        if (loc, bc) in seen:
+            continue
+        if ps == 0 or ps >= REPL_TRIGGER:
+            continue
+        candidates.append({"loc": loc, "bc": bc, "pos": ps, "sold": 0})
+
+    # 4) Store performance rank — used as priority when WH supply is short.
+    # Best-performing store (most units last 6 months) wins ties. Cached
+    # for 4h so we don't repeat the 6-month fan-out on every call.
+    perf_key = country or ""
+    if perf_key in _perf_rank_cache and _time.time() - _perf_rank_cache[perf_key][0] < _PERF_RANK_TTL:
+        rank = _perf_rank_cache[perf_key][1]
+    else:
+        perf_orders: List[Dict[str, Any]] = []
+        cur = today - timedelta(days=180)
+        while cur <= today:
+            end = min(cur + timedelta(days=29), today)
+            chunk = await _safe_fetch("/orders", {
+                "date_from": cur.isoformat(), "date_to": end.isoformat(),
+                "limit": 50000, "country": country,
+            }) or []
+            perf_orders.extend(chunk)
+            cur = end + timedelta(days=1)
+        perf: Dict[str, int] = {}
+        for r in perf_orders:
+            if (r.get("sale_kind") or "order") != "order":
+                continue
+            loc = r.get("pos_location_name") or r.get("channel") or ""
+            if not loc or is_warehouse_location(loc) or is_excluded_location(loc):
+                continue
+            perf[loc] = perf.get(loc, 0) + int(r.get("quantity") or 0)
+        rank = {loc: i for i, (loc, _) in enumerate(
+            sorted(perf.items(), key=lambda x: (-x[1], x[0]))
+        )}
+        _perf_rank_cache[perf_key] = (_time.time(), rank)
+
+    # 5) Allocate WH stock: highest-rank store gets first dibs. We pre-sort
+    # candidates by (store rank asc, pos stock asc, sold desc) so the
+    # neediest line at the best store wins when WH is constrained.
+    candidates.sort(key=lambda c: (
+        rank.get(c["loc"], 10_000), c["pos"], -c["sold"], c["loc"], c["bc"]
+    ))
+
+    wh_remaining = dict(wh_stock)  # mutated as we allocate
+    rows: List[Dict[str, Any]] = []
+    for c in candidates:
+        bc = c["bc"]
+        wh_avail = wh_remaining.get(bc, 0.0)
+        if wh_avail <= REPL_WH_FLOOR:
+            # Insufficient WH stock — skip; never strip the WH below floor.
+            continue
+        deficit = REPL_TARGET - int(c["pos"])
+        if deficit <= 0:
+            continue
+        # Allocate: take up to deficit units, leaving > REPL_WH_FLOOR at WH.
+        take = min(deficit, int(wh_avail) - REPL_WH_FLOOR)
+        if take <= 0:
+            continue
+        wh_remaining[bc] = wh_avail - take
+        meta = sku_meta.get(bc, {})
+        rows.append({
+            "owner": "",  # filled in step 6
+            "pos_location": c["loc"],
+            "product_name": meta.get("product_name") or "",
+            "size": meta.get("size") or "",
+            "barcode": bc,
+            "bin": "",  # filled in step 7
+            "units_sold": int(c["sold"]),
+            "soh_wh": int(wh_avail),  # snapshot value BEFORE allocation
+            "replenish": take,
+            "replenished": "",  # operator-filled in the spreadsheet
+        })
+
+    # 6) Owner assignment — greedy bin-pack stores onto owners so each owner
+    # carries near-equal total replenish units. Stickiness across days is
+    # not required (per spec: redistribute daily for balance).
+    units_per_store: Dict[str, int] = {}
+    for r in rows:
+        units_per_store[r["pos_location"]] = (
+            units_per_store.get(r["pos_location"], 0) + r["replenish"]
+        )
+    # Big stores first → tighter packing.
+    owners_load = {o: 0 for o in OWNERS}
+    store_owner: Dict[str, str] = {}
+    for store, _u in sorted(units_per_store.items(), key=lambda x: (-x[1], x[0])):
+        owner = min(owners_load, key=lambda o: (owners_load[o], OWNERS.index(o)))
+        store_owner[store] = owner
+        owners_load[owner] += _u
+    for r in rows:
+        r["owner"] = store_owner.get(r["pos_location"], OWNERS[0])
+
+    # 7) Bin lookup — strip H-prefixed bins (the loader already filters them
+    # out, so an empty result here means "no bin recorded in last stock take"
+    # which we leave blank rather than suppress the row).
+    bins_map = await bins_lookup.get_bins()
+    for r in rows:
+        r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
+
+    # 8) Final sort: owner → POS → product_name (matches the user's mock-up).
+    rows.sort(key=lambda r: (r["owner"], r["pos_location"], r["product_name"], r["size"]))
+
+    payload = {
+        "date": target_date.isoformat(),
+        "rows": rows,
+        "summary": {
+            "total_rows": len(rows),
+            "total_units": sum(r["replenish"] for r in rows),
+            "by_owner": [
+                {"owner": o, "stores": sum(1 for s, ow in store_owner.items() if ow == o),
+                 "units": owners_load[o]}
+                for o in OWNERS
+            ],
+        },
+    }
+    _repl_cache[cache_key] = (_time.time(), payload)
+    return payload
+
+
+@admin_router.post("/refresh-bins")
+async def refresh_bins():
+    """Force-refresh the barcode→bin map from the upstream Google Sheet."""
+    bins = await bins_lookup.get_bins(refresh=True)
+    return {"loaded": len(bins)}
+
+
 @api_router.get("/analytics/price-changes")
 async def analytics_price_changes(
     date_from: Optional[str] = None,
@@ -4525,9 +4787,11 @@ async def startup():
             await asyncio.gather(
                 analytics_sor_all_styles(),
                 analytics_new_styles_curve(days=122),
+                analytics_replenishment_report(),
+                bins_lookup.get_bins(),
                 return_exceptions=True,
             )
-            logger.info("[warmup] sor-all-styles + new-styles-curve cache warmed")
+            logger.info("[warmup] sor-all-styles + new-styles-curve + replenishment cache warmed")
         except Exception as e:
             logger.warning("[warmup] failed: %s", e)
     asyncio.create_task(_warm())

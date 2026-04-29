@@ -40,6 +40,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Statistical outlier flagging (`useOutliers.js`)
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
+## Recently Shipped
+- **Iter_39 bundle** (2026-04-29):
+  - **Daily Replenishment Report** [Exports → new "Daily Replenishment" tab `[data-testid='exports-tab-replen']`]: 10-column report (Owner · POS · Product · Size · Barcode · Bin · Units Sold · SOH WH · Replenish · Replenished) for any (POS, SKU) where shop-floor stock < 2. Tops up to 2 units, only when WH FG stock > 1 (never strips warehouse below floor). Stores split across 4 owners (Matthew/Teddy/Alvi/Emma) via greedy bin-packing on total replenish units. When demand > supply, priority falls to stores ranked highest by 6-month sell-through (4h cached). Date picker defaults to **yesterday**. Backed by new `/api/analytics/replenishment-report` (30-min cached) + `/api/admin/refresh-bins`. Verified: 4,198 rows · owner balance Matthew 1021 / Teddy 1049 / Alvi 1066 / Emma 1062.
+  - **Bins lookup** [`/app/backend/bins_lookup.py`]: fetches the public CSV export of the Google Sheet stock take, parses 3 column-pairs into a barcode→bin map (9,164 entries), strips H-prefixed bins per business rule, caches in-process for 24 h.
+  - **Walk-in fix**: `_is_walk_in()` in `/api/customers/walk-ins` now also flags rows whose `customer_name` contains "walk in" / "walkin" / "walk-in" OR matches a POS location name verbatim (in addition to the existing null-customer-id and customer_type rules).
+  - **Category column** [Inventory → Stock-to-Sales · by Subcategory]: already present (added previously); confirmed visible.
+
 - **Iter_38 bundle** (2026-04-29):
   - **Mobile snapshot for Overview KPIs**: New `[data-testid='open-snapshot-btn']` pill in the Overview header opens a fixed full-screen overlay (`OverviewSnapshot.jsx`, `[data-testid='overview-snapshot']`) showing every headline KPI in a single-screen, screenshot-friendly layout. 11 KPI tiles in a 2-col grid (Total Sales · Net Sales · Total Orders · Total Units · Footfall · Conversion · ABV · ASP · MSI · Return Rate · Return Amount) + a 3-col highlight strip (Top Subcat · Top Location · Best Conversion). Each tile shows label, value, and the vs-comparison delta arrow + %. Drill-down actions, prev-value sub-lines, and formula tooltips are stripped per the spec. Total content height ≈ 580 px → fits on any modern phone in a single screenshot. Close button restores the regular dashboard.
 
