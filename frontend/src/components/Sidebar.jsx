@@ -23,6 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 
 const tabs = [
@@ -125,6 +126,11 @@ const UserMenu = () => {
 
 const TopNav = () => {
   const { lastUpdated, refresh } = useFilters();
+  const { user } = useAuth();
+  const visibleTabs = React.useMemo(
+    () => tabs.filter((t) => canAccessPage(user, t.id)),
+    [user]
+  );
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
   const [, setTick] = React.useState(0);
@@ -169,7 +175,7 @@ const TopNav = () => {
       </div>
 
       <div className="hidden lg:flex items-center gap-1 flex-1 justify-center min-w-0 flex-wrap">
-        {tabs.map((t) => (
+        {visibleTabs.map((t) => (
           <NavLink
             key={t.id}
             to={t.to}
@@ -229,7 +235,7 @@ const TopNav = () => {
           className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
           data-testid="mobile-menu"
         >
-          {tabs.map((t) => (
+          {visibleTabs.map((t) => (
             <NavLink
               key={t.id}
               to={t.to}

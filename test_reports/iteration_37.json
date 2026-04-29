@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 37 — verified role-based page access (backend + frontend), Inventory '% Understocked Subcats' KPI, and CSV % normalization. Backend pytest 5/5 pass: /auth/login + /auth/me return correct allowed_pages for admin (14 pages) and viewer (4 pages); login response shape matches /me. Frontend: viewer sees only 4 nav tabs; admin sees all 12; viewer hits on /inventory and /products both redirect to /. KPI card present with correct text '% Understocked Subcats / 22.2% / 6 of 27 subcats · variance > 3 pp / See breakdown'; KPI grid is lg:grid-cols-6 (6 children). 'See breakdown' button scrolls page so [data-testid='understocked-subcats'] is in view. CSV export from inv-sts-subcat correctly emits '%' on '% of Total Sales' (e.g. 20.00%) and '% of Total Inventory' (e.g. 11.80%) columns. ONE BUG: the Variance column exports as bare numbers ('8.20', '-13.32') instead of '8.20%' / '-13.32%' — the rendered cell text uses ' pts' as the unit suffix (e.g. '+8.20 pts'), but exportCSV's auto-detect regex /(%|\\bpp)\\s*$/i only catches '%' or 'pp', so 'pts' is missed and the column isn't normalised.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SortableTable.exportCSV (Variance column on inv-sts-subcat / inv-sts-color / inv-sts-cat / inv-sts-size)", "issue": "Variance column exports as bare number ('8.20', '-13.32') instead of '8.20%' / '-13.32%'. Root cause: rendered cell text is '+8.20 pts' (percentage POINTS = 'pts'), but the auto-detect regex in /app/frontend/src/components/SortableTable.jsx line 38 is /(%|\\bpp)\\s*$/i and only matches '%' or 'pp'. 'pts' is not matched so the column is NOT added to pctCols and never gets the '%' suffix appended.", "selector": "[data-testid='inv-sts-subcat-export']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inventory page (admin)", "issues": ["Recurring Recharts width(-1)/height(-1) console warnings (carry-over from iter_36, non-functional)."]}
+    ]
+  },
+  "verifications": {
+    "backend_admin_allowed_pages_14": "Both /api/auth/login and /api/auth/me echo all 14 page IDs: overview, locations, footfall, customers, inventory, re-order, ibt, products, pricing, data-quality, ceo-report, exports, admin-users, admin-activity-logs.",
+    "backend_viewer_allowed_pages_4": "Both endpoints return ['overview','locations','footfall','customers']; explicitly verified inventory/products/re-order/ibt/pricing/ceo-report/data-quality/exports/admin-users/admin-activity-logs are absent.",
+    "backend_login_me_parity": "Login.user.allowed_pages and /me.allowed_pages contain identical contents and core identity fields (user_id, email, role) match.",
+    "frontend_viewer_nav": "data-testid attributes seen: nav-overview, nav-locations, nav-footfall, nav-customers (4 only). No nav-inventory/nav-products/nav-re-order/nav-ibt/nav-pricing/nav-ceo-report/nav-data-quality/nav-exports.",
+    "frontend_viewer_redirect": "Direct GET /inventory and /products both end on URL https://bi-platform-2.preview.emergentagent.com/ (homePageFor() → '/'). ProtectedRoute redirect verified.",
+    "frontend_admin_nav": "data-testid attributes seen (12): nav-overview, nav-locations, nav-footfall, nav-customers, nav-products, nav-inventory, nav-re-order, nav-ibt, nav-pricing, nav-ceo-report, nav-data-quality, nav-exports. Admin pages (Users / Activity Logs) live under user dropdown — outside top-nav scope.",
+    "frontend_inventory_kpi": "[data-testid='inv-kpi-understocked-pct'] visible. Text = '% Understocked Subcats 22.2% 6 of 27 subcats · variance > 3 pp See breakdown'. Sub-text matches spec.",
+    "frontend_inventory_kpi_grid": "Grid container className = 'grid grid-cols-2 lg:grid-cols-6 gap-3' with 6 children — widened from 5 to 6 as required.",
+    "frontend_inventory_kpi_action": "Clicking the 'See breakdown' button inside the KPI scrolled the page so [data-testid='understocked-subcats'] is in viewport (top=0.47px, inViewport=true).",
+    "csv_export_pct_columns": "CSV header = Category,Subcategory,Units Sold,Inventory,% of Total Sales,% of Total Inventory,Variance,Risk Flag. Rows 1-3 sampled: '% of Total Sales' = 20.00%, 10.00%, 10.00% (with %). '% of Total Inventory' = 11.80%, 5.54%, 10.49% (with %). All five sampled rows contain '%' overall — passes the basic check.",
+    "csv_export_variance_column": "FAIL — values are '8.20', '4.46', '-0.49' (no '%' or 'pp' or 'pts'). UI renders as '+8.20 pts'/'-0.49 pts'. Auto-detect regex doesn't match 'pts', so column is not normalised."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_37.py",
+    "/app/test_reports/pytest/iter37.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): /app/frontend/src/components/SortableTable.jsx line 38 — extend the percentage-detection regex from /(%|\\bpp)\\s*$/i to /(%|\\bpp|\\bpts?)\\s*$/i (or better: detect any of %, pp, pts, ppt) so the Variance column rendered as '+8.20 pts' is recognised as a percentage column. Also extend the normalisation block (lines 66-70) to strip ' pts' / ' pt' the same way it strips ' pp' before re-suffixing with '%'. Alternatively change the variance pill renderer to emit ' pp' instead of ' pts' — both pp (percentage points) and pts are valid abbreviations; the spec explicitly calls out 'pp'.",
+    "Optional cleanup: confirm fix on the other tables flagged (inv-sts-color, inv-sts-size, inv-sts-cat) since they share the same Variance column rendering.",
+    "Carry-over from iter_36: Recharts width(-1) warnings still printing on Inventory page; not blocking but pollutes console.",
+    "Carry-over from iter_36: cold-ingress 502 on /analytics/new-styles-curve and /sor-all-styles first-call — not retested this iteration."
+  ],
+  "critical_code_review_comments": [
+    "SortableTable.jsx auto-detect regex is too narrow. Spec asks for variance 'pp' → '%' but the renderer chose 'pts' (percentage points), and the regex only handles '%'/'pp'. This is exactly the kind of suffix drift that should be unit-tested at the FE level (a small jest test with a fake column rendering '+5.91 pts' → CSV cell = '+5.91%').",
+    "permissions.js / auth.py page-list duplication is inevitable but worth a comment-block linking the two; today they're both in sync (14 pages, 4 viewer pages) — verified.",
+    "ProtectedRoute redirect to homePageFor() is correct, but consider adding a tiny toast like 'Your role doesn't have access to that page — taking you home' so direct URL hits don't silently swallow user intent.",
+    "Backend /auth/me & /auth/login both run pages_for(user) — fine, but pages_for() is a pure dict lookup; consider memoising or just inlining once at startup. Cosmetic."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_37.py",
+    "/app/test_reports/iteration_37.json"
+  ],
+  "success_rate": {"backend": "5/5 = 100%", "frontend": "Role-gating + KPI + grid + scroll + non-variance % columns = 100%; CSV variance column = 0% (1 bug)"},
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 · Viewer: viewer@vivofashiongroup.com / Viewer!2026 (both confirmed working).",
+  "seed_data_creation": "None — viewer test user already seeded in prior session.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After main agent fixes the SortableTable regex, retest by clicking [data-testid='inv-sts-subcat-export'] and inspecting the Variance column — must see values like '8.20%' / '-13.32%'. Also re-check inv-sts-color, inv-sts-size, inv-sts-cat exports for the same column. Test file /app/backend/tests/test_iteration_37.py covers all backend role-pages assertions and is suitable as a regression suite. Reference iteration 36 cold-ingress observations on /analytics/* — not exercised this iter.",
+  "rca_of_the_issue": "CSV variance bug: in SortableTable.jsx exportCSV, columns are auto-classified as percentages by sampling the first row's rendered text against /(%|\\bpp)\\s*$/i. The Variance pill renders as e.g. '+8.20 pts' (percentage POINTS, abbreviated 'pts'). Since the regex only matches '%' or 'pp' and not 'pts', the column is excluded from pctCols, so when serialising the bare csv() value '8.20' the conditional at lines 62-71 is skipped and no '%' suffix is appended. The two other percentage columns ('% of Total Sales', '% of Total Inventory') render with literal '%' and therefore pass the detection. Fix: broaden the regex to /(%|\\bpp|\\bpts?)\\s*$/i and add a corresponding strip in the normalisation step. No data correctness issue — purely a labelling miss in the auto-detect heuristic."
+}

@@ -85,6 +85,30 @@ class UpdateUserBody(BaseModel):
     active: Optional[bool] = None
 
 
+# ---------- Page-level access control ----------
+# Mirrors `/app/frontend/src/lib/permissions.js::ROLE_PAGES`. Page IDs match
+# the `id` field on `tabs` in `Sidebar.jsx`. Admin-only pages use the
+# `admin-` prefix. The frontend hides nav items it can't access; ProtectedRoute
+# also redirects on direct URL hits. Backend stays the source of truth via
+# /auth/me which echoes the user's `allowed_pages` list.
+_VIEWER = ["overview", "locations", "footfall", "customers"]
+_STORE_MANAGER = _VIEWER + ["inventory", "re-order", "ibt"]
+_ANALYST = _STORE_MANAGER + ["products", "pricing", "data-quality"]
+_EXEC = _ANALYST + ["ceo-report", "exports"]
+_ADMIN = _EXEC + ["admin-users", "admin-activity-logs"]
+ROLE_PAGES = {
+    "viewer": _VIEWER,
+    "store_manager": _STORE_MANAGER,
+    "analyst": _ANALYST,
+    "exec": _EXEC,
+    "admin": _ADMIN,
+}
+
+
+def pages_for(user: "User") -> List[str]:
+    return ROLE_PAGES.get((user.role or "viewer").lower(), _VIEWER)
+
+
 # ---------- Helpers ----------
 def _clean_user(doc: dict) -> User:
     doc.pop("_id", None)
@@ -234,7 +258,10 @@ async def login(body: LoginBody, response: Response):
         {"$set": {"last_login_at": datetime.now(timezone.utc)}},
     )
     _set_session_cookie(response, token)
-    return {"token": token, "user": _clean_user(user_doc).model_dump()}
+    user_obj = _clean_user(user_doc)
+    user_payload = user_obj.model_dump()
+    user_payload["allowed_pages"] = pages_for(user_obj)
+    return {"token": token, "user": user_payload}
 
 
 @auth_router.post("/google/callback")
@@ -310,12 +337,17 @@ async def google_callback(body: GoogleCallbackBody, response: Response):
         upsert=True,
     )
     _set_session_cookie(response, token)
-    return {"token": token, "user": _clean_user(user_doc).model_dump()}
+    user_obj = _clean_user(user_doc)
+    user_payload = user_obj.model_dump()
+    user_payload["allowed_pages"] = pages_for(user_obj)
+    return {"token": token, "user": user_payload}
 
 
 @auth_router.get("/me")
 async def me(user: User = Depends(get_current_user)):
-    return user.model_dump()
+    payload = user.model_dump()
+    payload["allowed_pages"] = pages_for(user)
+    return payload
 
 
 @auth_router.get("/activity-streak")

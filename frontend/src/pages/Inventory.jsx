@@ -458,7 +458,7 @@ const Inventory = () => {
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
@@ -527,6 +527,40 @@ const Inventory = () => {
               higherIsBetter={false}
               action={{ label: "Triage now", onClick: () => document.querySelector('[data-testid="low-stock-section"]')?.scrollIntoView({ behavior: "smooth" }) }}
             />
+            {(() => {
+              // % Understocked Subcategories — share of merchandise subcats
+              // where sales-share outpaces stock-share by more than 3 pp
+              // (variance > 3). Lower is better; 0% means everything is
+              // healthy. Denominator = visible merchandise subcats.
+              const merch = (subcatSS || []).filter((r) => isMerchandise(r.subcategory));
+              const visible = filtersActive
+                ? merch.filter((r) => visibleSubcats.has(r.subcategory))
+                : merch;
+              const understocked = visible.filter(
+                (r) => ((r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0)) > 3
+              );
+              const total = visible.length;
+              const pct = total > 0 ? (understocked.length / total) * 100 : 0;
+              const sub = total === 0
+                ? "No subcategory data"
+                : `${understocked.length} of ${total} subcats · variance > 3 pp`;
+              return (
+                <KPICard
+                  testId="inv-kpi-understocked-pct"
+                  label="% Understocked Subcats"
+                  sub={sub}
+                  formula={
+                    "Understocked = subcats where (sales% − stock%) > 3 pp.\n" +
+                    "Result = understocked count ÷ total subcats."
+                  }
+                  value={total > 0 ? `${pct.toFixed(1)}%` : "—"}
+                  icon={TrendDown}
+                  higherIsBetter={false}
+                  showDelta={false}
+                  action={{ label: "See breakdown", onClick: () => document.querySelector('[data-testid="understocked-subcats"]')?.scrollIntoView({ behavior: "smooth" }) }}
+                />
+              );
+            })()}
           </div>
 
           <div className="card-white p-3 flex flex-wrap items-center gap-2">

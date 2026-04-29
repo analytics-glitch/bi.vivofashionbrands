@@ -60,8 +60,8 @@ const Shell = ({ children }) => {
   );
 };
 
-const ProtectedShell = ({ children, adminOnly = false }) => (
-  <ProtectedRoute adminOnly={adminOnly}>
+const ProtectedShell = ({ children, adminOnly = false, pageId }) => (
+  <ProtectedRoute adminOnly={adminOnly} pageId={pageId}>
     <Shell>{children}</Shell>
   </ProtectedRoute>
 );
@@ -75,20 +75,20 @@ function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
-              <Route path="/" element={<ProtectedShell><Overview /></ProtectedShell>} />
-              <Route path="/locations" element={<ProtectedShell><Locations /></ProtectedShell>} />
-              <Route path="/products" element={<ProtectedShell><Products /></ProtectedShell>} />
-              <Route path="/inventory" element={<ProtectedShell><Inventory /></ProtectedShell>} />
-              <Route path="/exports" element={<ProtectedShell><Exports /></ProtectedShell>} />
-              <Route path="/customers" element={<ProtectedShell><Customers /></ProtectedShell>} />
-              <Route path="/footfall" element={<ProtectedShell><Footfall /></ProtectedShell>} />
-              <Route path="/ceo-report" element={<ProtectedShell><CEOReport /></ProtectedShell>} />
-              <Route path="/re-order" element={<ProtectedShell><ReOrder /></ProtectedShell>} />
-              <Route path="/ibt" element={<ProtectedShell><IBT /></ProtectedShell>} />
-              <Route path="/pricing" element={<ProtectedShell><Pricing /></ProtectedShell>} />
-              <Route path="/data-quality" element={<ProtectedShell><DataQuality /></ProtectedShell>} />
-              <Route path="/admin/users" element={<ProtectedShell adminOnly><Users /></ProtectedShell>} />
-              <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly><ActivityLogs /></ProtectedShell>} />
+              <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+              <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
+              <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
+              <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
+              <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
+              <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
+              <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
+              <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
+              <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
+              <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
+              <Route path="/pricing" element={<ProtectedShell pageId="pricing"><Pricing /></ProtectedShell>} />
+              <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
+              <Route path="/admin/users" element={<ProtectedShell adminOnly pageId="admin-users"><Users /></ProtectedShell>} />
+              <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </FiltersProvider>

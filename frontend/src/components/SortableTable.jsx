@@ -2,15 +2,74 @@ import React, { useMemo, useState } from "react";
 import { CaretUp, CaretDown, CaretRight, Download } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
+/**
+ * Convert any React element / value into a flat string (used as a fallback
+ * when a column has no explicit `csv:` callback). Walks children recursively
+ * and joins their text content. This is what lets a column rendered as
+ * `<span className="pill-green">29.76%</span>` export as `29.76%` to CSV
+ * without each callsite having to write a custom csv() callback.
+ */
+const _flattenToText = (node) => {
+  if (node == null || node === false) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(_flattenToText).join("");
+  if (typeof node === "object" && node.props) {
+    return _flattenToText(node.props.children);
+  }
+  return "";
+};
+
 /** Download rows as CSV and show a success toast. */
 export const exportCSV = (rows, columns, filename = "export.csv") => {
   const header = columns.map((c) => `"${(c.label || c.key).replace(/"/g, '""')}"`).join(",");
-  const lines = rows.map((r) =>
+  // Auto-detect percentage columns by checking the rendered text of the first
+  // row. Any column whose render output ends with `%` or ` pp` is treated as
+  // a percentage and gets a `%` suffix in CSV (variance "pp" gets normalised
+  // to "%" too — keeps the export uniform).
+  const sample = rows[0];
+  const pctCols = new Set();
+  if (sample) {
+    columns.forEach((c, i) => {
+      if (c.pct === false) return;
+      if (c.pct === true) { pctCols.add(i); return; }
+      if (typeof c.render !== "function") return;
+      try {
+        const txt = _flattenToText(c.render(sample, 0)).trim();
+        if (/(%|\bpp)\s*$/i.test(txt)) pctCols.add(i);
+      } catch (_e) { /* ignore */ }
+    });
+  }
+  const lines = rows.map((r, idx) =>
     columns
-      .map((c) => {
-        const v = typeof c.csv === "function" ? c.csv(r) : r[c.key];
+      .map((c, ci) => {
+        let v;
+        if (typeof c.csv === "function") {
+          v = c.csv(r, idx);
+        } else if (typeof c.render === "function") {
+          // Auto-derive CSV from the rendered cell so percentages, KES-
+          // formatted values, and pills export with their unit suffix
+          // intact instead of as a bare number.
+          try {
+            v = _flattenToText(c.render(r, idx)).trim();
+          } catch (_e) {
+            v = r[c.key];
+          }
+        } else {
+          v = r[c.key];
+        }
         if (v == null) return "";
-        const s = String(v).replace(/"/g, '""');
+        let s = String(v);
+        if (pctCols.has(ci)) {
+          // Normalise variance "pp" → "%" and add "%" if a bare number snuck
+          // through (typical of legacy explicit csv callbacks like
+          // `r.x?.toFixed(2)`).
+          s = s.replace(/\s*pp\s*$/i, "%").trim();
+          if (s && !/%\s*$/.test(s)) {
+            const n = Number(s);
+            if (!Number.isNaN(n)) s = `${n.toFixed(2)}%`;
+          }
+        }
+        s = s.replace(/"/g, '""');
         return `"${s}"`;
       })
       .join(",")
