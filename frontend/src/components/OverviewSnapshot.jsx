@@ -1,6 +1,8 @@
-import React from "react";
+import React, { useRef, useState } from "react";
+import html2canvas from "html2canvas";
 import { fmtKESMobile, fmtNum, fmtPct, fmtDate, pctDelta } from "@/lib/api";
-import { X } from "@phosphor-icons/react";
+import { X, DownloadSimple, CircleNotch } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 /**
  * Mobile KPI snapshot — a single-screen compact layout designed for taking
@@ -77,12 +79,42 @@ const OverviewSnapshot = ({
 
   const d = (cur, prev) => (compareLbl && prev != null ? pctDelta(cur, prev) : null);
 
+  const captureRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+
+  const onSaveImage = async () => {
+    if (!captureRef.current || saving) return;
+    setSaving(true);
+    try {
+      // Render the snapshot card to a canvas at 2x DPR for retina-sharp output,
+      // then trigger a PNG download. We pass `backgroundColor: null` so the
+      // card's own background colour is preserved (avoids a stray white halo
+      // when the card uses a tinted bg).
+      const canvas = await html2canvas(captureRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: null,
+        logging: false,
+      });
+      const stamp = `${dateFrom}_to_${dateTo}`.replace(/-/g, "");
+      const link = document.createElement("a");
+      link.download = `vivo-overview-snapshot_${stamp}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+      toast.success("Snapshot saved — ready to share", { duration: 3000 });
+    } catch (e) {
+      toast.error("Couldn't save snapshot — " + (e?.message || "unknown error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-[60] overflow-y-auto bg-background"
       data-testid="overview-snapshot"
     >
-      <div className="mx-auto w-full max-w-[440px] px-3 pt-2 pb-4">
+      <div className="mx-auto w-full max-w-[440px] px-3 pt-2 pb-4" ref={captureRef} data-snapshot-capture>
       <div className="flex items-start justify-between gap-2 mb-2">
         <div>
           <div className="eyebrow text-[9px]">Snapshot · Overview</div>
@@ -94,15 +126,32 @@ const OverviewSnapshot = ({
             )}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          data-testid="snapshot-close"
-          className="p-1.5 rounded-full border border-border hover:bg-panel"
-          aria-label="Exit snapshot"
-        >
-          <X size={14} weight="bold" />
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={onSaveImage}
+            disabled={saving}
+            data-testid="snapshot-save"
+            data-html2canvas-ignore="true"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[10.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 disabled:opacity-60 disabled:cursor-wait"
+            title="Save this snapshot as a PNG to share"
+          >
+            {saving
+              ? <CircleNotch size={12} weight="bold" className="animate-spin" />
+              : <DownloadSimple size={12} weight="bold" />}
+            {saving ? "Saving…" : "Save image"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            data-testid="snapshot-close"
+            data-html2canvas-ignore="true"
+            className="p-1.5 rounded-full border border-border hover:bg-panel"
+            aria-label="Exit snapshot"
+          >
+            <X size={14} weight="bold" />
+          </button>
+        </div>
       </div>
 
       {/* Headline KPIs — 2-column compact grid (single screenshot height) */}
