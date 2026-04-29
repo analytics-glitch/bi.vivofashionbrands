@@ -23,6 +23,7 @@ import SalesProjection from "@/components/SalesProjection";
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
+import OverviewSnapshot from "@/components/OverviewSnapshot";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
@@ -72,6 +73,9 @@ const Overview = () => {
   const isOnlineOnly = channelGroup === "online";
   const filters = { dateFrom, dateTo, countries, channels };
   const isMobile = useIsMobile();
+  // Snapshot mode — toggled via the "Mobile snapshot" button in the header.
+  // Renders a stripped-down 2-col KPI grid sized for one mobile screenshot.
+  const [snapshot, setSnapshot] = useState(false);
   // On mobile, switch every KPI-tile currency value to a compact 2-decimal
   // form (e.g. "KES 354.99M" instead of "KES 354,985,308") so headline
   // figures fit on a phone screen without wrapping. Charts/tables keep the
@@ -581,6 +585,23 @@ const Overview = () => {
 
   return (
     <div className="space-y-6" data-testid="overview-page">
+      {snapshot && kpis && (
+        <OverviewSnapshot
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          compareLbl={compareMode !== "none" ? compareLbl : null}
+          kpis={kpis}
+          kpisPrev={kpisPrev}
+          footfallAgg={footfallAgg}
+          footfallAggPrev={footfallAggPrev}
+          subcatTop={subcatTop}
+          topChannel={topChannel}
+          bestConversionStore={bestConversionStore}
+          isOnlineOnly={isOnlineOnly}
+          onClose={() => setSnapshot(false)}
+        />
+      )}
+      {snapshot ? null : (<>
       <div className="flex flex-wrap items-baseline gap-3">
         <div>
           <div className="eyebrow">Dashboard · Overview</div>
@@ -592,6 +613,15 @@ const Overview = () => {
             )}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setSnapshot(true)}
+          data-testid="open-snapshot-btn"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold border border-border bg-white hover:border-brand/60 hover:text-brand transition-colors"
+          title="Compact mobile-friendly view of every KPI — perfect for one screenshot"
+        >
+          📱 Mobile snapshot
+        </button>
         {lastUpdated && (
           <div
             className="text-[11.5px] text-muted ml-auto"
@@ -1146,6 +1176,7 @@ const Overview = () => {
           </div>
         </>
       )}
+      </>)}
     </div>
   );
 };

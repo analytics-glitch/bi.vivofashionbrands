@@ -40,7 +40,15 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Statistical outlier flagging (`useOutliers.js`)
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
+- **Iter_38 bundle** (2026-04-29):
+  - **Mobile snapshot for Overview KPIs**: New `[data-testid='open-snapshot-btn']` pill in the Overview header opens a fixed full-screen overlay (`OverviewSnapshot.jsx`, `[data-testid='overview-snapshot']`) showing every headline KPI in a single-screen, screenshot-friendly layout. 11 KPI tiles in a 2-col grid (Total Sales · Net Sales · Total Orders · Total Units · Footfall · Conversion · ABV · ASP · MSI · Return Rate · Return Amount) + a 3-col highlight strip (Top Subcat · Top Location · Best Conversion). Each tile shows label, value, and the vs-comparison delta arrow + %. Drill-down actions, prev-value sub-lines, and formula tooltips are stripped per the spec. Total content height ≈ 580 px → fits on any modern phone in a single screenshot. Close button restores the regular dashboard.
+
 - **Iter_37 bundle** (2026-04-29):
+  - **CSV %**: `SortableTable.exportCSV` now auto-detects percentage columns by sampling the first row's rendered text against `/(%|\bpp|\bpts?)\s*$/i`. When matched, the cell value is normalised to `XX.XX%` — `pp` and `pts` are stripped and `%` is appended, including when the column has a legacy explicit `csv: (r) => r.x?.toFixed(2)` callback returning a bare number.
+  - **`% Understocked Subcats` KPI** [Inventory]: New `[data-testid='inv-kpi-understocked-pct']` tile in the top KPI grid (widened lg:grid-cols-5 → grid-cols-6).
+  - **Role-based page access**: viewer / store_manager / analyst / exec / admin maps in `lib/permissions.js` mirror `auth.py::ROLE_PAGES`. Sidebar filters tabs; ProtectedRoute redirects unauthorised hits.
+
+
   - **CSV %**: `SortableTable.exportCSV` now auto-detects percentage columns by sampling the first row's rendered text against `/(%|\bpp|\bpts?)\s*$/i`. When matched, the cell value is normalised to `XX.XX%` — `pp` and `pts` are stripped and `%` is appended, including when the column has a legacy explicit `csv: (r) => r.x?.toFixed(2)` callback returning a bare number. Verified end-to-end via the testing agent (5/5 backend pass, all main % columns and Variance columns now export with `%`).
   - **`% Understocked Subcats` KPI** [Inventory]: New `[data-testid='inv-kpi-understocked-pct']` tile in the top KPI grid (widened lg:grid-cols-5 → grid-cols-6). `(count where pct_of_total_sold − pct_of_total_stock > 3) / total subcats`. Sub-text shows `X of Y subcats · variance > 3 pp`. Action button scrolls to the existing `understocked-subcats` table.
   - **Role-based page access**: New `/app/frontend/src/lib/permissions.js` mirrors `auth.py::ROLE_PAGES`. Maps roles → page IDs:
