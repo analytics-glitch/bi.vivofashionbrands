@@ -1,0 +1,52 @@
+{
+  "summary": "Iteration 39 — verified path-aware country normalization bug-fix for Inventory Stock-to-Sales tables. Backend pytest 16/16 PASS at the public API surface (frontend lowercases country -> backend normalizes per-path). Frontend UI verified end-to-end at https://bi-platform-2.preview.emergentagent.com/inventory under Country=Kenya filter: by-Color (Black 100/6,993, White 30/2,979, Navy 12/3,752...), by-Size (S 48/11,058, L 72/11,095, F 61/7,280...), by-Category (Dresses 130/16,951, Tops 101/12,676...), by-Subcategory (Knee Length Dresses 72/9,639...) — every section shows non-zero UNITS SOLD AND non-zero INVENTORY. Top Inventory KPIs under Kenya filter: Total Available Units=65,357, Stock in Stores=35,430, Stock in Warehouse=29,927, Weeks of Cover=9.9 wks — all populated, confirming /inventory still receives lowercase. /kpis lowercase regression PASS. /country-summary Q2-window regression PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inventory + Overview", "issues": ["Pre-existing: Recharts width(-1)/height(-1) console warnings (non-functional, carry-over from iter_36-38).", "Pre-existing: React hydration warning '<span> cannot be a child of <option>' from a select renderer in Shell — non-blocking, unrelated to this fix (carry-over from iter_38)."]}
+    ]
+  },
+  "verifications": {
+    "backend_by_color_kenya": "GET /api/analytics/stock-to-sales-by-attribute?country=kenya&date_from=2026-04-22&date_to=2026-04-29 → by_color sum(units_sold)=4901, sum(current_stock)=65362. Black=1043 units / 6993 stock. PASS.",
+    "backend_by_size_kenya": "by_size under same filter: sum(units_sold)=4901, sum(current_stock)=65362. M=1008/14719. PASS.",
+    "backend_by_color_uganda": "Uganda lowercase: by_color units=398, stock=4528. PASS.",
+    "backend_by_color_rwanda": "Rwanda lowercase: by_color units=221, stock=2355. PASS.",
+    "backend_by_color_online": "Online lowercase: by_color units=783, stock=0 (correct — Online has no warehouse). PASS.",
+    "backend_kenya_multi_pos": "country=kenya & locations=Vivo Imaara,Vivo Westgate → by_color units=192, stock=1669. PASS.",
+    "backend_multi_country": "country=kenya,uganda → by_color non-zero on both metrics. PASS.",
+    "backend_subcat_category_regression": "by-subcat and by-category endpoints with country=kenya still return non-zero units_sold (regression preserved from iter_38 fix). PASS.",
+    "backend_inventory_lowercase": "GET /api/inventory?country=kenya page=1 limit=25 returns rows; /api/analytics/inventory-summary?country=kenya returns positive metrics. Confirms path-aware lowercase routing for /inventory. PASS.",
+    "backend_kpis_lowercase": "/api/kpis?country=kenya last-7-days → net_sales > 0. PASS.",
+    "backend_country_summary_q2": "/api/country-summary date_from=2026-04-01 date_to=2026-06-30 returns Kenya/Uganda/Rwanda/Online with non-zero achieved. Q2 card regression PASS.",
+    "frontend_inventory_kenya_filter": "Inventory page with Country dropdown set to Kenya only — page header reads 'Showing inventory for: Kenya'. All 4 STS tables (Category/Subcategory/Color/Size) show non-zero UNITS SOLD AND INVENTORY for top rows. PASS.",
+    "frontend_top_kpis_kenya": "Total Available Units 65,357 / Stock in Stores 35,430 / Stock in Warehouse 29,927 / Weeks of Cover 9.9 wks / Low-Stock Styles 529 / % Understocked Subcats 7.4% — all populated under Kenya filter (proves /inventory lowercase routing on the UI). PASS.",
+    "frontend_locations_chart_kenya": "Stock-by-location chart shows 25 Kenya locations with non-zero bars (Warehouse Finished Goods 29,492, Vivo Junction 2,585, etc.). PASS."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_39_country_norm.py",
+    "/app/test_reports/pytest/iter39.xml"
+  ],
+  "action_items": [
+    "None blocking — bug fix verified end-to-end at backend AND frontend.",
+    "Carry-over (non-blocking): Recharts width/height(-1) warnings on Inventory page and '<span> cannot be a child of <option>' hydration warning in Shell — both pre-existing from iter_36-38, unrelated to this fix."
+  ],
+  "critical_code_review_comments": [
+    "Path-aware normalization in fetch() is the right place — single choke-point so future endpoints automatically get correct casing without each call site remembering. Worth adding a comment block listing which upstream paths fall in each casing group as documentation.",
+    "_COUNTRY_TITLECASE only covers {kenya, uganda, rwanda, online}. If a new country is added (e.g. Tanzania), _norm_country returns the raw value with .strip() — defensive but silently mis-cased. Consider auto-titlecasing the fallback (`return val.strip().title()`).",
+    "The CSV branch in fetch() splits, normalizes, and rejoins — fine, but a cached call with `country=kenya,uganda` and a separate call with `country=Kenya,Uganda` would now hit the same upstream cache_key only AFTER normalization. Currently cache_key is built from `clean` post-normalization (line 182), so this is correctly de-duped — good.",
+    "server.py is now ~5250 lines. The path-aware hack in fetch() should ideally move to a small `upstream_client.py` module; today's fix is correct and minimal but the file is past the 700-line guideline."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_39_country_norm.py",
+    "/app/test_reports/iteration_39.json"
+  ],
+  "success_rate": {"backend": "16/16 = 100%", "frontend": "100% — Inventory page under Kenya filter shows non-zero units AND non-zero stock in by-Color, by-Size, by-Category, by-Subcategory; top KPIs all populated"},
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 (verified working).",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The path-aware country normalization fix lives in /app/backend/server.py at fetch() lines ~165-181: if path.startswith('/inventory') -> lowercase; else -> Title-case via _norm_country (helper at ~line 285). All combinations verified: 4 countries (Kenya/Uganda/Rwanda/Online lowercase), single + multi-country CSV, multi-POS, by-color/size/subcat/category. Online correctly returns current_stock=0 (no warehouse) — DO NOT assert >0 on Online stock. UI tested at /inventory with Country dropdown = Kenya only; 'Showing inventory for: Kenya' chip appears below the page title; all 4 STS tables and 6 KPI cards populated. Test file: /app/backend/tests/test_iteration_39_country_norm.py (16 tests, ~38s).",
+  "rca_of_the_issue": "ROOT CAUSE: Upstream Vivo BI API has MIXED case-sensitivity. /orders, /sales-summary, /daily-trend, /subcategory-sales, /subcategory-stock-sales, /top-customers REQUIRE Title-case (Kenya). /inventory REQUIRES lowercase (kenya). /locations, /country-summary, /kpis are case-insensitive. The frontend lowercases country before sending. Iter_40 only fixed two specific endpoints; an earlier centralized attempt Title-cased everything which broke /inventory. CURRENT FIX: in fetch() wrapper, normalize country once based on path: `if path.startswith('/inventory'): lowercase; else: Title-case via _norm_country`. Handles CSV (kenya,uganda) by splitting, per-element normalize, rejoin. Cache key uses post-normalization params so de-dup still works. VERIFIED: by-Color/by-Size now show non-zero units AND non-zero stock for all physical-stock countries; Online correctly shows units>0 stock=0; /inventory KPIs and raw list still load (lowercase preserved); /kpis and /country-summary regressions pass."
+}

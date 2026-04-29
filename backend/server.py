@@ -163,6 +163,22 @@ async def fetch(
     """
     client = await get_client()
     clean = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    # Normalize country case for upstream. The upstream BI API is case-
+    # sensitive on /orders, /subcategory-sales, /subcategory-stock-sales,
+    # /sales-summary, /daily-trend, /top-customers and most other paths
+    # — they require Title-case (`Kenya`). EXCEPTION: /inventory wants
+    # lowercase (`kenya`) and silently returns 0 rows for Title-case.
+    # Frontend lowercases country codes; we Title-case here once and
+    # never have to worry about it at every call site again.
+    if "country" in clean and isinstance(clean["country"], str):
+        wants_lower = path.startswith("/inventory")
+        v = clean["country"]
+        if "," in v:
+            parts = [p.strip() for p in v.split(",") if p.strip()]
+            normed = [p.lower() if wants_lower else _norm_country(p) for p in parts]
+            clean["country"] = ",".join(normed)
+        else:
+            clean["country"] = v.lower() if wants_lower else _norm_country(v)
     cache_key = (path, tuple(sorted(clean.items()))) if cache else None
     if cache_key is not None:
         hit = _FETCH_CACHE.get(cache_key)
