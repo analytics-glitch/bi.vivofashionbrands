@@ -24,6 +24,7 @@ import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
+import Q2TargetsCard from "@/components/Q2TargetsCard";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
@@ -1171,6 +1172,7 @@ const Overview = () => {
                 channel={channels.length ? channels.join(",") : undefined}
                 dataVersion={dataVersion}
               />
+              <Q2TargetsCard />
               <DataFreshness />
             </div>
           </div>

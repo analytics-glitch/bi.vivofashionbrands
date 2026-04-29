@@ -2163,6 +2163,85 @@ async def analytics_active_pos(
     return out
 
 
+async def _subcategory_sales_from_orders(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    country: Optional[str],
+    locs: List[str],
+) -> Dict[str, Dict[str, float]]:
+    """Aggregate /orders rows by subcategory (`product_type`) when a POS
+    scope is active. Upstream's `/subcategory-stock-sales` and
+    `/subcategory-sales` silently drop sales when `channel` is set to a
+    name they don't recognize (or when a CSV is passed) — many Kenya
+    POS hit this and return units_sold=0. We sidestep that here by
+    rolling /orders up ourselves so units/sales/orders stay accurate
+    under multi-POS / single-non-warehouse-POS filters.
+
+    Returns `{subcategory: {units, sales, orders}}`. Mirrors the brand
+    / merchandise filters from `analytics_sts_by_attribute`.
+    """
+    today = datetime.now(timezone.utc).date()
+    df = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else (today - timedelta(days=30))
+    dt = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
+    cs = _split_csv(country)
+
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= dt:
+        end = min(cur + timedelta(days=29), dt)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _chunk(d1: date, d2: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": locs[0] if len(locs) == 1 else None,
+        }) or []
+
+    chunk_rows: List[Dict[str, Any]] = []
+    for d1, d2 in chunks:
+        chunk_rows.extend(await _chunk(d1, d2))
+
+    cs_set = {c.lower() for c in cs}
+    locs_set = set(locs)
+
+    # `orders` count = unique order_id per subcategory (mirrors how the
+    # upstream `/subcategory-sales` exposes the field). Track per-subcat
+    # order_id sets and reduce to len at the end.
+    by_sub: Dict[str, Dict[str, Any]] = {}
+    for r in chunk_rows:
+        if is_excluded_brand(r.get("brand")):
+            continue
+        if is_excluded_product(r):
+            continue
+        if cs_set and (r.get("country") or "").lower() not in cs_set:
+            continue
+        chan = r.get("channel") or r.get("pos_location_name") or ""
+        if locs_set and chan not in locs_set:
+            continue
+        # Drop returns / exchanges / refunds — match upstream sales semantics
+        # so we don't net negative quantities into units_sold.
+        sk = (r.get("sale_kind") or "order").lower()
+        if sk in ("return", "exchange", "refund"):
+            continue
+        sub = r.get("subcategory") or r.get("product_type") or ""
+        if not sub:
+            continue
+        agg = by_sub.setdefault(sub, {"units": 0, "sales": 0.0, "_oids": set()})
+        agg["units"] += int(r.get("quantity") or 0)
+        agg["sales"] += float(r.get("total_sales_kes") or 0)
+        oid = r.get("order_id")
+        if oid:
+            agg["_oids"].add(oid)
+
+    return {
+        sub: {"units": v["units"], "sales": v["sales"], "orders": len(v["_oids"])}
+        for sub, v in by_sub.items()
+    }
+
+
 @api_router.get("/analytics/stock-to-sales-by-subcat")
 async def analytics_sts_by_subcat(
     date_from: Optional[str] = None,
@@ -2181,6 +2260,11 @@ async def analytics_sts_by_subcat(
     If no `channel` is explicitly passed but `locations` is, we forward
     `locations` as `channel` to the upstream `/subcategory-stock-sales`
     call so both SALES and STOCK scope to the same POS.
+
+    SALES under a POS scope: upstream's `/subcategory-stock-sales` silently
+    returns units_sold=0 for many POS names (esp. Kenya). When `locs` is
+    set we override units_sold/total_sales/orders by aggregating `/orders`
+    ourselves (see `_subcategory_sales_from_orders`).
 
     When `include_warehouse=True` AND a POS scope is active, warehouse /
     holding inventory (Warehouse Finished Goods, Wholesale, etc.) is
@@ -2223,26 +2307,69 @@ async def analytics_sts_by_subcat(
                 stock_by_subcat[pt] += float(r.get("available") or 0)
         total_stock_local = sum(stock_by_subcat.values()) or 0
 
+    # When a POS scope is active, override sales (units_sold / total_sales /
+    # orders) with values aggregated from /orders. Upstream's
+    # /subcategory-stock-sales drops sales to 0 for many POS names, so we
+    # cannot trust its numbers under a POS filter.
+    sales_override: Optional[Dict[str, Dict[str, float]]] = None
+    if locs:
+        sales_override = await _subcategory_sales_from_orders(
+            date_from=date_from, date_to=date_to, country=country, locs=locs,
+        )
+        # Recompute orders_by_subcat from the overridden values too.
+        orders_by_subcat = {sub: int(v.get("orders") or 0) for sub, v in sales_override.items()}
+        # Refresh % shares against new total units sold.
+        _total_units_override = sum(v.get("units") or 0 for v in sales_override.values()) or 0
+    else:
+        _total_units_override = 0
+
     out = []
-    for r in rows or []:
-        pct_sold = r.get("pct_of_total_sold") or 0
+    # Build the row universe from upstream rows + any subcat that only
+    # appears in the override (so we don't drop a subcategory that sold
+    # under a POS but wasn't in the upstream stock-sales response).
+    seen = set()
+    iter_rows = list(rows or [])
+    if sales_override:
+        existing_subs = {(r.get("subcategory") or "") for r in iter_rows}
+        for sub in sales_override.keys():
+            if sub and sub not in existing_subs:
+                iter_rows.append({"subcategory": sub})
+
+    for r in iter_rows:
+        sub = r.get("subcategory") or ""
+        if sub in seen:
+            continue
+        seen.add(sub)
+        if sales_override is not None:
+            ov = sales_override.get(sub) or {}
+            units_sold = int(ov.get("units") or 0)
+            total_sales = float(ov.get("sales") or 0)
+            pct_sold = (units_sold / _total_units_override * 100) if _total_units_override else 0
+        else:
+            units_sold = r.get("units_sold") or 0
+            total_sales = r.get("total_sales") or 0
+            pct_sold = r.get("pct_of_total_sold") or 0
         if stock_by_subcat is not None:
-            cs = stock_by_subcat.get(r.get("subcategory"), 0)
+            cs = stock_by_subcat.get(sub, 0)
             pct_stock = (cs / total_stock_local * 100) if total_stock_local else 0
             current_stock = cs
         else:
             pct_stock = r.get("pct_of_total_stock") or 0
             current_stock = r.get("current_stock") or 0
+        sor_pct = (
+            (units_sold / (units_sold + current_stock) * 100)
+            if (units_sold + current_stock) else 0
+        ) if sales_override is not None else (r.get("sor_percent") or 0)
         out.append({
-            "subcategory": r.get("subcategory"),
-            "units_sold": r.get("units_sold") or 0,
+            "subcategory": sub,
+            "units_sold": units_sold,
             "current_stock": current_stock,
             "pct_of_total_sold": pct_sold,
             "pct_of_total_stock": pct_stock,
             "variance": pct_sold - pct_stock,
-            "sor_percent": r.get("sor_percent") or 0,
-            "total_sales": r.get("total_sales") or 0,
-            "orders": orders_by_subcat.get(r.get("subcategory") or "", 0),
+            "sor_percent": sor_pct,
+            "total_sales": total_sales,
+            "orders": orders_by_subcat.get(sub, 0),
         })
     out.sort(key=lambda x: x["units_sold"], reverse=True)
     return out
@@ -2309,6 +2436,35 @@ async def analytics_sts_by_category(
             {**r, "current_stock": stock_by_subcat.get(r.get("subcategory"), 0)}
             for r in rows
         ]
+
+    # When a POS scope is active, also override the SALES side from /orders.
+    # Upstream's /subcategory-stock-sales returns units_sold=0 for many POS
+    # names — see _subcategory_sales_from_orders for context.
+    if locs:
+        sales_override = await _subcategory_sales_from_orders(
+            date_from=date_from, date_to=date_to, country=country, locs=locs,
+        )
+        orders_by_subcat = {sub: int(v.get("orders") or 0) for sub, v in sales_override.items()}
+        rows = [
+            {
+                **r,
+                "units_sold": int((sales_override.get(r.get("subcategory")) or {}).get("units") or 0),
+                "total_sales": float((sales_override.get(r.get("subcategory")) or {}).get("sales") or 0),
+            }
+            for r in rows
+        ]
+        # Add subcats that only appear in the override (sold but no upstream
+        # stock-sales row). current_stock comes from local inventory above.
+        existing_subs = {(r.get("subcategory") or "") for r in rows}
+        for sub in sales_override.keys():
+            if sub and sub not in existing_subs:
+                ov = sales_override[sub]
+                rows.append({
+                    "subcategory": sub,
+                    "units_sold": int(ov.get("units") or 0),
+                    "total_sales": float(ov.get("sales") or 0),
+                    "current_stock": stock_by_subcat.get(sub, 0),
+                })
 
     total_sold = sum(r.get("units_sold") or 0 for r in rows)
     total_stock = sum(r.get("current_stock") or 0 for r in rows)

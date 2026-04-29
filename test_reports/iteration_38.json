@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 38 — verified (A) Inventory STS POS-filter regression fix and (B) new Q2 Targets card on Overview. Backend pytest 6/6 PASS: stock-to-sales-by-subcat / by-category / by-attribute (color+size) all return non-zero units_sold under Kenya 2-POS filter (Vivo Imaara + Vivo Westgate, 2026-04-01..2026-04-29: 28 subcat rows totalling 621 units sold; top subcats 'Full Length Pants'=97, 'Knee Length Dresses'=91, 'Loose Tops'=76). Single-POS subcat regression also passes. Baseline (no POS) still returns non-zero. /country-summary?date_from=2026-04-01&date_to=2026-06-30 returns Kenya=KES 73.4M, Rwanda=KES 3.1M, Uganda=KES 7.3M, Online=KES 7.3M. Frontend: Q2 card renders all 5 tiles with EXACT spec values — Kenya target KES 269M (achieved 73.4M, projected 230.3M, 86%), Rwanda 12M (3.1M, 9.8M, 81%), Uganda 28M (7.3M, 22.9M, 82%), Online 24M (7.3M, 23.0M, 96%), Overall 333M (91.1M, 286.0M, 86%). All 4 country rings AMBER as predicted (70-99%). 'FIXED WINDOW' chip + 'Apr 1 – Jun 30, 2026' + 'Q2 Days left = 62' all visible. Overall tile uses green-card styling (gradient bg-[#1a5c38]). FILTER INDEPENDENCE confirmed: switching global country filter to Rwanda did NOT change any of the 5 Q2 tile values (achieved/projected identical before vs after).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview (Q2 card)", "issues": ["Hydration warning in console: '<span> cannot be a child of <option>' from a select rendering — non-blocking React hydration warning, unrelated to Q2 card or STS fix."]}
+    ]
+  },
+  "verifications": {
+    "backend_sts_subcat_2pos": "GET /api/analytics/stock-to-sales-by-subcat?country=Kenya&locations=Vivo Imaara,Vivo Westgate&date_from=2026-04-01&date_to=2026-04-29 → 28 rows, sum(units_sold)=621. Sample: Full Length Pants=97, Knee Length Dresses=91, Loose Tops=76, Fitted Tops=74, Maxi Dresses=62. PASS (regression fixed).",
+    "backend_sts_subcat_1pos": "Single Vivo Imaara filter also returns non-zero units_sold rows. PASS.",
+    "backend_sts_category_2pos": "by-category endpoint with same 2-POS filter returns rows with non-zero units_sold. PASS.",
+    "backend_sts_attribute_2pos": "by-attribute endpoint returns by_color and by_size each with non-zero units_sold under POS filter (already used /orders pre-fix; verified regression-safe). PASS.",
+    "backend_sts_subcat_no_locations": "Baseline w/o POS filter still returns non-zero units_sold (no regression). PASS.",
+    "backend_country_summary_q2": "Returns Kenya=73381925, Rwanda=3113611, Uganda=7312082, Online=7334466 — all > 0 and well below their Q2 targets. PASS.",
+    "frontend_q2_card_render": "[data-testid='q2-targets-card'] visible. 5 tiles: q2-tile-kenya, q2-tile-rwanda, q2-tile-uganda, q2-tile-online, q2-tile-overall — all visible with non-zero achieved + projected values.",
+    "frontend_q2_targets_match_spec": "Targets shown: KES 269.0M / 12.0M / 28.0M / 24.0M / 333.0M — match spec exactly.",
+    "frontend_q2_achieved": "Kenya KES 73.4M, Rwanda KES 3.1M, Uganda KES 7.3M, Online KES 7.3M, Overall KES 91.1M (sum of 4) — all match /country-summary backend response.",
+    "frontend_q2_projected": "Pace-based with elapsed=29/91: Kenya 73.4M*91/29 ≈ 230M (shown 230.3M). All 4 countries within 70-99% range → AMBER ring color ✓.",
+    "frontend_q2_days_left": "Card shows '62' as Q2 Days Left (matches today=2026-04-29; 91-29=62).",
+    "frontend_q2_fixed_window_chip": "'FIXED WINDOW' chip visible inline with title; subtitle 'Apr 1 – Jun 30, 2026 · pace-based projection · not affected by filters' present.",
+    "frontend_q2_overall_styling": "Overall tile uses green-card styling (bg gradient #1a5c38 → #0f3d24, white text) per spec.",
+    "frontend_q2_filter_independence": "Switched global country filter from 'All countries' to 'Rwanda' — every other widget on Overview re-rendered with Rwanda-only data, but all 5 Q2 tile values (achieved + projected) were IDENTICAL before vs after. PASS — Q2 card is filter-independent.",
+    "frontend_inventory_no_zero_units_text": "Inventory page (default filters) does NOT contain literal '0 units sold' anywhere. STS-by-Location chart and by-subcategory chart both render real units. Backend regression already proves the POS-filter case at the API level."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_38.py",
+    "/app/test_reports/pytest/iter38.xml"
+  ],
+  "action_items": [
+    "None for this iteration — both bug fix (A) and new feature (B) verified end-to-end at API + UI levels.",
+    "MINOR (carry-over): Hydration warning '<span> cannot be a child of <option>' in console — unrelated to this iter's scope; main agent may want to audit any select renderer that's wrapping option label in a span.",
+    "Carry-over from iter_36/37: Recharts width(-1) console warnings on Inventory page; non-functional."
+  ],
+  "critical_code_review_comments": [
+    "Q2TargetsCard.jsx is well-isolated: it does NOT consume the global FilterContext at all — it issues its own /country-summary call with hardcoded Q2 window via useEffect(..., []). This is the right design choice for a 'fixed window, filter-independent' card.",
+    "daysElapsedInQ2() correctly clamps to [1, 91] and Q2_DAYS=91 matches Apr-Jun day count. Projection formula achieved/elapsed × 91 is sound for pace-based forecasting.",
+    "Backend _subcategory_sales_from_orders chunks /orders by ≤30 days and aggregates by product_type — correct fix because the upstream /subcategory-stock-sales silently drops sales when channel=<POS> is set. Worth adding a docstring / unit-test that explicitly covers POS=Vivo Imaara as a regression guard.",
+    "by-attribute endpoint already used /orders rolled-up (pre-fix), so it never had the POS-zero bug — but it shares chunked-orders helpers; if those helpers regress, both will fail. A shared cache invalidation key for STS endpoints would help.",
+    "Q2TargetsCard hardcodes targets (269M/12M/28M/24M) inline in the component. Consider moving to backend config or env-driven so leadership can update targets without a code deploy."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_38.py",
+    "/app/test_reports/iteration_38.json"
+  ],
+  "success_rate": {"backend": "6/6 = 100%", "frontend": "100% — Q2 card renders, values match spec, filter-independent verified; Inventory STS POS regression covered at API"},
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 (verified working).",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both deliverables for this review are GREEN. Q2TargetsCard reads from /country-summary with hardcoded Apr1–Jun30 window and bypasses FilterContext entirely — verified via country-filter swap (no value change). STS POS-zero regression confirmed fixed via 6 pytest cases in /app/backend/tests/test_iteration_38.py (subcat 2POS=621 units, single-POS, baseline, by-category, by-attribute). When testing inventory STS POS filter through UI, use 'filter-channels' testid (channel multiselect == POS). Backend hot-reloaded mid-test once and produced a brief 502; just sleep 20s after any test_iteration_38.py edit to let watchfiles settle. The non-blocking '<span> cannot be a child of <option>' hydration warning is pre-existing and unrelated.",
+  "rca_of_the_issue": "(A) Root cause: upstream API /subcategory-stock-sales drops the sales-side when ANY channel=<POS> name is passed for several Kenya stores, causing units_sold=0 for most subcats. Fix: in analytics_sts_by_subcat / analytics_sts_by_category, when locations is non-empty, override units_sold/total_sales/orders by aggregating /orders chunked over ≤30-day windows (helper _subcategory_sales_from_orders). by-attribute already used /orders, so it was unaffected. Verified: backend tests show 28 rows / 621 units for 2-POS Kenya filter (was zeros before fix). (B) Q2 card design: explicit fixed window (Q2_START=2026-04-01, Q2_END=2026-06-30, Q2_DAYS=91); component does its own /country-summary fetch with no dependency on global FilterContext, so filter changes simply don't trigger a re-fetch. Confirmed at the UI level: country-filter swap leaves all 5 tile values identical."
+}
