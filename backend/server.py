@@ -259,6 +259,28 @@ def _split_csv(val: Optional[str]) -> List[str]:
     return [x.strip() for x in val.split(",") if x.strip()]
 
 
+# Country names the upstream Vivo BI API recognizes (Title-case). The
+# frontend sends lowercase ("kenya") but the upstream silently returns
+# units_sold=0 for non-Title-case values on /subcategory-sales and
+# /subcategory-stock-sales (and likely others). Normalize before forward.
+_COUNTRY_TITLECASE = {"kenya": "Kenya", "uganda": "Uganda", "rwanda": "Rwanda", "online": "Online"}
+
+
+def _norm_country(val: Optional[str]) -> Optional[str]:
+    """Title-case a single country name for upstream calls."""
+    if not val:
+        return val
+    return _COUNTRY_TITLECASE.get(val.strip().lower(), val.strip())
+
+
+def _norm_country_csv(val: Optional[str]) -> Optional[str]:
+    """Title-case each country in a CSV string."""
+    if not val:
+        return val
+    parts = [_norm_country(p) for p in _split_csv(val)]
+    return ",".join([p for p in parts if p]) or None
+
+
 async def multi_fetch(path: str, base: Dict[str, Any], countries: List[str], channels: List[str]) -> List[Any]:
     """Fire requests for each (country,channel) combo in parallel and return list of responses.
     Empty lists mean 'all' for that dimension."""
@@ -1775,9 +1797,13 @@ async def get_subcategory_sales(
     channel: Optional[str] = None,
 ):
     """Upstream now returns one clean row per subcategory (no brand split),
-    so we fan out per country/channel and merge by subcategory only."""
+    so we fan out per country/channel and merge by subcategory only.
+
+    Country must be Title-case for upstream (lowercase silently returns
+    zeros) — normalize via `_norm_country` before forwarding.
+    """
     base = {"date_from": date_from, "date_to": date_to}
-    cs = _split_csv(country)
+    cs = [_norm_country(c) for c in _split_csv(country)]
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
         return await fetch("/subcategory-sales", {
@@ -1904,9 +1930,12 @@ async def get_subcategory_stock_sales(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    # Upstream silently zeros sales when country isn't Title-case (frontend
+    # sends "kenya" → upstream needs "Kenya"). Normalize CSV → Title-case.
+    norm_country = _norm_country_csv(country)
     return await fetch("/subcategory-stock-sales", {
         "date_from": date_from, "date_to": date_to,
-        "country": country if country and "," not in country else country,
+        "country": norm_country if norm_country and "," not in norm_country else norm_country,
         "channel": channel,
     })
 
