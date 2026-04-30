@@ -40,9 +40,9 @@ const SorNewStylesL10 = ({ brand }) => {
 
   const enriched = useMemo(
     () => (rows || [])
-      // Exclude very-low-volume rows (units sold + SOH < 20). They make
-      // the L-10 view noisy and don't deserve buyer attention.
-      .filter((r) => ((r.units_6m || 0) + (r.soh_total || 0)) >= 20)
+      // Backend `/api/analytics/sor-new-styles-l10` already filters
+      // out rows where `(units_6m + soh_total) < 20` — keep the map
+      // here just to enrich with category.
       .map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),
     [rows]
   );

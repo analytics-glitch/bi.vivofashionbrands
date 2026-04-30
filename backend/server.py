@@ -3754,6 +3754,12 @@ async def analytics_sor_new_styles_l10(
             "woc": round(woc, 1) if woc is not None else None,
             "style_age_weeks": round(age_weeks, 1),
         })
+    # Drop very-low-volume rows (units_6m + soh_total < 20). They add
+    # noise to buyer dashboards and, more importantly, to CSV exports
+    # that were previously only filtered client-side. Applied here so
+    # every consumer (UI, CSV export, any third-party script hitting
+    # the endpoint directly) sees the same de-noised list.
+    out = [r for r in out if (r["units_6m"] + r["soh_total"]) >= 20]
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _l10_cache[cache_key] = (_time.time(), out)
     return out

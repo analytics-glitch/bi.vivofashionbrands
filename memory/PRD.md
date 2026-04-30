@@ -41,6 +41,15 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30)
 ## Recently Shipped
+- **Iter_45** (2026-04-30) — **Accurate ages on All-Styles SOR + backend-side L-10 noise filter**:
+  - **Bug fix · All-Styles SOR `style_age_weeks` / `launch_date` / `weekly_avg` / `days_since_last_sale`**: these 4 columns were hardcoded (26.0 / null / units_6m÷26 / 0 or 22 heuristic) regardless of the style's real age. Example: "Vivo Tanda Maxi Dress in Ponte" showed 26.0 weeks when its real age is 8.3 weeks (launched 2026-03-03).
+  - Added new shared helper `_get_style_first_last_sale(country, channel, days=180)` that returns `{style_name: (first_sale_iso, last_sale_iso)}`. It piggybacks on `_curve_cache` (populated by `analytics_new_styles_curve`, warmed at startup with `days=180`) — zero new upstream calls on the hot path. Falls back to a bounded /orders chunked fan-out only when the curve cache is cold.
+  - `/sor-all-styles` now uses this helper to compute **real** `style_age_weeks` (capped at 26), **real** `launch_date`, **real** `days_since_last_sale`, and a **real-age-based** `weekly_avg`. Coverage: **1,670 / 1,697 styles (98%)** have accurate ages; only styles older than 180 days still report 26.0.
+  - **Perf**: cold→warm /sor-all-styles dropped from **>60s timing out → 0.26s**.
+  - **Startup warmup reordered**: curve + bins run first (~15s), THEN sor-all-styles + replenishment run in parallel (~20s). Previously they ran in parallel and sor-all-styles raced the curve cache it now depends on.
+  - **L-10 filter moved to backend**: `(units_6m + soh_total) >= 20` is now applied in `/sor-new-styles-l10` (was frontend-only). CSV exports and any third-party consumer now get the de-noised list. Frontend filter removed (map stays for category enrichment).
+  - Verified: Tanda Maxi Dress in Ponte now shows `style_age_weeks=8.3, launch_date=2026-03-03, days_since_last_sale=2, weekly_avg=23.9, woc=12.6`. L-10 regression clean — same band (12.9–17.4 wks) preserved.
+
 - **Iter_44** (2026-04-30) — **Cold-load resilience + general perf pass**:
   - **Root cause**: Overview's "Upstream KPIs unavailable (Network Error)" banner fired when the upstream Vivo BI Cloud Run container was cold and the per-attempt budget (30s × 2 attempts) plus k8s ingress timeout combined to exceed the browser's patience, OR when the in-memory stale cache (3-min TTL) had already expired before the upstream came back online.
   - **Backend fixes**:
