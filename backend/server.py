@@ -1237,7 +1237,12 @@ def _is_walk_in_order(r: Dict[str, Any]) -> bool:
 async def _orders_for_window(date_from: str, date_to: str, country: Optional[str] = None,
                              channel: Optional[str] = None) -> List[Dict[str, Any]]:
     """Chunked /orders fan-out for analytics (≤30 days per chunk).
-    Cached in-memory for 10 minutes per (window, country, channel)."""
+    Cached in-memory for 10 minutes per (window, country, channel).
+
+    On upstream 5xx, returns the partial result instead of bubbling
+    HTTPException — analytics endpoints can still produce useful output
+    from whatever chunks succeeded. If EVERY chunk fails we raise 503.
+    """
     import time as _time
     cache_key = f"{date_from}|{date_to}|{country or ''}|{channel or ''}"
     cached = _CUSTOMER_HIST_CACHE.get(cache_key)
@@ -1254,16 +1259,27 @@ async def _orders_for_window(date_from: str, date_to: str, country: Optional[str
         chunks.append((cur, end))
         cur = end + timedelta(days=1)
     out: List[Dict[str, Any]] = []
+    failed_chunks = 0
     for d1, d2 in chunks:
-        rows = await _safe_fetch("/orders", {
-            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
-            "limit": 50000,
-            "country": cs[0] if len(cs) == 1 else None,
-            "channel": chs[0] if len(chs) == 1 else None,
-        }) or []
-        out.extend(rows)
+        try:
+            rows = await _safe_fetch("/orders", {
+                "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+                "limit": 50000,
+                "country": cs[0] if len(cs) == 1 else None,
+                "channel": chs[0] if len(chs) == 1 else None,
+            }) or []
+            out.extend(rows)
+        except HTTPException:
+            failed_chunks += 1
+        except Exception as e:
+            logger.warning("[_orders_for_window] chunk %s..%s failed: %s", d1, d2, e)
+            failed_chunks += 1
+    # Only raise if EVERY chunk failed and we got nothing — otherwise cache
+    # and return the partial set so the analytics endpoints can compute
+    # something useful from whatever did come back.
+    if failed_chunks == len(chunks) and not out:
+        raise HTTPException(status_code=503, detail="Upstream /orders unavailable — please retry in a moment.")
     _CUSTOMER_HIST_CACHE[cache_key] = (_time.time(), out)
-    # Trim cache if it grows too large (keep most recent 32 entries).
     if len(_CUSTOMER_HIST_CACHE) > 32:
         oldest = sorted(_CUSTOMER_HIST_CACHE.items(), key=lambda kv: kv[1][0])[:8]
         for k, _ in oldest:
@@ -6035,6 +6051,19 @@ async def startup():
                 return_exceptions=True,
             )
             logger.info("[warmup] sor-all-styles + new-styles-curve + replenishment cache warmed")
+            # Pre-load the customer-history cache for MTD + last-30 windows
+            # so the new analytics endpoints (customer-retention, avg-spend,
+            # recently-unchurned, customer-details, replen-by-color) don't
+            # cross the ingress timeout on first hit.
+            today = datetime.now(timezone.utc).date()
+            mtd_from = today.replace(day=1).isoformat()
+            last30_from = (today - timedelta(days=30)).isoformat()
+            await asyncio.gather(
+                _orders_for_window(mtd_from, today.isoformat()),
+                _orders_for_window(last30_from, today.isoformat()),
+                return_exceptions=True,
+            )
+            logger.info("[warmup] customer-history cache warmed (MTD + last-30)")
         except Exception as e:
             logger.warning("[warmup] failed: %s", e)
     asyncio.create_task(_warm())
