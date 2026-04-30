@@ -1,0 +1,52 @@
+{
+  "summary": "Iteration 42 — verified the 5 follow-up tweaks (retention KPI card, stock_scope on STS endpoints, SOR bulk SKU fix, Footfall title rename). Backend pytest 6/6 PASS (after re-running the bulk SKU test that initially skipped on transient 502). Frontend admin login verified all testids resolve. One UX observation: `inv-stock-scope` toggle is rendered only when at least one country or channel filter is active — on the default 'All countries / All POS' view it is hidden, even though the backend default is `stores`. With country=Kenya selected, all three buttons (`inv-stock-scope-stores`, `-warehouse`, `-combined`) render; clicking Combined increased TOTAL AVAILABLE UNITS for Kenya from ~42K (stores) to 83,161 (combined) confirming the toggle drives the right rollup. Products SOR All Styles `+Color/Print` toggle: 0 occurrences of 'no SKU data' across the visible rows after toggle — the bulk-endpoint fix works. Footfall chart title changed from 'Weekday pattern · top 15 stores' → 'Weekday pattern per store' (1 match for new, 0 for old). Customer Loyalty: kpi-retention-rate-value = 50.0% (identified-only · walk-ins excluded · '117 of 234 identified'), kpi-repeat-rate-value = 2.6% (legacy · includes walk-ins · 235 buckets) — both testids resolve, contain DIFFERENT numbers, retention >> legacy as designed. (Spec quoted ~55% / ~6.8% but live Apr-2026 MTD data shows 50.0% / 2.6% — the spec values were illustrative; the structural test passes.)",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/style-sku-breakdown-bulk", "issue": "First call after cold cache occasionally 502s at the ingress (60s cap) for the 6-month /orders fan-out. Second call (warm cache) returns 200 in ~5s. Carry-over from iter_41."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Inventory page · STS Stock toggle", "issue": "`inv-stock-scope` is wrapped in the `(countries.length > 0 || channels.length > 0)` conditional at Inventory.jsx:434. Default 'All countries / All POS' view = toggle is HIDDEN. Per the user spec: 'Inventory page: header has new stock-scope toggle. Default = stores. Click warehouse and verify…' — implying it should be visible at all times. Recommend lifting the toggle out of that conditional and rendering it unconditionally. Once a country/channel filter is applied, the toggle does render correctly and all three buttons work.", "selector": "[data-testid=\"inv-stock-scope\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verifications": {
+    "tweak_1_retention_card": "kpi-retention-rate present, green-bordered, value 50.0%, label '117 of 234 identified · walk-ins excluded'. ✓",
+    "tweak_2_repeat_rate_legacy": "kpi-repeat-rate present (legacy, plain border), value 2.6%, label 'includes walk-ins · 235 buckets'. Both testids resolve, values DIFFER. ✓ Backend `/analytics/customer-retention` returns repeat_rate_pct in the expected band. ✓",
+    "tweak_3_stock_scope_subcat": "Backend /analytics/stock-to-sales-by-subcat?stock_scope=stores|warehouse|combined → all 200; warehouse rows have DIFFERENT current_stock from stores; combined total >= stores total. ✓",
+    "tweak_3_stock_scope_category": "/analytics/stock-to-sales-by-category accepts the same param and returns combined >= stores totals. ✓",
+    "tweak_3_stock_scope_ui": "Toggle renders only when a country/channel filter is active (see ui_bugs). When visible, all three buttons (inv-stock-scope-stores/-warehouse/-combined) work and the by-subcat / by-category tables update. ✓ (functional)",
+    "tweak_4_bulk_sku": "Backend /analytics/style-sku-breakdown-bulk?style_names=Soko Kazuri Lariat,Vivo Basic Double Layered Wrap Poncho,Denim Haven High Rise Skinny Jeans → 200, styles dict non-empty, missing=[]. Frontend SOR All Styles +Color toggle: 0 'no SKU data' occurrences across visible rows. ✓",
+    "tweak_5_footfall_title": "FootfallWeekdayHeatmap.jsx:128 → 'Weekday pattern per store'; old 'top 15 stores' title not present in DOM. ✓"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_42.py",
+    "/app/test_reports/pytest/iter42.xml"
+  ],
+  "action_items": [
+    "MEDIUM: Inventory.jsx — move the `inv-stock-scope` div OUT of the `(countries.length > 0 || channels.length > 0)` conditional (line 434). The toggle should render on the default 'All countries / All POS' view too, since `stock_scope=stores` is the API default and users expect to see the control regardless of geo-scope. Currently a user landing on /inventory cannot find the toggle until they pick a country.",
+    "LOW (carry-over from iter_41): Cold-cache 502 risk on /analytics/style-sku-breakdown-bulk and /analytics/customer-retention — first hit per window can exceed ingress 60s cap. Consider warming caches on backend startup for MTD/last_30."
+  ],
+  "critical_code_review_comments": [
+    "Inventory.jsx:434 — gating inv-stock-scope behind a country/channel filter is the most likely user-visible miss. The toggle controls a backend param that is meaningful even with global scope.",
+    "Both analytics_sts_by_subcat and analytics_sts_by_category have a small back-compat shim: `if include_warehouse and stock_scope == 'stores': stock_scope = 'combined'`. This silently overrides the new param when the legacy checkbox is on. Document this in the API doc-string (already partially done) and consider deprecating `include_warehouse` in favour of `stock_scope` to avoid two sources of truth.",
+    "server.py is at ~6100 lines (was 6050 last iteration). The new stock_scope branches in two endpoints add ~30 lines of duplicated location-fetch logic — would benefit from a shared `_resolve_stock_scope(loc_codes, stock_scope, include_warehouse)` helper."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_42.py",
+    "/app/test_reports/iteration_42.json"
+  ],
+  "success_rate": {
+    "backend": "6/6 = 100% (after retry of one transient skip)",
+    "frontend": "5/5 features structurally verified. 1 UX gap on inv-stock-scope visibility (rendered conditionally)."
+  },
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 (verified).",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter_42 verified the 5 follow-up tweaks. /app/backend/tests/test_iteration_42.py covers: customer-retention pct, stock_scope on both STS endpoints (stores/warehouse/combined cross-validation), and bulk SKU breakdown. Frontend testids inv-stock-scope-{stores,warehouse,combined} only appear when countries.length>0 OR channels.length>0; this is filed as a MEDIUM ui_bug — main agent should lift the wrapper out of the conditional. All other testids (kpi-retention-rate, kpi-retention-rate-value, kpi-repeat-rate, kpi-repeat-rate-value) resolve on default Customers view. Footfall title rename verified. Bulk SKU endpoint cold-cache 502 still possible (carry-over).",
+  "rca_of_the_issue": "ui_bug rca — Inventory.jsx renders its filter row (which now contains the new STS Stock scope toggle) inside `{(countries.length > 0 || channels.length > 0) && ( … )}`. The original filter row only contained the include-warehouse legacy toggle, which only made sense with an active filter. The new stock_scope toggle was placed inside the same wrapper and therefore inherits the conditional. Fix: emit the inv-stock-scope sibling-block unconditionally (or split the wrapper into 'filter banner' and 'controls' rows)."
+}

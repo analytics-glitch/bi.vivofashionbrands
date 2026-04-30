@@ -62,6 +62,9 @@ const Inventory = () => {
   // Include warehouse / wholesale / holding stock in the POS-scoped STS
   // tables. Off by default — most users want pure shop-floor stock.
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
+  // Stock-to-Sales stock scope: which inventory rolls up into the
+  // current_stock column. "stores" (POS only), "warehouse", or "combined".
+  const [stockScope, setStockScope] = useState("stores");
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 120);
@@ -80,6 +83,7 @@ const Inventory = () => {
       date_from: dateFrom, date_to: dateTo,
       country: countryCsv, locations: locationsCsv,
       include_warehouse: includeWarehouse ? 1 : undefined,
+      stock_scope: stockScope,
     };
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
@@ -106,7 +110,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -461,6 +465,32 @@ const Inventory = () => {
                 {includeWarehouse && <span className="pill-amber">+ warehouse</span>}
               </label>
             )}
+            {/* Stock-to-Sales scope picker — drives which inventory rolls
+                up into the `current_stock` column of the STS tables. */}
+            <div className="inline-flex items-center gap-1.5" data-testid="inv-stock-scope">
+              <span className="text-[10.5px] font-semibold uppercase tracking-wide text-muted">STS Stock</span>
+              <div className="inline-flex rounded-md overflow-hidden border border-border">
+                {[
+                  { v: "stores", l: "Stores" },
+                  { v: "warehouse", l: "Warehouse" },
+                  { v: "combined", l: "Combined" },
+                ].map((opt) => (
+                  <button
+                    key={opt.v}
+                    onClick={() => setStockScope(opt.v)}
+                    data-testid={`inv-stock-scope-${opt.v}`}
+                    title={
+                      opt.v === "stores"  ? "Only POS / shop-floor inventory counts toward % of total stock." :
+                      opt.v === "warehouse" ? "Only warehouse / wholesale / holding inventory counts." :
+                                              "Stores + warehouse combined — total allocable inventory."
+                    }
+                    className={`text-[10.5px] font-bold px-2 py-1 transition-colors ${stockScope === opt.v ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                  >
+                    {opt.l}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>

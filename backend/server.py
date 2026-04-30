@@ -2955,9 +2955,20 @@ async def analytics_sts_by_subcat(
     channel: Optional[str] = None,
     locations: Optional[str] = None,
     include_warehouse: bool = False,
+    stock_scope: str = Query("stores", regex="^(stores|warehouse|combined)$"),
 ):
     """Derived view of /subcategory-stock-sales with a variance column
     (% of sales − % of stock). One clean row per subcategory.
+
+    `stock_scope` controls which inventory rolls up into the
+    `current_stock` column:
+      • `stores`     — POS / shop-floor inventory only (default)
+      • `warehouse`  — warehouse / wholesale / holding only
+      • `combined`   — both
+
+    `include_warehouse=True` is preserved for backwards compatibility
+    and behaves like `stock_scope=combined` when no `stock_scope` is
+    explicitly passed.
 
     When `locations` (CSV) is given, current_stock is recomputed locally
     from the location-scoped inventory so the stock side matches the
@@ -2970,12 +2981,10 @@ async def analytics_sts_by_subcat(
     returns units_sold=0 for many POS names (esp. Kenya). When `locs` is
     set we override units_sold/total_sales/orders by aggregating `/orders`
     ourselves (see `_subcategory_sales_from_orders`).
-
-    When `include_warehouse=True` AND a POS scope is active, warehouse /
-    holding inventory (Warehouse Finished Goods, Wholesale, etc.) is
-    ADDED to the POS stock so users see total allocable inventory, not
-    just shop-floor. When no POS is set, the flag is a no-op (upstream
-    already returns group-wide stock)."""
+    """
+    # Backwards-compatible: include_warehouse forces combined when scope was left default.
+    if include_warehouse and stock_scope == "stores":
+        stock_scope = "combined"
     effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
@@ -2992,19 +3001,38 @@ async def analytics_sts_by_subcat(
     locs = _split_csv(locations) or _split_csv(channel)
     cs = _split_csv(country)
     stock_by_subcat: Optional[Dict[str, float]] = None
-    if locs:
-        inv = await fetch_all_inventory(country=country, locations=locs)
+    if locs or cs or stock_scope != "stores":
+        # Always do a local roll-up when filters are active OR we need to
+        # split warehouse vs floor stock. Without it the upstream's
+        # group-wide stock-only number wins.
+        if locs:
+            inv = await fetch_all_inventory(country=country, locations=locs) or []
+        else:
+            inv = await fetch_all_inventory(country=country) or []
         stock_by_subcat = defaultdict(float)
-        for r in inv or []:
+        for r in inv:
             pt = r.get("product_type")
             if not pt:
                 continue
+            is_wh = is_warehouse_location(r.get("location_name"))
+            # `stock_scope` filter: only count rows that match the requested
+            # scope. When `locations` (POS list) is set the inventory call
+            # already excluded warehouse rows so this filter is effectively
+            # a no-op in that path — we honour `combined` by additionally
+            # pulling country-scoped warehouse rows below.
+            if stock_scope == "stores" and is_wh:
+                continue
+            if stock_scope == "warehouse" and not is_wh:
+                continue
             stock_by_subcat[pt] += float(r.get("available") or 0)
-        if include_warehouse:
-            # Fan-out inventory for all locations in country scope and add the
-            # rows from warehouse / holding locations on top.
-            all_inv = await fetch_all_inventory(country=country)
-            for r in all_inv or []:
+        if locs and stock_scope in ("warehouse", "combined"):
+            # POS-scoped pull above already excluded warehouse rows. For
+            # `warehouse` and `combined`, add country-wide warehouse rows.
+            wh_inv = await fetch_all_inventory(country=country) or []
+            if stock_scope == "warehouse":
+                # Reset to warehouse-only; ignore the POS-scoped store rows.
+                stock_by_subcat = defaultdict(float)
+            for r in wh_inv:
                 if not is_warehouse_location(r.get("location_name")):
                     continue
                 pt = r.get("product_type")
@@ -3103,17 +3131,13 @@ async def analytics_sts_by_category(
     channel: Optional[str] = None,
     locations: Optional[str] = None,
     include_warehouse: bool = False,
+    stock_scope: str = Query("stores", regex="^(stores|warehouse|combined)$"),
 ):
     """Roll subcategory-stock-sales up to CATEGORY level using subcategory
-    name prefixes. "Category" is approximated as the first word of the
-    subcategory (e.g. "Knee Length Dresses" → "Dresses"). Falls back to
-    the full subcategory if no mapping exists. When `locations` is given,
-    stock is recomputed from location-scoped inventory.
-    If no `channel` is explicitly passed but `locations` is, we forward
-    `locations` as `channel` to the upstream sales call so both SALES
-    and STOCK scope to the same POS.
-    `include_warehouse=True` ADDS warehouse / holding stock on top of the
-    POS stock (see `analytics_sts_by_subcat` for details)."""
+    name prefixes. See `analytics_sts_by_subcat` for `stock_scope` semantics.
+    """
+    if include_warehouse and stock_scope == "stores":
+        stock_scope = "combined"
     effective_channel = channel or locations
     rows = await get_subcategory_stock_sales(
         date_from=date_from, date_to=date_to, country=country, channel=effective_channel,
@@ -3133,13 +3157,16 @@ async def analytics_sts_by_category(
     cs = _split_csv(country)
     inv_rows: List[Dict[str, Any]] = []
     if locs:
-        inv_rows = await fetch_all_inventory(country=country, locations=locs) or []
-        if include_warehouse:
-            all_inv = await fetch_all_inventory(country=country)
-            for r in all_inv or []:
+        # Stores side
+        store_inv = await fetch_all_inventory(country=country, locations=locs) or []
+        if stock_scope in ("stores", "combined"):
+            inv_rows.extend(store_inv)
+        if stock_scope in ("warehouse", "combined"):
+            all_inv = await fetch_all_inventory(country=country) or []
+            for r in all_inv:
                 if is_warehouse_location(r.get("location_name")):
                     inv_rows.append(r)
-    elif cs:
+    elif cs or stock_scope != "stores":
         # Country-only scope: upstream returns GLOBAL current_stock for every
         # country query, so stock doesn't actually vary. Re-fetch country-
         # scoped inventory to produce real per-country stock numbers.
@@ -3151,12 +3178,18 @@ async def analytics_sts_by_category(
 
     # If locations OR country is provided, rebuild current_stock per row from
     # local inventory (upstream's stock ignores country for non-POS queries
-    # and its channel param only filters sales).
-    if locs or cs:
+    # and its channel param only filters sales). `stock_scope` filters the
+    # rows we count: stores-only, warehouse-only, or combined.
+    if locs or cs or stock_scope != "stores":
         stock_by_subcat: Dict[str, float] = defaultdict(float)
         for r in inv_rows:
             pt = r.get("product_type")
             if not pt:
+                continue
+            is_wh = is_warehouse_location(r.get("location_name"))
+            if stock_scope == "stores" and is_wh:
+                continue
+            if stock_scope == "warehouse" and not is_wh:
                 continue
             stock_by_subcat[pt] += float(r.get("available") or 0)
         rows = [
@@ -4503,54 +4536,39 @@ async def analytics_style_sku_breakdown_bulk(
     today = datetime.now(timezone.utc).date()
     six_m_from = today - timedelta(days=180)
     three_w_from = today - timedelta(days=21)
-    cs = _split_csv(country)
-    chs = _split_csv(channel)
 
-    chunks: List[Tuple[date, date]] = []
-    cur = six_m_from
-    while cur <= today:
-        end = min(cur + timedelta(days=29), today)
-        chunks.append((cur, end))
-        cur = end + timedelta(days=1)
-
-    async def _orders_chunk(df_: date, dt_: date) -> List[Dict[str, Any]]:
-        return await _safe_fetch("/orders", {
-            "date_from": df_.isoformat(), "date_to": dt_.isoformat(),
-            "limit": 50000,
-            "country": cs[0] if len(cs) == 1 else None,
-            "channel": chs[0] if len(chs) == 1 else None,
-        }) or []
-
-    chunks_data: List[List[Dict[str, Any]]] = []
-    for df_, dt_ in chunks:
-        chunks_data.append(await _orders_chunk(df_, dt_))
+    # Use _orders_for_window so partial upstream 503s don't kill the
+    # whole bulk call. We also benefit from its 10-min cache.
+    chunk_rows = await _orders_for_window(
+        six_m_from.isoformat(), today.isoformat(), country, channel,
+    )
     inv = await fetch_all_inventory(country=country) or []
 
     needle_set = set(needles)
     # Per-style aggregation: { style_name: { (color, size, sku): {...} } }
     per_style_sales: Dict[str, Dict[tuple, Dict[str, Any]]] = {n: {} for n in needles}
-    for chunk in chunks_data:
-        for r in (chunk or []):
-            sn = (r.get("style_name") or "").strip()
-            if sn not in needle_set:
-                continue
-            order_date = (r.get("order_date") or "")[:10]
-            color = r.get("color_print") or r.get("color") or "—"
-            size = r.get("size") or "—"
-            sku = r.get("sku") or ""
-            key = (color, size, sku)
-            b = per_style_sales[sn].setdefault(key, {
-                "sku": sku, "color": color, "size": size,
-                "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
-            })
-            qty = int(r.get("quantity") or 0)
-            sales = float(r.get("total_sales_kes") or 0)
-            b["units_6m"] += qty
-            b["sales_6m"] += sales
-            if order_date and order_date >= three_w_from.isoformat():
-                b["units_3w"] += qty
+    for r in chunk_rows:
+        sn = (r.get("style_name") or "").strip()
+        if sn not in needle_set:
+            continue
+        order_date = (r.get("order_date") or "")[:10]
+        color = r.get("color_print") or r.get("color") or "—"
+        size = r.get("size") or "—"
+        sku = r.get("sku") or ""
+        key = (color, size, sku)
+        b = per_style_sales[sn].setdefault(key, {
+            "sku": sku, "color": color, "size": size,
+            "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+        })
+        qty = int(r.get("quantity") or 0)
+        sales = float(r.get("total_sales_kes") or 0)
+        b["units_6m"] += qty
+        b["sales_6m"] += sales
+        if order_date and order_date >= three_w_from.isoformat():
+            b["units_3w"] += qty
 
     per_style_soh: Dict[str, Dict[tuple, Dict[str, float]]] = {n: {} for n in needles}
+    chs = _split_csv(channel)
     for r in inv:
         sn = (r.get("style_name") or "").strip()
         if sn not in needle_set:

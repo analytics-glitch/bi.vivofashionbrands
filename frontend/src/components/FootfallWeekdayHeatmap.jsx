@@ -125,7 +125,7 @@ const FootfallWeekdayHeatmap = () => {
           <div className="flex items-center gap-2 text-brand-deep">
             <CalendarBlank size={16} weight="fill" />
             <h3 className="text-[14px] font-bold tracking-tight">
-              Weekday pattern · top {rows.length} stores
+              Weekday pattern per store
             </h3>
           </div>
           <div className="text-[11.5px] text-muted mt-0.5">

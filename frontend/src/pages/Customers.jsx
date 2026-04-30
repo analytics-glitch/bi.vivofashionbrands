@@ -1004,16 +1004,30 @@ const Customers = () => {
                 {curTotal === 0 ? <UpstreamNotReady /> : (
                   <>
                     {/* ---- Supporting KPI strip ---- */}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-                      <div className="rounded-xl border border-border p-3" data-testid="kpi-repeat-rate">
-                        <div className="eyebrow">Repeat Purchase Rate</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-repeat-rate-value">
-                          {(retention?.repeat_rate_pct ?? repeatRate).toFixed(1)}%
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+                      {/* NEW dedicated Retention Rate card — identified-only,
+                          excludes walk-ins. This is the canonical retention
+                          number the leadership team cares about. The Repeat
+                          Purchase Rate card next to it preserves the legacy
+                          metric so users can spot the gap. */}
+                      <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-retention-rate">
+                        <div className="eyebrow text-[#1a5c38]">Retention Rate</div>
+                        <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-retention-rate-value">
+                          {retention ? `${retention.repeat_rate_pct.toFixed(1)}%` : "—"}
                         </div>
-                        <div className="text-[10.5px] text-muted mt-0.5" title="Walk-ins (no customer_id) excluded so the rate reflects only identifiable customers who can actually repeat-purchase.">
+                        <div className="text-[10.5px] text-muted mt-0.5">
                           {retention
-                            ? `${fmtNum(retention.repeat_customers)} of ${fmtNum(retention.total_customers)} identified · walk-ins excluded`
-                            : "computing identified-only rate…"}
+                            ? <>{fmtNum(retention.repeat_customers)} of {fmtNum(retention.total_customers)} <span className="font-semibold">identified</span> customers · walk-ins excluded</>
+                            : "computing identified-only rate (~30s on cold cache)…"}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-repeat-rate">
+                        <div className="eyebrow">Repeat Purchase Rate <span className="text-[9px] text-muted">(legacy)</span></div>
+                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-repeat-rate-value">
+                          {repeatRate.toFixed(1)}%
+                        </div>
+                        <div className="text-[10.5px] text-muted mt-0.5" title="Includes walk-ins (no customer_id). Reflects raw upstream /customer-frequency buckets — comparable to historical reports.">
+                          includes walk-ins · {fmtNum(curTotal)} buckets
                         </div>
                         {hasCompare && (
                           <div className={`text-[11px] font-semibold mt-0.5 ${repeatRateDelta >= 0 ? "text-brand" : "text-danger"}`}>
