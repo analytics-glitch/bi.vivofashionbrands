@@ -41,6 +41,14 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30)
 ## Recently Shipped
+- **Iter_43** (2026-04-30) — **P0 visibility fix + P1 refactor pass 1**:
+  - **Fix · Inventory STS Stock toggle visibility**: the `[data-testid='inv-stock-scope']` Stores/Warehouse/Combined toggle was wrapped inside `{(countries.length > 0 || channels.length > 0) && …}` so it stayed hidden until the user applied a filter. Moved it (and the warehouse-include checkbox) into an unconditional `inv-filter-row` so the controls are always visible right under the page title. Banner ("Showing inventory for: …") still stays conditional on `filtersActive`. Verified via screenshot.
+  - **Refactor · server.py extraction pass 1**: `server.py` reduced from **6,095 → 5,520 lines**. Created a new `/app/backend/routes/` package and extracted:
+    - `routes/customer_analytics.py` (368 lines, 4 endpoints): `/api/analytics/customer-details`, `/api/analytics/customer-retention`, `/api/analytics/avg-spend-by-customer-type`, `/api/analytics/recently-unchurned`.
+    - `routes/analytics_inventory.py` (285 lines, 2 endpoints): `/api/analytics/replenish-by-color`, `/api/analytics/aged-stock`.
+  - **Pattern documented in `routes/__init__.py`**: each submodule does a `from server import api_router, …helpers…` and is itself imported at the BOTTOM of `server.py` (after all helpers are defined, before `app.include_router(api_router)`). Late import sidesteps the circular-import trap while keeping registration ergonomic.
+  - Verified: `/api/analytics/customer-retention` (55.28% repeat rate, 8264 customers, 48 walk-ins), `/api/analytics/avg-spend-by-customer-type` (New 6,875 vs Returning 10,401 KES), `/api/analytics/customer-details`, `/api/analytics/replenish-by-color` all return live data; `/api/locations`, `/api/kpis`, `/api/sor`, `/api/health` regression-tested OK.
+
 - **Iter_41** (2026-04-30) — **Major feature drop (12 items, 4 phases)**:
   - Phase 1 (Quick UX wins): (a) Collapsible Category accordion on Stock-to-Sales by Subcategory tables (Inventory + Products) via new `CategoryAccordionTable.jsx` + `Flat ↔ Grouped` view toggle. Header rows show aggregated totals; rows ranked by units_sold desc within each group. (b) SOR · L-10 New Styles now excludes any row where `(units_6m + soh_total) < 20`. (c) Style names line-clamped to 2 lines with full text on hover (CSS `-webkit-line-clamp:2`). (d) Cat / SubCat MultiSelect filter pills on Inventory + Products driven by static `MERCH_CATEGORIES` / `subcategoriesFor()` helpers in `productCategory.js` — instant, no extra fetch.
   - Phase 2 (Customer analytics): (a) `/api/analytics/customer-retention` excludes walk-ins (no customer_id OR customer_type=Guest) → repeat rate jumped from bogus ~6% to truthful ~55%. (b) `/api/analytics/avg-spend-by-customer-type` New vs Returning twin-tile using upstream's `customer_type` field (no costly historical fan-out). (c) `/api/analytics/recently-unchurned` with `min_gap_days` slider (30/60/90/180) — customers who came back after a long silence.
@@ -156,12 +164,21 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
 ## Roadmap
-### P1 — Refactor
-- Break up `/app/backend/server.py` (>2600 lines) into routers: `routers/sales.py`, `routers/inventory.py`, `routers/analytics.py`, `routers/customers.py`.
+### P1 — Refactor (in progress)
+- Continue extracting from `/app/backend/server.py` (now 5,520 lines after iter_43 pass 1):
+  - `routes/customers.py` — `/customers`, `/customers/churn-rate`, `/customers/walk-ins`, `/customer-trend`, `/top-customers`, `/customer-search`, `/customer-products`, `/churned-customers`, `/orders`, `/customer-frequency`, `/customers-by-location`, `/new-customer-products`, `/customer-products`.
+  - `routes/footfall.py` — `/footfall`, `/footfall/weekday-pattern`, `/footfall/daily-calendar`.
+  - `routes/exports.py` — `/exports/store-kpis`, `/exports/period-performance`, `/exports/stock-rebalancing`.
+  - `routes/sor.py` — `/sor`, `/analytics/sor-new-styles-l10`, `/analytics/sor-all-styles`, `/analytics/style-sku-breakdown`, `/analytics/style-sku-breakdown-bulk`, `/analytics/new-styles`, `/analytics/new-styles-curve`.
+  - `routes/stock_to_sales.py` — `/stock-to-sales`, `/analytics/stock-to-sales-by-subcat`, `/analytics/stock-to-sales-by-category`, `/analytics/stock-to-sales-by-attribute`, `/analytics/stock-to-sales-by-sku`, `/analytics/weeks-of-cover`, `/analytics/sell-through-by-location`, `/analytics/inventory-summary`, `/analytics/low-stock`.
+  - `routes/replenishment.py` — `/analytics/replenishment-report`, `/analytics/replenishment-report/mark`, `/admin/refresh-bins`.
+  - `routes/ibt.py` — `/analytics/ibt-suggestions`, `/analytics/ibt-sku-breakdown`.
+  - `routes/misc.py` — `/analytics/price-changes`, `/analytics/returns`, `/analytics/insights`, `/analytics/churn`, `/analytics/active-pos`, `/analytics/sales-projection`, `/analytics/customer-crosswalk`, leaderboards.
 
 ### P2
 - Margin reporting (gross margin at category & product level)
 - Proper FX handling via `dim_fx_rate` for UGX / RWF → KES
+- Training Dashboard from Google Sheet (BLOCKED — sheet `1K_cGADA67ymxruhcti5YvEY36qm7b1lbFNo65py20e4` requires public access or CSV export)
 
 ### P3
 - Wire L-10 SOR action choices `{Reorder · Markdown · IBT · Hold}` into `recommendations_state`

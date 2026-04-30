@@ -431,11 +431,11 @@ const Inventory = () => {
           Merchandise only — Accessories, Sample &amp; Sale Items and
           uncategorised products are excluded from every section below.
         </p>
-        {(countries.length > 0 || channels.length > 0) && (
-          <div
-            className="mt-2 flex flex-wrap items-center gap-2"
-            data-testid="inv-filter-row"
-          >
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2"
+          data-testid="inv-filter-row"
+        >
+          {(countries.length > 0 || channels.length > 0) && (
             <div
               className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"
               data-testid="inv-active-filter-banner"
@@ -448,51 +448,56 @@ const Inventory = () => {
                 <span key={`p-${p}`} className="pill-green">POS · {p}</span>
               ))}
             </div>
-            {channels.length > 0 && (
-              <label
-                className="inline-flex items-center gap-1.5 cursor-pointer rounded-lg border border-border bg-white px-2.5 py-1 text-[11.5px] font-semibold hover:border-brand/40 select-none"
-                data-testid="inv-include-warehouse-toggle"
-                title="When ON, the POS-scoped Stock-to-Sales tables ADD warehouse / wholesale / holding inventory on top of shop-floor stock. Useful when you need to see total allocable units, not just what's on the floor. OFF (default) = shop-floor stock only."
-              >
-                <input
-                  type="checkbox"
-                  checked={includeWarehouse}
-                  onChange={(e) => setIncludeWarehouse(e.target.checked)}
-                  className="accent-brand"
-                  data-testid="inv-include-warehouse-checkbox"
-                />
-                <span>Include warehouse stock</span>
-                {includeWarehouse && <span className="pill-amber">+ warehouse</span>}
-              </label>
-            )}
-            {/* Stock-to-Sales scope picker — drives which inventory rolls
-                up into the `current_stock` column of the STS tables. */}
-            <div className="inline-flex items-center gap-1.5" data-testid="inv-stock-scope">
-              <span className="text-[10.5px] font-semibold uppercase tracking-wide text-muted">STS Stock</span>
-              <div className="inline-flex rounded-md overflow-hidden border border-border">
-                {[
-                  { v: "stores", l: "Stores" },
-                  { v: "warehouse", l: "Warehouse" },
-                  { v: "combined", l: "Combined" },
-                ].map((opt) => (
-                  <button
-                    key={opt.v}
-                    onClick={() => setStockScope(opt.v)}
-                    data-testid={`inv-stock-scope-${opt.v}`}
-                    title={
-                      opt.v === "stores"  ? "Only POS / shop-floor inventory counts toward % of total stock." :
-                      opt.v === "warehouse" ? "Only warehouse / wholesale / holding inventory counts." :
-                                              "Stores + warehouse combined — total allocable inventory."
-                    }
-                    className={`text-[10.5px] font-bold px-2 py-1 transition-colors ${stockScope === opt.v ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
-                  >
-                    {opt.l}
-                  </button>
-                ))}
-              </div>
+          )}
+          {channels.length > 0 && (
+            <label
+              className="inline-flex items-center gap-1.5 cursor-pointer rounded-lg border border-border bg-white px-2.5 py-1 text-[11.5px] font-semibold hover:border-brand/40 select-none"
+              data-testid="inv-include-warehouse-toggle"
+              title="When ON, the POS-scoped Stock-to-Sales tables ADD warehouse / wholesale / holding inventory on top of shop-floor stock. Useful when you need to see total allocable units, not just what's on the floor. OFF (default) = shop-floor stock only."
+            >
+              <input
+                type="checkbox"
+                checked={includeWarehouse}
+                onChange={(e) => setIncludeWarehouse(e.target.checked)}
+                className="accent-brand"
+                data-testid="inv-include-warehouse-checkbox"
+              />
+              <span>Include warehouse stock</span>
+              {includeWarehouse && <span className="pill-amber">+ warehouse</span>}
+            </label>
+          )}
+          {/* Stock-to-Sales scope picker — drives which inventory rolls
+              up into the `current_stock` column of the STS tables.
+              Always visible (independent of filtersActive) so users can
+              switch contexts without first having to apply a filter. */}
+          <div
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1"
+            data-testid="inv-stock-scope"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wide text-muted">STS Stock</span>
+            <div className="inline-flex rounded-md overflow-hidden border border-border">
+              {[
+                { v: "stores", l: "Stores" },
+                { v: "warehouse", l: "Warehouse" },
+                { v: "combined", l: "Combined" },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  onClick={() => setStockScope(opt.v)}
+                  data-testid={`inv-stock-scope-${opt.v}`}
+                  title={
+                    opt.v === "stores"  ? "Only POS / shop-floor inventory counts toward % of total stock." :
+                    opt.v === "warehouse" ? "Only warehouse / wholesale / holding inventory counts." :
+                                            "Stores + warehouse combined — total allocable inventory."
+                  }
+                  className={`text-[10.5px] font-bold px-2 py-1 transition-colors ${stockScope === opt.v ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                >
+                  {opt.l}
+                </button>
+              ))}
             </div>
           </div>
-        )}
+        </div>
       </div>
 
       {loading && <Loading />}
