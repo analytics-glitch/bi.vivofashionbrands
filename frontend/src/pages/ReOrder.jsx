@@ -10,6 +10,8 @@ import VariantDrillDown from "@/components/VariantDrillDown";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import { useThumbnails } from "@/lib/useThumbnails";
+import AgedStockReport from "@/components/AgedStockReport";
+import ReplenishByColor from "@/components/ReplenishByColor";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { Package, ArrowsClockwise, Fire, TrendUp } from "@phosphor-icons/react";
 
@@ -196,6 +198,9 @@ const ReOrder = () => {
               <span className="pill-neutral ml-1">MEDIUM 50–65%</span>.
             </div>
           </div>
+
+          <ReplenishByColor />
+          <AgedStockReport />
         </>
       )}
 

@@ -39,7 +39,11 @@ const SorNewStylesL10 = ({ brand }) => {
   }, [brand]);
 
   const enriched = useMemo(
-    () => (rows || []).map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),
+    () => (rows || [])
+      // Exclude very-low-volume rows (units sold + SOH < 20). They make
+      // the L-10 view noisy and don't deserve buyer attention.
+      .filter((r) => ((r.units_6m || 0) + (r.soh_total || 0)) >= 20)
+      .map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),
     [rows]
   );
 

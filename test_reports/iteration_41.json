@@ -1,0 +1,73 @@
+{
+  "summary": "Iteration 41 — E2E validation of Vivo BI dashboard major feature drop (12 items across 4 phases). Backend pytest 7/9 PASS on first run (1 skipped fixed, 2 transient upstream 502). Frontend UI verified under admin login at the public URL for all feature testids except STS view toggles on Inventory and unchurned-count on Customers. Repeat-rate KPI shows 54.4% ('68 of 125 identified · walk-ins excluded') — exactly matches the ~55% spec and proves walk-ins exclusion works. Avg Spend tiles show New KES 4,524 / Returning KES 8,088 (non-zero). Recently Unchurned section with all 4 day toggles (30/60/90/180) renders. /customer-details page loads with 25 rows and exact column set: First Name, Last Name, Email, Mobile, SMS Opt-in, Email Opt-in, Total Sales, Orders, First Order, Last Order — 'n/a' indicator present as designed. KPI Trend chart on Overview has all 7 options (Total Sales, Net Sales, Units Sold, Orders, Avg Basket, Discount, Returns). Replen-by-Color and Aged-Stock sections render on /re-order though row populations were affected by transient upstream 503 on /orders.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/analytics/customer-retention", "issue": "Uncaught JSONDecodeError / cascades HTTPException(503) when upstream /orders returns 503 — results in 500 status to caller instead of a graceful fallback or 503. Repro: hit endpoint twice in quick succession; second call 500s until cache warms. Stack in /var/log/supervisor/backend.err.log line `analytics_customer_retention ... JSONDecodeError('Expecting value')`.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/analytics/avg-spend-by-customer-type", "issue": "Ingress 60s hard timeout triggers public 502 on cold cache — backend keeps working but ingress drops. Axios client timeout bumped to 240s but ingress caps at 60s."},
+      {"endpoint": "/api/analytics/customer-details", "issue": "Same ingress 60s timeout on cold cache (6-month /orders fan-out) → public 502. Warm cache: 200 with correct rows + 'n/a' opt-in columns."},
+      {"endpoint": "/api/analytics/replenish-by-color", "issue": "Frontend surfaces 'Request failed with status code 502' on cold-cache call. Endpoint itself returns 200 once cache warmed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Customers page · Recently Unchurned", "issue": "data-testid 'unchurned-count' not found in DOM. Section + 4 day-toggle buttons (30/60/90/180) all render correctly, but the count summary element is either not emitted or is missing the testid.", "selector": "[data-testid=\"unchurned-count\"]", "priority": "LOW"},
+      {"component": "Inventory page · Stock-to-Sales toggle", "issue": "data-testid 'sts-view-flat' and 'sts-view-grouped' not found in the initial DOM scan (184 testids inventoried, neither present). Either the toggle lives inside a lazy-mounted subcategory section that didn't render in the test window, or the testids were not added. Spec requires these for the Collapsible Category accordion feature (Phase 1.1).", "selector": "[data-testid=\"sts-view-flat\"] / [data-testid=\"sts-view-grouped\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Re-Order · Replenishment by Color", "issue": "On cold cache the section renders its header + threshold toggles and then shows 'Request failed with status code 502' instead of rows. Needs retry/backoff or a warmed-cache preload on page entry.", "affected_selectors": ["[data-testid=\"replen-by-color\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Shell / Overview / Inventory", "issues": ["Carry-over from iter_36-40: Recharts width(-1)/height(-1) console warnings; React hydration warning '<span> cannot be a child of <option>' (Shell). Non-blocking."]}
+    ]
+  },
+  "verifications": {
+    "phase_1_3_line_clamp": "NOT directly verified in this pass (would need SOR styles table with long names); styles with long names were not opened in this run.",
+    "phase_1_4_products_multi": "products-cat-multi and products-subcat-multi testids present ✓",
+    "phase_1_4_inventory_multi": "inv-cat-multi and inv-subcat-multi testids present ✓",
+    "phase_1_1_stv_toggle": "sts-view-flat / sts-view-grouped testids NOT present in Inventory DOM — see ui_bugs[1]",
+    "phase_2_5_repeat_rate": "kpi-repeat-rate shows '54.4% · 68 of 125 identified · walk-ins excluded' — MATCHES spec (~55% identified-only) ✓",
+    "phase_2_6_avg_spend": "spend-by-type + kpi-spend-new (KES 4,524) + kpi-spend-returning (KES 8,088) ✓",
+    "phase_2_7_unchurned": "recently-unchurned-section + unchurned-days-{30,60,90,180} all present ✓; unchurned-count MISSING (minor)",
+    "phase_3_8_aged_stock": "aged-stock-report section renders with 2 table rows in test window ✓ (warm cache); backend pytest PASSED with aged_stock rows present",
+    "phase_3_9_replen_color": "replen-by-color section renders with threshold toggles (4/6/8/12 wk × 40/50/65/80%) ✓; rows empty due to cold-cache 502 at the moment of capture. Backend pytest PASSED for this endpoint.",
+    "phase_3_10_bulk_sku": "GET /api/analytics/style-sku-breakdown-bulk?style_names=... returns 200 with {styles:{...}, missing:[...]} shape. Endpoint correctly signatured (CSV query param). Performance claim (25 styles in one call) not measured vs old path but endpoint is in place.",
+    "phase_4_11_customer_details": "/customer-details page loads; 25 rows; headers exactly: First Name, Last Name, Email, Mobile, SMS Opt-in, Email Opt-in, Total Sales, Orders, First Order, Last Order; 'n/a' present in body ✓",
+    "phase_4_12_kpi_trend": "kpi-trend-chart + kpi-trend-select on Overview (Insights section); dropdown has all 7 KPIs: Total Sales (KES), Net Sales (KES), Units Sold, Orders, Avg Basket Size (KES), Discount (KES), Returns (KES) ✓"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_41_analytics.py",
+    "/app/test_reports/pytest/iter41.xml"
+  ],
+  "action_items": [
+    "HIGH: Add graceful 503 handling in analytics_customer_retention (wrap `_orders_for_window` call in try/except HTTPException and either return empty-shaped response or propagate 503). Currently bubbles as 500 with JSONDecodeError trace. Same pattern likely exists in avg-spend-by-customer-type, recently-unchurned, customer-details — audit all endpoints that call `_orders_for_window` for uncaught 503 cascades.",
+    "HIGH: Inventory page — add data-testid='sts-view-flat' and 'sts-view-grouped' to the Stock-to-Sales by Subcategory view toggle component. Not found in scan of 184 testids on /inventory under networkidle+15s wait.",
+    "MED: Recently Unchurned — add data-testid='unchurned-count' to the count summary (e.g., 'X customers re-activated in last Y days').",
+    "MED: Cold-cache 502 risk at ingress (60s cap) on customer-retention / avg-spend / customer-details / replen-by-color. Consider: (a) warming /_CUSTOMER_HIST_CACHE on backend startup for 'mtd' and 'last_30' windows, (b) splitting the 6-month fan-out into a background job + paged response, or (c) lowering the window of /orders fan-out when cache is cold and surfacing a progressive UI.",
+    "LOW: Replen-by-Color UI — show a retry button instead of raw 'Request failed with status code 502' when backend 502s."
+  ],
+  "critical_code_review_comments": [
+    "analytics_customer_retention (~line 1677): `_orders_for_window` is called synchronously with no try/except. When upstream /orders 503s, the exception bubbles all the way through to the FastAPI handler which cannot serialize the HTTPException chain cleanly — hence the 500 + JSONDecodeError in logs. Recommend: wrap with `try/except HTTPException as e: raise HTTPException(503, 'Upstream orders temporarily unavailable — retry in a moment')`.",
+    "The 10-min _CUSTOMER_HIST_CACHE is the right call for perf, but the first hit on cold cache now exceeds ingress 60s limit for MTD windows (observed 60+ seconds). This needs a startup warm-up hook OR a 202-with-polling endpoint. Today it looks like a hang/502 to the user.",
+    "Bulk endpoint `/analytics/style-sku-breakdown-bulk` uses GET with comma-separated style_names — some upstreams/proxies cap URL length around 2048 chars. With 25 styles averaging 40 chars each, you're at ~1000 chars — OK today, but consider moving to POST body for safety margin.",
+    "server.py is now ~6050 lines — 8.5× past the 700-line guideline. Adding 6 new analytics endpoints (customer-retention, avg-spend-by-customer-type, recently-unchurned, aged-stock, replenish-by-color, customer-details, style-sku-breakdown-bulk) should have triggered a split into analytics/customers.py, analytics/inventory.py, analytics/replenishment.py.",
+    "Recharts width(-1)/height(-1) console warnings persist across 4+ iterations. Adding a `min-width: 200px; min-height: 200px` fallback on the ResponsiveContainer wrappers would silence these and prevent flash-of-empty-chart.",
+    "Shell <span> inside <option> hydration warning — likely a country/POS dropdown rendering flag emojis inside <option>. Use <optgroup> label or move to a Combobox component.",
+    "Customer Details page: headers text match spec exactly. Good. But verify the 'n/a' tooltip mentioned in the spec ('tooltip explaining upstream limitation') actually renders on hover — only the literal 'n/a' text was verified in this pass, not the title attribute."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_41_analytics.py",
+    "/app/test_reports/iteration_41.json"
+  ],
+  "success_rate": {
+    "backend": "7/9 = 78% (2 transient upstream 502s; 1 real 500 bug in customer-retention)",
+    "frontend": "10/12 feature testids verified (83%). Missing: sts-view-flat/grouped on Inventory, unchurned-count on Customers. All Customer Details, KPI Trend, Avg Spend, Repeat Rate, Unchurned toggles, Replen/Aged sections render with correct structure."
+  },
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 (verified). Viewer: viewer@vivofashiongroup.com / Viewer!2026 (not retested — per spec viewer should now see /customer-details; testid nav-customer-details IS present in top-nav scan).",
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter_41 created /app/backend/tests/test_iteration_41_analytics.py (10 tests, ~270s). Known: upstream /orders is rate-limiting — retries are baked in for /recently-unchurned but other endpoints (customer-retention, avg-spend, customer-details, replen-by-color) cascade 502/503 raw. First backend run: test_customer_retention PASSED with repeat_rate_pct=55.196% (matches spec exactly). Second run 500'd due to upstream rate-limit AND unhandled exception path. Frontend verified at https://bi-platform-2.preview.emergentagent.com with admin creds. Customer Details nav link is at /customer-details (already linked in sidebar via nav-customer-details testid). The KPI Trend chart is in the Insights section of Overview, below the fold. Two specific testids missing from the DOM despite long waits: sts-view-flat, sts-view-grouped (Inventory STS toggle) and unchurned-count (Customers). Re-test these after main agent fix.",
+  "rca_of_the_issue": "Two distinct issues: (1) CUSTOMER-RETENTION 500: analytics_customer_retention at server.py:1677 calls `_orders_for_window` with no try/except. When upstream /orders returns 503 (rate-limit), `fetch()` raises HTTPException(503) which propagates through `_safe_fetch` (sometimes) or bubbles as a raw JSONDecodeError when the 503 body isn't JSON. Caller sees 500 instead of 503. Mitigation: wrap the call in try/except HTTPException; re-raise as HTTPException(503). (2) COLD-CACHE 502 at ingress: several new endpoints do a 6-month /orders fan-out on first hit (~90+ seconds with rate-limited upstream). Kubernetes ingress / axios cap around 60s → user sees 502. The _CUSTOMER_HIST_CACHE 10-min TTL works great for subsequent calls but the first call per window is a cliff. Mitigation: startup warm-up OR break fan-out into smaller windows OR add 202/poll pattern. (3) MISSING TESTIDS: sts-view-flat/grouped not in Inventory DOM — likely not added to the STS toggle component (or lazy-rendered). unchurned-count not emitted by the Unchurned section header."
+}

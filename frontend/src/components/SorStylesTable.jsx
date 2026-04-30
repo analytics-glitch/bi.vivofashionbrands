@@ -44,33 +44,46 @@ const SorStylesTable = ({
     });
   }, [rows, search]);
 
-  // When either toggle is on, fetch SKU breakdown for visible rows that
-  // haven't been fetched yet. Limit to first 25 visible rows so we don't
-  // hammer the backend on a 1000-row catalog.
+  // When either toggle is on, fetch SKU breakdown for the first
+  // `pageSize` visible rows that haven't been fetched yet. Uses the
+  // BULK endpoint so 25 styles share a single 6-month /orders fan-out
+  // instead of 25 independent calls (saves ~30s × 25 cold).
   useEffect(() => {
     if (!showColor && !showSize) return;
     const visible = filtered.slice(0, pageSize);
-    visible.forEach((r) => {
-      if (skuMap[r.style_name]) return;
-      setSkuMap((m) => ({ ...m, [r.style_name]: { loading: true, skus: [] } }));
-      api
-        .get("/analytics/style-sku-breakdown", {
-          params: { style_name: r.style_name },
-          timeout: 180000,
-        })
-        .then(({ data }) => {
-          setSkuMap((m) => ({
-            ...m,
-            [r.style_name]: { loading: false, skus: data?.skus || [] },
-          }));
-        })
-        .catch((e) => {
-          setSkuMap((m) => ({
-            ...m,
-            [r.style_name]: { loading: false, error: e?.message, skus: [] },
-          }));
-        });
+    const toFetch = visible.filter((r) => !skuMap[r.style_name]);
+    if (!toFetch.length) return;
+    // Mark all as loading immediately so we don't double-fetch on the
+    // next render cycle.
+    setSkuMap((m) => {
+      const next = { ...m };
+      for (const r of toFetch) next[r.style_name] = { loading: true, skus: [] };
+      return next;
     });
+    api
+      .get("/analytics/style-sku-breakdown-bulk", {
+        params: { style_names: toFetch.map((r) => r.style_name).join(",") },
+        timeout: 240000,
+      })
+      .then(({ data }) => {
+        const styles = data?.styles || {};
+        setSkuMap((m) => {
+          const next = { ...m };
+          for (const r of toFetch) {
+            next[r.style_name] = { loading: false, skus: styles[r.style_name] || [] };
+          }
+          return next;
+        });
+      })
+      .catch((e) => {
+        setSkuMap((m) => {
+          const next = { ...m };
+          for (const r of toFetch) {
+            next[r.style_name] = { loading: false, error: e?.message, skus: [] };
+          }
+          return next;
+        });
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showColor, showSize, filtered]);
 
@@ -171,9 +184,24 @@ const SorStylesTable = ({
       {
         key: "style_name", label: "Style Name", align: "left", mobilePrimary: true,
         render: (r) => (
-          <div className="max-w-[260px]">
-            <div className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.style_name}</div>
-            <div className="text-[10.5px] text-muted mt-0.5">{r.brand || "—"} · {r.collection || "—"}</div>
+          <div className="max-w-[220px]">
+            {/* Clamp style name to 2 lines so very long names don't blow up
+                row height. Tooltip shows the full name on hover. */}
+            <div
+              className="font-medium leading-snug overflow-hidden"
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                wordBreak: "break-word",
+              }}
+              title={r.style_name}
+            >
+              {r.style_name}
+            </div>
+            <div className="text-[10.5px] text-muted mt-0.5 truncate" title={`${r.brand || "—"} · ${r.collection || "—"}`}>
+              {r.brand || "—"} · {r.collection || "—"}
+            </div>
             {r._sku_loading && <div className="text-[10.5px] text-muted italic mt-0.5">loading SKUs…</div>}
             {r._no_skus && <div className="text-[10.5px] text-muted italic mt-0.5">no SKU data</div>}
           </div>

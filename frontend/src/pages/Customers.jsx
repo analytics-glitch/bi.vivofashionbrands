@@ -125,6 +125,11 @@ const Customers = () => {
   // /top-skus to compute Acquisition Skew on the "Product Mix" table.
   const [byLocPrev, setByLocPrev] = useState([]);
   const [topSkus, setTopSkus] = useState([]);
+  const [retention, setRetention] = useState(null);
+  const [spendByType, setSpendByType] = useState(null);
+  const [unchurned, setUnchurned] = useState(null);
+  const [unchurnedDays, setUnchurnedDays] = useState(90); // 30 / 60 / 90 / 180
+  const [unchurnedLoading, setUnchurnedLoading] = useState(false);
 
   // Compute the previous-period range
   const prevRange = useMemo(() => {
@@ -173,11 +178,17 @@ const Customers = () => {
       ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["byLocPrev", prevRange ? api.get("/customers-by-location", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["topSkus", api.get("/top-skus", { params: { ...dateP, limit: 200 } }).catch(() => ({ data: [] }))],
+      // Identified-customer retention metrics (excludes walk-ins). Replaces
+      // the upstream /customer-frequency repeat-rate which over-counts
+      // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
+      ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: null }))],
+      ["spendByType", api.get("/analytics/avg-spend-by-customer-type", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: null }))],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
       topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
+      retention: setRetention, spendByType: setSpendByType,
     };
     for (const [key, p] of rest) {
       p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
@@ -217,6 +228,21 @@ const Customers = () => {
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
+
+  // Recently-unchurned table — re-fetches whenever the slider days change,
+  // independent of the main page fetch since it can be slow (10-min cache).
+  useEffect(() => {
+    let cancelled = false;
+    setUnchurnedLoading(true);
+    api.get("/analytics/recently-unchurned", {
+      params: { date_from: dateFrom, date_to: dateTo, min_gap_days: unchurnedDays },
+      timeout: 120000,
+    })
+      .then((r) => { if (!cancelled) setUnchurned(r.data || []); })
+      .catch(() => { if (!cancelled) setUnchurned([]); })
+      .finally(() => { if (!cancelled) setUnchurnedLoading(false); });
+    return () => { cancelled = true; };
+  }, [dateFrom, dateTo, unchurnedDays, dataVersion]);
 
   // debounced search
   useEffect(() => {
@@ -981,7 +1007,14 @@ const Customers = () => {
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                       <div className="rounded-xl border border-border p-3" data-testid="kpi-repeat-rate">
                         <div className="eyebrow">Repeat Purchase Rate</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5">{repeatRate.toFixed(1)}%</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-repeat-rate-value">
+                          {(retention?.repeat_rate_pct ?? repeatRate).toFixed(1)}%
+                        </div>
+                        <div className="text-[10.5px] text-muted mt-0.5" title="Walk-ins (no customer_id) excluded so the rate reflects only identifiable customers who can actually repeat-purchase.">
+                          {retention
+                            ? `${fmtNum(retention.repeat_customers)} of ${fmtNum(retention.total_customers)} identified · walk-ins excluded`
+                            : "computing identified-only rate…"}
+                        </div>
                         {hasCompare && (
                           <div className={`text-[11px] font-semibold mt-0.5 ${repeatRateDelta >= 0 ? "text-brand" : "text-danger"}`}>
                             {repeatRateDelta >= 0 ? "▲" : "▼"} {Math.abs(repeatRateDelta).toFixed(1)}pp {compareLbl}
@@ -990,17 +1023,57 @@ const Customers = () => {
                       </div>
                       <div className="rounded-xl border border-border p-3" data-testid="kpi-orders-per-returning">
                         <div className="eyebrow">Avg Orders / Returning Customer</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5">{avgOrdersPerReturning.toFixed(2)}</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">
+                          {(retention?.avg_orders_per_returner ?? avgOrdersPerReturning).toFixed(2)}
+                        </div>
                         <div className="text-[11px] text-muted mt-0.5">customers with ≥2 orders</div>
                       </div>
                       <div className="rounded-xl border border-border p-3" data-testid="kpi-vip-count">
                         <div className="eyebrow">VIP (5+ orders)</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5">{fmtNum(data[4]?.count || 0)}</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">
+                          {fmtNum(retention?.vip_customers ?? (data[4]?.count || 0))}
+                        </div>
                         <div className="text-[11px] text-muted mt-0.5">
-                          {curTotal ? ((data[4]?.count || 0) / curTotal * 100).toFixed(1) : "0.0"}% of base
+                          {(retention?.total_customers || curTotal) ? (((retention?.vip_customers ?? (data[4]?.count || 0)) / (retention?.total_customers || curTotal)) * 100).toFixed(1) : "0.0"}% of base
                         </div>
                       </div>
                     </div>
+
+                    {/* ---- Avg spend per customer split (New vs Returning) ---- */}
+                    {spendByType && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4" data-testid="spend-by-type">
+                        <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-emerald-800">New customers</div>
+                            <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
+                              {fmtNum(spendByType.new.customers)} customers
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-spend-new">
+                            {fmtKES(spendByType.new.avg_spend_per_customer_kes)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            avg spend · {spendByType.new.avg_orders_per_customer.toFixed(2)} orders / cust
+                            · {fmtKES(spendByType.new.total_spend_kes)} total
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-blue-300 bg-blue-50/40 p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-blue-800">Returning customers</div>
+                            <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
+                              {fmtNum(spendByType.returning.customers)} customers
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-spend-returning">
+                            {fmtKES(spendByType.returning.avg_spend_per_customer_kes)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            avg spend · {spendByType.returning.avg_orders_per_customer.toFixed(2)} orders / cust
+                            · {fmtKES(spendByType.returning.total_spend_kes)} total
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* ---- Grouped / single bar chart ---- */}
                     <div style={{ width: "100%", height: 320 }}>
@@ -1363,6 +1436,80 @@ const Customers = () => {
               </div>
             );
           })()}
+
+          {/* ---- Recently Unchurned (customers returning after a long silence) ---- */}
+          <div className="card-white p-5" data-testid="recently-unchurned-section">
+            <SectionTitle
+              title="Recently Unchurned Customers"
+              subtitle={`Customers whose latest visit happened in the selected window AND came after a silence of ${unchurnedDays}+ days. These shoppers JUST proved they still respond — perfect targets for win-back nudges, loyalty re-onboarding, or a personalised email/SMS within the next 7 days.`}
+            />
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <span className="eyebrow">Min silence gap</span>
+              <div className="inline-flex rounded-md overflow-hidden border border-border" data-testid="unchurned-days-toggle">
+                {[30, 60, 90, 180].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setUnchurnedDays(d)}
+                    data-testid={`unchurned-days-${d}`}
+                    className={`text-[11px] font-bold px-3 py-1.5 transition-colors ${unchurnedDays === d ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                  >
+                    {d} days
+                  </button>
+                ))}
+              </div>
+              {unchurnedLoading && <span className="text-[11px] text-muted">computing…</span>}
+              {!unchurnedLoading && unchurned && (
+                <span className="text-[11px] text-muted" data-testid="unchurned-count">
+                  {fmtNum(unchurned.length)} customer{unchurned.length === 1 ? "" : "s"} found
+                </span>
+              )}
+            </div>
+            {unchurnedLoading && <Loading label={`scanning last ${unchurnedDays + 30} days of orders…`} />}
+            {!unchurnedLoading && unchurned && unchurned.length === 0 && (
+              <UpstreamNotReady label={`No customers came back from a ${unchurnedDays}+ day silence in this window.`} />
+            )}
+            {!unchurnedLoading && unchurned && unchurned.length > 0 && (
+              <SortableTable
+                testId="unchurned-table"
+                exportName={`recently-unchurned_${unchurnedDays}d.csv`}
+                pageSize={20}
+                initialSort={{ key: "gap_days", dir: "desc" }}
+                columns={[
+                  { key: "customer_name", label: "Customer", align: "left",
+                    render: (r) => (
+                      <div>
+                        <div className="font-semibold">{r.customer_name || `Customer #${r.customer_id?.slice?.(-6) || "—"}`}</div>
+                        {r.customer_email && <div className="text-[10.5px] text-muted">{r.customer_email}</div>}
+                        {!r.customer_email && r.customer_id && (
+                          <div className="text-[10.5px] text-muted font-mono">{r.customer_id}</div>
+                        )}
+                      </div>
+                    ),
+                    csv: (r) => r.customer_name || r.customer_id },
+                  { key: "gap_days", label: "Silence (days)", numeric: true,
+                    render: (r) => (
+                      <span className={
+                        r.gap_days >= 180 ? "pill-red" :
+                        r.gap_days >= 90 ? "pill-amber" :
+                        "pill-green"
+                      }>
+                        {r.gap_days}
+                      </span>
+                    ),
+                    csv: (r) => r.gap_days },
+                  { key: "prev_order_date", label: "Previous Visit", align: "left" },
+                  { key: "last_order_date", label: "Latest Visit", align: "left",
+                    render: (r) => <span className="font-bold text-brand">{r.last_order_date}</span> },
+                  { key: "total_orders_window", label: "Orders (window)", numeric: true,
+                    render: (r) => fmtNum(r.total_orders_window) },
+                  { key: "total_spend_kes_window", label: "Spend (window)", numeric: true,
+                    render: (r) => <span className="font-bold">{fmtKES(r.total_spend_kes_window)}</span>,
+                    csv: (r) => r.total_spend_kes_window },
+                ]}
+                rows={unchurned}
+              />
+            )}
+          </div>
 
           {/* ---- Store cross-shop (customer-crosswalk) ---- */}
           {(() => {

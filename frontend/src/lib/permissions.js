@@ -9,7 +9,7 @@
  * only pages use the `admin-` prefix.
  */
 
-const VIEWER = ["overview", "locations", "footfall", "customers"];
+const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details"];
 const STORE_MANAGER = [...VIEWER, "inventory", "re-order", "ibt"];
 const ANALYST = [...STORE_MANAGER, "products", "pricing", "data-quality"];
 const EXEC = [...ANALYST, "ceo-report", "exports"];
@@ -52,6 +52,7 @@ export const homePageFor = (user) => {
     "locations": "/locations",
     "footfall": "/footfall",
     "customers": "/customers",
+    "customer-details": "/customer-details",
     "products": "/products",
     "inventory": "/inventory",
     "re-order": "/re-order",

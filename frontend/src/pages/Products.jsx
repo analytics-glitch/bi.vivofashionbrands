@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
-import { isMerchandise, categoryFor } from "@/lib/productCategory";
+import { isMerchandise, categoryFor, MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
 import SORHeader from "@/components/SORHeader";
@@ -9,6 +9,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
+import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import SorAllStyles from "@/components/SorAllStyles";
@@ -32,6 +33,9 @@ const Products = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   const [brands, setBrands] = useState([]);
+  const [merchCats, setMerchCats] = useState([]);
+  const [merchSubs, setMerchSubs] = useState([]);
+  const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
@@ -115,6 +119,23 @@ const Products = () => {
     return rows.filter((r) => bs.has((r.brand || "").toLowerCase()));
   };
 
+  // Merch-taxonomy filter applied client-side. `subcategory` is present on
+  // SOR rows, top-skus, new styles AND stock-sales rows. Categories are
+  // resolved via `categoryFor` (uses the SUBCATEGORY_TO_CATEGORY map).
+  const filterByMerch = (rows) => {
+    if (!merchCats.length && !merchSubs.length) return rows;
+    const catSet = merchCats.length ? new Set(merchCats) : null;
+    const subSet = merchSubs.length ? new Set(merchSubs) : null;
+    return rows.filter((r) => {
+      const sub = r.subcategory || r.product_type || "";
+      if (subSet && !subSet.has(sub)) return false;
+      if (catSet && !catSet.has(categoryFor(sub))) return false;
+      return true;
+    });
+  };
+
+  const filterByBrandAndMerch = (rows) => filterByMerch(filterByBrand(rows));
+
   const avgSor = sor.length ? sor.reduce((s, r) => s + (r.sor_percent || 0), 0) / sor.length : 0;
   const hi = sor.filter((r) => (r.sor_percent || 0) > 60).length;
   const mid = sor.filter((r) => (r.sor_percent || 0) >= 30 && (r.sor_percent || 0) <= 60).length;
@@ -122,21 +143,29 @@ const Products = () => {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const brandFiltered = filterByBrand(sor);
+    const base0 = filterByBrandAndMerch(sor);
     const base = q
-      ? brandFiltered.filter((r) =>
+      ? base0.filter((r) =>
           (r.style_name || "").toLowerCase().includes(q) ||
           (r.collection || "").toLowerCase().includes(q) ||
           (r.brand || "").toLowerCase().includes(q)
         )
-      : brandFiltered;
+      : base0;
     return [...base].sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0));
     // eslint-disable-next-line
-  }, [sor, search, brands]);
+  }, [sor, search, brands, merchCats, merchSubs]);
 
   // Tornado data removed — charts replaced by sortable tables.
-  const topFiltered = useMemo(() => filterByBrand(top).slice(0, 20), [top, brands]); // eslint-disable-line
-  const newStylesFiltered = useMemo(() => filterByBrand(newStyles), [newStyles, brands]); // eslint-disable-line
+  const topFiltered = useMemo(() => filterByBrandAndMerch(top).slice(0, 20), [top, brands, merchCats, merchSubs]); // eslint-disable-line
+  const newStylesFiltered = useMemo(() => filterByBrandAndMerch(newStyles), [newStyles, brands, merchCats, merchSubs]); // eslint-disable-line
+
+  // Stock-Sales by subcat + by category get the merch filter too.
+  const filteredStockSales = useMemo(() => filterByMerch(stockSales), [stockSales, merchCats, merchSubs]); // eslint-disable-line
+  const filteredStsByCat = useMemo(() => {
+    if (!merchCats.length) return stsByCat;
+    const set = new Set(merchCats);
+    return stsByCat.filter((r) => set.has(r.category));
+  }, [stsByCat, merchCats]);
 
   // Batch-fetch thumbnails for every visible style across all three tables.
   const thumbStyles = useMemo(() => {
@@ -161,16 +190,46 @@ const Products = () => {
           <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Products</h1>
           <p className="text-muted text-[13px] mt-0.5">For Head of Products — style & subcategory performance</p>
         </div>
-        <div className="w-full sm:w-64" data-testid="products-brand-filter">
-          <div className="eyebrow mb-1">Brand</div>
-          <MultiSelect
-            testId="brand-select"
-            options={BRAND_OPTIONS.map((b) => ({ value: b, label: b }))}
-            value={brands}
-            onChange={setBrands}
-            placeholder="All brands"
-            width={256}
-          />
+        <div className="flex flex-wrap items-end gap-3" data-testid="products-filters">
+          <div className="w-full sm:w-44">
+            <div className="eyebrow mb-1">Category</div>
+            <MultiSelect
+              testId="products-cat-multi"
+              options={MERCH_CATEGORIES.map((c) => ({ value: c, label: c }))}
+              value={merchCats}
+              onChange={(v) => {
+                setMerchCats(v);
+                if (v.length) {
+                  const allowed = new Set(subcategoriesFor(v));
+                  setMerchSubs((subs) => subs.filter((s) => allowed.has(s)));
+                }
+              }}
+              placeholder="All categories"
+              width={176}
+            />
+          </div>
+          <div className="w-full sm:w-56">
+            <div className="eyebrow mb-1">Subcategory</div>
+            <MultiSelect
+              testId="products-subcat-multi"
+              options={subcategoriesFor(merchCats).map((s) => ({ value: s, label: s }))}
+              value={merchSubs}
+              onChange={setMerchSubs}
+              placeholder="All subcategories"
+              width={224}
+            />
+          </div>
+          <div className="w-full sm:w-64" data-testid="products-brand-filter">
+            <div className="eyebrow mb-1">Brand</div>
+            <MultiSelect
+              testId="brand-select"
+              options={BRAND_OPTIONS.map((b) => ({ value: b, label: b }))}
+              value={brands}
+              onChange={setBrands}
+              placeholder="All brands"
+              width={256}
+            />
+          </div>
         </div>
       </div>
 
@@ -282,15 +341,41 @@ const Products = () => {
                   csv: (r) => varianceFlag(r.variance),
                 },
               ]}
-              rows={stsByCat}
+              rows={filteredStsByCat}
             />
           </div>
 
           <div className="card-white p-5" data-testid="sts-subcat-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view — one row per merchandise subcategory. Click Category to group rows by category (subcategories ranked by units sold within each group). Red = action needed (stockout or overstock risk). Green = healthy balance."
+              subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
+            <div className="flex justify-end mb-2 -mt-1">
+              <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid="sts-view-toggle">
+                <button
+                  onClick={() => setStsView("flat")}
+                  data-testid="sts-view-flat"
+                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "flat" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                >
+                  Flat table
+                </button>
+                <button
+                  onClick={() => setStsView("grouped")}
+                  data-testid="sts-view-grouped"
+                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "grouped" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                >
+                  Grouped by category
+                </button>
+              </div>
+            </div>
+            {stsView === "grouped" ? (
+              <CategoryAccordionTable
+                rows={filteredStockSales}
+                categoryFor={categoryFor}
+                testId="sts-subcat-grouped"
+                exportName="stock-to-sales-by-subcategory-grouped.csv"
+              />
+            ) : (
             <SortableTable
               testId="sts-subcat"
               exportName="stock-to-sales-by-subcategory.csv"
@@ -322,8 +407,9 @@ const Products = () => {
                   csv: (r) => varianceFlag(r.variance),
                 },
               ]}
-              rows={stockSales}
+              rows={filteredStockSales}
             />
+            )}
           </div>
 
           {/* ---- Product Performance by Category / Subcategory ---- */}
@@ -332,7 +418,7 @@ const Products = () => {
             testId="perf-category"
             nameKey="category"
             nameLabel="Category"
-            rows={stsByCat}
+            rows={filteredStsByCat}
             prevRows={stsByCatPrev}
             compareLbl={compareLbl}
             csvName="performance-by-category.csv"
@@ -344,7 +430,7 @@ const Products = () => {
             testId="perf-subcat"
             nameKey="subcategory"
             nameLabel="Subcategory"
-            rows={stockSales}
+            rows={filteredStockSales}
             prevRows={stockSalesPrev}
             compareLbl={compareLbl}
             csvName="performance-by-subcategory.csv"

@@ -25,6 +25,7 @@ import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
 import Q2TargetsCard from "@/components/Q2TargetsCard";
+import KpiTrendChart from "@/components/KpiTrendChart";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
@@ -1170,6 +1171,12 @@ const Overview = () => {
                 dateTo={dateTo}
                 country={countries.length === 1 ? countries[0] : undefined}
                 channel={channels.length ? channels.join(",") : undefined}
+                dataVersion={dataVersion}
+              />
+              <KpiTrendChart
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                countries={countries}
                 dataVersion={dataVersion}
               />
               <Q2TargetsCard />

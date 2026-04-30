@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="1" tests="10" time="268.400" timestamp="2026-04-30T10:25:45.574527+00:00" hostname="agent-env-08a75415-0b0e-4c37-9b31-a096a60f524b"><testcase classname="backend.tests.test_iteration_41_analytics" name="test_customer_retention" time="52.614"><failure message="AssertionError: Internal Server Error&#10;assert 500 == 200&#10; +  where 500 = &lt;Response [500]&gt;.status_code">backend/tests/test_iteration_41_analytics.py:63: in test_customer_retention
+    assert r.status_code == 200, r.text[:300]
+E   AssertionError: Internal Server Error
+E   assert 500 == 200
+E    +  where 500 = &lt;Response [500]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration_41_analytics" name="test_avg_spend_by_customer_type" time="60.148"><failure message="AssertionError: The preview environment is not responding. It may be starting up.&#10;  &#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration_41_analytics.py:89: in test_avg_spend_by_customer_type
+    assert r.status_code == 200, r.text[:300]
+E   AssertionError: The preview environment is not responding. It may be starting up.
+E     
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration_41_analytics" name="test_recently_unchurned[30]" time="43.371" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_recently_unchurned[60]" time="0.260" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_recently_unchurned[90]" time="0.311" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_recently_unchurned[180]" time="0.198" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_aged_stock" time="48.188" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_replenish_by_color" time="1.256" /><testcase classname="backend.tests.test_iteration_41_analytics" name="test_style_sku_breakdown_bulk" time="1.753"><skipped type="pytest.skip" message="Could not fetch style names (status 200)">/app/backend/tests/test_iteration_41_analytics.py:197: Could not fetch style names (status 200)</skipped></testcase><testcase classname="backend.tests.test_iteration_41_analytics" name="test_customer_details" time="60.099"><failure message="AssertionError: The preview environment is not responding. It may be starting up.&#10;  &#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration_41_analytics.py:222: in test_customer_details
+    assert r.status_code == 200, r.text[:300]
+E   AssertionError: The preview environment is not responding. It may be starting up.
+E     
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase></testsuite></testsuites>

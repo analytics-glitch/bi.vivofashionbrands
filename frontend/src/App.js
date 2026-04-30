@@ -9,6 +9,7 @@ import Products from "@/pages/Products";
 import Inventory from "@/pages/Inventory";
 import Exports from "@/pages/Exports";
 import Customers from "@/pages/Customers";
+import CustomerDetails from "@/pages/CustomerDetails";
 import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
 import ReOrder from "@/pages/ReOrder";
@@ -81,6 +82,7 @@ function App() {
               <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
               <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
               <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
+              <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
               <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
               <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
               <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />

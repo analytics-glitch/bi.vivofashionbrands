@@ -1209,6 +1209,650 @@ async def customer_frequency(
     return mask_rows(rows or [], getattr(user, "role", None))
 
 
+# ---------------------------------------------------------------------------
+# Customer analytics — identified-only retention, spend-by-type, unchurned.
+# Walk-in orders (missing customer_id or customer_type=Guest) are excluded
+# from EVERY metric below. Without this, the retention rate denominator is
+# inflated by anonymous foot traffic that physically can't repeat-purchase.
+# ---------------------------------------------------------------------------
+# In-memory cache for the historical /orders fan-out — these queries are
+# expensive (365-day window = 12 chunks × ≤50k rows). 10-minute TTL is
+# enough for the dashboard while the data only ticks once a day upstream.
+_CUSTOMER_HIST_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_CUSTOMER_HIST_TTL = 600  # 10 minutes
+def _is_walk_in_order(r: Dict[str, Any]) -> bool:
+    """Walk-in detector — must match `walk-ins` endpoint logic.
+    A walk-in has either no customer_id, customer_type=Guest, or no
+    customer_name at all (some POS rows omit customer_id but include name).
+    """
+    cid = r.get("customer_id")
+    ctype = (r.get("customer_type") or "").lower()
+    if not cid:
+        return True
+    if ctype == "guest":
+        return True
+    return False
+
+
+async def _orders_for_window(date_from: str, date_to: str, country: Optional[str] = None,
+                             channel: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Chunked /orders fan-out for analytics (≤30 days per chunk).
+    Cached in-memory for 10 minutes per (window, country, channel)."""
+    import time as _time
+    cache_key = f"{date_from}|{date_to}|{country or ''}|{channel or ''}"
+    cached = _CUSTOMER_HIST_CACHE.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _CUSTOMER_HIST_TTL:
+        return cached[1]
+    df = datetime.strptime(date_from, "%Y-%m-%d").date()
+    dt = datetime.strptime(date_to, "%Y-%m-%d").date()
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= dt:
+        end = min(cur + timedelta(days=29), dt)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+    out: List[Dict[str, Any]] = []
+    for d1, d2 in chunks:
+        rows = await _safe_fetch("/orders", {
+            "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+        out.extend(rows)
+    _CUSTOMER_HIST_CACHE[cache_key] = (_time.time(), out)
+    # Trim cache if it grows too large (keep most recent 32 entries).
+    if len(_CUSTOMER_HIST_CACHE) > 32:
+        oldest = sorted(_CUSTOMER_HIST_CACHE.items(), key=lambda kv: kv[1][0])[:8]
+        for k, _ in oldest:
+            _CUSTOMER_HIST_CACHE.pop(k, None)
+    return out
+
+
+@api_router.get("/analytics/replenish-by-color")
+async def analytics_replenish_by_color(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    min_units_sold: int = Query(20, ge=0),
+    min_sor_percent: float = Query(50.0, ge=0, le=100),
+    max_weeks_of_cover: float = Query(8.0, ge=0.5, le=52),
+    user=Depends(get_current_user),
+):
+    """Replenishment recommendations by color.
+
+    Filters styles that qualify for replen:
+      • Units sold (last 6 months) ≥ `min_units_sold`
+      • Sell-out rate ≥ `min_sor_percent`
+      • Weeks of cover < `max_weeks_of_cover` (using 3-week sales rate)
+
+    For each qualifying style we break down sales & stock by COLOR. Each
+    color gets its own target stock = (color_3w_units / 21) × 56 days
+    (i.e. 8 weeks of cover at the recent run-rate). Recommended replen
+    qty per color = max(0, target − current SOH).
+
+    Output: list of {style_name, brand, subcategory, total_units_6m,
+    total_soh, weeks_of_cover, sor_percent, sell_thru_30d, colors:
+    [{color, units_6m, units_3w, soh_total, target_qty, recommended_qty,
+    pct_of_style_sales}, …], total_recommended_qty}.
+    Sorted by total_recommended_qty descending.
+
+    Source data: re-uses the cached SOR list from /sor (new + repeat
+    styles) plus the BULK SKU breakdown so we don't fan out per-style.
+    """
+    sor_rows = await _safe_fetch("/sor", {
+        "country": country, "channel": channel, "limit": 5000,
+    }) or []
+
+    # Filter to candidates worth replenishing.
+    candidates = []
+    for r in sor_rows:
+        units_6m = int(r.get("units_sold") or 0)
+        sor_pct = float(r.get("sor_percent") or r.get("sor") or 0)
+        soh = float(r.get("current_stock") or r.get("soh") or 0)
+        # 3-week rate proxy from upstream sell-thru (units sold last 30d).
+        # Upstream's `weeks_of_cover` already accounts for this; if it's
+        # missing we'll compute below from the SKU breakdown.
+        woc = r.get("weeks_of_cover")
+        if units_6m < min_units_sold:
+            continue
+        if sor_pct < min_sor_percent:
+            continue
+        # Skip if we can't compute WoC at all (zero current stock means
+        # already stocked-out — those go to `out-of-stock` not replenish).
+        if soh <= 0:
+            continue
+        if woc is not None and float(woc) >= max_weeks_of_cover:
+            continue
+        candidates.append(r)
+
+    if not candidates:
+        return []
+
+    # Cap to top 100 candidates by units_sold; final output is bounded by
+    # how many actually need replen so this is a soft cap.
+    candidates.sort(key=lambda r: r.get("units_sold") or 0, reverse=True)
+    candidates = candidates[:100]
+    candidate_names = {r.get("style_name") for r in candidates if r.get("style_name")}
+
+    # Single 30-day /orders fan-out — much cheaper than the 6-month bulk
+    # SKU breakdown. We use it to compute per-(style, color) recent sell-
+    # through. 30 days is enough for an 8-week-cover replen calc since
+    # we still have meaningful daily run-rates without overwhelming upstream.
+    today = datetime.now(timezone.utc).date()
+    look_from = (today - timedelta(days=30)).isoformat()
+    sales_rows = await _orders_for_window(look_from, today.isoformat(), country, channel)
+
+    # (style_name, color) → units_30d / sales_30d
+    color_30d: Dict[Tuple[str, str], int] = defaultdict(int)
+    style_total_30d: Dict[str, int] = defaultdict(int)
+    for r in sales_rows:
+        sn = (r.get("style_name") or "").strip()
+        if sn not in candidate_names:
+            continue
+        color = (r.get("color_print") or r.get("color") or "—").strip() or "—"
+        qty = int(r.get("quantity") or 0)
+        color_30d[(sn, color)] += qty
+        style_total_30d[sn] += qty
+
+    # Per-(style, color) SOH from the inventory cache.
+    inv = await fetch_all_inventory(country=country) or []
+    chs_set = set(_split_csv(channel)) if channel else None
+    color_soh: Dict[Tuple[str, str], float] = defaultdict(float)
+    for r in inv:
+        sn = (r.get("style_name") or "").strip()
+        if sn not in candidate_names:
+            continue
+        if chs_set and (r.get("location_name") or "") not in chs_set:
+            continue
+        if is_warehouse_location(r.get("location_name")):
+            continue
+        color = (r.get("color_print") or r.get("color") or "—").strip() or "—"
+        color_soh[(sn, color)] += float(r.get("available") or 0)
+
+    out: List[Dict[str, Any]] = []
+    for r in candidates:
+        sn = r.get("style_name") or ""
+        if not sn:
+            continue
+        # Find every color that either sold in last 30d or has SOH.
+        colors = {k[1] for k in color_30d.keys() if k[0] == sn} | {k[1] for k in color_soh.keys() if k[0] == sn}
+        if not colors:
+            continue
+        total_30d = style_total_30d.get(sn, 0)
+        if total_30d <= 0:
+            # No recent sales — skip; replen cools off otherwise.
+            continue
+        sell_rate_per_day = total_30d / 30.0
+        color_rows = []
+        total_replen = 0
+        total_soh = 0.0
+        for color in colors:
+            u30 = color_30d.get((sn, color), 0)
+            soh = color_soh.get((sn, color), 0.0)
+            total_soh += soh
+            color_rate = u30 / 30.0
+            target = color_rate * 56.0  # 8 weeks of cover at recent rate
+            rec = max(0, int(round(target - soh)))
+            color_rows.append({
+                "color": color,
+                "units_30d": u30,
+                "soh_total": int(soh),
+                "target_qty": int(round(target)),
+                "recommended_qty": rec,
+                "pct_of_style_sales": round((u30 / total_30d * 100), 1) if total_30d else 0.0,
+            })
+            total_replen += rec
+        if total_replen <= 0:
+            continue
+        color_rows.sort(key=lambda x: x["recommended_qty"], reverse=True)
+        woc_calc = round((total_soh / sell_rate_per_day / 7), 2) if sell_rate_per_day else 999.0
+        out.append({
+            "style_name": sn,
+            "brand": r.get("brand") or "",
+            "subcategory": r.get("subcategory") or r.get("product_type") or "",
+            "total_units_6m": int(r.get("units_sold") or 0),
+            "total_units_30d": total_30d,
+            "total_soh": int(total_soh),
+            "sor_percent": round(float(r.get("sor_percent") or r.get("sor") or 0), 1),
+            "weeks_of_cover": woc_calc,
+            "sell_rate_per_day": round(sell_rate_per_day, 2),
+            "colors": color_rows,
+            "total_recommended_qty": total_replen,
+        })
+    out.sort(key=lambda r: r["total_recommended_qty"], reverse=True)
+    return out
+
+
+@api_router.get("/analytics/customer-details")
+async def analytics_customer_details(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    category: Optional[str] = None,  # CSV of merch categories
+    subcategory: Optional[str] = None,  # CSV of merch subcategories
+    limit: int = Query(500, ge=1, le=5000),
+    user=Depends(get_current_user),
+):
+    """Customer details list — one row per identified customer with basic
+    contact info, lifetime stats inside the window, and first / last
+    order dates. Powers the new Customer Details page.
+
+    Filters:
+      • country  — single or CSV (Title-cased upstream)
+      • channel  — POS location, single or CSV
+      • category / subcategory — merchandise filters; an order counts
+        toward the customer if ANY of its line items match.
+
+    The upstream BI doesn't expose SMS / email marketing-consent flags,
+    so those columns will come back as null and the UI shows them as
+    "n/a" — we explicitly do NOT fabricate consent values.
+
+    Walk-ins (no customer_id) are excluded.
+    """
+    rows = await _orders_for_window(date_from, date_to, country, channel)
+
+    # Optional category / subcategory filter — applied per /orders row.
+    cat_set = set(_split_csv(category)) if category else None
+    sub_set = set(_split_csv(subcategory)) if subcategory else None
+    chs_set = set(_split_csv(channel)) if channel else None
+
+    by_cust: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        if _is_walk_in_order(r):
+            continue
+        cid = str(r.get("customer_id") or "")
+        if not cid:
+            continue
+        # Channel / POS filter (when CSV — single value already filtered upstream).
+        if chs_set:
+            chan = r.get("channel") or r.get("pos_location_name") or ""
+            if chan not in chs_set:
+                continue
+        # Merch filter — order qualifies if its subcategory matches.
+        sub = r.get("subcategory") or r.get("product_type") or ""
+        if sub_set and sub not in sub_set:
+            continue
+        if cat_set and category_of(sub) not in cat_set:
+            continue
+        agg = by_cust.setdefault(cid, {
+            "customer_id": cid,
+            "customer_name": r.get("customer_name") or "",
+            "email": r.get("customer_email") or "",
+            "mobile": r.get("customer_phone") or r.get("phone") or "",
+            "country": r.get("country") or r.get("customer_country") or "",
+            "first_order_date": "",
+            "last_order_date": "",
+            "total_orders": 0,
+            "total_units": 0,
+            "total_sales": 0.0,
+            "_order_ids": set(),
+        })
+        # Backfill name/email/mobile if upstream omitted earlier rows.
+        if not agg["customer_name"] and r.get("customer_name"):
+            agg["customer_name"] = r["customer_name"]
+        if not agg["email"] and r.get("customer_email"):
+            agg["email"] = r["customer_email"]
+        if not agg["mobile"] and (r.get("customer_phone") or r.get("phone")):
+            agg["mobile"] = r.get("customer_phone") or r.get("phone")
+        od = (r.get("order_date") or "")[:10]
+        if od:
+            if not agg["first_order_date"] or od < agg["first_order_date"]:
+                agg["first_order_date"] = od
+            if not agg["last_order_date"] or od > agg["last_order_date"]:
+                agg["last_order_date"] = od
+        oid = r.get("order_id")
+        if oid:
+            agg["_order_ids"].add(oid)
+        agg["total_units"] += int(r.get("quantity") or 0)
+        agg["total_sales"] += float(r.get("net_sales_kes") or r.get("total_sales_kes") or 0)
+
+    out: List[Dict[str, Any]] = []
+    for agg in by_cust.values():
+        agg["total_orders"] = len(agg.pop("_order_ids", set()))
+        agg["total_sales"] = round(agg["total_sales"], 2)
+        out.append(agg)
+
+    out.sort(key=lambda x: x["total_sales"], reverse=True)
+    out = out[:limit]
+
+    # Enrich with name / phone / email from /top-customers (upstream's only
+    # source for these — /orders doesn't carry customer_name). Pull a
+    # generous limit so we cover the visible IDs; this is one cached call.
+    try:
+        top = await _safe_fetch("/top-customers", {
+            "date_from": date_from, "date_to": date_to,
+            "country": _split_csv(country)[0] if country and "," not in country else None,
+            "limit": 5000,
+        }) or []
+        by_id = {str(r.get("customer_id") or ""): r for r in top}
+        for agg in out:
+            tc = by_id.get(agg["customer_id"])
+            if tc:
+                if not agg["customer_name"] and tc.get("customer_name"):
+                    agg["customer_name"] = tc["customer_name"]
+                if not agg["email"] and tc.get("email"):
+                    agg["email"] = tc["email"]
+                if not agg["mobile"] and tc.get("phone"):
+                    agg["mobile"] = tc["phone"]
+                if not agg["country"] and tc.get("customer_country"):
+                    agg["country"] = tc["customer_country"]
+    except Exception as e:
+        logger.warning("[/analytics/customer-details] top-customers enrichment failed: %s", e)
+
+    # Best-effort first / last name split + consent placeholders.
+    for agg in out:
+        full = (agg["customer_name"] or "").strip()
+        parts = full.split() if full else []
+        agg["first_name"] = parts[0] if parts else ""
+        agg["last_name"] = " ".join(parts[1:]) if len(parts) > 1 else ""
+        agg["accepts_sms_marketing"] = None
+        agg["accepts_email_marketing"] = None
+
+    return mask_rows(out, getattr(user, "role", None))
+
+
+@api_router.get("/analytics/aged-stock")
+async def analytics_aged_stock(
+    min_days_since_sale: int = Query(60, ge=0, le=365),
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Aged stock report — per-SKU view of inventory that has not been
+    selling. Used by store ops teams to drive markdowns, IBT, returns
+    or product-mix decisions.
+
+    Output rows: {pos_location, product_name, size, barcode, sku,
+    units_sold_180d, soh, soh_warehouse, days_since_last_sale}.
+
+    Logic:
+      • Fan out /orders for 180 days; per (location, sku) compute
+        units_sold and max(order_date).
+      • Walk fetch_all_inventory → one row per (location, sku) where
+        SOH > 0. Join with the sales aggregate.
+      • days_since_last_sale = today − max(order_date). If the SKU has
+        NEVER sold in the look-back window we set it to 999 (treat as
+        "never sold this period" / very aged).
+      • Filter rows where days_since_last_sale ≥ min_days_since_sale.
+      • Sort by days_since_last_sale desc, then SOH desc.
+
+    `soh_warehouse` is the warehouse / holding-location stock for the
+    same SKU (group-wide, not POS-scoped) so reorder/markdown decisions
+    consider replenishable backstock too.
+    """
+    today = datetime.now(timezone.utc).date()
+    look_from = (today - timedelta(days=180)).isoformat()
+    rows = await _orders_for_window(look_from, today.isoformat(), country, channel)
+
+    # Per (location, sku) sales aggregates.
+    sales: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for r in rows:
+        loc = r.get("pos_location_name") or r.get("channel") or ""
+        sku = r.get("sku") or ""
+        if not loc or not sku:
+            continue
+        key = (loc, sku)
+        b = sales.setdefault(key, {"units": 0, "last_date": ""})
+        b["units"] += int(r.get("quantity") or 0)
+        od = (r.get("order_date") or "")[:10]
+        if od and od > b["last_date"]:
+            b["last_date"] = od
+
+    inv = await fetch_all_inventory(country=country) or []
+    chs = _split_csv(channel)
+    chs_set = set(chs) if chs else None
+
+    # Group warehouse stock per SKU (location-agnostic) — same SKU may sit
+    # in multiple warehouses; sum them all.
+    wh_by_sku: Dict[str, float] = defaultdict(float)
+    for r in inv:
+        if is_warehouse_location(r.get("location_name")):
+            wh_by_sku[r.get("sku") or ""] += float(r.get("available") or 0)
+
+    today_iso = today.isoformat()
+    out: List[Dict[str, Any]] = []
+    for r in inv:
+        loc = r.get("location_name") or ""
+        if not loc or is_warehouse_location(loc):
+            continue
+        if chs_set and loc not in chs_set:
+            continue
+        sku = r.get("sku") or ""
+        if not sku:
+            continue
+        soh = float(r.get("available") or 0)
+        if soh <= 0:
+            continue
+        agg = sales.get((loc, sku)) or {"units": 0, "last_date": ""}
+        units_sold = agg["units"]
+        last_date = agg["last_date"]
+        if last_date:
+            days = (datetime.strptime(today_iso, "%Y-%m-%d").date() -
+                    datetime.strptime(last_date, "%Y-%m-%d").date()).days
+        else:
+            days = 999
+        if days < min_days_since_sale:
+            continue
+        out.append({
+            "pos_location": loc,
+            "product_name": r.get("product_name") or r.get("style_name") or "",
+            "color": r.get("color_print") or r.get("color") or "",
+            "size": r.get("size") or "",
+            "barcode": r.get("barcode") or "",
+            "sku": sku,
+            "units_sold_180d": int(units_sold),
+            "soh": round(soh, 0),
+            "soh_warehouse": round(wh_by_sku.get(sku, 0), 0),
+            "days_since_last_sale": days,
+            "last_sale_date": last_date or None,
+        })
+    out.sort(key=lambda x: (x["days_since_last_sale"], x["soh"]), reverse=True)
+    return out
+
+
+@api_router.get("/analytics/customer-retention")
+async def analytics_customer_retention(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Identified-customer retention metrics.
+
+    Excludes walk-ins (no customer_id OR customer_type=Guest) — they
+    can't be tracked across orders so they shouldn't dilute retention.
+
+    Returns:
+      • total_customers — distinct customer_id seen in window
+      • repeat_customers — customer_id with ≥2 orders in window
+      • vip_customers — customer_id with ≥5 orders in window
+      • repeat_rate_pct — repeat / total × 100
+      • avg_orders_per_returner — orders ÷ customers (for repeaters only)
+      • walk_in_orders — orders excluded
+    """
+    rows = await _orders_for_window(date_from, date_to, country, channel)
+    by_cust: Dict[str, int] = defaultdict(int)
+    walk_ins = 0
+    for r in rows:
+        if _is_walk_in_order(r):
+            walk_ins += 1
+            continue
+        cid = r.get("customer_id")
+        if cid:
+            by_cust[str(cid)] += 1
+    total = len(by_cust)
+    repeat = sum(1 for n in by_cust.values() if n >= 2)
+    vip = sum(1 for n in by_cust.values() if n >= 5)
+    returner_orders = sum(n for n in by_cust.values() if n >= 2)
+    avg_orders_per_returner = (returner_orders / repeat) if repeat else 0
+    return {
+        "total_customers": total,
+        "repeat_customers": repeat,
+        "vip_customers": vip,
+        "repeat_rate_pct": (repeat / total * 100) if total else 0,
+        "avg_orders_per_returner": round(avg_orders_per_returner, 2),
+        "walk_in_orders": walk_ins,
+    }
+
+
+@api_router.get("/analytics/avg-spend-by-customer-type")
+async def analytics_avg_spend_by_customer_type(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Avg spend per customer split by New vs Returning.
+
+    Uses upstream `customer_type` field directly (values "New" / "Returning"
+    / "Guest"). A customer's classification can shift inside the window —
+    we count each customer ONCE per bucket (their majority type, with
+    "Returning" winning ties). Walk-ins (customer_type=Guest OR no
+    customer_id) are excluded.
+    """
+    rows = await _orders_for_window(date_from, date_to, country, channel)
+
+    # Per-customer aggregates: spend, order count, type vote.
+    spend_by_cust: Dict[str, float] = defaultdict(float)
+    orders_by_cust: Dict[str, int] = defaultdict(int)
+    type_votes: Dict[str, Dict[str, int]] = defaultdict(lambda: {"New": 0, "Returning": 0})
+    for r in rows:
+        if _is_walk_in_order(r):
+            continue
+        cid = str(r.get("customer_id") or "")
+        if not cid:
+            continue
+        ctype = (r.get("customer_type") or "").strip()
+        if ctype not in ("New", "Returning"):
+            # Default unknowns to "Returning" — safer; under-counts new.
+            ctype = "Returning"
+        spend_by_cust[cid] += float(r.get("net_sales_kes") or r.get("total_sales_kes") or 0)
+        orders_by_cust[cid] += 1
+        type_votes[cid][ctype] += 1
+
+    if not spend_by_cust:
+        return {"new": _empty_spend_bucket(), "returning": _empty_spend_bucket()}
+
+    new_spend = 0.0
+    new_count = 0
+    new_orders = 0
+    ret_spend = 0.0
+    ret_count = 0
+    ret_orders = 0
+    for cid, spend in spend_by_cust.items():
+        votes = type_votes[cid]
+        # "Returning" wins ties — once a customer is returning, they stay.
+        is_new = votes["New"] > votes["Returning"]
+        if is_new:
+            new_spend += spend
+            new_count += 1
+            new_orders += orders_by_cust[cid]
+        else:
+            ret_spend += spend
+            ret_count += 1
+            ret_orders += orders_by_cust[cid]
+
+    def _bucket(spend, count, orders):
+        return {
+            "customers": count,
+            "orders": orders,
+            "total_spend_kes": round(spend, 2),
+            "avg_spend_per_customer_kes": round(spend / count, 2) if count else 0,
+            "avg_orders_per_customer": round(orders / count, 2) if count else 0,
+        }
+
+    return {"new": _bucket(new_spend, new_count, new_orders),
+            "returning": _bucket(ret_spend, ret_count, ret_orders)}
+
+
+def _empty_spend_bucket() -> Dict[str, Any]:
+    return {"customers": 0, "orders": 0, "total_spend_kes": 0,
+            "avg_spend_per_customer_kes": 0, "avg_orders_per_customer": 0}
+
+
+@api_router.get("/analytics/recently-unchurned")
+async def analytics_recently_unchurned(
+    date_from: str,
+    date_to: str,
+    min_gap_days: int = Query(90, ge=7, le=365),
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Customers whose gap between their LAST TWO visits is ≥ `min_gap_days`
+    AND whose latest visit falls inside [date_from, date_to].
+
+    "Recently unchurned" = a customer who came back after a long silence.
+    Useful for win-back campaigns: they just proved they still respond,
+    so a follow-up nudge has high conversion. Reasonable thresholds: 30,
+    60, 90, 180 days (frontend slider).
+
+    Look-back window: dynamic — we look back `min_gap_days + 30` days
+    so we always have enough history to detect the requested gap, but
+    avoid the cost of a full year of /orders chunks. Walk-ins excluded.
+    Output is masked by role like the other PII endpoints.
+
+    Returns: list of {customer_id, customer_name, last_order_date,
+    prev_order_date, gap_days, total_orders_window, total_spend_kes_window}.
+    """
+    today = datetime.strptime(date_to, "%Y-%m-%d").date()
+    # Just enough history to spot the requested gap plus a 30-day buffer.
+    look_from = (today - timedelta(days=min_gap_days + 30)).isoformat()
+    hist_rows = await _orders_for_window(look_from, date_to, country, channel)
+
+    # Bucket orders by customer_id, drop walk-ins.
+    by_cust: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in hist_rows:
+        if _is_walk_in_order(r):
+            continue
+        cid = str(r.get("customer_id") or "")
+        if not cid:
+            continue
+        by_cust[cid].append(r)
+
+    out: List[Dict[str, Any]] = []
+    for cid, orders in by_cust.items():
+        # Order events by date — collapse same-day orders into one "visit"
+        # since we want gaps between trips, not gaps between line-items.
+        visit_dates = sorted({(o.get("order_date") or "")[:10] for o in orders if o.get("order_date")})
+        if len(visit_dates) < 2:
+            continue
+        last = visit_dates[-1]
+        prev = visit_dates[-2]
+        # Latest visit must be in the requested window — otherwise the
+        # customer's "comeback" happened before this period.
+        if not (date_from <= last <= date_to):
+            continue
+        try:
+            gap = (datetime.strptime(last, "%Y-%m-%d").date() -
+                   datetime.strptime(prev, "%Y-%m-%d").date()).days
+        except Exception:
+            continue
+        if gap < min_gap_days:
+            continue
+        # Window aggregates (orders & spend during the requested window).
+        win_orders = [o for o in orders if date_from <= (o.get("order_date") or "")[:10] <= date_to]
+        spend = sum(float(o.get("net_sales_kes") or o.get("total_sales_kes") or 0) for o in win_orders)
+        sample = orders[-1]
+        out.append({
+            "customer_id": cid,
+            "customer_name": sample.get("customer_name") or "",
+            "customer_email": sample.get("customer_email") or "",
+            "last_order_date": last,
+            "prev_order_date": prev,
+            "gap_days": gap,
+            "total_orders_window": len(win_orders),
+            "total_spend_kes_window": round(spend, 2),
+        })
+    out.sort(key=lambda x: x["gap_days"], reverse=True)
+    return mask_rows(out, getattr(user, "role", None))
+
+
 @api_router.get("/customers-by-location")
 async def customers_by_location(
     request: Request,
@@ -3811,6 +4455,141 @@ async def analytics_style_sku_breakdown(
     payload = {"style_name": style_name, "skus": rows}
     _sku_breakdown_cache[cache_key] = (_time.time(), payload)
     return payload
+
+
+@api_router.get("/analytics/style-sku-breakdown-bulk")
+async def analytics_style_sku_breakdown_bulk(
+    style_names: str = Query(..., description="Comma-separated style names"),
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Bulk variant of `/analytics/style-sku-breakdown` — accepts a CSV of
+    style names and runs the 6-month /orders fan-out and inventory pull
+    ONCE, then aggregates per-style. The single-style endpoint is fine
+    for one-off lookups but the SOR styles table calls it for the first
+    25 visible rows on render — 25× independent fan-outs hit the upstream
+    rate-limit (and even with our cache, cold-load is 30+ seconds per
+    style serially). This bulk path collapses 25 calls into one.
+
+    Output: `{styles: {<style_name>: [{sku, color, size, units_6m, ...},
+    ...], ...}, missing: [<style names with no data>]}`. Per-style rows
+    use the same shape as the single endpoint so the frontend can swap.
+
+    Each (style, country, channel) triple also gets stamped into the
+    single-row cache, so a follow-up `/style-sku-breakdown?style_name=…`
+    hits warm cache too.
+    """
+    import time as _time
+    needles = [s.strip() for s in style_names.split(",") if s.strip()]
+    if not needles:
+        return {"styles": {}, "missing": []}
+
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    chunks: List[Tuple[date, date]] = []
+    cur = six_m_from
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(df_: date, dt_: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": df_.isoformat(), "date_to": dt_.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    chunks_data: List[List[Dict[str, Any]]] = []
+    for df_, dt_ in chunks:
+        chunks_data.append(await _orders_chunk(df_, dt_))
+    inv = await fetch_all_inventory(country=country) or []
+
+    needle_set = set(needles)
+    # Per-style aggregation: { style_name: { (color, size, sku): {...} } }
+    per_style_sales: Dict[str, Dict[tuple, Dict[str, Any]]] = {n: {} for n in needles}
+    for chunk in chunks_data:
+        for r in (chunk or []):
+            sn = (r.get("style_name") or "").strip()
+            if sn not in needle_set:
+                continue
+            order_date = (r.get("order_date") or "")[:10]
+            color = r.get("color_print") or r.get("color") or "—"
+            size = r.get("size") or "—"
+            sku = r.get("sku") or ""
+            key = (color, size, sku)
+            b = per_style_sales[sn].setdefault(key, {
+                "sku": sku, "color": color, "size": size,
+                "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+            })
+            qty = int(r.get("quantity") or 0)
+            sales = float(r.get("total_sales_kes") or 0)
+            b["units_6m"] += qty
+            b["sales_6m"] += sales
+            if order_date and order_date >= three_w_from.isoformat():
+                b["units_3w"] += qty
+
+    per_style_soh: Dict[str, Dict[tuple, Dict[str, float]]] = {n: {} for n in needles}
+    for r in inv:
+        sn = (r.get("style_name") or "").strip()
+        if sn not in needle_set:
+            continue
+        if len(chs) >= 1 and r.get("location_name") not in chs:
+            continue
+        color = r.get("color_print") or r.get("color") or "—"
+        size = r.get("size") or "—"
+        sku = r.get("sku") or ""
+        key = (color, size, sku)
+        avail = float(r.get("available") or 0)
+        loc = r.get("location_name") or ""
+        b = per_style_soh[sn].setdefault(key, {"store": 0.0, "wh": 0.0})
+        if is_warehouse_location(loc):
+            b["wh"] += avail
+        else:
+            b["store"] += avail
+
+    out_styles: Dict[str, List[Dict[str, Any]]] = {}
+    missing: List[str] = []
+    now_ts = _time.time()
+    for sn in needles:
+        sales_map = per_style_sales[sn]
+        soh_map = per_style_soh[sn]
+        keys = set(sales_map.keys()) | set(soh_map.keys())
+        rows: List[Dict[str, Any]] = []
+        for k in keys:
+            sales_row = sales_map.get(k, {
+                "sku": k[2], "color": k[0], "size": k[1],
+                "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+            })
+            soh_row = soh_map.get(k, {"store": 0.0, "wh": 0.0})
+            soh_total = soh_row["store"] + soh_row["wh"]
+            rows.append({
+                "sku": sales_row["sku"],
+                "color": sales_row["color"],
+                "size": sales_row["size"],
+                "units_6m": int(sales_row["units_6m"]),
+                "units_3w": int(sales_row["units_3w"]),
+                "sales_6m": round(sales_row["sales_6m"], 2),
+                "soh_store": round(soh_row["store"], 2),
+                "soh_wh": round(soh_row["wh"], 2),
+                "soh_total": round(soh_total, 2),
+                "pct_in_wh": round((soh_row["wh"] / soh_total * 100), 1) if soh_total else 0.0,
+            })
+        rows.sort(key=lambda r: r["units_6m"], reverse=True)
+        out_styles[sn] = rows
+        if not rows:
+            missing.append(sn)
+        # Warm the single-style cache so subsequent ?style_name=… calls
+        # hit it instantly.
+        ck = f"{sn}|{country or ''}|{channel or ''}"
+        _sku_breakdown_cache[ck] = (now_ts, {"style_name": sn, "skus": rows})
+
+    return {"styles": out_styles, "missing": missing}
 
 
 # ---------------------------------------------------------------------------

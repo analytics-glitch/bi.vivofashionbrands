@@ -80,3 +80,36 @@ export function isMerchandise(subcat) {
   if (!cat) return false; // unknown subcategory → exclude
   return !NON_MERCHANDISE_CATEGORIES.has(cat);
 }
+
+// Pre-computed lookup data for the Category / Sub-Category filter pills.
+// Built from the same merch taxonomy so the UI is instant (no extra fetch).
+// Categories are ordered alphabetically; subcategories within each category
+// are ordered alphabetically too.
+const _CAT_TO_SUBS = (() => {
+  const map = {};
+  for (const [sub, cat] of Object.entries(SUBCATEGORY_TO_CATEGORY)) {
+    if (NON_MERCHANDISE_CATEGORIES.has(cat)) continue;
+    if (!map[cat]) map[cat] = [];
+    map[cat].push(sub);
+  }
+  for (const cat of Object.keys(map)) map[cat].sort();
+  return map;
+})();
+
+export const MERCH_CATEGORIES = Object.keys(_CAT_TO_SUBS).sort();
+
+/** All merch subcategories (sorted) — for "any subcat" pickers. */
+export const MERCH_SUBCATEGORIES = Object.keys(SUBCATEGORY_TO_CATEGORY)
+  .filter((s) => isMerchandise(s))
+  .sort();
+
+/** Subcategories under the given categories. Pass [] / null for ALL merch
+ * subcats. Returns a sorted, de-duplicated array. */
+export function subcategoriesFor(categories) {
+  if (!categories || !categories.length) return MERCH_SUBCATEGORIES;
+  const set = new Set();
+  for (const c of categories) {
+    for (const s of (_CAT_TO_SUBS[c] || [])) set.add(s);
+  }
+  return Array.from(set).sort();
+}

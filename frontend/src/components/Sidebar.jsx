@@ -31,6 +31,7 @@ const tabs = [
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },
+  { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },

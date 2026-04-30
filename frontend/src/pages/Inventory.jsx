@@ -8,9 +8,11 @@ import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ChartTooltip, makePctDeltaLabel } from "@/components/ChartHelpers";
-import { categoryFor, isMerchandise } from "@/lib/productCategory";
+import { categoryFor, isMerchandise, MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
+import MultiSelect from "@/components/MultiSelect";
 import SORHeader from "@/components/SORHeader";
 import StockToSalesByVariant from "@/components/StockToSalesByVariant";
+import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import {
   Package,
   Warning,
@@ -49,6 +51,11 @@ const Inventory = () => {
 
   // Live search — debounced via useEffect below to avoid re-render storms.
   const [searchInput, setSearchInput] = useState("");
+  const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
+  // Local merch-taxonomy filters (multi-select). Drive `visibleSubcats`
+  // intersection downstream so every section reacts in lock-step.
+  const [merchCats, setMerchCats] = useState([]); // [] = all merch categories
+  const [merchSubs, setMerchSubs] = useState([]); // [] = all merch subcats
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
@@ -154,27 +161,32 @@ const Inventory = () => {
     });
   }, [merchInv, styleCanonicalType]);
 
-  // Apply country, location, brand, product-type AND search (product / sku /
-  // style / barcode) filters. This drives every downstream aggregate.
+  // Apply country, location, brand, product-type, merch-taxonomy AND
+  // search filters. This drives every downstream aggregate.
   const filteredInv = useMemo(() => {
     const q = search.toLowerCase();
     const hasCountryFilter = countries.length > 1;
     const countriesLC = hasCountryFilter ? countries.map((c) => c.toLowerCase()) : null;
     const channelsSet = channels.length ? new Set(channels) : null;
+    const catSet = merchCats.length ? new Set(merchCats) : null;
+    const subSet = merchSubs.length ? new Set(merchSubs) : null;
     return enrichedInv.filter((r) => {
       if (countriesLC && !countriesLC.includes((r.country || "").toLowerCase())) return false;
       if (channelsSet && !channelsSet.has(r.location_name)) return false;
       if (brandFilter && r.brand !== brandFilter) return false;
       if (typeFilter && r.product_type !== typeFilter) return false;
+      if (catSet && !catSet.has(categoryFor(r.product_type))) return false;
+      if (subSet && !subSet.has(r.product_type)) return false;
       if (!q) return true;
       return r._search.includes(q);
     });
-  }, [enrichedInv, countries, channels, brandFilter, typeFilter, search]);
+  }, [enrichedInv, countries, channels, brandFilter, typeFilter, merchCats, merchSubs, search]);
 
-  // When any filter (search/brand/type) is active, derive the visible
-  // location & subcategory set and restrict the aggregated charts/tables to
-  // match. When no filters are active we show the raw merchandise aggregates.
-  const filtersActive = Boolean(search || brandFilter || typeFilter);
+  // When any filter (search/brand/type/category/subcat) is active, derive
+  // the visible location & subcategory set and restrict the aggregated
+  // charts/tables to match. When no filters are active we show the raw
+  // merchandise aggregates.
+  const filtersActive = Boolean(search || brandFilter || typeFilter || merchCats.length || merchSubs.length);
   const visibleLocations = useMemo(
     () => new Set(filteredInv.map((r) => r.location_name).filter(Boolean)),
     [filteredInv]
@@ -584,6 +596,32 @@ const Inventory = () => {
                 Clear
               </button>
             )}
+            <MultiSelect
+              testId="inv-cat-multi"
+              icon={null}
+              options={MERCH_CATEGORIES.map((c) => ({ value: c, label: c }))}
+              value={merchCats}
+              onChange={(v) => {
+                setMerchCats(v);
+                // Drop any selected subcat that's no longer under the
+                // chosen categories so the two stay coherent.
+                if (v.length) {
+                  const allowed = new Set(subcategoriesFor(v));
+                  setMerchSubs((subs) => subs.filter((s) => allowed.has(s)));
+                }
+              }}
+              placeholder="All categories"
+              width={170}
+            />
+            <MultiSelect
+              testId="inv-subcat-multi"
+              icon={null}
+              options={subcategoriesFor(merchCats).map((s) => ({ value: s, label: s }))}
+              value={merchSubs}
+              onChange={setMerchSubs}
+              placeholder="All subcategories"
+              width={210}
+            />
             <select
               className="input-pill"
               value={brandFilter}
@@ -593,17 +631,6 @@ const Inventory = () => {
               <option value="">All brands</option>
               {brands.map((b) => (
                 <option key={b}>{b}</option>
-              ))}
-            </select>
-            <select
-              className="input-pill"
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              data-testid="inv-type"
-            >
-              <option value="">All subcategories</option>
-              {types.map((t) => (
-                <option key={t}>{t}</option>
               ))}
             </select>
             {filtersActive && (
@@ -738,8 +765,34 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="sts-by-subcategory-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view — one row per merchandise subcategory. Click Category to group rows by category (subcategories ranked by units sold within each group). Red = action needed (stockout or overstock risk). Green = healthy balance."
+              subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
+            <div className="flex justify-end mb-2 -mt-1">
+              <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid="sts-view-toggle">
+                <button
+                  onClick={() => setStsView("flat")}
+                  data-testid="sts-view-flat"
+                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "flat" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                >
+                  Flat table
+                </button>
+                <button
+                  onClick={() => setStsView("grouped")}
+                  data-testid="sts-view-grouped"
+                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "grouped" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
+                >
+                  Grouped by category
+                </button>
+              </div>
+            </div>
+            {stsView === "grouped" ? (
+              <CategoryAccordionTable
+                rows={filteredSubcatSS}
+                categoryFor={categoryFor}
+                testId="inv-sts-subcat-grouped"
+                exportName={`inventory-sts-by-subcategory-grouped_${exportSlug}.csv`}
+              />
+            ) : (
             <SortableTable
               testId="inv-sts-subcat"
               exportName={`inventory-sts-by-subcategory_${exportSlug}.csv`}
@@ -772,6 +825,7 @@ const Inventory = () => {
               ]}
               rows={filteredSubcatSS}
             />
+            )}
           </div>
 
           <StockToSalesByVariant exportSlug={exportSlug} />
