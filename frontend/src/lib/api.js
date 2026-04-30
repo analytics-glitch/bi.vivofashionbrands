@@ -38,7 +38,13 @@ export const api = axios.create({ baseURL: API, timeout: 120000 });
 // are LIVE business numbers, not static.
 const _inflight = new Map();   // key -> Promise<resp>
 const _respCache = new Map();  // key -> { ts, data }
-const RESP_TTL_MS = 5_000;     // 5 s — long enough for StrictMode + sibling effects
+// 60 s — dashboard reads are 99% idempotent (BI numbers refresh on the
+// order of minutes, not seconds). A 60 s cache means navigating between
+// pages re-uses identical KPI/sales/inventory payloads instead of paying
+// the upstream cost every time, which dramatically smooths perceived
+// performance on cold-cache scenarios. Refresh button still bumps
+// `dataVersion` which forces a fresh fetch.
+const RESP_TTL_MS = 60_000;
 const RESP_CACHE_MAX = 300;
 
 const _cacheKey = (url, params) => {

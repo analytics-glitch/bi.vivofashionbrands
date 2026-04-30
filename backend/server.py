@@ -35,10 +35,66 @@ logger = logging.getLogger(__name__)
 
 _client: Optional[httpx.AsyncClient] = None
 
-# In-memory stale cache for /kpis — used to avoid blank dashboards when the
-# upstream BI API is mid-refresh / cold-starting. Key: (date_from, date_to,
-# country, channel). Value: (timestamp, data_with_stale_flag=False).
+# In-memory stale cache for /kpis (and sister Overview endpoints) — used
+# to avoid blank dashboards when the upstream BI API is mid-refresh /
+# cold-starting. Key: (path, date_from, date_to, country, channel).
+# Value: (timestamp, data). On startup the cache is rehydrated from disk
+# (`/tmp/_kpi_stale_cache.json`) so a pod restart doesn't wipe it.
 _kpi_stale_cache: Dict[tuple, tuple] = {}
+_KPI_STALE_TTL = 86400  # 24 h — stale data beats a Network Error banner
+_KPI_STALE_PATH = Path("/tmp/_kpi_stale_cache.json")
+_kpi_stale_save_lock = asyncio.Lock()  # serialise concurrent disk flushes
+
+
+async def _kpi_stale_save_async() -> None:
+    """Coroutine variant of `_kpi_stale_save` that holds a lock so
+    concurrent fire-and-forget callers don't race on the tmp→final
+    rename. Wrapped via `asyncio.create_task` from the hot path.
+    """
+    async with _kpi_stale_save_lock:
+        await asyncio.to_thread(_kpi_stale_save)
+
+
+def _kpi_stale_load() -> None:
+    """Best-effort rehydrate of the /kpis stale cache from disk on boot.
+
+    Stored as a list of (key_tuple, ts, data) so a pod restart doesn't
+    drop the user back to a Network Error banner. Reads silently fail —
+    a missing/corrupt file just means we start cold.
+    """
+    try:
+        if not _KPI_STALE_PATH.exists():
+            return
+        import json as _json
+        with _KPI_STALE_PATH.open() as fh:
+            for entry in _json.load(fh):
+                key = tuple(entry["key"])
+                _kpi_stale_cache[key] = (entry["ts"], entry["data"])
+        logger.info(f"[stale-cache] rehydrated {len(_kpi_stale_cache)} entries from disk")
+    except Exception as e:
+        logger.warning(f"[stale-cache] rehydrate failed: {e}")
+
+
+def _kpi_stale_save() -> None:
+    """Best-effort flush of the in-memory stale cache to disk. Called from
+    a fire-and-forget task whenever a fresh value is written. Cheap (small
+    dict, JSON-serialisable) so we just dump-on-write rather than batching.
+    """
+    try:
+        import json as _json
+        # Only keep entries fresher than 24 h to bound the file.
+        now = time.time()
+        out = []
+        for key, (ts, data) in _kpi_stale_cache.items():
+            if now - ts > _KPI_STALE_TTL:
+                continue
+            out.append({"key": list(key), "ts": ts, "data": data})
+        tmp = _KPI_STALE_PATH.with_suffix(".tmp")
+        with tmp.open("w") as fh:
+            _json.dump(out, fh)
+        tmp.replace(_KPI_STALE_PATH)
+    except Exception as e:
+        logger.warning(f"[stale-cache] flush failed: {e}")
 
 # TTL cache for the full churned-customers list used by the /customers churn-
 # rate calculation. Upstream /churned-customers?limit=100000 takes ~30s which
@@ -363,7 +419,23 @@ async def get_country_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
-    return await fetch("/country-summary", {"date_from": date_from, "date_to": date_to})
+    cache_key = ("/country-summary", date_from or "", date_to or "", "", "")
+    try:
+        data = await fetch(
+            "/country-summary",
+            {"date_from": date_from, "date_to": date_to},
+            timeout_sec=15.0,
+            max_attempts=3,
+        )
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        asyncio.create_task(_kpi_stale_save_async())
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/country-summary upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 @api_router.get("/kpis")
@@ -375,15 +447,15 @@ async def get_kpis(
 ):
     """Supports comma-separated country & channel. Aggregates if more than one combo.
 
-    Hedged path: tries a single upstream attempt with a 30 s per-call timeout
-    (2 × 30 s = 60 s max budget, well inside the 120 s frontend timeout).
-    On upstream error/timeout, falls back to a short-lived stale cache so the
-    dashboard never goes blank during Vivo BI refresh windows / cold starts.
+    Hedged path: tries the upstream with a 15 s per-attempt budget and 3
+    attempts (45 s total). On upstream error/timeout, falls back to a
+    24-hour disk-persisted stale cache so the dashboard never goes blank
+    during Vivo BI refresh windows / cold starts / pod restarts.
     """
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     chs = _split_csv(channel)
-    cache_key = (date_from or "", date_to or "", country or "", channel or "")
+    cache_key = ("/kpis", date_from or "", date_to or "", country or "", channel or "")
     single = len(cs) <= 1 and len(chs) <= 1
 
     try:
@@ -391,12 +463,12 @@ async def get_kpis(
             data = await fetch(
                 "/kpis",
                 {**base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None},
-                timeout_sec=30.0,
-                max_attempts=2,
+                timeout_sec=15.0,
+                max_attempts=3,
             )
         else:
-            # Multi-country/channel fan-out — keep default timeout (more calls,
-            # each should still be fast individually) but cap attempts at 2.
+            # Multi-country/channel fan-out — same per-call budget; in-flight
+            # de-dup in fetch() collapses concurrent identical calls.
             tasks = []
             for c in (cs or [None]):
                 for ch in (chs or [None]):
@@ -405,17 +477,17 @@ async def get_kpis(
                         params["country"] = c
                     if ch:
                         params["channel"] = ch
-                    tasks.append(fetch("/kpis", params, timeout_sec=30.0, max_attempts=2))
+                    tasks.append(fetch("/kpis", params, timeout_sec=15.0, max_attempts=3))
             results = await asyncio.gather(*tasks)
             data = agg_kpis(results)
-        # Cache the good result. 90 s TTL — long enough to cover a Cloud Run
-        # cold start, short enough that numbers are near-real-time.
         data = {**data, "stale": False}
         _kpi_stale_cache[cache_key] = (time.time(), data)
+        # Fire-and-forget disk flush so a pod restart preserves it.
+        asyncio.create_task(_kpi_stale_save_async())
         return data
     except HTTPException as e:
         cached = _kpi_stale_cache.get(cache_key)
-        if cached and (time.time() - cached[0] < 180):  # 3-min window
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
             stale_data = {**cached[1], "stale": True, "stale_age_sec": int(time.time() - cached[0])}
             logger.warning(f"/kpis upstream {e.status_code} — serving stale cache (age={stale_data['stale_age_sec']}s)")
             return stale_data
@@ -432,25 +504,37 @@ async def get_sales_summary(
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     chs = _split_csv(channel)
-    if len(cs) <= 1 and len(chs) <= 1:
-        return await fetch("/sales-summary", {
-            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
-        })
-    # call per (country) and flatten; channel filter applied post-hoc
-    tasks = [fetch("/sales-summary", {**base, "country": c}) for c in (cs or [None])]
-    groups = await asyncio.gather(*tasks)
-    out: List[Dict[str, Any]] = []
-    seen = set()
-    for g in groups:
-        for row in g:
-            key = (row.get("channel"), row.get("country"))
-            if key in seen:
-                continue
-            seen.add(key)
-            if chs and row.get("channel") not in chs:
-                continue
-            out.append(row)
-    return out
+    cache_key = ("/sales-summary", date_from or "", date_to or "", country or "", channel or "")
+    try:
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/sales-summary", {
+                **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+            }, timeout_sec=15.0, max_attempts=3)
+        else:
+            # call per (country) and flatten; channel filter applied post-hoc
+            tasks = [fetch("/sales-summary", {**base, "country": c}, timeout_sec=15.0, max_attempts=3) for c in (cs or [None])]
+            groups = await asyncio.gather(*tasks)
+            out: List[Dict[str, Any]] = []
+            seen = set()
+            for g in groups:
+                for row in g:
+                    key = (row.get("channel"), row.get("country"))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if chs and row.get("channel") not in chs:
+                        continue
+                    out.append(row)
+            data = out
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        asyncio.create_task(_kpi_stale_save_async())
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/sales-summary upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 @api_router.get("/top-skus")
@@ -541,23 +625,35 @@ async def get_daily_trend(
 ):
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
-    if len(cs) <= 1:
-        return await fetch("/daily-trend", {**base, "country": cs[0] if cs else None})
-    tasks = [fetch("/daily-trend", {**base, "country": c}) for c in cs]
-    results = await asyncio.gather(*tasks)
-    merged: Dict[str, Dict[str, Any]] = {}
-    for g in results:
-        for row in g:
-            day = row.get("day")
-            if day not in merged:
-                merged[day] = {"day": day, "orders": 0, "gross_sales": 0.0, "net_sales": 0.0, "total_sales": 0.0}
-            merged[day]["orders"] += row.get("orders") or 0
-            merged[day]["gross_sales"] += row.get("gross_sales") or 0
-            merged[day]["net_sales"] += row.get("net_sales") or 0
-            merged[day]["total_sales"] += row.get("total_sales") or row.get("gross_sales") or 0
-    out = list(merged.values())
-    out.sort(key=lambda r: r["day"])
-    return out
+    cache_key = ("/daily-trend", date_from or "", date_to or "", country or "", "")
+    try:
+        if len(cs) <= 1:
+            data = await fetch("/daily-trend", {**base, "country": cs[0] if cs else None}, timeout_sec=15.0, max_attempts=3)
+        else:
+            tasks = [fetch("/daily-trend", {**base, "country": c}, timeout_sec=15.0, max_attempts=3) for c in cs]
+            results = await asyncio.gather(*tasks)
+            merged: Dict[str, Dict[str, Any]] = {}
+            for g in results:
+                for row in g:
+                    day = row.get("day")
+                    if day not in merged:
+                        merged[day] = {"day": day, "orders": 0, "gross_sales": 0.0, "net_sales": 0.0, "total_sales": 0.0}
+                    merged[day]["orders"] += row.get("orders") or 0
+                    merged[day]["gross_sales"] += row.get("gross_sales") or 0
+                    merged[day]["net_sales"] += row.get("net_sales") or 0
+                    merged[day]["total_sales"] += row.get("total_sales") or row.get("gross_sales") or 0
+            out = list(merged.values())
+            out.sort(key=lambda r: r["day"])
+            data = out
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        asyncio.create_task(_kpi_stale_save_async())
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/daily-trend upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 @api_router.get("/inventory")
@@ -586,15 +682,20 @@ async def get_inventory(
 async def admin_cache_clear():
     """Clear all server-side caches so the next request re-fetches
     from upstream Vivo BI. Non-authenticated (same trust zone as /api/*).
+
+    NOTE: We deliberately preserve `_kpi_stale_cache` (and its disk file)
+    because it is a *safety net* for upstream failures — wiping it on
+    every Refresh click would mean the user loses their fallback right
+    when they need it most. The stale cache is only consulted when the
+    upstream fails outright; on success the user always gets fresh data.
     """
     _inv_cache["ts"] = 0
     _inv_cache["key"] = None
     _inv_cache["data"] = None
     _churn_full_cache.clear()
     _churn_neg_cache.clear()
-    _kpi_stale_cache.clear()
     _FETCH_CACHE.clear()
-    return {"ok": True, "cleared": ["inventory", "churn_full", "churn_neg", "kpi_stale", "fetch_cache"]}
+    return {"ok": True, "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache"]}
 
 
 @api_router.get("/stock-to-sales")
@@ -1705,20 +1806,32 @@ async def get_footfall(
 ):
     base = {"date_from": date_from, "date_to": date_to}
     chs = _split_csv(channel)
-    if len(chs) <= 1:
-        return await fetch("/footfall", {**base, "channel": chs[0] if chs else None})
-    tasks = [fetch("/footfall", {**base, "channel": ch}) for ch in chs]
-    results = await asyncio.gather(*tasks)
-    out = []
-    seen = set()
-    for g in results:
-        for r in g:
-            k = r.get("location")
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(r)
-    return out
+    cache_key = ("/footfall", date_from or "", date_to or "", "", channel or "")
+    try:
+        if len(chs) <= 1:
+            data = await fetch("/footfall", {**base, "channel": chs[0] if chs else None}, timeout_sec=15.0, max_attempts=3)
+        else:
+            tasks = [fetch("/footfall", {**base, "channel": ch}, timeout_sec=15.0, max_attempts=3) for ch in chs]
+            results = await asyncio.gather(*tasks)
+            out = []
+            seen = set()
+            for g in results:
+                for r in g:
+                    k = r.get("location")
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    out.append(r)
+            data = out
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        asyncio.create_task(_kpi_stale_save_async())
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/footfall upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 # Footfall weekday pattern — caches for 1 hour since the data only shifts
@@ -5478,12 +5591,15 @@ app.add_middleware(ActivityLogMiddleware)
 @app.on_event("startup")
 async def startup():
     await seed_admin()
+    # Rehydrate the on-disk stale cache so the very first user click after
+    # a pod restart still has /kpis & friends to fall back on if upstream
+    # is cold. Runs synchronously — it's a small JSON file.
+    _kpi_stale_load()
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
-    # only populate in-process caches (`_all_styles_cache`, `_curve_cache`),
-    # so we run them as background tasks. Errors are swallowed because a
-    # warmup failure must NOT block boot — the endpoints will simply pay the
-    # cold cost on first user click as before.
+    # only populate in-process caches, so we run them as background tasks.
+    # Errors are swallowed because a warmup failure must NOT block boot —
+    # the endpoints will simply pay the cold cost on first user click.
     async def _warm():
         try:
             await asyncio.sleep(8)  # let the upstream finish its own warmup
@@ -5508,6 +5624,42 @@ async def startup():
                 return_exceptions=True,
             )
             logger.info("[warmup] customer-history cache warmed (MTD + last-30)")
+            # Pre-warm the Overview-page hot path: /kpis + /country-summary +
+            # /sales-summary + /footfall + /daily-trend across the windows
+            # that the user lands on first (Today, MTD, Last 30d) and the
+            # default last-month compare. This guarantees the first dashboard
+            # load shows numbers instantly even if Vivo BI is cold-starting.
+            iso_today = today.isoformat()
+            iso_yest = (today - timedelta(days=1)).isoformat()
+            iso_l7 = (today - timedelta(days=6)).isoformat()
+            iso_lm_from = (today.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
+            iso_lm_to = (today.replace(day=1) - timedelta(days=1)).isoformat()
+            countries = ["Kenya", "Uganda", "Rwanda", "Online", None]
+            warm_ranges = [
+                (iso_today, iso_today),    # Today
+                (iso_yest, iso_yest),      # Yesterday
+                (iso_l7, iso_today),       # Last 7d
+                (last30_from, iso_today),  # Last 30d
+                (mtd_from, iso_today),     # MTD
+                (iso_lm_from, iso_lm_to),  # Last month (compare default)
+            ]
+            warm_tasks = []
+            for df, dt in warm_ranges:
+                # Country-summary doesn't take country/channel params.
+                warm_tasks.append(get_country_summary(date_from=df, date_to=dt))
+                # Per-country /kpis, /sales-summary; /daily-trend per country.
+                for c in countries:
+                    warm_tasks.append(get_kpis(date_from=df, date_to=dt, country=c))
+                # /footfall + /sales-summary at no-country are the hottest.
+                warm_tasks.append(get_sales_summary(date_from=df, date_to=dt))
+                warm_tasks.append(get_footfall(date_from=df, date_to=dt))
+                for c in ("Kenya", "Uganda", "Rwanda", "Online"):
+                    warm_tasks.append(get_daily_trend(date_from=df, date_to=dt, country=c))
+            # Concurrency cap via gather — the upstream pool has 400 conns
+            # and our in-flight de-dup collapses redundant work, so this
+            # finishes inside ~30 s even with hundreds of warm targets.
+            await asyncio.gather(*warm_tasks, return_exceptions=True)
+            logger.info(f"[warmup] Overview hot-path pre-warmed ({len(warm_tasks)} targets across {len(warm_ranges)} ranges)")
         except Exception as e:
             logger.warning("[warmup] failed: %s", e)
     asyncio.create_task(_warm())

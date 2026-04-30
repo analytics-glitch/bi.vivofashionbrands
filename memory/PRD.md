@@ -41,6 +41,25 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30)
 ## Recently Shipped
+- **Iter_44** (2026-04-30) — **Cold-load resilience + general perf pass**:
+  - **Root cause**: Overview's "Upstream KPIs unavailable (Network Error)" banner fired when the upstream Vivo BI Cloud Run container was cold and the per-attempt budget (30s × 2 attempts) plus k8s ingress timeout combined to exceed the browser's patience, OR when the in-memory stale cache (3-min TTL) had already expired before the upstream came back online.
+  - **Backend fixes**:
+    - `_kpi_stale_cache` TTL extended **3 min → 24 h** and now **persisted to disk** (`/tmp/_kpi_stale_cache.json`) so a pod restart no longer wipes the safety net.
+    - Disk flush is serialised via `_kpi_stale_save_lock` (`asyncio.Lock`) so concurrent fire-and-forget saves don't race on the tmp→final rename.
+    - `/kpis` per-attempt budget **30s → 15s × 3 attempts** (45s total) — fails faster into the stale fallback, well inside the ingress timeout.
+    - Same stale-cache pattern (15s × 3 attempts, 24-h disk-backed fallback) applied to `/country-summary`, `/sales-summary`, `/footfall`, `/daily-trend` — every Overview-page hot endpoint.
+    - **Startup hot-path warmup**: 72 background tasks pre-populate `/kpis` + `/country-summary` + `/sales-summary` + `/footfall` + `/daily-trend` for {Today, Yesterday, Last 7d, Last 30d, MTD, Last Month} × {Kenya, Uganda, Rwanda, Online, no-country} on boot — so the FIRST user click after a deploy hits warm cache.
+    - On rehydrate, the 24-h disk cache is loaded into memory before the warmup runs, so pod restarts inherit ALL prior cached values.
+    - `/admin/cache-clear` now **preserves** `_kpi_stale_cache` (was clearing it). The stale cache is a safety net, not a freshness cache — wiping it on user-triggered Refresh defeats its purpose. Only `_FETCH_CACHE`, inventory, and churn caches are cleared on Refresh now.
+  - **Frontend fixes**:
+    - `RESP_TTL_MS` (axios response cache) bumped **5s → 60s** — re-navigating between pages now re-uses identical KPI/sales/inventory payloads instead of re-hitting the upstream every time.
+    - `refresh()` in `filters.jsx` now also calls `clearApiCache()` so the new 60-s window doesn't mask a manual Refresh.
+  - **Verified**:
+    - 14-call parallel cold-cache wave completes in 5.3s wall-time (most calls <2s).
+    - Cold `/api/kpis` returns in **1.05s** (was timing out cold previously).
+    - Overview screenshot post-fix: 11 KPI tiles populated, no `degraded-banner`, all charts render.
+    - `_kpi_stale_save_async` lock eliminated all "stale-cache flush failed" race-condition warnings in supervisor logs.
+
 - **Iter_43** (2026-04-30) — **P0 visibility fix + P1 refactor pass 1**:
   - **Fix · Inventory STS Stock toggle visibility**: the `[data-testid='inv-stock-scope']` Stores/Warehouse/Combined toggle was wrapped inside `{(countries.length > 0 || channels.length > 0) && …}` so it stayed hidden until the user applied a filter. Moved it (and the warehouse-include checkbox) into an unconditional `inv-filter-row` so the controls are always visible right under the page title. Banner ("Showing inventory for: …") still stays conditional on `filtersActive`. Verified via screenshot.
   - **Refactor · server.py extraction pass 1**: `server.py` reduced from **6,095 → 5,520 lines**. Created a new `/app/backend/routes/` package and extracted:

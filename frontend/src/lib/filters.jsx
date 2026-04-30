@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState,
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { datePresets } from "@/lib/api";
-import { api } from "@/lib/api";
+import { api, clearApiCache } from "@/lib/api";
 import { invalidateKpis } from "@/lib/useKpis";
 import { useAuth } from "@/lib/auth";
 
@@ -202,6 +202,7 @@ export const FiltersProvider = ({ children }) => {
     try {
       await api.post("/admin/cache-clear");
     } catch { /* non-fatal — still bump dataVersion */ }
+    clearApiCache();
     invalidateKpis();
     setDataVersion((v) => v + 1);
   }, []);
