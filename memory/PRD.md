@@ -41,6 +41,11 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29)
 ## Recently Shipped
+- **Iter_40d** (2026-04-30) — **Per-country stock on Stock-to-Sales tables**:
+  - User reported "The inventory shows for all business, it does not filter by country or POS". Confirmed upstream Vivo BI `/subcategory-stock-sales` returns per-country SALES but **GLOBAL STOCK** — every country query got identical `current_stock` values (e.g. Dresses=9,600 for Kenya, Uganda AND Rwanda).
+  - Previous logic only re-scoped stock when `locations` (POS) was set. Country-only queries passed through upstream's buggy global stock unchanged.
+  - Fix: added `elif cs:` branch in `analytics_sts_by_subcat` (~line 2355) and a parallel `if locs or cs` guard in `analytics_sts_by_category` (~line 2482). Both now call `fetch_all_inventory(country=country)` and rebuild `stock_by_subcat` from the country-scoped inventory.
+  - Verified with 11/11 backend tests + frontend: Kenya Dresses = 6,135 units / 20,501 stock; Uganda = 538 / 1,773; Rwanda = 207 / 985 (all distinct). No-country call preserved as upstream pass-through. POS+country still narrows correctly.
 - **Iter_40c** (2026-04-29) — **Path-aware country case normalization (final fix)**:
   - User reported by-Color and by-Size tables still zero under country filter, even after iter_40b fixed by-subcategory. Root cause: upstream Vivo BI API has **mixed case-sensitivity** — `/orders`, `/sales-summary`, `/daily-trend`, `/top-customers`, `/subcategory-sales`, `/subcategory-stock-sales` REQUIRE Title-case (`Kenya`); but `/inventory` REQUIRES lowercase (`kenya`); `/locations`, `/country-summary`, `/kpis` are case-insensitive. Iter_40b only patched the two subcategory endpoints; a global Title-case attempt then broke `/inventory`.
   - Fix moved to a single choke-point in the `fetch()` wrapper (~line 165): `if path.startswith('/inventory') → lowercase, else → Title-case` via new `_norm_country` / `_norm_country_csv` helpers. Handles CSV (`kenya,uganda` → `Kenya,Uganda`). Cache key uses post-normalization params, so de-dup still works correctly.
