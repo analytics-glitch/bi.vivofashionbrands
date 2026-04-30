@@ -2330,6 +2330,7 @@ async def analytics_sts_by_subcat(
         for r in (sales_rows or [])
     }
     locs = _split_csv(locations) or _split_csv(channel)
+    cs = _split_csv(country)
     stock_by_subcat: Optional[Dict[str, float]] = None
     if locs:
         inv = await fetch_all_inventory(country=country, locations=locs)
@@ -2350,6 +2351,20 @@ async def analytics_sts_by_subcat(
                 if not pt:
                     continue
                 stock_by_subcat[pt] += float(r.get("available") or 0)
+        total_stock_local = sum(stock_by_subcat.values()) or 0
+    elif cs:
+        # Country-only scope (no POS filter). Upstream `/subcategory-stock-sales`
+        # returns GLOBAL current_stock for every country query — sales scope
+        # correctly but stock doesn't. Rebuild stock from the country-scoped
+        # inventory fan-out so Kenya/Uganda/Rwanda tiles don't all show the
+        # same (global) numbers.
+        inv = await fetch_all_inventory(country=country)
+        stock_by_subcat = defaultdict(float)
+        for r in inv or []:
+            pt = r.get("product_type")
+            if not pt:
+                continue
+            stock_by_subcat[pt] += float(r.get("available") or 0)
         total_stock_local = sum(stock_by_subcat.values()) or 0
 
     # When a POS scope is active, override sales (units_sold / total_sales /
@@ -2455,6 +2470,7 @@ async def analytics_sts_by_category(
     # See note in `analytics_sts_by_subcat` — scope stock side to the same POS
     # whether the client sent `locations` or `channel`.
     locs = _split_csv(locations) or _split_csv(channel)
+    cs = _split_csv(country)
     inv_rows: List[Dict[str, Any]] = []
     if locs:
         inv_rows = await fetch_all_inventory(country=country, locations=locs) or []
@@ -2463,14 +2479,20 @@ async def analytics_sts_by_category(
             for r in all_inv or []:
                 if is_warehouse_location(r.get("location_name")):
                     inv_rows.append(r)
+    elif cs:
+        # Country-only scope: upstream returns GLOBAL current_stock for every
+        # country query, so stock doesn't actually vary. Re-fetch country-
+        # scoped inventory to produce real per-country stock numbers.
+        inv_rows = await fetch_all_inventory(country=country) or []
 
     # Reuse the module-level Vivo merch taxonomy (see SUBCATEGORY_TO_CATEGORY
     # near the top of this file). category_of(...) returns "Other" for unknown
     # subcategories so downstream filters can cleanly exclude them.
 
-    # If locations filter is provided, rebuild current_stock per row
-    # from local inventory (upstream's channel param only filters sales).
-    if locs:
+    # If locations OR country is provided, rebuild current_stock per row from
+    # local inventory (upstream's stock ignores country for non-POS queries
+    # and its channel param only filters sales).
+    if locs or cs:
         stock_by_subcat: Dict[str, float] = defaultdict(float)
         for r in inv_rows:
             pt = r.get("product_type")
