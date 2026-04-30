@@ -131,6 +131,12 @@ export const SortableTable = ({
   renderExpanded = null,
   /** Stable key getter for expanded-state tracking. Defaults to row index. */
   rowKey = null,
+  /** Optional tiebreaker sort applied after the primary `sort`. Useful for
+   * grouped views like "sort by Category, then Units Sold desc within each
+   * category" — set `secondarySort={{ key: 'units_sold', dir: 'desc' }}` and
+   * the Category click does the rest. Resolved against `columns` like the
+   * primary sort, so `sortValue` callbacks are honoured. */
+  secondarySort = null,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [expanded, setExpanded] = useState(() => new Set());
@@ -142,16 +148,29 @@ export const SortableTable = ({
     if (!col) return rows;
     const dir = sort.dir === "asc" ? 1 : -1;
     const getVal = (r) => (col.sortValue ? col.sortValue(r) : r[sort.key]);
-    return [...rows].sort((a, b) => {
-      const av = getVal(a);
-      const bv = getVal(b);
+    // Tiebreaker — only applied when (a) caller provided `secondarySort`,
+    // (b) it points at a real column, and (c) it's not the same key as the
+    // primary sort (otherwise the primary already orders those rows).
+    const sec = secondarySort && secondarySort.key !== sort.key
+      ? columns.find((c) => c.key === secondarySort.key)
+      : null;
+    const secDir = sec && secondarySort?.dir === "asc" ? 1 : -1;
+    const getSec = sec
+      ? (r) => (sec.sortValue ? sec.sortValue(r) : r[secondarySort.key])
+      : null;
+    const cmp = (av, bv, d) => {
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
-      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
-      return String(av).localeCompare(String(bv)) * dir;
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * d;
+      return String(av).localeCompare(String(bv)) * d;
+    };
+    return [...rows].sort((a, b) => {
+      const primary = cmp(getVal(a), getVal(b), dir);
+      if (primary !== 0 || !getSec) return primary;
+      return cmp(getSec(a), getSec(b), secDir);
     });
-  }, [rows, sort, columns]);
+  }, [rows, sort, columns, secondarySort]);
 
   const visible = limit ? sorted.slice(0, limit) : sorted;
 

@@ -738,15 +738,21 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="sts-by-subcategory-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view — one row per merchandise subcategory. Red = action needed (stockout or overstock risk). Green = healthy balance."
+              subtitle="Granular view — one row per merchandise subcategory. Click Category to group rows by category (subcategories ranked by units sold within each group). Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
             <SortableTable
               testId="inv-sts-subcat"
               exportName={`inventory-sts-by-subcategory_${exportSlug}.csv`}
               pageSize={15}
               initialSort={{ key: "variance_abs", dir: "desc" }}
+              secondarySort={{ key: "units_sold", dir: "desc" }}
               columns={[
-                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
+                {
+                  key: "category", label: "Category", align: "left",
+                  sortValue: (r) => categoryFor(r.subcategory) || "",
+                  render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>,
+                  csv: (r) => categoryFor(r.subcategory),
+                },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                 { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
