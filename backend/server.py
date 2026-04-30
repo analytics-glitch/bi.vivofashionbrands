@@ -3772,6 +3772,141 @@ _sku_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SKU_BREAKDOWN_TTL = 60 * 30  # 30 minutes — heavy /orders chunked fetch
 _curve_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _CURVE_TTL = 60 * 30  # 30 minutes — same fan-out cost as sor-all-styles
+# Per-style first / last sale dates from the last 180 days. Shared between
+# /sor-all-styles (for accurate ages) and any other endpoint that needs
+# launch / recency data without paying the full /orders fan-out twice.
+# Key: f"{country}|{channel}". Value: (ts, {style_name: (first_iso, last_iso)}).
+_style_dates_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
+_STYLE_DATES_TTL = 60 * 30  # 30 minutes
+
+
+async def _get_style_first_last_sale(
+    country: Optional[str],
+    channel: Optional[str],
+    days: int = 180,
+) -> Dict[str, Tuple[str, str]]:
+    """Return `{style_name: (first_sale_iso, last_sale_iso)}` for every
+    style with at least one sale in the last `days` days. Cached for
+    30 min per (country, channel, days) so repeat callers share work.
+
+    Implementation strategy (for cost-control):
+      1. **First**, try to read the result from the existing
+         ``_curve_cache`` populated by `analytics_new_styles_curve` —
+         that endpoint is pre-warmed at startup and runs the same
+         /orders 180-day fan-out as we'd need here. If the cache has a
+         compatible entry (same country/channel scope, days ≥ requested),
+         we reuse its `first_sale` and derive `last_sale` from the last
+         non-empty weekly bucket. **No new upstream hits.**
+      2. **Fallback**: if the curve cache is empty (e.g. the warmup
+         hasn't run yet), do our own bounded /orders fan-out. We use a
+         concurrency cap of 4 so we don't trigger upstream 503s by
+         saturating the BI API alongside other warm-up traffic.
+
+    Multi-country / multi-channel callers fall through to the global
+    view (no upstream filter) to keep the fan-out bounded — the All-
+    Styles report is fundamentally a catalog snapshot.
+    """
+    import time as _time
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    only_country = cs[0] if len(cs) == 1 else None
+    only_channel = chs[0] if len(chs) == 1 else None
+    cache_key = f"{only_country or ''}|{only_channel or ''}|{days}"
+    cached = _style_dates_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _STYLE_DATES_TTL:
+        return cached[1]
+
+    today = datetime.now(timezone.utc).date()
+
+    # ── Path 1: piggyback on the curve cache when possible ──────────
+    # Curve cache key shape: f"{days}|{country or ''}|{channel or ''}".
+    # We need a compatible scope (same country+channel) and a window
+    # that's at least as deep as the one we're being asked for. The
+    # startup warmup pre-fetches days=122 (no country/channel), which
+    # covers the dominant All-Styles call.
+    for ck, (cts, payload) in list(_curve_cache.items()):
+        if (_time.time() - cts) >= _CURVE_TTL:
+            continue
+        try:
+            cdays_s, ccountry, cchannel = ck.split("|", 2)
+            cdays = int(cdays_s)
+        except Exception:
+            continue
+        if ccountry != (only_country or "") or cchannel != (only_channel or ""):
+            continue
+        if cdays < days:
+            continue
+        rows = (payload or {}).get("rows") or []
+        out: Dict[str, Tuple[str, str]] = {}
+        for row in rows:
+            s = row.get("style_name")
+            first = row.get("first_sale")
+            weekly = row.get("weekly") or []
+            if not s or not first:
+                continue
+            # last_sale ≈ start-of-final-non-empty-week. Curve buckets
+            # by week_start so the resolution is ±6 days; that's
+            # plenty for a "days_since_last_sale" pill.
+            last_iso = first
+            for w in weekly:
+                if (w.get("units") or 0) > 0:
+                    ws = w.get("week_start") or ""
+                    if ws and ws > last_iso:
+                        last_iso = ws
+            out[s] = (first, last_iso)
+        _style_dates_cache[cache_key] = (_time.time(), out)
+        logger.info(f"[style-dates] hydrated {len(out)} styles from curve cache (key={ck})")
+        return out
+
+    # ── Path 2: cold fan-out (rare — only if curve hasn't warmed) ──
+    df = today - timedelta(days=int(days))
+    chunks: List[Tuple[date, date]] = []
+    cur = df
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    sem = asyncio.Semaphore(4)
+
+    async def _chunk(d1: date, d2: date) -> List[Dict[str, Any]]:
+        async with sem:
+            return await _safe_fetch("/orders", {
+                "date_from": d1.isoformat(), "date_to": d2.isoformat(),
+                "limit": 50000,
+                "country": only_country,
+                "channel": only_channel,
+            }) or []
+
+    chunk_results = await asyncio.gather(
+        *(_chunk(d1, d2) for d1, d2 in chunks),
+        return_exceptions=True,
+    )
+    out: Dict[str, Tuple[str, str]] = {}
+    for chunk in chunk_results:
+        if isinstance(chunk, Exception):
+            logger.warning("[style-dates] chunk failed: %s", chunk)
+            continue
+        for r in chunk:
+            s = r.get("style_name")
+            if not s:
+                continue
+            d_iso = (r.get("order_date") or "")[:10]
+            if not d_iso:
+                continue
+            cur_pair = out.get(s)
+            if cur_pair is None:
+                out[s] = (d_iso, d_iso)
+            else:
+                first, last = cur_pair
+                if d_iso < first:
+                    first = d_iso
+                if d_iso > last:
+                    last = d_iso
+                out[s] = (first, last)
+    _style_dates_cache[cache_key] = (_time.time(), out)
+    logger.info(f"[style-dates] cold fan-out → {len(out)} styles ({len(chunks)} chunks)")
+    return out
 
 
 @api_router.get("/analytics/sor-all-styles")
@@ -3830,10 +3965,11 @@ async def analytics_sor_all_styles(
                         merged[s]["collection"] = r.get("collection")
         return list(merged.values())
 
-    six_m_skus, three_w_skus, inventory = await asyncio.gather(
+    six_m_skus, three_w_skus, inventory, style_dates = await asyncio.gather(
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
+        _get_style_first_last_sale(country, channel, days=180),
     )
 
     candidates = {r.get("style_name") for r in six_m_skus if r.get("style_name")}
@@ -3857,9 +3993,10 @@ async def analytics_sor_all_styles(
         if s not in sku_for_style and r.get("sku"):
             sku_for_style[s] = r["sku"]
 
-    # First-sale + last-sale dates — for All-Styles we don't need precise
-    # launch dates (no launch-band filter), so we infer last-sale from the
-    # `three_w_map` if present, else fall back to the 6-month window.
+    # First-sale + last-sale dates — pulled from the shared 180-day
+    # /orders helper. Styles with first_sale within 180 days get a real
+    # age + launch_date; older styles fall back to the legacy "≥26 wks"
+    # behaviour so we don't have to fan out further into history.
     out: List[Dict[str, Any]] = []
     for s in candidates:
         sm = six_m_map.get(s, {})
@@ -3873,14 +4010,47 @@ async def analytics_sor_all_styles(
         pct_in_wh = (wh / soh_total * 100.0) if soh_total > 0 else 0.0
         denom = units_6m + soh_total
         sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
-        # Weekly avg: divide by 26 (full window) so apples-to-apples vs L-10
-        # for styles in the launch band still aligns roughly with their age.
-        weekly_avg = units_6m / 26.0
+        # Real age + last-sale lookup. The 180-day helper returns ISO
+        # strings; only styles that actually traded in the window are
+        # present, so absence => style is older than 180 days OR sold
+        # zero in the period (and won't be in `candidates` either).
+        dates = style_dates.get(s)
+        if dates:
+            first_iso, last_iso = dates
+            try:
+                first_d = datetime.fromisoformat(first_iso).date()
+                last_d = datetime.fromisoformat(last_iso).date()
+            except Exception:
+                first_d = None
+                last_d = None
+        else:
+            first_d = None
+            last_d = None
+        if first_d is not None:
+            age_days = (today - first_d).days
+            # If the upstream /orders sweep found a first sale ≥180d ago
+            # (i.e. the style was actively trading on the boundary day)
+            # cap the displayed age at 26.0 wks so the column stays
+            # comparable across the catalog.
+            age_weeks = min(age_days / 7.0, 26.0)
+            launch_date_iso = first_iso if age_days <= 180 else None
+        else:
+            # Style not seen in the 180-day window — must be older. Mark
+            # explicitly so the FE can render "≥26w" if it wants to.
+            age_weeks = 26.0
+            launch_date_iso = None
+        # Weekly avg uses the actual age (capped at 26) so a 12-week
+        # style isn't averaged across 26 — same convention as L-10.
+        eff_weeks = max(age_weeks, 1.0)  # avoid /0 on freshly-launched styles
+        weekly_avg = units_6m / eff_weeks
         woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
         units_3w = float(tw.get("units_sold") or 0)
-        # Days since last sale: if 3W has units, last sale ≤ 21 days ago;
-        # if not, mark as 22+ (we don't fan out /orders here for perf).
-        days_since_last = 0 if units_3w > 0 else 22
+        # Days since last sale: prefer the real /orders-derived date when
+        # available, else fall back to the cheap 3w-bucket heuristic.
+        if last_d is not None:
+            days_since_last = (today - last_d).days
+        else:
+            days_since_last = 0 if units_3w > 0 else 22
 
         out.append({
             "style_name": s,
@@ -3898,10 +4068,10 @@ async def analytics_sor_all_styles(
             "asp_6m": round(asp_6m, 2),
             "days_since_last_sale": days_since_last,
             "sor_6m": round(sor_6m, 2),
-            "launch_date": None,  # not computed for All-Styles
+            "launch_date": launch_date_iso,
             "weekly_avg": round(weekly_avg, 2),
             "woc": round(woc, 1) if woc is not None else None,
-            "style_age_weeks": 26.0,
+            "style_age_weeks": round(age_weeks, 1),
         })
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _all_styles_cache[cache_key] = (_time.time(), out)
@@ -5603,11 +5773,19 @@ async def startup():
     async def _warm():
         try:
             await asyncio.sleep(8)  # let the upstream finish its own warmup
+            # Curve runs FIRST — its `_curve_cache` is consumed by
+            # `_get_style_first_last_sale` so sor-all-styles can derive
+            # accurate launch dates without paying the /orders fan-out
+            # twice. Other warm targets are independent and can fan out
+            # in parallel after the curve completes.
+            await asyncio.gather(
+                analytics_new_styles_curve(days=180),
+                bins_lookup.get_bins(),
+                return_exceptions=True,
+            )
             await asyncio.gather(
                 analytics_sor_all_styles(),
-                analytics_new_styles_curve(days=122),
                 analytics_replenishment_report(),
-                bins_lookup.get_bins(),
                 return_exceptions=True,
             )
             logger.info("[warmup] sor-all-styles + new-styles-curve + replenishment cache warmed")
