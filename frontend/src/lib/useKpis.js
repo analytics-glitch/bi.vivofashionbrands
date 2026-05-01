@@ -13,7 +13,14 @@ import { api } from "@/lib/api";
  * de-duplicates concurrent / back-to-back requests. The cache is cleared when
  * the user clicks Refresh (which also bumps `dataVersion`).
  */
-const kpiCache = new Map(); // key -> { promise?, data? }
+const kpiCache = new Map(); // key -> { promise?, data?, ts? }
+// 60 s TTL — long enough to dedupe a burst of concurrent component
+// mounts (Overview, AppHeader, KpiTrendChart all consume the same
+// payload) but short enough that a fresh deploy / data-pipeline update
+// upstream reaches users within ~1 minute even if they don't click
+// Refresh. The hard cache-clear (`invalidateKpis()`) on Refresh button
+// is still in place; this TTL is an additional self-healing safety net.
+const KPI_CACHE_TTL_MS = 60_000;
 
 const cacheKey = (p) =>
   [p.date_from, p.date_to, p.country || "", p.channel || "", p._v || 0].join("|");
@@ -38,8 +45,11 @@ export function fetchKpis(params) {
   const key = cacheKey(params);
   if (kpiCache.has(key)) {
     const entry = kpiCache.get(key);
-    if (entry.data) return Promise.resolve(entry.data);
-    if (entry.promise) return entry.promise;
+    const fresh = entry.ts && (Date.now() - entry.ts) < KPI_CACHE_TTL_MS;
+    if (entry.data && fresh) return Promise.resolve(entry.data);
+    if (entry.promise && fresh) return entry.promise;
+    // Stale entry — drop it so we re-fetch below.
+    if (!fresh) kpiCache.delete(key);
   }
   const promise = api
     .get("/kpis", {
@@ -51,14 +61,14 @@ export function fetchKpis(params) {
       },
     })
     .then((r) => {
-      kpiCache.get(key).data = r.data;
+      kpiCache.set(key, { data: r.data, ts: Date.now() });
       return r.data;
     })
     .catch((e) => {
       kpiCache.delete(key);
       throw e;
     });
-  kpiCache.set(key, { promise });
+  kpiCache.set(key, { promise, ts: Date.now() });
   return promise;
 }
 
