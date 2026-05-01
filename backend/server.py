@@ -743,6 +743,22 @@ async def get_kpis(
     cache_key = ("/kpis", date_from or "", date_to or "", country or "", channel or "")
     single = len(cs) <= 1 and len(chs) <= 1
 
+    # Detect "no country filter + FX override active" case. When the user
+    # picks "All countries", upstream's /kpis returns the global sum
+    # without converting UGX/RWF — Uganda's 3.15M UGX gets added to KES
+    # values as if they were the same currency, inflating the dashboard
+    # KPI cards by millions. Force a fan-out across every known country
+    # so each per-country payload can be FX-corrected before aggregation.
+    # Skipped when no FX override applies to the window (e.g. April or
+    # earlier) so we don't pay the fan-out cost unnecessarily.
+    needs_fx_fanout = (
+        not cs
+        and any(_fx_window_rate(c, date_from, date_to) for c in FX_OVERRIDES)
+    )
+    if needs_fx_fanout:
+        cs = ["Kenya", "Uganda", "Rwanda", "Online"]
+        single = False
+
     try:
         if single:
             country_for_call = cs[0] if cs else None
@@ -936,6 +952,16 @@ async def get_daily_trend(
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     cache_key = ("/daily-trend", date_from or "", date_to or "", country or "", "")
+    # Same "no country filter + FX override active" guard as /kpis.
+    # Without this, the upstream `/daily-trend` (no country) sums UGX/RWF
+    # in unconverted on top of KES values, inflating the daily-trend
+    # chart that drives the Overview page.
+    needs_fx_fanout = (
+        not cs
+        and any(_fx_window_rate(c, date_from, date_to) for c in FX_OVERRIDES)
+    )
+    if needs_fx_fanout:
+        cs = ["Kenya", "Uganda", "Rwanda", "Online"]
     try:
         if len(cs) <= 1:
             country_for_call = cs[0] if cs else None

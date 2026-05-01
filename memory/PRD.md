@@ -41,6 +41,11 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1)
 ## Recently Shipped
+- **Iter_48** (2026-05-01) — **FX correction now also covers the "All countries" view** (KPI cards bug):
+  - Bug: Overview KPI cards (Total Sales, Net Sales, etc.) did NOT show the corrected values when "All countries" was selected. They called `/kpis` with no `country` param, so upstream returned the global aggregate that sums UGX + RWF + KES as if they were the same currency — inflating May 1 from the correct ~3.4M to a fake **7.61M**.
+  - Fix: in `/kpis` and `/daily-trend`, when the request has NO country filter AND any FX override is active for the requested window, force a per-country fan-out across `["Kenya", "Uganda", "Rwanda", "Online"]`. Each per-country payload is FX-corrected before aggregation. When NO override is active (e.g. April or earlier), the cheap single upstream call is used as before.
+  - Verified: May 1 (no country filter) now returns **3,437,091 KES** (was 7,607,883). Matches per-country sum. Warm cache is idempotent (no double-correction). April requests still take the fast single-call path (1.1s).
+
 - **Iter_47** (2026-05-01) — **FX overrides for Uganda & Rwanda (April 2026 onward)**:
   - Vivo BI started returning sales in local currencies (UGX / RWF) for these two countries from 2026-04-01 — dashboard tiles were showing huge inflated numbers.
   - Hard-coded overrides: `Uganda → ÷28.79`, `Rwanda → ÷11.27`, `start: 2026-04-01`. (Configured in `FX_OVERRIDES` dict in `server.py` — bump and redeploy when rates change.)
