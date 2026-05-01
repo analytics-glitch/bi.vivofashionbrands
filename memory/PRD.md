@@ -41,6 +41,17 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1)
 ## Recently Shipped
+- **Iter_47** (2026-05-01) — **FX overrides for Uganda & Rwanda (April 2026 onward)**:
+  - Vivo BI started returning sales in local currencies (UGX / RWF) for these two countries from 2026-04-01 — dashboard tiles were showing huge inflated numbers.
+  - Hard-coded overrides: `Uganda → ÷28.79`, `Rwanda → ÷11.27`, `start: 2026-04-01`. (Configured in `FX_OVERRIDES` dict in `server.py` — bump and redeploy when rates change.)
+  - **Per-row correction inside `fetch()`** for `/orders` — every monetary field (`total_sales`, `net_sales`, `gross_sales`, `unit_price`, `subtotal`, `discount`, `revenue`, `amount` and their `_kes` variants) is divided by the country/date-appropriate rate before the row enters the response cache. Mutation is safe because correction happens BEFORE the cache write — subsequent cache hits return already-correct values without re-correcting.
+  - **Wrapper-level correction** for aggregated endpoints `/kpis`, `/sales-summary`, `/country-summary`, `/daily-trend`. These call `fetch()` (which caches the RAW upstream payload), so the wrapper SHALLOW-COPIES rows before applying FX — never mutates the cached upstream dict (otherwise repeat callers would compound the division and drift toward 0).
+  - **Per-day boundary check** in `/daily-trend`: even multi-month windows correctly correct only the override-period days, leaving pre-2026-04-01 days untouched.
+  - **Multi-country `/kpis` fan-out** corrects each per-country payload BEFORE aggregation, so KE + UG + RW combine cleanly in KES (verified: 77.9M + 0.27M + 0.30M = 78.69M ✓).
+  - **Field allow-list** (`_FX_FIELDS_ROW`) covers the full set of upstream sales / monetary fields including `avg_basket_size`, `aov`, `discounts`, `returns` so derived columns line up with the corrected `total_sales` in the same row.
+  - **New ops endpoint** `GET /api/admin/fx-overrides` — returns the active config (rates + start dates + corrected fields).
+  - Verified Apr MTD: Uganda total_sales = **264,872 KES** (avg basket 450 KES), Rwanda = **295,028 KES** (avg basket 1,046 KES). Kenya & Online unchanged. Round 1/2/3 warm-cache hits return identical values (no double-correction).
+
 - **Iter_46** (2026-05-01) — **Circuit breaker + auto-recovery** (fixes the "super slow / stale 68 min ago" UX during real upstream outages):
   - **Backend circuit breaker** in `fetch()`: after 2 consecutive 5xx / timeout failures on an upstream path-prefix (e.g. `/orders`, `/kpis`, `/footfall`), the breaker OPENS and fails fast for 30 s. Subsequent requests raise in <50 ms instead of paying 15 s × 3 attempts = 45 s of timeouts → endpoints fall straight through to their 24 h disk-backed stale cache. After 30 s, one probe is allowed (HALF state); success closes, failure re-opens.
   - **Background recovery loop** (60 s tick): if any breaker is open OR `_kpi_stale_cache` has any entry older than 5 min, force-close breakers, probe `/kpis` against upstream. On success, re-warm the hot path (today + MTD + last-30d /kpis, /country-summary, /footfall, /sales-summary) so the stale banner clears within ~60 s of upstream actually recovering — no user action required.
