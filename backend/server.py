@@ -308,8 +308,8 @@ async def admin_circuit_breaker_reset():
 # change often enough to warrant a full `dim_fx_rate` lookup yet.
 # When the rates change, just bump the dict and redeploy.
 FX_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "Uganda": {"start": "2026-04-01", "rate": 28.79},
-    "Rwanda": {"start": "2026-04-01", "rate": 11.27},
+    "Uganda": {"start": "2026-05-01", "rate": 28.79},
+    "Rwanda": {"start": "2026-05-01", "rate": 11.27},
 }
 # Sales / monetary fields that should be FX-corrected on /orders rows.
 # Anything not in this set (units, customer_id, order_id, dates …) is
