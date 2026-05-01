@@ -129,6 +129,39 @@ export function useKpis({ compare = false } = {}) {
     compare,
   ]);
 
+  // Auto-recovery poll — when the backend is currently serving stale
+  // values (`stale === true` flag on the /kpis payload), we silently
+  // re-fetch every 30 s in the background. The fresh fetch invalidates
+  // the in-process kpiCache (via `_v`-bumped key) when upstream
+  // recovers, so the staleness banner clears within ~30 s of upstream
+  // coming back online — no user action / page refresh needed.
+  // Stops as soon as `stale === false` so we don't pin upstream when
+  // everything's healthy.
+  useEffect(() => {
+    if (!kpis || !kpis.stale) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        // Force a fresh upstream call by bumping the cache key — the
+        // shared cache module exposes invalidateKpis() for this exact
+        // purpose (clears the entire kpiCache).
+        invalidateKpis();
+        const params = buildKpiParams(applied);
+        const fresh = await fetchKpis(params);
+        if (!cancelled && fresh && !fresh.stale) {
+          setKpis(fresh);
+        }
+      } catch {
+        // Upstream still down — keep polling silently.
+      }
+    };
+    const id = setInterval(tick, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kpis?.stale, applied.dateFrom, applied.dateTo,
+      JSON.stringify(applied.countries), JSON.stringify(applied.channels)]);
+
   return { kpis, prevKpis, loading, error };
 }
 

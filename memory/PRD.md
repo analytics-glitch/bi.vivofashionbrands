@@ -39,8 +39,15 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
 
-## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30)
+## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1)
 ## Recently Shipped
+- **Iter_46** (2026-05-01) — **Circuit breaker + auto-recovery** (fixes the "super slow / stale 68 min ago" UX during real upstream outages):
+  - **Backend circuit breaker** in `fetch()`: after 2 consecutive 5xx / timeout failures on an upstream path-prefix (e.g. `/orders`, `/kpis`, `/footfall`), the breaker OPENS and fails fast for 30 s. Subsequent requests raise in <50 ms instead of paying 15 s × 3 attempts = 45 s of timeouts → endpoints fall straight through to their 24 h disk-backed stale cache. After 30 s, one probe is allowed (HALF state); success closes, failure re-opens.
+  - **Background recovery loop** (60 s tick): if any breaker is open OR `_kpi_stale_cache` has any entry older than 5 min, force-close breakers, probe `/kpis` against upstream. On success, re-warm the hot path (today + MTD + last-30d /kpis, /country-summary, /footfall, /sales-summary) so the stale banner clears within ~60 s of upstream actually recovering — no user action required.
+  - **Frontend auto-poll** in `useKpis`: while a payload comes back with `stale: true`, silently re-fetch every 30 s in the background. As soon as the backend serves fresh data the staleness banner disappears, no page refresh needed.
+  - **New admin endpoints** for ops debugging: `/api/admin/circuit-breaker` (current state — open paths, fail counts) and `POST /api/admin/circuit-breaker/reset` (force-close everything).
+  - **Why this matters**: before this change, when Vivo BI was actually down for an hour, every Overview tile request paid 45 s of timeouts before falling back to stale — even though the stale data was right there. With 20 + tiles fanning out concurrently the user perception was "the dashboard is broken". Now the stale fallback hits in <50 ms, AND the dashboard self-heals within 60 s of upstream recovery.
+
 - **Iter_45** (2026-04-30) — **Accurate ages on All-Styles SOR + backend-side L-10 noise filter**:
   - **Bug fix · All-Styles SOR `style_age_weeks` / `launch_date` / `weekly_avg` / `days_since_last_sale`**: these 4 columns were hardcoded (26.0 / null / units_6m÷26 / 0 or 22 heuristic) regardless of the style's real age. Example: "Vivo Tanda Maxi Dress in Ponte" showed 26.0 weeks when its real age is 8.3 weeks (launched 2026-03-03).
   - Added new shared helper `_get_style_first_last_sale(country, channel, days=180)` that returns `{style_name: (first_sale_iso, last_sale_iso)}`. It piggybacks on `_curve_cache` (populated by `analytics_new_styles_curve`, warmed at startup with `days=180`) — zero new upstream calls on the hot path. Falls back to a bounded /orders chunked fan-out only when the curve cache is cold.

@@ -200,6 +200,100 @@ async def get_client() -> httpx.AsyncClient:
 # concurrently — we collapse them into one upstream call.
 _INFLIGHT: Dict[tuple, asyncio.Future] = {}
 
+# ─── Circuit breaker per upstream path ────────────────────────────────
+# When an upstream path returns 5xx / times out repeatedly, every fresh
+# request through `fetch()` would otherwise burn 15s × 3 = 45s of retries
+# before the endpoint falls back to the stale cache. With 20+ Overview
+# tiles fanning out concurrently the user perceives this as "super slow"
+# — even though we eventually serve stale numbers.
+#
+# This circuit breaker tracks consecutive failures per path-prefix:
+#   • CLOSED   — pass requests straight through (default)
+#   • OPEN     — short-circuit with HTTPException 504 for `RECOVERY_S` sec,
+#                no upstream call attempted
+#   • HALF     — after RECOVERY_S, one probe request is allowed; success
+#                closes the breaker, failure re-opens it for another window
+#
+# Threshold (`FAIL_THRESHOLD`) and recovery window (`RECOVERY_S`) are tuned
+# for Vivo BI's typical Cloud Run cold-start (~5-10s) — wide enough to
+# avoid false positives during routine cold starts, narrow enough to stop
+# a real outage from wedging the dashboard for minutes at a time.
+_CB_FAILS: Dict[str, int] = {}        # path-prefix → consecutive failure count
+_CB_OPEN_UNTIL: Dict[str, float] = {} # path-prefix → unix-ts breaker stays open
+_CB_FAIL_THRESHOLD = 2
+_CB_RECOVERY_S = 30.0
+
+
+def _cb_path_key(path: str) -> str:
+    """Group upstream paths by their first segment so the breaker is
+    coarse-grained: an outage on /orders shouldn't open the breaker for
+    /kpis. e.g. '/orders' and '/orders' both map to '/orders'."""
+    if not path:
+        return ""
+    if path.startswith("/"):
+        seg = path.split("/", 2)[1] if "/" in path[1:] else path[1:]
+    else:
+        seg = path.split("/", 1)[0]
+    return f"/{seg}"
+
+
+def _cb_is_open(path: str) -> bool:
+    key = _cb_path_key(path)
+    until = _CB_OPEN_UNTIL.get(key)
+    if until is None:
+        return False
+    if time.time() >= until:
+        # Window expired → enter HALF state (let one probe through).
+        _CB_OPEN_UNTIL.pop(key, None)
+        # Reset fail count to threshold-1 so a single failure re-opens.
+        _CB_FAILS[key] = _CB_FAIL_THRESHOLD - 1
+        return False
+    return True
+
+
+def _cb_record_success(path: str) -> None:
+    key = _cb_path_key(path)
+    _CB_FAILS.pop(key, None)
+    _CB_OPEN_UNTIL.pop(key, None)
+
+
+def _cb_record_failure(path: str) -> None:
+    key = _cb_path_key(path)
+    _CB_FAILS[key] = _CB_FAILS.get(key, 0) + 1
+    if _CB_FAILS[key] >= _CB_FAIL_THRESHOLD:
+        _CB_OPEN_UNTIL[key] = time.time() + _CB_RECOVERY_S
+        logger.warning(
+            f"[circuit-breaker] OPEN for {key} ({_CB_FAILS[key]} failures) — "
+            f"failing fast for {_CB_RECOVERY_S}s, falling back to stale cache"
+        )
+
+
+@api_router.get("/admin/circuit-breaker")
+async def admin_circuit_breaker():
+    """Expose breaker state for ops debugging — e.g. when the dashboard
+    shows "stale 68 min ago" you can hit this to see which upstream
+    paths are currently failing fast."""
+    now = time.time()
+    return {
+        "open": [
+            {"path": k, "fails": _CB_FAILS.get(k, 0), "reopens_in_sec": int(v - now)}
+            for k, v in _CB_OPEN_UNTIL.items()
+            if v > now
+        ],
+        "fail_counts": {k: v for k, v in _CB_FAILS.items() if v > 0},
+        "thresholds": {"fail": _CB_FAIL_THRESHOLD, "recovery_s": _CB_RECOVERY_S},
+    }
+
+
+@api_router.post("/admin/circuit-breaker/reset")
+async def admin_circuit_breaker_reset():
+    """Force-close every open breaker. Use after a confirmed upstream
+    recovery if you don't want to wait the 30 s recovery window."""
+    n_open = len(_CB_OPEN_UNTIL)
+    _CB_FAILS.clear()
+    _CB_OPEN_UNTIL.clear()
+    return {"ok": True, "previously_open": n_open}
+
 
 async def fetch(
     path: str,
@@ -255,6 +349,19 @@ async def fetch(
         _INFLIGHT[cache_key] = my_future
     else:
         my_future = None
+    # Circuit breaker — if this upstream path has been repeatedly failing,
+    # short-circuit immediately so the caller can fall back to its stale
+    # cache instead of paying 45s of timeouts. Checked AFTER cache lookup
+    # (so warm responses still serve) but BEFORE the upstream call itself.
+    if _cb_is_open(path):
+        exc = HTTPException(
+            status_code=504,
+            detail=f"Upstream {path} circuit-breaker OPEN — failing fast, served from stale",
+        )
+        if my_future is not None and not my_future.done():
+            my_future.set_exception(exc)
+            _INFLIGHT.pop(cache_key, None)
+        raise exc
     last_err: Optional[Exception] = None
     req_timeout = (
         httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec), pool=15.0)
@@ -274,6 +381,7 @@ async def fetch(
                     oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
                     for k, _ in oldest:
                         _FETCH_CACHE.pop(k, None)
+            _cb_record_success(path)
             if my_future is not None and not my_future.done():
                 my_future.set_result(data)
                 _INFLIGHT.pop(cache_key, None)
@@ -284,6 +392,8 @@ async def fetch(
                 last_err = e
                 continue
             logger.error(f"Upstream {path} failed: {e.response.status_code}")
+            if 500 <= e.response.status_code < 600:
+                _cb_record_failure(path)
             exc = HTTPException(
                 status_code=e.response.status_code,
                 detail=f"Upstream {path} returned {e.response.status_code}",
@@ -298,6 +408,7 @@ async def fetch(
                 await asyncio.sleep(0.4 * (attempt + 1))
                 continue
             logger.error(f"Upstream {path} timeout/connect: {type(e).__name__}: {e}")
+            _cb_record_failure(path)
             exc = HTTPException(
                 status_code=504,
                 detail=f"Upstream {path} {type(e).__name__}: timed out after {max_attempts} attempts",
@@ -308,6 +419,7 @@ async def fetch(
             raise exc
         except httpx.HTTPError as e:
             logger.error(f"Upstream {path} connection error: {type(e).__name__}: {e}")
+            _cb_record_failure(path)
             exc = HTTPException(
                 status_code=502,
                 detail=f"Upstream {path} unreachable ({type(e).__name__}): {str(e) or 'no detail'}",
@@ -5847,6 +5959,62 @@ async def startup():
         except Exception as e:
             logger.warning("[warmup] failed: %s", e)
     asyncio.create_task(_warm())
+
+    # Background recovery loop — every 60 s, if any circuit breaker is
+    # open OR the in-process /kpis stale cache has any entry older than
+    # 5 minutes, kick a single fresh `/kpis` probe (today, no filter)
+    # against upstream. On success the breaker closes, the stale cache
+    # gets a fresh value, and ALL connected clients see the "stale" pill
+    # disappear within ~60 s of upstream recovering — no user action
+    # required. Cheap (one upstream call per minute) and only runs when
+    # there's actually something to refresh.
+    async def _recovery_loop():
+        while True:
+            try:
+                await asyncio.sleep(60)
+                today = datetime.now(timezone.utc).date().isoformat()
+                stale_age = 0
+                for (path, *_), (ts, _data) in _kpi_stale_cache.items():
+                    age = time.time() - ts
+                    if age > stale_age:
+                        stale_age = age
+                breakers_open = bool(_CB_OPEN_UNTIL)
+                if not breakers_open and stale_age < 300:
+                    continue  # nothing to do — system is healthy
+                # Force-close every breaker so the probe actually goes
+                # to upstream instead of being short-circuited. If the
+                # upstream is still down, the probe will re-open them.
+                _CB_FAILS.clear()
+                _CB_OPEN_UNTIL.clear()
+                logger.info(
+                    f"[recovery] stale_age={int(stale_age)}s, "
+                    f"breakers_open_pre_reset={breakers_open} — probing upstream"
+                )
+                try:
+                    await get_kpis(date_from=today, date_to=today)
+                    logger.info("[recovery] upstream probe SUCCEEDED — fresh data flowing")
+                    # Re-warm the most-hit hot-path windows so users get
+                    # truly fresh numbers immediately, not just the probe.
+                    mtd_from = (datetime.now(timezone.utc).date()
+                                .replace(day=1).isoformat())
+                    last30_from = (datetime.now(timezone.utc).date()
+                                   - timedelta(days=30)).isoformat()
+                    await asyncio.gather(
+                        get_kpis(date_from=mtd_from, date_to=today),
+                        get_kpis(date_from=last30_from, date_to=today),
+                        get_country_summary(date_from=today, date_to=today),
+                        get_country_summary(date_from=mtd_from, date_to=today),
+                        get_footfall(date_from=mtd_from, date_to=today),
+                        get_sales_summary(date_from=today, date_to=today),
+                        return_exceptions=True,
+                    )
+                    logger.info("[recovery] hot-path re-warmed after upstream recovery")
+                except Exception as e:
+                    logger.warning(f"[recovery] upstream still down: {e}")
+            except Exception as e:
+                logger.warning(f"[recovery-loop] unexpected: {e}")
+                await asyncio.sleep(60)
+    asyncio.create_task(_recovery_loop())
 
 
 @app.on_event("shutdown")
