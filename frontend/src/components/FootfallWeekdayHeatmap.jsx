@@ -28,8 +28,14 @@ const mix = (a, b, t) => {
 const COLD = [252, 245, 230];  // warm cream
 const HOT_FOOTFALL = [26, 92, 56];     // brand-deep green
 const HOT_CONVERSION = [245, 158, 11]; // amber — different story, different warmth
+const HOT_SHARE = [90, 58, 176];       // indigo — share-of-week is its own story
 
-const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel }) => {
+const hotForMode = (mode) =>
+  mode === "conversion" ? HOT_CONVERSION
+  : mode === "share" ? HOT_SHARE
+  : HOT_FOOTFALL;
+
+const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall }) => {
   if (days === 0) {
     return (
       <div
@@ -38,36 +44,41 @@ const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel }) => {
       />
     );
   }
-  const hot = mode === "conversion" ? HOT_CONVERSION : COLD_TO_HOT_CR();
-  const max = Math.max(1, maxValue);
+  const max = Math.max(mode === "share" ? 0.5 : 1, maxValue);
   const ratio = Math.min(1, value / max);
-  const color = mix(COLD, mode === "conversion" ? HOT_CONVERSION : HOT_FOOTFALL, ratio);
+  const color = mix(COLD, hotForMode(mode), ratio);
   const textLight = ratio > 0.55;
+  // Tooltip shows both absolute + share of week for the `share` mode
+  // so the user never loses the raw number context.
+  const tipValue =
+    mode === "conversion" ? `${value.toFixed(1)}%` :
+    mode === "share"      ? `${(value * 100).toFixed(1)}% of week (${fmtNum(absoluteFootfall)} avg)` :
+                            fmtNum(value);
+  const cellLabel =
+    mode === "conversion" ? `${value.toFixed(1)}%` :
+    mode === "share"      ? `${Math.round(value * 100)}%` :
+                            (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value));
   return (
     <div
       className="h-7 rounded-sm flex items-center justify-center text-[10.5px] font-bold transition-transform hover:scale-[1.04]"
       style={{ background: color, color: textLight ? "white" : "#1f2937" }}
-      title={`${loc} · ${weekdayLabel}\n${mode === "conversion" ? "CR" : "Footfall"}: ${
-        mode === "conversion" ? value.toFixed(1) + "%" : fmtNum(value)
-      } (${days} days sampled)`}
+      title={`${loc} · ${weekdayLabel}\n${mode === "conversion" ? "CR" : mode === "share" ? "Share" : "Footfall"}: ${tipValue}`}
       data-testid={`wkd-cell-${loc}-${weekdayLabel}`}
     >
-      {mode === "conversion"
-        ? `${value.toFixed(1)}%`
-        : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value)}
+      {cellLabel}
     </div>
   );
 };
 
-// Tiny helper to keep the Cell lookup explicit — we use hot brand-green
-// for footfall and hot amber for conversion. Separated so the mode
-// mapping stays readable.
-const COLD_TO_HOT_CR = () => HOT_FOOTFALL;
-
 const FootfallWeekdayHeatmap = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState("footfall");  // "footfall" | "conversion"
+  // "footfall" = absolute avg, "share" = % of each store's own weekly total,
+  // "conversion" = avg conversion rate. "share" was added because absolute
+  // numbers mask the real question: does this store skew harder toward
+  // weekends / weekdays than others? Normalising each row to 100% makes
+  // that skew jump out even when two stores have very different volumes.
+  const [mode, setMode] = useState("footfall");
 
   useEffect(() => {
     let cancel = false;
@@ -86,6 +97,25 @@ const FootfallWeekdayHeatmap = () => {
     // Keep only top 15 locations so the heatmap stays scannable; rest is
     // still in the table below. The user's eye handles 15 rows fine.
     const top = data.rows.slice(0, 15);
+    // For share mode, pre-compute each row's weekly total so the
+    // per-cell value = day_avg / weekly_sum (each row sums to 1.0).
+    if (mode === "share") {
+      let maxShare = 0;
+      top.forEach((r) => {
+        const weekTotal = r.by_weekday.reduce((s, w) => s + (w.avg_footfall || 0), 0) || 1;
+        r._weekly_total = weekTotal;
+        r.by_weekday.forEach((w) => {
+          const v = (w.avg_footfall || 0) / weekTotal;
+          if (v > maxShare) maxShare = v;
+        });
+      });
+      return {
+        rows: top,
+        groupByWkd: data.group_avg_by_weekday || [],
+        windowMeta: data.window,
+        maxValue: maxShare || 0.3, // e.g. a store with 30% of week on one day
+      };
+    }
     const key = mode === "conversion" ? "avg_conversion_rate" : "avg_footfall";
     let m = 0;
     top.forEach((r) => r.by_weekday.forEach((w) => {
@@ -135,18 +165,24 @@ const FootfallWeekdayHeatmap = () => {
                 {windowMeta.start} → {windowMeta.end}.
               </span>
             )}
-            {peakWkd && softestWkd && (
+            {mode === "share" ? (
+              <span className="ml-1">
+                Each row = 100%. Cells show that store's share of its own weekly footfall
+                — reveals weekday skew independent of store volume.
+              </span>
+            ) : peakWkd && softestWkd ? (
               <span className="ml-1">
                 Group peak: <strong className="text-brand-deep">{WEEKDAY_SHORT[peakWkd.weekday]}</strong> ({fmtNum(peakWkd.avg_footfall)} avg).
                 Softest: <strong>{WEEKDAY_SHORT[softestWkd.weekday]}</strong>.
                 Best CR day: <strong>{WEEKDAY_SHORT[peakCrWkd.weekday]}</strong> ({fmtPct(peakCrWkd.avg_conversion_rate, 1)}).
               </span>
-            )}
+            ) : null}
           </div>
         </div>
         <div className="inline-flex rounded-lg border border-border p-0.5 bg-panel" data-testid="heatmap-mode-switch">
           {[
             ["footfall", "Footfall"],
+            ["share", "% of week"],
             ["conversion", "Conversion"],
           ].map(([k, lbl]) => (
             <button
@@ -177,30 +213,38 @@ const FootfallWeekdayHeatmap = () => {
               <div className="text-[11.5px] font-medium truncate pr-2 flex items-center" title={r.location}>
                 <span className="truncate">{r.location}</span>
               </div>
-              {r.by_weekday.map((w, i) => (
-                <Cell
-                  key={i}
-                  value={mode === "conversion" ? (w.avg_conversion_rate || 0) : (w.avg_footfall || 0)}
-                  maxValue={maxValue}
-                  mode={mode}
-                  days={w.days}
-                  loc={r.location}
-                  weekdayLabel={WEEKDAY_SHORT[w.weekday]}
-                />
-              ))}
+              {r.by_weekday.map((w, i) => {
+                const weekTotal = r._weekly_total || r.by_weekday.reduce((s, x) => s + (x.avg_footfall || 0), 0) || 1;
+                const cellValue =
+                  mode === "conversion" ? (w.avg_conversion_rate || 0) :
+                  mode === "share"      ? ((w.avg_footfall || 0) / weekTotal) :
+                                          (w.avg_footfall || 0);
+                return (
+                  <Cell
+                    key={i}
+                    value={cellValue}
+                    maxValue={maxValue}
+                    mode={mode}
+                    days={w.days}
+                    loc={r.location}
+                    weekdayLabel={WEEKDAY_SHORT[w.weekday]}
+                    absoluteFootfall={w.avg_footfall || 0}
+                  />
+                );
+              })}
             </React.Fragment>
           ))}
         </div>
       </div>
       <div className="mt-3 flex items-center gap-2 text-[10.5px] text-muted">
-        <span>{mode === "conversion" ? "Low CR" : "Quiet day"}</span>
+        <span>{mode === "conversion" ? "Low CR" : mode === "share" ? "Low share" : "Quiet day"}</span>
         <div
           className="h-2.5 w-28 rounded-full"
           style={{
-            background: `linear-gradient(to right, rgb(${COLD.join(",")}), rgb(${(mode === "conversion" ? HOT_CONVERSION : HOT_FOOTFALL).join(",")}))`
+            background: `linear-gradient(to right, rgb(${COLD.join(",")}), rgb(${hotForMode(mode).join(",")}))`
           }}
         />
-        <span>{mode === "conversion" ? "High CR" : "Peak day"}</span>
+        <span>{mode === "conversion" ? "High CR" : mode === "share" ? "High share" : "Peak day"}</span>
         <span className="ml-auto">Dashed cell = no data</span>
       </div>
     </div>
