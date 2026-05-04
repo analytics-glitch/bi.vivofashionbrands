@@ -15,6 +15,7 @@ import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
 import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
+import ProductsPlan from "@/components/ProductsPlan";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
@@ -285,12 +286,23 @@ const Products = () => {
         >
           Country Matrix
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "products-plan"}
+          onClick={() => setTab("products-plan")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "products-plan" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-products-plan"
+        >
+          Products Plan
+        </button>
       </div>
 
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} />}
       {tab === "all-styles" && <SorAllStyles brand={brandCsv} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
+      {tab === "products-plan" && <ProductsPlan />}
 
       {tab === "catalog" && (<>
 

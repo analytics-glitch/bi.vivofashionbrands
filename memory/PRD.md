@@ -41,6 +41,18 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_51** (2026-05-05) — **Stock to Sales — Products Plan report**:
+  - New tab on the Products page: `/products?tab=products-plan` (data-testid `subtab-products-plan`).
+  - New backend endpoint `GET /api/analytics/products-plan` returns one row per subcategory with:
+    - `category`, `subcategory`, `total_sales`, `sor`
+    - `qty_sold` + `pct_qty` (share of window-wide units sold)
+    - `total_soh` + `pct_total_soh` (share of group total SOH)
+    - `stores_soh` + `pct_stores_soh` (share of store SOH)
+    - `wh_soh` + `pct_wh_soh` (share of warehouse SOH)
+  - Sales honour `country` + `channel` filters; under a POS channel we switch to `/orders`-aggregated sales (upstream's `/subcategory-sales` is unreliable under POS filters). Warehouse SOH always group-wide so it reflects total allocable backstock.
+  - Frontend component: sortable, CSV-exportable, mobile-card layout, with SOR pill colouring (red <20, amber 20-30, green ≥30) and a 5-tile "Totals" strip at the bottom summarising the % denominators (total sales, qty, group SOR, stores SOH, W/H SOH) so users can validate the math at a glance.
+  - Verified Apr MTD: 32 rows; Knee-Length Dresses lead at 17.2% of qty sold and 20.3% of stores SOH. All three % columns sum to ~100% (rounding).
+
 - **Iter_50** (2026-05-05) — **IBT enhancements + bins sheet refresh + WOC semantics + SOR L-10 tighter filter**:
   - **IBT — export with color & size**: new "Export with color & size" button on IBT page. Fetches the SKU breakdown for every visible suggestion in parallel (cap 6 concurrent), flattens to one CSV row per (suggestion × suggested-SKU) with color, size, from/to SOH, suggested qty, and pro-rata revenue uplift.
   - **IBT — Expand-all / Collapse-all**: `SortableTable` now exposes a top-of-table toggle when `renderExpanded` is set. Labels flip to "Collapse all" when every row is open.

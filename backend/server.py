@@ -3180,6 +3180,128 @@ async def _subcategory_sales_from_orders(
     }
 
 
+@api_router.get("/analytics/products-plan")
+async def analytics_products_plan(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Products Plan — one row per subcategory with a tight sales-vs-
+    inventory composition view for merchandisers.
+
+    Returns rows with the columns:
+      • category, subcategory
+      • total_sales (KES in the requested window)
+      • sor        — sell-out rate = qty / (qty + total_soh) × 100
+      • qty_sold, pct_qty       (share of window-wide units sold)
+      • total_soh, pct_total_soh (share of group total SOH)
+      • stores_soh, pct_stores_soh (share of stores SOH)
+      • wh_soh, pct_wh_soh       (share of warehouse SOH)
+
+    Sales scope: honours `country` and `channel` filters. If `channel`
+    is set, we source sales from /orders (same pattern as the main STS
+    endpoint — upstream's `/subcategory-sales` is unreliable under a POS
+    filter). Stock scope: always group-wide warehouse + (POS-scoped
+    stores when `channel` is set, otherwise all stores country-wide).
+
+    Grand-total row is NOT included — the frontend renders it as a
+    footer so it can be styled differently.
+    """
+    chs = _split_csv(channel)
+
+    # Sales — per-subcategory qty + total_sales.
+    if chs:
+        # POS-scoped sales come from /orders because upstream's
+        # /subcategory-sales silently zeroes sales for many POS names.
+        sales_by_sub = await _subcategory_sales_from_orders(
+            date_from=date_from, date_to=date_to, country=country, locs=chs,
+        )
+    else:
+        sales_rows = await get_subcategory_sales(
+            date_from=date_from, date_to=date_to, country=country, channel=None,
+        )
+        sales_by_sub = {
+            (r.get("subcategory") or ""): {
+                "units": float(r.get("units_sold") or 0),
+                "total_sales": float(r.get("total_sales") or 0),
+                "orders": int(r.get("orders") or 0),
+            }
+            for r in (sales_rows or [])
+            if r.get("subcategory")
+        }
+
+    # Inventory — split stores vs warehouse per subcategory. `channel`
+    # filter scopes STORE rows only; warehouse is always group-wide so
+    # the W/H SOH column reflects allocable backstock regardless of
+    # which shop you're looking at.
+    if chs:
+        inv_stores = await fetch_all_inventory(country=country, locations=chs) or []
+    else:
+        inv_stores = await fetch_all_inventory(country=country) or []
+    # When a POS channel is set, stores-scope inventory excludes warehouse
+    # rows automatically. We still need warehouse rows → pull country-scope
+    # without the channel filter.
+    if chs:
+        inv_wh = await fetch_all_inventory(country=country) or []
+    else:
+        inv_wh = inv_stores
+
+    stores_by_sub: Dict[str, float] = defaultdict(float)
+    wh_by_sub: Dict[str, float] = defaultdict(float)
+    for r in inv_stores:
+        sub = r.get("product_type") or ""
+        if not sub:
+            continue
+        if is_warehouse_location(r.get("location_name")):
+            continue  # stores_by_sub gets POS rows only
+        stores_by_sub[sub] += float(r.get("available") or 0)
+    for r in inv_wh:
+        if not is_warehouse_location(r.get("location_name")):
+            continue
+        sub = r.get("product_type") or ""
+        if sub:
+            wh_by_sub[sub] += float(r.get("available") or 0)
+
+    # Build row universe — every subcategory that has either sales or stock.
+    all_subs = set(sales_by_sub.keys()) | set(stores_by_sub.keys()) | set(wh_by_sub.keys())
+
+    # Pre-compute denominators for the % columns.
+    total_qty = sum(v.get("units") or 0 for v in sales_by_sub.values()) or 0
+    total_stores = sum(stores_by_sub.values()) or 0
+    total_wh = sum(wh_by_sub.values()) or 0
+    total_soh_grand = total_stores + total_wh
+
+    out = []
+    for sub in all_subs:
+        sv = sales_by_sub.get(sub) or {}
+        qty = float(sv.get("units") or 0)
+        sales = float(sv.get("total_sales") or 0)
+        s = float(stores_by_sub.get(sub) or 0)
+        w = float(wh_by_sub.get(sub) or 0)
+        total_soh = s + w
+        denom_sor = qty + total_soh
+        sor = (qty / denom_sor * 100.0) if denom_sor > 0 else 0.0
+        out.append({
+            "category": category_of(sub) or "—",
+            "subcategory": sub or "—",
+            "total_sales": round(sales, 2),
+            "sor": round(sor, 2),
+            "qty_sold": int(qty),
+            "pct_qty": round((qty / total_qty * 100.0), 2) if total_qty else 0.0,
+            "total_soh": int(total_soh),
+            "pct_total_soh": round((total_soh / total_soh_grand * 100.0), 2) if total_soh_grand else 0.0,
+            "stores_soh": int(s),
+            "pct_stores_soh": round((s / total_stores * 100.0), 2) if total_stores else 0.0,
+            "wh_soh": int(w),
+            "pct_wh_soh": round((w / total_wh * 100.0), 2) if total_wh else 0.0,
+        })
+    # Sort by qty_sold desc so the biggest movers lead.
+    out.sort(key=lambda r: (r["qty_sold"], r["total_sales"]), reverse=True)
+    return out
+
+
 @api_router.get("/analytics/stock-to-sales-by-subcat")
 async def analytics_sts_by_subcat(
     date_from: Optional[str] = None,
