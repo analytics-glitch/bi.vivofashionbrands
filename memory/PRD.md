@@ -39,8 +39,21 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
 
-## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1)
+## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4)
 ## Recently Shipped
+- **Iter_49** (2026-05-04) — **FX correction now handles straddling custom date ranges**:
+  - Bug: a custom range like 27 Apr → 3 May 2026 (straddling the May 1 FX boundary) showed Vivo Acacia at KES 11.78M and Vivo Kigali Heights at KES 4.90M — local-currency UGX/RWF values weren't being divided. Root cause: my `_fx_window_rate` returned `None` for any window starting before the override `start`, so the entire straddling window inherited "no FX".
+  - Fix: new `_fx_split_window(country, df, dt)` returns 1 or 2 `(df, dt, rate)` slices. Straddling windows get split into a pre-boundary slice (`rate=None`, no correction — pre-May data was already in KES upstream) and a post-boundary slice (`rate=28.79` or `11.27`, divided per row).
+  - Two new aggregation helpers wired into `/kpis`, `/sales-summary`, `/country-summary`:
+    - `_fetch_kpis_with_fx_split` — fetches both halves in parallel, FX-corrects post, and re-aggregates via `agg_kpis` (recomputes weighted ABV / ASP / return-rate cleanly).
+    - `_fetch_rows_with_fx_split` — fetches both halves, FX-corrects post per-row, sum-merges by `(channel, country)`, and recomputes `avg_basket_size` post-merge as `total_sales / orders` (averaging two pre-computed AOVs would be wrong).
+  - `/daily-trend` already iterates per-day-row so it gets straddling correct for free; updated only the no-country-filter fanout guard to trigger when ANY slice touches an override (was: only when whole window is post-boundary).
+  - Verified Apr 27 → May 3:
+    - Vivo Acacia: 441,195 (Apr 27-30, no FX) + 393,717 (May 1-3, ÷28.79) = **834,912 KES** ✓ (was 11,776,295)
+    - The Oasis Mall: 364,363 + 131,817 = **496,180 KES** ✓
+    - Vivo Kigali Heights: 491,216 + 390,772 = **881,988 KES** ✓ (was 4,895,216)
+    - Order counts sum exactly: Acacia 40+42=82, Oasis 25+18=43, Kigali Heights 36+29=65.
+
 - **Iter_48** (2026-05-01) — **FX correction now also covers the "All countries" view** (KPI cards bug):
   - Bug: Overview KPI cards (Total Sales, Net Sales, etc.) did NOT show the corrected values when "All countries" was selected. They called `/kpis` with no `country` param, so upstream returned the global aggregate that sums UGX + RWF + KES as if they were the same currency — inflating May 1 from the correct ~3.4M to a fake **7.61M**.
   - Fix: in `/kpis` and `/daily-trend`, when the request has NO country filter AND any FX override is active for the requested window, force a per-country fan-out across `["Kenya", "Uganda", "Rwanda", "Online"]`. Each per-country payload is FX-corrected before aggregation. When NO override is active (e.g. April or earlier), the cheap single upstream call is used as before.
