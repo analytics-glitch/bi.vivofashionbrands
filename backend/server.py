@@ -422,6 +422,40 @@ async def admin_fx_overrides():
     return {"overrides": FX_OVERRIDES, "fields": sorted(_FX_FIELDS_ROW)}
 
 
+def _fx_correct_country_scoped(
+    data: Any,
+    country: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+) -> Any:
+    """FX-correct a country-scoped upstream response when the whole
+    window qualifies for an FX override.
+
+    Used by wrappers around `/sor`, `/subcategory-sales`, `/top-skus`,
+    `/top-customers`, `/stock-to-sales-by-*` and similar — endpoints
+    that return monetary fields and were called with a single country
+    query param (so every row in the response is scoped to that
+    country). For all-country and multi-country calls we can't apply
+    a blanket rate and we fall back to the caller's explicit logic.
+
+    Returns a NEW list/dict with corrected values — never mutates the
+    upstream payload so the shared `_FETCH_CACHE` entry stays raw.
+    Straddling windows are silently skipped; callers that care about
+    straddling must use the explicit splitters (this helper is the
+    "safe default" for non-straddling country-scoped calls).
+    """
+    if not country or not date_from or not date_to:
+        return data
+    rate = _fx_window_rate(country, date_from, date_to)
+    if not rate:
+        return data
+    if isinstance(data, list):
+        return _fx_apply_aggregate([{**r} for r in data if isinstance(r, dict)], rate)
+    if isinstance(data, dict):
+        return _fx_apply_aggregate({**data}, rate)
+    return data
+
+
 def _fx_split_window(
     country: Optional[str], date_from: Optional[str], date_to: Optional[str]
 ) -> List[Tuple[str, str, Optional[float]]]:
@@ -1115,12 +1149,31 @@ async def get_top_skus(
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
+        cfc = cs[0] if cs else None
         data = await fetch("/top-skus", {
-            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+            **base, "country": cfc, "channel": chs[0] if chs else None,
         })
+        # FX correction — safe because every row in a country-scoped
+        # call belongs to that country.
+        data = _fx_correct_country_scoped(data, cfc, date_from, date_to)
         data = sorted(data or [], key=lambda r: r.get("total_sales") or 0, reverse=True)
         return data[:limit]
-    results = await multi_fetch("/top-skus", base, cs, chs)
+    # Multi-country / multi-channel fan-out — apply FX per-payload
+    # using the per-country param before merging (same pattern as /kpis).
+    results_raw = await asyncio.gather(*[
+        fetch("/top-skus", {
+            **base,
+            **({"country": c} if c else {}),
+            **({"channel": ch} if ch else {}),
+        })
+        for c in (cs or [None])
+        for ch in (chs or [None])
+    ])
+    # Correlate each payload back to its country so we can FX it.
+    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
+    results: List[List[Dict[str, Any]]] = []
+    for g, c in zip(results_raw, iterator_countries):
+        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
         for row in g:
@@ -1155,11 +1208,26 @@ async def get_sor(
     cs = _split_csv(country)
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
+        cfc = cs[0] if cs else None
         data = await fetch("/sor", {
-            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+            **base, "country": cfc, "channel": chs[0] if chs else None,
         })
+        data = _fx_correct_country_scoped(data, cfc, date_from, date_to)
         return sorted(data or [], key=lambda r: r.get("sor_percent") or 0, reverse=True)
-    results = await multi_fetch("/sor", base, cs, chs)
+    # Multi-country fan-out — FX each payload before merge.
+    results_raw = await asyncio.gather(*[
+        fetch("/sor", {
+            **base,
+            **({"country": c} if c else {}),
+            **({"channel": ch} if ch else {}),
+        })
+        for c in (cs or [None])
+        for ch in (chs or [None])
+    ])
+    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
+    results: List[List[Dict[str, Any]]] = []
+    for g, c in zip(results_raw, iterator_countries):
+        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
         for row in g:
@@ -1844,6 +1912,10 @@ async def get_top_customers(
         "date_from": date_from, "date_to": date_to,
         "country": country, "channel": channel, "limit": limit,
     })
+    # Top-customers is a PII + money endpoint. When called for a single
+    # FX-overridden country we divide by the local rate so the `total_spend`
+    # column on Customers page matches the dashboard elsewhere.
+    rows = _fx_correct_country_scoped(rows, country, date_from, date_to)
     return await mask_and_audit(rows or [], user=user, endpoint="/top-customers", request_ip=_client_ip(request))
 
 
@@ -2767,10 +2839,25 @@ async def get_subcategory_sales(
     cs = [_norm_country(c) for c in _split_csv(country)]
     chs = _split_csv(channel)
     if len(cs) <= 1 and len(chs) <= 1:
-        return await fetch("/subcategory-sales", {
-            **base, "country": cs[0] if cs else None, "channel": chs[0] if chs else None,
+        cfc = cs[0] if cs else None
+        data = await fetch("/subcategory-sales", {
+            **base, "country": cfc, "channel": chs[0] if chs else None,
         })
-    results = await multi_fetch("/subcategory-sales", base, cs, chs)
+        return _fx_correct_country_scoped(data, cfc, date_from, date_to) or []
+    # Multi-country fan-out — FX each payload using its country before merge.
+    results_raw = await asyncio.gather(*[
+        fetch("/subcategory-sales", {
+            **base,
+            **({"country": c} if c else {}),
+            **({"channel": ch} if ch else {}),
+        })
+        for c in (cs or [None])
+        for ch in (chs or [None])
+    ])
+    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
+    results: List[List[Dict[str, Any]]] = []
+    for g, c in zip(results_raw, iterator_countries):
+        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
         for r in g:
@@ -2841,6 +2928,12 @@ async def get_category_country_matrix(
 
     # Parallel pull, one request per country.
     per_country = await asyncio.gather(*[_fetch_for(c) for c in _MATRIX_COUNTRIES])
+    # FX-correct each country's rows BEFORE building the matrix so UGX/RWF
+    # are divided and comparable to KES.
+    per_country = [
+        _fx_correct_country_scoped(rows, country, date_from, date_to) or []
+        for country, rows in zip(_MATRIX_COUNTRIES, per_country)
+    ]
 
     # Build the matrix: index every subcategory observed in any country.
     country_totals: Dict[str, float] = {c: 0.0 for c in _MATRIX_COUNTRIES}
@@ -2894,11 +2987,16 @@ async def get_subcategory_stock_sales(
     # Upstream silently zeros sales when country isn't Title-case (frontend
     # sends "kenya" → upstream needs "Kenya"). Normalize CSV → Title-case.
     norm_country = _norm_country_csv(country)
-    return await fetch("/subcategory-stock-sales", {
+    data = await fetch("/subcategory-stock-sales", {
         "date_from": date_from, "date_to": date_to,
         "country": norm_country if norm_country and "," not in norm_country else norm_country,
         "channel": channel,
     })
+    # FX-correct when the call is scoped to a single FX-overridden country
+    # (straddling windows fall through uncorrected — callers that care
+    # should split the window upstream).
+    single_country = norm_country if norm_country and "," not in norm_country else None
+    return _fx_correct_country_scoped(data, single_country, date_from, date_to)
 
 
 # -------------------- Inventory helpers --------------------
