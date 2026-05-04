@@ -2215,6 +2215,144 @@ async def analytics_ibt_suggestions(
     return suggestions[: int(limit)]
 
 
+@api_router.get("/analytics/ibt-warehouse-to-store")
+async def analytics_ibt_warehouse_to_store(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=1000),
+    min_daily_velocity: float = Query(0.2, ge=0, le=50),
+    user=Depends(get_current_user),
+):
+    """Warehouse → Store replenishment suggestions.
+
+    Stores selling a SKU but stocked-out (or near-out) get listed with
+    the warehouse stock that could top them up. Different from the
+    store-to-store IBT because warehouses can't sell — they only feed
+    the shop floor.
+
+    Rule:
+      • A (style, store) qualifies if the store has sold units in the
+        window AND its current SOH is below the recent daily-velocity
+        run-rate × ``3`` days (a deliberate 3-day safety floor).
+      • A style qualifies if ≥1 warehouse location has ``available > 0``.
+      • Suggested qty = min(warehouse_available, 4×weekly_velocity − soh)
+        capped at a max of 4 weeks of cover.
+
+    Returns rows ordered by ``missed_sales_risk`` (velocity × shortfall)
+    descending so the biggest wins come first.
+    """
+    if not date_from or not date_to:
+        today = datetime.now(timezone.utc).date()
+        date_to = today.isoformat()
+        date_from = (today - timedelta(days=28)).isoformat()
+
+    # Window duration in days (for computing daily velocity from
+    # `units_sold` aggregates).
+    try:
+        window_days = max(
+            1,
+            (datetime.fromisoformat(date_to).date()
+             - datetime.fromisoformat(date_from).date()).days + 1,
+        )
+    except Exception:
+        window_days = 28
+
+    # Fetch sales-per-(style, store) and inventory in parallel.
+    cs = _split_csv(country)
+    sor_task = fetch("/sor", {
+        "date_from": date_from, "date_to": date_to,
+        "country": cs[0] if len(cs) == 1 else None,
+        "limit": 5000,
+    })
+    inv_task = fetch_all_inventory(country=country)
+    # `/orders` is the source of truth for per-(style, store) sales —
+    # upstream has no `/top-skus-by-store` equivalent, but the
+    # chunked-orders helper is already used elsewhere in this file
+    # with a 30-min TTL so the warmup covers it.
+    orders_task = _orders_for_window(date_from, date_to, country=country)
+    sor_rows, inv, sales_rows = await asyncio.gather(
+        sor_task, inv_task, orders_task
+    )
+
+    # Index warehouse stock per style (sum across warehouse locations).
+    wh_by_style: Dict[str, float] = defaultdict(float)
+    for r in (inv or []):
+        if not is_warehouse_location(r.get("location_name")):
+            continue
+        style = r.get("style_name")
+        if style:
+            wh_by_style[style] += float(r.get("available") or 0)
+
+    # Index store stock per (style, store).
+    store_stock: Dict[Tuple[str, str], float] = defaultdict(float)
+    store_brand: Dict[Tuple[str, str], str] = {}
+    for r in (inv or []):
+        if is_warehouse_location(r.get("location_name")):
+            continue
+        style = r.get("style_name")
+        store = r.get("location_name")
+        if not style or not store:
+            continue
+        store_stock[(style, store)] += float(r.get("available") or 0)
+        store_brand[(style, store)] = r.get("brand") or ""
+
+    # Build per-(style, store) sales velocity from /orders rows.
+    # `/orders` rows have `style_name`, `pos_location_name` (the POS),
+    # and `quantity`. Warehouses don't book sales so they never appear.
+    sales_by_style_store: Dict[Tuple[str, str], float] = defaultdict(float)
+    for r in (sales_rows or []):
+        style = r.get("style_name")
+        store = r.get("pos_location_name") or r.get("channel")
+        if not style or not store:
+            continue
+        if is_warehouse_location(store):
+            continue
+        sales_by_style_store[(style, store)] += float(r.get("quantity") or 0)
+
+    suggestions: List[Dict[str, Any]] = []
+    for (style, store), units in sales_by_style_store.items():
+        if units <= 0:
+            continue
+        daily = units / window_days
+        if daily < min_daily_velocity:
+            continue
+        soh = store_stock.get((style, store), 0.0)
+        # Shortfall = what we need to cover ~3 more days minus what's
+        # on the floor. Only actionable when shortfall > 0.
+        target_3d = daily * 3
+        if soh >= target_3d:
+            continue
+        wh_available = wh_by_style.get(style, 0.0)
+        if wh_available <= 0:
+            continue
+        # Suggested move: fill to 4 weeks cover, bounded by warehouse
+        # stock.
+        target_4w = daily * 28
+        suggested = max(0, min(int(wh_available), int(round(target_4w - soh))))
+        if suggested <= 0:
+            continue
+        shortfall_risk = round(daily * max(0, target_3d - soh), 2)
+        # Pull brand/subcat off the SOR row for display.
+        sor_match = next((r for r in (sor_rows or []) if r.get("style_name") == style), None)
+        suggestions.append({
+            "style_name": style,
+            "brand": (sor_match or {}).get("brand") or store_brand.get((style, store), ""),
+            "subcategory": (sor_match or {}).get("product_type") or "",
+            "to_store": store,
+            "units_sold": int(units),
+            "daily_velocity": round(daily, 2),
+            "weekly_velocity": round(daily * 7, 1),
+            "store_soh": int(soh),
+            "days_of_cover": round(soh / daily, 1) if daily > 0 else None,
+            "warehouse_available": int(wh_available),
+            "suggested_qty": int(suggested),
+            "missed_sales_risk": shortfall_risk,
+        })
+    suggestions.sort(key=lambda r: r["missed_sales_risk"], reverse=True)
+    return suggestions[: int(limit)]
+
+
 @api_router.get("/analytics/ibt-sku-breakdown")
 async def analytics_ibt_sku_breakdown(
     style_name: str,
@@ -3520,12 +3658,25 @@ async def analytics_weeks_of_cover(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     locations: Optional[str] = None,
+    stock_scope: str = Query("stores", regex="^(stores|warehouse|combined)$"),
 ):
     """Weeks of Cover per style:
        weeks = current_stock / (units_sold_last_28_days / 4)
+
+    `stock_scope` controls WHICH inventory feeds `current_stock`:
+      • "stores"    — POS / shop-floor only (default; sales happen here)
+      • "warehouse" — only warehouse / wholesale / holding stock
+      • "combined"  — stores + warehouse (total allocable units)
+
+    IMPORTANT: sales (units_sold_28d, avg_weekly_sales) ALWAYS come from
+    store traffic regardless of `stock_scope` — warehouses don't sell.
+    This matches the user's explicit requirement: switching to the
+    warehouse-only view only changes the numerator of WOC, not the
+    denominator, so you can see e.g. "there's 18w of cover sitting in
+    the warehouse but store-floor has only 3w → move it out".
+
     SOR data gives 28-day sell rate when we query the last 28 days.
-    When `locations` is provided, current_stock is recomputed from
-    location-scoped inventory."""
+    """
     from datetime import datetime, timedelta
     dt = datetime.utcnow().date()
     df = dt - timedelta(days=28)
@@ -3556,26 +3707,35 @@ async def analytics_weeks_of_cover(
                         merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
         rows = list(merged.values())
 
-    out = []
-    # If locations is provided, recompute current_stock per style from
-    # location-scoped inventory.
-    local_stock_by_style: Optional[Dict[str, float]] = None
-    locs = _split_csv(locations)
-    if locs:
-        inv = await fetch_all_inventory(country=country, locations=locs) or []
-        local_stock_by_style = defaultdict(float)
-        for r in inv:
-            s = r.get("style_name") or r.get("product_name")
-            if s:
-                local_stock_by_style[s] += float(r.get("available") or 0)
+    # Recompute current_stock per style according to `stock_scope`. We
+    # ALWAYS walk the inventory cache (not just when `locations` is set)
+    # so "warehouse"/"combined" actually pull warehouse rows. The
+    # `channel`/`locations` param further narrows POS inventory for
+    # "stores"/"combined" modes — sales aggregates (units_sold) stay
+    # from /sor and are therefore always store-sourced.
+    inv = await fetch_all_inventory(country=country) or []
+    locs = _split_csv(locations) or _split_csv(channel)
+    stock_by_style: Dict[str, float] = defaultdict(float)
+    for r in inv:
+        style = r.get("style_name") or r.get("product_name")
+        if not style:
+            continue
+        is_wh = is_warehouse_location(r.get("location_name"))
+        if stock_scope == "stores" and is_wh:
+            continue
+        if stock_scope == "warehouse" and not is_wh:
+            continue
+        # Location filter is only meaningful for POS rows; warehouse rows
+        # are scoped group-wide.
+        if locs and not is_wh and (r.get("location_name") not in set(locs)):
+            continue
+        stock_by_style[style] += float(r.get("available") or 0)
 
+    out = []
     for r in rows:
         units = r.get("units_sold") or 0
         style = r.get("style_name")
-        if local_stock_by_style is not None:
-            stock = local_stock_by_style.get(style, 0)
-        else:
-            stock = r.get("current_stock") or 0
+        stock = stock_by_style.get(style, 0)
         weekly = units / 4 if units else 0
         weeks = (stock / weekly) if weekly else None
         out.append({
@@ -4318,12 +4478,15 @@ async def analytics_sor_new_styles_l10(
             "woc": round(woc, 1) if woc is not None else None,
             "style_age_weeks": round(age_weeks, 1),
         })
-    # Drop very-low-volume rows (units_6m + soh_total < 20). They add
+    # Drop very-low-volume rows (units_6m + soh_total < 50). They add
     # noise to buyer dashboards and, more importantly, to CSV exports
     # that were previously only filtered client-side. Applied here so
     # every consumer (UI, CSV export, any third-party script hitting
     # the endpoint directly) sees the same de-noised list.
-    out = [r for r in out if (r["units_6m"] + r["soh_total"]) >= 20]
+    # Threshold raised 20 → 50 on 2026-05-05 per user feedback —
+    # 20 was letting through slow runners that don't deserve buyer
+    # attention; 50 aligns with the minimum stock-keeping threshold.
+    out = [r for r in out if (r["units_6m"] + r["soh_total"]) >= 50]
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _l10_cache[cache_key] = (_time.time(), out)
     return out

@@ -196,6 +196,26 @@ export const SortableTable = ({
             {limit ? `Show all (${sorted.length})` : `Show first ${pageSize}`}
           </button>
         )}
+        {renderExpanded && sorted.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              // Toggle: if every row is already open, collapse all;
+              // else expand every currently-sorted row. Uses the
+              // existing `rowKey` resolver so it honours the same
+              // stable keys used for single-row toggles.
+              const allKeys = sorted.map((r, i) => (rowKey ? rowKey(r, i) : i));
+              const allOpen = allKeys.every((k) => expanded.has(k));
+              setExpanded(allOpen ? new Set() : new Set(allKeys));
+            }}
+            className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand"
+            data-testid={testId ? `${testId}-expand-all` : undefined}
+          >
+            {sorted.every((r, i) => expanded.has(rowKey ? rowKey(r, i) : i))
+              ? "Collapse all"
+              : "Expand all"}
+          </button>
+        )}
         {exportName && (
           <button
             type="button"

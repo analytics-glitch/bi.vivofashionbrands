@@ -7,6 +7,7 @@ import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import IBTSkuBreakdown from "@/components/IBTSkuBreakdown";
+import WarehouseToStoreIBT from "@/components/WarehouseToStoreIBT";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { ArrowRight, Truck, Coins, Package, MagnifyingGlass, CaretDown, CaretRight } from "@phosphor-icons/react";
@@ -142,6 +143,85 @@ const IBT = () => {
               <option value="">All brands</option>
               {brands.map((b) => <option key={b}>{b}</option>)}
             </select>
+            <button
+              type="button"
+              onClick={async () => {
+                // Detailed CSV: one row per (IBT suggestion × SKU) so
+                // the picker team gets color + size on every line.
+                // Fetch the SKU breakdown for each visible row in
+                // parallel (bounded to 6 at a time so we don't
+                // hammer the upstream) and flatten.
+                const CONCURRENCY = 6;
+                const out = [];
+                const header = [
+                  "Style", "Brand", "Subcategory", "From Store", "To Store",
+                  "SKU", "Color", "Size", "Stock at FROM", "Stock at TO",
+                  "Suggested Qty", "Row Uplift (KES)",
+                ];
+                out.push(header);
+                const queue = visible.slice();
+                const worker = async () => {
+                  while (queue.length) {
+                    const r = queue.shift();
+                    if (!r) return;
+                    try {
+                      const { data } = await api.get("/analytics/ibt-sku-breakdown", {
+                        params: {
+                          style_name: r.style_name,
+                          from_store: r.from_store,
+                          to_store: r.to_store,
+                          units_to_move: r.units_to_move,
+                        },
+                        timeout: 60000,
+                      });
+                      const skus = (data?.skus || []).filter((s) => s.suggested_qty > 0);
+                      if (skus.length === 0) {
+                        out.push([
+                          r.style_name, r.brand || "", r.subcategory || "",
+                          r.from_store, r.to_store, "", "", "",
+                          "", "", r.units_to_move, Math.round(r.estimated_uplift || 0),
+                        ]);
+                      } else {
+                        skus.forEach((s) => {
+                          out.push([
+                            r.style_name, r.brand || "", r.subcategory || "",
+                            r.from_store, r.to_store, s.sku, s.color || "",
+                            s.size || "", s.from_available, s.to_available,
+                            s.suggested_qty,
+                            // Pro-rata the row uplift across SKUs by suggested qty.
+                            Math.round(
+                              (r.estimated_uplift || 0) *
+                              (s.suggested_qty / Math.max(1, r.units_to_move))
+                            ),
+                          ]);
+                        });
+                      }
+                    } catch { /* ignore this row — partial export is better than nothing */ }
+                  }
+                };
+                await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+                const csv = out.map((row) =>
+                  row.map((cell) => {
+                    const v = cell == null ? "" : String(cell);
+                    return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+                  }).join(",")
+                ).join("\n");
+                const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = `ibt-detailed-${new Date().toISOString().slice(0, 10)}.csv`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(link.href);
+              }}
+              className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-brand hover:bg-brand-deep px-3 py-2 rounded-md disabled:opacity-50"
+              disabled={visible.length === 0}
+              data-testid="ibt-export-detailed"
+              title="Export every IBT suggestion expanded to its SKUs — includes color, size, barcode-ready stock-at-FROM / stock-at-TO and per-SKU suggested move qty."
+            >
+              Export with color & size
+            </button>
           </div>
 
           <div className="card-white p-5" data-testid="ibt-table-card">
@@ -281,6 +361,8 @@ const IBT = () => {
               excluded.
             </div>
           </div>
+
+          <WarehouseToStoreIBT dateFrom={dateFrom} dateTo={dateTo} countries={countries} />
         </>
       )}
     </div>

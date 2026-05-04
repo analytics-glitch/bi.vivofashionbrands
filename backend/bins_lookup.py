@@ -26,7 +26,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 SHEET_ID = "1QwXsJUZthhDVL-yo1ru0pvizJiXYFQOi-BeMfKlPDxs"
-SHEET_GID = "563816019"
+# Updated 2026-05-05 — operations switched to a cleaner 2-column
+# (barcode, location) stock-take tab. GID changed from 563816019
+# (old 6-col "Copy of Stock take" layout). The H-prefix exclusion
+# rule still applies.
+SHEET_GID = "1405111046"
 SHEET_CSV_URL = (
     f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
     f"?format=csv&gid={SHEET_GID}"
@@ -41,12 +45,23 @@ _lock = asyncio.Lock()
 def _row_pairs(row: list[str]):
     """Yield (barcode, bin) pairs from one CSV row.
 
-    The sheet packs 3 pairs into a single row at columns (0,1), (4,5), (8,9).
-    Empty cells are skipped. We keep the parser flexible — if the upstream
-    layout shifts to 2 pairs or 4 pairs, the same step-of-4 walk still works
-    until the first empty barcode terminates that pair.
+    The current (2026-05-05) tab has a simple 2-column shape:
+    `BARCODE,LOCATION` — one pair per row. The older sheet packed
+    3 pairs per row at columns (0,1), (4,5), (8,9); we still tolerate
+    that layout by walking in steps of 4, which collapses to a single
+    step on a 2-col row.
     """
     cols = len(row)
+    if cols == 0:
+        return
+    # Fast path — 2-col "barcode,location".
+    if cols <= 3:
+        bc = (row[0] or "").strip()
+        bn = (row[1] or "").strip() if cols > 1 else ""
+        if bc and bn and bc.lower() not in ("barcode", "location"):
+            yield bc, bn
+        return
+    # Legacy wide layout — step-of-4 walk.
     for start in range(0, cols, 4):
         if start + 1 >= cols:
             break
@@ -54,7 +69,7 @@ def _row_pairs(row: list[str]):
         bn = (row[start + 1] or "").strip()
         if not bc or not bn:
             continue
-        if bc.lower() in ("barcode", "location"):  # header row
+        if bc.lower() in ("barcode", "location"):
             continue
         yield bc, bn
 

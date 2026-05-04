@@ -39,8 +39,18 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Streaks, leaderboard, daily briefing, dopamine micro-interactions
 - Statistical outlier flagging (`useOutliers.js`)
 
-## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4)
+## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_50** (2026-05-05) — **IBT enhancements + bins sheet refresh + WOC semantics + SOR L-10 tighter filter**:
+  - **IBT — export with color & size**: new "Export with color & size" button on IBT page. Fetches the SKU breakdown for every visible suggestion in parallel (cap 6 concurrent), flattens to one CSV row per (suggestion × suggested-SKU) with color, size, from/to SOH, suggested qty, and pro-rata revenue uplift.
+  - **IBT — Expand-all / Collapse-all**: `SortableTable` now exposes a top-of-table toggle when `renderExpanded` is set. Labels flip to "Collapse all" when every row is open.
+  - **IBT — Warehouse → Store suggestions**: new endpoint `GET /api/analytics/ibt-warehouse-to-store` + new `WarehouseToStoreIBT` section on the IBT page. Surfaces (style × store) pairs where the store is selling AND shop-floor SOH < 3-day safety floor, with matching warehouse stock. Suggested move fills to 4-week cover, capped by warehouse availability. Sortable by missed-sales risk score. Verified: returns real candidates (e.g. Wrap Poncho shop-zetu: 137/wk velocity, wh=206, suggest 33).
+  - **Weeks of Cover — ideal is 12 weeks**: the WOC column on both the STS subcategory table and the aging table now renders < 12w as RED, 12–26w as AMBER, > 26w as GREEN (was: < 2 red, ≤ 4 amber). Tooltip updated.
+  - **stockScope applies to WOC too**: `GET /api/analytics/weeks-of-cover` now accepts `stock_scope` (stores / warehouse / combined). Sales ALWAYS come from stores (warehouses don't sell) — only the `current_stock` numerator changes. Verified: Tank Top → warehouse-scope WOC 1.77w (wh=227 units), stores-scope WOC 5.39w (stores=693 units); velocity identical (128.5/wk) across both.
+  - **Aged Stock on Inventory page**: `AgedStockReport` component rendered on the Inventory page as well as Re-Order. Already supports 30/60/90/180 presets plus custom numeric input (0-365 days), POS filter, product search.
+  - **SOR L-10 filter 20 → 50**: `(units_6m + soh_total) >= 50` now applied server-side. L-10 list drops from 18 rows to 16; removes weak runners from buyer attention. CSV exports also honour the new threshold.
+  - **Bins sheet migrated**: `bins_lookup.py` GID updated to `1405111046` (new 2-col `BARCODE,LOCATION` layout). Parser auto-detects 2-col vs legacy 6-col (step-of-4) rows. H-prefix bins still excluded. Verified: loaded 7,850 entries.
+
 - **Iter_49** (2026-05-04) — **FX correction now handles straddling custom date ranges**:
   - Bug: a custom range like 27 Apr → 3 May 2026 (straddling the May 1 FX boundary) showed Vivo Acacia at KES 11.78M and Vivo Kigali Heights at KES 4.90M — local-currency UGX/RWF values weren't being divided. Root cause: my `_fx_window_rate` returned `None` for any window starting before the override `start`, so the entire straddling window inherited "no FX".
   - Fix: new `_fx_split_window(country, df, dt)` returns 1 or 2 `(df, dt, rate)` slices. Straddling windows get split into a pre-boundary slice (`rate=None`, no correction — pre-May data was already in KES upstream) and a post-boundary slice (`rate=28.79` or `11.27`, divided per row).

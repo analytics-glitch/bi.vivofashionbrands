@@ -13,6 +13,7 @@ import MultiSelect from "@/components/MultiSelect";
 import SORHeader from "@/components/SORHeader";
 import StockToSalesByVariant from "@/components/StockToSalesByVariant";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
+import AgedStockReport from "@/components/AgedStockReport";
 import {
   Package,
   Warning,
@@ -91,7 +92,7 @@ const Inventory = () => {
       api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, locations: locationsCsv } }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
-      api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv } }),
+      api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
       api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
         .catch(() => ({ data: [] })),
     ])
@@ -958,7 +959,7 @@ const Inventory = () => {
                 {
                   key: "weeks_of_cover",
                   label: (
-                    <span title="Weeks of Cover = current_stock ÷ (units sold in last 4 weeks ÷ 4). Lower is faster turnover.">
+                    <span title="Weeks of Cover = current_stock ÷ (units sold in last 4 weeks ÷ 4). Ideal = 12 weeks. Red = undercover (< 12w → restock); Amber = healthy (12-26w); Green = excess cover (> 26w → watch for slow turn).">
                       Weeks of Cover ⓘ
                     </span>
                   ),
@@ -970,7 +971,9 @@ const Inventory = () => {
                   render: (r) => {
                     if (r.weeks_of_cover == null) return <span className="pill-neutral">—</span>;
                     const w = r.weeks_of_cover;
-                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
+                    // Ideal WOC = 12 weeks. Anything below = undercover → red.
+                    // 12-26w = healthy range → amber; >26w = excess → green-but-watch.
+                    const cls = w < 12 ? "pill-red" : w <= 26 ? "pill-amber" : "pill-green";
                     return <span className={cls}>{w.toFixed(1)}w</span>;
                   },
                   csv: (r) => (r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2)),
@@ -1140,7 +1143,8 @@ const Inventory = () => {
                     if (r.weeks_of_cover == null) return <span className="pill-neutral">— (no sales)</span>;
                     if (r.avg_weekly_sales === 0) return <span className="pill-neutral">∞</span>;
                     const w = r.weeks_of_cover;
-                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
+                    // Ideal = 12 weeks; < 12 = undercover; 12-26 = healthy; > 26 = excess.
+                    const cls = w < 12 ? "pill-red" : w <= 26 ? "pill-amber" : "pill-green";
                     return <span className={cls}>{w.toFixed(1)}w</span>;
                   },
                   csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
@@ -1166,6 +1170,11 @@ const Inventory = () => {
               rows={agingRows}
             />
           </div>
+
+          {/* Aged Stock — per-SKU stock that hasn't sold in N+ days,
+              filterable by days-since-last-sale (30/60/90/180 presets
+              plus custom input). Also available on the Re-Order page. */}
+          <AgedStockReport />
         </>
       )}
     </div>
