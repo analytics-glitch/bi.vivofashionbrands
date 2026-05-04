@@ -3265,12 +3265,27 @@ async def analytics_products_plan(
             wh_by_sub[sub] += float(r.get("available") or 0)
 
     # Build row universe — every subcategory that has either sales or stock.
-    all_subs = set(sales_by_sub.keys()) | set(stores_by_sub.keys()) | set(wh_by_sub.keys())
+    # Filter out excluded categories EARLY so the % denominators below
+    # (which drive `pct_qty`, `pct_total_soh`, etc.) reflect only the
+    # rows the user will actually see — otherwise the % columns
+    # wouldn't sum to ~100% after exclusion.
+    EXCLUDED_CATEGORIES = {"sale", "accessories"}
+    all_subs = (
+        set(sales_by_sub.keys())
+        | set(stores_by_sub.keys())
+        | set(wh_by_sub.keys())
+    )
+    all_subs = {
+        s for s in all_subs
+        if (category_of(s) or "—").strip().lower() not in EXCLUDED_CATEGORIES
+    }
 
-    # Pre-compute denominators for the % columns.
-    total_qty = sum(v.get("units") or 0 for v in sales_by_sub.values()) or 0
-    total_stores = sum(stores_by_sub.values()) or 0
-    total_wh = sum(wh_by_sub.values()) or 0
+    # Pre-compute denominators for the % columns — only over kept rows.
+    total_qty = sum(
+        (sales_by_sub.get(s) or {}).get("units") or 0 for s in all_subs
+    )
+    total_stores = sum(stores_by_sub.get(s, 0) for s in all_subs)
+    total_wh = sum(wh_by_sub.get(s, 0) for s in all_subs)
     total_soh_grand = total_stores + total_wh
 
     out = []
