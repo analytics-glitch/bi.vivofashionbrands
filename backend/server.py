@@ -847,44 +847,96 @@ async def get_country_summary(
 ):
     cache_key = ("/country-summary", date_from or "", date_to or "", "", "")
     try:
-        # If any country has an FX override active in this window
-        # (including straddling), fan out per-country through the
-        # splitter. Otherwise the cheap single upstream call is fine.
-        def _country_overlaps_fx(c: str) -> bool:
-            return any(rate for *_, rate in _fx_split_window(c, date_from, date_to))
-        if any(_country_overlaps_fx(c) for c in FX_OVERRIDES):
-            countries = ["Kenya", "Uganda", "Rwanda", "Online"]
-            per_country_groups = await asyncio.gather(*[
-                _fetch_rows_with_fx_split(
-                    "/country-summary",
-                    {"date_from": date_from, "date_to": date_to},
-                    c,
-                    date_from or "",
-                    date_to or "",
-                    sum_fields=("orders", "units_sold", "total_sales", "gross_sales",
-                                "net_sales", "discounts", "returns"),
-                    key_fn=lambda row: row.get("country"),
+        # IMPORTANT: upstream's `/country-summary` IGNORES any `country`
+        # query param — it always returns all four countries. Fanning
+        # out per-country like we do for /sales-summary was a bug: each
+        # fan-out call got the same full payload and FX got applied to
+        # non-matching rows. We now do a single upstream call and apply
+        # FX per-row based on each row's own `country`, splitting at
+        # the override boundary for windows that straddle it.
+        data = await fetch(
+            "/country-summary",
+            {"date_from": date_from, "date_to": date_to},
+            timeout_sec=15.0,
+            max_attempts=3,
+        )
+        if isinstance(data, list):
+            # Split each window-slice contribution per country. For a
+            # straddling window we need pre-boundary (no FX) + post-
+            # boundary (FX) sums — but we've already made only one
+            # upstream call covering the full window. To split correctly
+            # we re-query the post-boundary sub-window ONLY for the
+            # FX-overridden countries, then derive the pre-boundary
+            # numbers by subtraction. Much cheaper than a full per-
+            # country fan-out and doesn't hit the "country param
+            # ignored" trap.
+            out_rows: List[Dict[str, Any]] = []
+            fx_countries = [
+                c for c in FX_OVERRIDES
+                if any(rate for *_, rate in _fx_split_window(c, date_from, date_to))
+            ]
+            post_only_data = None
+            if fx_countries:
+                # Does any override straddle? Same start date for all
+                # current overrides; pick the earliest so we cover them
+                # all with a single post-only call.
+                earliest_start = min(FX_OVERRIDES[c]["start"] for c in fx_countries)
+                if date_from[:10] < earliest_start <= date_to[:10]:
+                    post_only_data = await fetch(
+                        "/country-summary",
+                        {"date_from": earliest_start, "date_to": date_to},
+                        timeout_sec=15.0,
+                        max_attempts=3,
+                    )
+            post_by_country = {
+                (r.get("country") or ""): r for r in (post_only_data or [])
+                if isinstance(r, dict)
+            }
+            for r in data:
+                if not isinstance(r, dict):
+                    out_rows.append(r)
+                    continue
+                country_name = r.get("country") or ""
+                slices = _fx_split_window(country_name, date_from, date_to)
+                # No override / entirely pre / entirely post → simple one-shot correction.
+                if len(slices) == 1:
+                    _, _, rate = slices[0]
+                    new_r = {**r}
+                    if rate:
+                        _fx_apply_aggregate(new_r, rate)
+                    out_rows.append(new_r)
+                    continue
+                # Straddle — need pre (no FX) + post (FX) halves. The
+                # full-window row minus the post-only row gives us the
+                # pre half. Post-only row gets FX-corrected, then we
+                # sum volume-like fields back together.
+                post_row = post_by_country.get(country_name)
+                if post_row is None:
+                    # Fall back: if upstream didn't return the post-only
+                    # sub-window for some reason, skip the correction
+                    # (worse to return wrong numbers silently).
+                    out_rows.append({**r})
+                    continue
+                rate = slices[-1][2]  # FX rate for the post slice
+                post_corrected = {**post_row}
+                _fx_apply_aggregate(post_corrected, rate)
+                # Pre = full - post (pre-correction); then pre + corrected post.
+                sum_fields = (
+                    "orders", "units_sold", "total_sales", "gross_sales",
+                    "net_sales", "discounts", "returns",
                 )
-                for c in countries
-            ])
-            seen: Dict[str, Dict[str, Any]] = {}
-            for g in per_country_groups:
-                for row in g:
-                    k = row.get("country")
-                    if not k:
-                        continue
-                    seen[k] = row  # one row per country guaranteed by splitter merge
-            data = list(seen.values())
-        else:
-            # Plain single upstream call — no FX corrections needed.
-            data = await fetch(
-                "/country-summary",
-                {"date_from": date_from, "date_to": date_to},
-                timeout_sec=15.0,
-                max_attempts=3,
-            )
-            if isinstance(data, list):
-                data = _fx_correct_rows_per_country(data, date_from, date_to)
+                new_r: Dict[str, Any] = {**r}
+                for f in sum_fields:
+                    full_v = r.get(f) or 0
+                    post_raw = post_row.get(f) or 0
+                    post_corr = post_corrected.get(f) or 0
+                    new_r[f] = round((full_v - post_raw) + post_corr, 2)
+                # Recompute avg_basket_size from the corrected sums.
+                orders = new_r.get("orders") or 0
+                if orders:
+                    new_r["avg_basket_size"] = round((new_r.get("total_sales") or 0) / orders, 2)
+                out_rows.append(new_r)
+            data = out_rows
         _kpi_stale_cache[cache_key] = (time.time(), data)
         asyncio.create_task(_kpi_stale_save_async())
         return data

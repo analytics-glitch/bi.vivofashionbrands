@@ -41,6 +41,11 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_52** (2026-05-05) — **/country-summary FX bug fix** (the "Country split" chart showed Uganda 21M, Rwanda 7.5M):
+  - Root cause: my iter_49 refactor wired `/country-summary` through a per-country fan-out, but upstream's `/country-summary` IGNORES the `country` query param — it always returns all 4 countries. So each fan-out call got the full payload, and FX was applied to ALL rows (Kenya, Uganda, Rwanda, Online) with whichever country's rate the slice was for, before a "last-writer-wins" merge produced nonsense.
+  - Fix: one single upstream call (as it should have been), then per-row correction using each row's own `country`. For straddling windows I make ONE extra call for the post-boundary sub-window only, derive pre = full − post_raw, FX-correct post, sum pre + corrected_post, and recompute `avg_basket_size` from the merged orders/total_sales.
+  - Verified May 1-4: Uganda 736,648 KES (was 21.2M), Rwanda 671,695 KES (was 7.57M). Straddle 27 Apr → 3 May: Uganda 1.33M, Rwanda 0.88M. Pre-boundary April untouched.
+
 - **Iter_51** (2026-05-05) — **Stock to Sales — Products Plan report**:
   - New tab on the Products page: `/products?tab=products-plan` (data-testid `subtab-products-plan`).
   - New backend endpoint `GET /api/analytics/products-plan` returns one row per subcategory with:
