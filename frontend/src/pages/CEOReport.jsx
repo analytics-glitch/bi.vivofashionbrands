@@ -302,7 +302,7 @@ const CEOReport = () => {
               testId="ceo-k-returns"
             />
             <KPIBox
-              label="Total Orders"
+              label="Transactions"
               value={fmtNum(kpi.total_orders)}
               deltaLM={delta("total_orders", kpiLM)}
               deltaLY={delta("total_orders", kpiLY)}

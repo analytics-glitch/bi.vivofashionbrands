@@ -173,7 +173,7 @@ const OverviewSnapshot = ({
         />
         <Tile
           testId="snap-orders"
-          label="Total Orders"
+          label="Transactions"
           value={fmtNum(k.total_orders)}
           deltaPct={d(k.total_orders, kp.total_orders)}
           compareLbl={compareLbl}

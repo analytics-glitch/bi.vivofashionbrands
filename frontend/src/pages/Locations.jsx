@@ -286,7 +286,7 @@ const Locations = () => {
             />
             <KPICard
               testId="loc-kpi-orders"
-              label="Total Orders"
+              label="Transactions"
               value={fmtNum(kpis.total_orders)}
               delta={d(kpis.total_orders, prevGroupTotals?.total_orders)}
               deltaLabel={compareLbl}

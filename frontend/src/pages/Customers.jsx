@@ -379,7 +379,7 @@ const Customers = () => {
                 </button>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-                <div><div className="eyebrow">Total Orders</div><div className="font-semibold num">{fmtNum(selectedCustomer.total_orders)}</div></div>
+                <div><div className="eyebrow">Transactions</div><div className="font-semibold num">{fmtNum(selectedCustomer.total_orders)}</div></div>
                 <div><div className="eyebrow">Units</div><div className="font-semibold num">{fmtNum(selectedCustomer.total_units)}</div></div>
                 <div><div className="eyebrow">Lifetime Spend</div><div className="font-semibold num text-brand">{fmtKES(selectedCustomer.total_sales)}</div></div>
                 <div><div className="eyebrow">Avg Basket</div><div className="font-semibold num">{fmtKES(selectedCustomer.avg_basket)}</div></div>
@@ -688,7 +688,7 @@ const Customers = () => {
                   { key: "country", label: "Country", align: "left" },
                   { key: "walk_in_orders", label: "Walk-in Orders", numeric: true,
                     render: (r) => fmtNum(r.walk_in_orders), csv: (r) => r.walk_in_orders },
-                  { key: "total_orders", label: "Total Orders", numeric: true,
+                  { key: "total_orders", label: "Transactions", numeric: true,
                     render: (r) => fmtNum(r.total_orders), csv: (r) => r.total_orders },
                   { key: "walk_in_share_orders_pct", label: "% of Orders", numeric: true,
                     render: (r) => `${(r.walk_in_share_orders_pct || 0).toFixed(2)}%`,
@@ -736,7 +736,7 @@ const Customers = () => {
                     render: (r) => <span className="text-muted text-[11.5px]">{r.country || "—"}</span> },
                   { key: "walk_in_orders", label: "Walk-ins", numeric: true,
                     render: (r) => fmtNum(r.walk_in_orders), csv: (r) => r.walk_in_orders },
-                  { key: "total_orders", label: "Total Orders", numeric: true,
+                  { key: "total_orders", label: "Transactions", numeric: true,
                     render: (r) => fmtNum(r.total_orders), csv: (r) => r.total_orders },
                   { key: "walk_in_share_orders_pct", label: "Walk-in %", numeric: true,
                     render: (r) => `${(r.walk_in_share_orders_pct || 0).toFixed(2)}%`,
