@@ -680,7 +680,7 @@ async def get_top_skus(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     brand: Optional[str] = None,
-    limit: int = Query(20, ge=1, le=200),
+    limit: int = Query(20, ge=1, le=10000),
 ):
     base = {"date_from": date_from, "date_to": date_to, "limit": max(limit, 50)}
     if brand:

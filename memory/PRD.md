@@ -28,6 +28,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 ## Implemented (highlights)
 - Authenticated dashboard, role-based PII masking, audit logs
 - Overview, Locations, Footfall, Customers, Products, Inventory, Re-Order, IBT, Pricing, CEO Report, Data Quality, Exports
+
+### Recent (Feb 2026 — Iter 47/48)
+- SOR Report (Exports tab): added `Units Since Launch` + `SOR Since Launch` columns sourced from a 3-year lifetime `/top-skus` window
+- SOR Report: 3-level drill — Style row → Color rollups → click a Color to expand its Sizes
+- SOR Report: "Where did it sell?" Location pane is now sortable on every column (Location / Units 6M / SOH / SOR)
+- Inventory page: products-search filter now correctly cascades to sales-side (Stock-to-Sales by Cat & Subcat) — added `/top-skus` fetch + `salesByVisibleSubcat/Category` override; `/api/top-skus` limit cap raised from 200 → 10000 to support the full catalog rollup
+- Removed broken `/products` upstream call from `analytics_sor_all_styles` (upstream returns 404); modal lifetime ASP from `/top-skus` is now the canonical Original Price source
 - Stock aging (weeks-on-hand) + phantom stock anomaly detection
 - Mobile card-views for all wide tables (`SortableTable.jsx`)
 - Notifications bell (stockouts, records, anomalies)
