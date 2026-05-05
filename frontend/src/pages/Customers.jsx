@@ -89,6 +89,35 @@ const Customers = () => {
   const [freqPrev, setFreqPrev] = useState([]);
   const [byLoc, setByLoc] = useState([]);
   const [churned, setChurned] = useState([]);
+  // PII reveal — token issued by /api/auth/verify-password (10 min TTL)
+  // gates a re-fetch of /churned-customers?reveal=true, which returns
+  // unmasked phone/email so users can export and run win-back campaigns.
+  const [revealToken, setRevealToken] = useState(null);
+  const [revealModalOpen, setRevealModalOpen] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [revealError, setRevealError] = useState(null);
+  const [revealPassword, setRevealPassword] = useState("");
+
+  const doReveal = async () => {
+    if (!revealPassword) return;
+    setRevealing(true);
+    setRevealError(null);
+    try {
+      const r = await api.post("/auth/verify-password", { email: "ignored", password: revealPassword });
+      const tok = r?.data?.reveal_token;
+      if (!tok) throw new Error("Server did not return a reveal token.");
+      setRevealToken(tok);
+      // Auto-expire the token client-side after 10 min so the UI flips
+      // back to the masked state when the server token expires.
+      setTimeout(() => setRevealToken(null), 10 * 60 * 1000);
+      setRevealModalOpen(false);
+      setRevealPassword("");
+    } catch (e) {
+      setRevealError(e?.response?.data?.detail || e.message || "Wrong password.");
+    } finally {
+      setRevealing(false);
+    }
+  };
   const [newProducts, setNewProducts] = useState([]);
   const [crosswalk, setCrosswalk] = useState([]);
 
@@ -172,7 +201,10 @@ const Customers = () => {
       ["top", api.get("/top-customers", { params: { ...dateP, limit: topN } }).catch(() => ({ data: [] }))],
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
-      ["churned", api.get("/churned-customers", { params: { days: churnDays, limit: 500 } }).catch(() => ({ data: [] }))],
+      ["churned", api.get("/churned-customers", {
+        params: { days: churnDays, limit: 500, ...(revealToken ? { reveal: true } : {}) },
+        ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
+      }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
@@ -239,7 +271,7 @@ const Customers = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN, revealToken]);
 
   // Recently-unchurned table — re-fetches whenever the slider days change,
   // independent of the main page fetch since it can be slow (10-min cache).
@@ -1953,9 +1985,9 @@ const Customers = () => {
                     title={`Reactivation Opportunity · ${fmtNum(decorated.length)}${decorated.length >= 500 ? "+" : ""} Churned Customers`}
                     subtitle={`Customers with no purchase in the last ${churnDays} days. Prioritized by reactivation value — target high-LTV / high-frequency / recent-churn segments first for win-back campaigns.`}
                     action={
-                      <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="churn-days-filter">
+                      <div className="inline-flex items-center gap-1.5 text-[11.5px] flex-wrap" data-testid="churn-days-filter">
                         <span className="text-muted font-medium">Churn window:</span>
-                        {[60, 90, 120, 180].map((d) => (
+                        {[30, 45, 60, 90, 120, 180].map((d) => (
                           <button
                             key={d}
                             type="button"
@@ -2006,6 +2038,83 @@ const Customers = () => {
                     </button>
                   ))}
                 </div>
+
+                {/* Show contacts (password-gated PII reveal) ------------- */}
+                <div className="flex items-center gap-2 mb-3 flex-wrap" data-testid="reveal-contacts-strip">
+                  {revealToken ? (
+                    <>
+                      <span className="text-[11.5px] font-bold text-emerald-700 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300">
+                        ✓ Contacts visible · session expires in ~10 min
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => { setRevealToken(null); setRevealError(null); }}
+                        data-testid="hide-contacts-btn"
+                        className="text-[11.5px] font-medium px-2.5 py-1 rounded-md border border-border hover:bg-panel"
+                      >
+                        Hide contacts
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setRevealModalOpen(true); setRevealError(null); setRevealPassword(""); }}
+                      data-testid="show-contacts-btn"
+                      className="text-[12px] font-bold px-3 py-1.5 rounded-md border border-brand text-brand hover:bg-brand hover:text-white transition-colors"
+                    >
+                      🔒 Show contacts (password required)
+                    </button>
+                  )}
+                  <span className="text-[10.5px] text-muted">
+                    Contacts are masked by default. Re-enter your password to reveal full mobile + email and enable export.
+                  </span>
+                </div>
+
+                {revealModalOpen && (
+                  <div
+                    className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+                    data-testid="reveal-modal"
+                    onClick={(e) => { if (e.target === e.currentTarget) setRevealModalOpen(false); }}
+                  >
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
+                      <div className="font-extrabold text-[16px] mb-1">Confirm your password</div>
+                      <div className="text-[12px] text-muted mb-4">
+                        This unmasks customer phone numbers and emails for the next 10 minutes. Each access is audit-logged.
+                      </div>
+                      <input
+                        type="password"
+                        value={revealPassword}
+                        onChange={(e) => setRevealPassword(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") doReveal(); }}
+                        placeholder="Your password"
+                        autoFocus
+                        data-testid="reveal-password-input"
+                        className="w-full px-3 py-2 rounded-lg border border-border text-[13px] mb-3"
+                      />
+                      {revealError && (
+                        <div className="text-[12px] text-rose-600 mb-3" data-testid="reveal-error">{revealError}</div>
+                      )}
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setRevealModalOpen(false)}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-md border border-border hover:bg-panel"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={doReveal}
+                          disabled={revealing || !revealPassword}
+                          data-testid="reveal-submit-btn"
+                          className="btn-primary disabled:opacity-50"
+                        >
+                          {revealing ? "Verifying…" : "Show contacts"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {decorated.length === 0 ? (
                   <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">

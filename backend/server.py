@@ -1453,9 +1453,29 @@ async def customer_products(request: Request, customer_id: str, user=Depends(get
 
 
 @api_router.get("/churned-customers")
-async def churned_customers(request: Request, days: int = 90, limit: int = 20, user=Depends(get_current_user)):
-    rows = await _safe_fetch("/churned-customers", {"days": days, "limit": limit})
-    return await mask_and_audit(rows or [], user=user, endpoint="/churned-customers", request_ip=_client_ip(request))
+async def churned_customers(request: Request, days: int = 90, limit: int = 20, reveal: bool = False, user=Depends(get_current_user)):
+    """Returns the churned customer list with role-based PII masking.
+    Pass `reveal=true` AND a valid `X-PII-Reveal-Token` header (issued
+    by `/api/auth/verify-password`) to bypass the mask and get full
+    contacts. Every revealed access is logged.
+    """
+    rows = await _safe_fetch("/churned-customers", {"days": days, "limit": limit}) or []
+    if reveal:
+        token = request.headers.get("X-PII-Reveal-Token") or request.headers.get("x-pii-reveal-token")
+        from auth import verify_pii_reveal_token  # late import to avoid circular at module load
+        if not verify_pii_reveal_token(getattr(user, "user_id", None), token):
+            raise HTTPException(status_code=403, detail="Reveal token missing or expired — re-enter password")
+        # Bypass role-based masking but write an audit row per customer.
+        from pii import log_unmasked_access, _row_id, _CONTACT_FIELDS  # type: ignore
+        await log_unmasked_access(
+            user=user,
+            endpoint="/churned-customers?reveal=true",
+            row_ids=[rid for rid in (_row_id(r) for r in rows) if rid],
+            fields=list(_CONTACT_FIELDS),
+            request_ip=_client_ip(request),
+        )
+        return rows
+    return await mask_and_audit(rows, user=user, endpoint="/churned-customers", request_ip=_client_ip(request))
 
 
 @api_router.get("/orders")

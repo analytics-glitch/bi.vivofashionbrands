@@ -10,7 +10,7 @@ import uuid
 import logging
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, Depends, Query
@@ -244,6 +244,74 @@ class ActivityLogMiddleware(BaseHTTPMiddleware):
 
 
 # ---------- Auth routes ----------
+import hmac as _hmac
+import hashlib as _hashlib
+import os as _auth_os
+
+
+def _pii_reveal_secret() -> bytes:
+    """Secret used to sign short-lived PII reveal tokens. Reuses
+    JWT_SECRET / SECRET_KEY if set so that all auth-derived secrets
+    rotate together; falls back to a fixed dev string."""
+    return (_auth_os.environ.get("JWT_SECRET") or _auth_os.environ.get("SECRET_KEY") or "vivo-pii-reveal-dev").encode()
+
+
+def _make_pii_reveal_token(user_id: str, ttl_seconds: int = 600) -> Tuple[str, int]:
+    """Return ``(token, expiry_unix)``. Token is `<expiry>.<hmac>` where
+    hmac is HMAC-SHA256 of `f"{user_id}:{expiry}"` using
+    ``_pii_reveal_secret``. 10-minute default TTL — short so a copy/paste
+    of the token doesn't grant lasting PII access.
+    """
+    exp = int(datetime.now(timezone.utc).timestamp()) + ttl_seconds
+    msg = f"{user_id}:{exp}".encode()
+    sig = _hmac.new(_pii_reveal_secret(), msg, _hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}", exp
+
+
+def verify_pii_reveal_token(user_id: Optional[str], token: Optional[str]) -> bool:
+    """Verify a PII reveal token. False on missing/expired/tampered."""
+    if not token or not user_id:
+        return False
+    try:
+        exp_str, sig = token.split(".", 1)
+        exp = int(exp_str)
+    except (ValueError, AttributeError):
+        return False
+    if exp < int(datetime.now(timezone.utc).timestamp()):
+        return False
+    msg = f"{user_id}:{exp}".encode()
+    expected = _hmac.new(_pii_reveal_secret(), msg, _hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(expected, sig)
+
+
+@auth_router.post("/verify-password")
+async def verify_password(body: LoginBody, user: User = Depends(get_current_user)):
+    """Confirm the current session-user's own password — used as a
+    "step-up" gate before revealing PII (full mobile / email of churned
+    customers, the masked-by-default Top-N customers list, etc.).
+    Returns `{ok: True, reveal_token, expires_at}` on match. Always
+    responds 401 on mismatch.
+
+    The `reveal_token` is short-lived (10 min) and HMAC-signed against
+    the user's `user_id`. Frontends pass it as the
+    `X-PII-Reveal-Token` header on subsequent calls to PII endpoints
+    (e.g. `/churned-customers?reveal=true`).
+    """
+    user_doc = await db.users.find_one({"user_id": user.user_id})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    ph = user_doc.get("password_hash")
+    if not ph or not pwd.verify(body.password, ph):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token, exp = _make_pii_reveal_token(user.user_id)
+    return {
+        "ok": True,
+        "user_id": user.user_id,
+        "reveal_token": token,
+        "expires_at": datetime.fromtimestamp(exp, tz=timezone.utc).isoformat(),
+    }
+
+
 @auth_router.post("/login")
 async def login(body: LoginBody, response: Response):
     user_doc = await db.users.find_one({"email": body.email.lower()})
