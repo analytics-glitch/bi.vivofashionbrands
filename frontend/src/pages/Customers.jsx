@@ -168,21 +168,21 @@ const Customers = () => {
 
     const rest = [
       ["top", api.get("/top-customers", { params: { ...dateP, limit: topN } }).catch(() => ({ data: [] }))],
-      ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: [] }))],
+      ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", { params: { days: churnDays, limit: 500 } }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
       ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
-      ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, country, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["byLocPrev", prevRange ? api.get("/customers-by-location", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["topSkus", api.get("/top-skus", { params: { ...dateP, limit: 200 } }).catch(() => ({ data: [] }))],
       // Identified-customer retention metrics (excludes walk-ins). Replaces
       // the upstream /customer-frequency repeat-rate which over-counts
       // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
-      ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: null }))],
-      ["spendByType", api.get("/analytics/avg-spend-by-customer-type", { params: { date_from: dateFrom, date_to: dateTo } }).catch(() => ({ data: null }))],
+      ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
+      ["spendByType", api.get("/analytics/avg-spend-by-customer-type", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
@@ -1026,8 +1026,8 @@ const Customers = () => {
                         <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-repeat-rate-value">
                           {repeatRate.toFixed(1)}%
                         </div>
-                        <div className="text-[10.5px] text-muted mt-0.5" title="Includes walk-ins (no customer_id). Reflects raw upstream /customer-frequency buckets — comparable to historical reports.">
-                          includes walk-ins · {fmtNum(curTotal)} buckets
+                        <div className="text-[10.5px] text-muted mt-0.5" title="Of all customers in the selected period (walk-ins excluded), the percentage with 2+ orders. Reflects the same buckets shown in the chart above.">
+                          walk-ins excluded · {fmtNum(curTotal)} customers
                         </div>
                         {hasCompare && (
                           <div className={`text-[11px] font-semibold mt-0.5 ${repeatRateDelta >= 0 ? "text-brand" : "text-danger"}`}>

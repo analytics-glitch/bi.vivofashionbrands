@@ -41,6 +41,19 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_54** (2026-05-05) — **Walk-in detection unified across Customers page (fixes Avg Spend mismatch + Repeat Purchase Rate inflated by anonymous traffic)**:
+  - **Bug**: Avg Spend / Customer card showed KES 9,695 while New (KES 5,721) + Returning (KES 8,758) buckets, weighted by their customer counts (141 + 882 = 1,023), came out to ~KES 8,341. Mismatch = walk-in revenue counted in the numerator (`/kpis.total_sales` includes anonymous transactions) but excluded from the denominator (upstream `/customers.total_customers` is identified-only).
+  - **Bug 2**: Repeat Purchase Rate (legacy) showed 8.2% because `/customer-frequency` upstream returns ALL customers including walk-ins, who almost always have only 1 "order" — collapsing the repeat-rate denominator.
+  - **Walk-in rules per ops definition**: any of (a) no `customer_id`, (b) `customer_type=Guest`, (c) blank-name in `/top-customers` roster (~379 IDs), (d) **NEITHER phone NOR email** in roster, (e) name contains "walk", "vivo", or "safari", (f) name matches the POS / store / location name.
+  - **Fix**: 
+    1. Promoted module-level `_is_walk_in_order` in `server.py` to the same robust 7-rule detector used inside `/customers/walk-ins`. Now accepts optional pre-warmed `name_lookup` + `contact_lookup` params for hot-path performance.
+    2. Extended `_get_customer_name_lookup()` to also build a sibling `_customer_contacts_cache` (customer_id → {has_phone, has_email}) so rule (d) can fire.
+    3. Updated all four `routes/customer_analytics.py` endpoints to warm the lookups once and pass both into `_is_walk_in_order` for every row.
+    4. Rewrote `GET /api/customer-frequency` to compute buckets from `/orders` with the robust walk-in filter, instead of upstream pass-through. Now honours `country` + `channel` filters too.
+    5. `/api/customers` `avg_customer_spend` recompute now uses identified-only spend (sum of New + Returning totals from `/analytics/avg-spend-by-customer-type`) ÷ identified-only customer count. Source flag changed to `recomputed_local_identified`. Also overrides `total_customers` to the identified count so retention denominators align.
+  - **Frontend**: updated the "Repeat Purchase Rate (legacy)" caption from "includes walk-ins · X buckets" to "walk-ins excluded · X customers". Added `country`/`channel` filters to `/customer-frequency`, `/analytics/customer-retention`, and `/analytics/avg-spend-by-customer-type` API calls.
+  - **Verified Apr 2026**: `total_customers` now = 8,405 (was bigger before walk-in cleanup). New = 1,306 × 6,909 = 9.0M. Returning = 7,099 × 10,385 = 73.7M. Total = 82.7M ÷ 8,405 = **KES 9,845 avg spend** — matches the New + Returning weighted average exactly. Frequency buckets sum to the same 8,405.
+
 - **Iter_53** (2026-05-05) — **FX conversion now handled upstream in BigQuery — all server-side FX logic removed**:
   - The upstream BI API now returns every monetary field already converted to KES (Uganda UGX→KES at 28.79, Rwanda RWF→KES at 11.27, etc.) at the data layer in BigQuery.
   - Removed from `server.py` (~555 lines): `FX_OVERRIDES`, `_FX_FIELDS_ROW`, `_fx_rate_for`, `_fx_correct_orders`, `_fx_window_rate`, `_fx_apply_aggregate`, `_fx_correct_country_scoped`, `_fx_split_window`, `_fetch_kpis_with_fx_split`, `_fetch_rows_with_fx_split`, `_fx_correct_rows_per_country`. Endpoint `/api/admin/fx-overrides` removed.

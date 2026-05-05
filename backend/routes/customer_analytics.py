@@ -26,6 +26,8 @@ from server import (
     api_router,
     _orders_for_window,
     _is_walk_in_order,
+    _get_customer_name_lookup,
+    _get_customer_contact_lookup_sync,
     _safe_fetch,
     _split_csv,
     category_of,
@@ -64,6 +66,10 @@ async def analytics_customer_details(
     Walk-ins (no customer_id) are excluded.
     """
     rows = await _orders_for_window(date_from, date_to, country, channel)
+    # Warm the customer-name + contact lookup so the walk-in detector
+    # can fire its name-pattern + no-phone-no-email rules.
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _get_customer_contact_lookup_sync()
 
     # Optional category / subcategory filter — applied per /orders row.
     cat_set = set(_split_csv(category)) if category else None
@@ -72,7 +78,7 @@ async def analytics_customer_details(
 
     by_cust: Dict[str, Dict[str, Any]] = {}
     for r in rows:
-        if _is_walk_in_order(r):
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
             continue
         cid = str(r.get("customer_id") or "")
         if not cid:
@@ -188,10 +194,12 @@ async def analytics_customer_retention(
       • walk_in_orders — orders excluded
     """
     rows = await _orders_for_window(date_from, date_to, country, channel)
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _get_customer_contact_lookup_sync()
     by_cust: Dict[str, int] = defaultdict(int)
     walk_ins = 0
     for r in rows:
-        if _is_walk_in_order(r):
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
             walk_ins += 1
             continue
         cid = r.get("customer_id")
@@ -235,13 +243,15 @@ async def analytics_avg_spend_by_customer_type(
     customer_id) are excluded.
     """
     rows = await _orders_for_window(date_from, date_to, country, channel)
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _get_customer_contact_lookup_sync()
 
     # Per-customer aggregates: spend, order count, type vote.
     spend_by_cust: Dict[str, float] = defaultdict(float)
     orders_by_cust: Dict[str, int] = defaultdict(int)
     type_votes: Dict[str, Dict[str, int]] = defaultdict(lambda: {"New": 0, "Returning": 0})
     for r in rows:
-        if _is_walk_in_order(r):
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
             continue
         cid = str(r.get("customer_id") or "")
         if not cid:
@@ -319,11 +329,13 @@ async def analytics_recently_unchurned(
     # Just enough history to spot the requested gap plus a 30-day buffer.
     look_from = (today - timedelta(days=min_gap_days + 30)).isoformat()
     hist_rows = await _orders_for_window(look_from, date_to, country, channel)
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _get_customer_contact_lookup_sync()
 
     # Bucket orders by customer_id, drop walk-ins.
     by_cust: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in hist_rows:
-        if _is_walk_in_order(r):
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
             continue
         cid = str(r.get("customer_id") or "")
         if not cid:

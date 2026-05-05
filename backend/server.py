@@ -942,23 +942,40 @@ async def get_customers(
     # parallel and merges into the same `cust` state.
     if data:
         # ---- Trust-critical override: recompute avg_customer_spend locally ----
-        # Upstream /customers returns an `avg_customer_spend` that in some
-        # months is ~10× the correct value (observed: 116,887 in Apr vs
-        # 11,939 in Mar — a scale drift, not a real 880% growth). Since the
-        # defensible definition is simply `total_sales ÷ total_customers`,
-        # we recompute it here from /kpis for the exact same filter scope.
-        # If /kpis fails, we fall back to the upstream number so the tile
-        # still renders (with a flag the UI can surface).
-        active = data.get("total_customers") or 0
+        # Two bugs to fix:
+        #   1. Upstream /customers returns an `avg_customer_spend` that in
+        #      some months is ~10× the correct value (observed: 116,887 in
+        #      Apr vs 11,939 in Mar — a scale drift, not a real 880% growth).
+        #   2. Computing it as `total_sales ÷ total_customers` mixes a
+        #      walk-in-INCLUDED numerator with a walk-in-EXCLUDED
+        #      denominator (upstream's /customers count is identified-only,
+        #      while /kpis total_sales includes anonymous walk-in revenue).
+        #      That inflated the tile to KES 9,695 when New + Returning
+        #      averaged to ~8,340.
+        # The defensible definition is `identified_total_sales ÷ identified_customers`,
+        # which matches the New + Returning weighted average shown in the
+        # Customer Loyalty section. We get those numbers from the same
+        # walk-in-excluded /analytics/avg-spend-by-customer-type pipeline.
         try:
-            kpi_data = await get_kpis(
-                date_from=date_from, date_to=date_to,
-                country=country, channel=channel,
-            )
-            total_sales = (kpi_data or {}).get("total_sales") or 0
-            if active and total_sales:
-                data["avg_customer_spend"] = round(total_sales / active, 2)
-                data["avg_customer_spend_source"] = "recomputed_local"
+            if date_from and date_to:
+                from routes.customer_analytics import analytics_avg_spend_by_customer_type
+                spend = await analytics_avg_spend_by_customer_type(
+                    date_from=date_from, date_to=date_to,
+                    country=country, channel=channel,
+                    user=type("U", (), {"role": "admin"})(),
+                )
+                new_b = (spend or {}).get("new") or {}
+                ret_b = (spend or {}).get("returning") or {}
+                identified_sales = (new_b.get("total_spend_kes") or 0) + (ret_b.get("total_spend_kes") or 0)
+                identified_count = (new_b.get("customers") or 0) + (ret_b.get("customers") or 0)
+                if identified_count and identified_sales:
+                    data["avg_customer_spend"] = round(identified_sales / identified_count, 2)
+                    data["avg_customer_spend_source"] = "recomputed_local_identified"
+                    # Also align total_customers with the identified count
+                    # so retention denominators on the page agree.
+                    data["total_customers"] = identified_count
+                else:
+                    data["avg_customer_spend_source"] = "upstream_unverified"
             else:
                 data["avg_customer_spend_source"] = "upstream_unverified"
         except Exception as e:
@@ -1054,6 +1071,7 @@ async def get_customers_churn_rate(
     return out
 
 _customer_names_cache: Tuple[float, Dict[str, str]] = (0.0, {})
+_customer_contacts_cache: Tuple[float, Dict[str, Dict[str, bool]]] = (0.0, {})
 _CUSTOMER_NAMES_TTL = 60 * 60 * 6  # 6 hours
 
 
@@ -1070,7 +1088,7 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
     "anonymous walk-in customer" from "customer not yet loaded".
     """
     import time as _time
-    global _customer_names_cache
+    global _customer_names_cache, _customer_contacts_cache
     ts, cache = _customer_names_cache
     if cache and _time.time() - ts < _CUSTOMER_NAMES_TTL:
         return cache
@@ -1080,6 +1098,7 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
         logger.warning("[customer-names] /top-customers failed: %s", e)
         return cache or {}
     out: Dict[str, str] = {}
+    contacts: Dict[str, Dict[str, bool]] = {}
     blanks = 0
     for r in rows:
         cid = r.get("customer_id")
@@ -1093,9 +1112,27 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
             # Empty-name customers — the walk-in roster.
             out[cid_s] = ""
             blanks += 1
+        # Capture contact-info presence — used by the walk-in detector.
+        # A customer with NEITHER a phone NOR an email is treated as a
+        # walk-in regardless of customer_id (per ops definition).
+        phone = r.get("phone") or r.get("customer_phone")
+        email = r.get("email") or r.get("customer_email")
+        contacts[cid_s] = {
+            "has_phone": bool(phone and str(phone).strip()),
+            "has_email": bool(email and str(email).strip()),
+        }
     logger.info("[customer-names] loaded %d names (%d are walk-in blanks)", len(out), blanks)
     _customer_names_cache = (_time.time(), out)
+    _customer_contacts_cache = (_time.time(), contacts)
     return out
+
+
+def _get_customer_contact_lookup_sync() -> Dict[str, Dict[str, bool]]:
+    """Synchronous accessor for the contact lookup populated by
+    `_get_customer_name_lookup`. Returns {} if the name lookup hasn't
+    been warmed yet — callers should always call the async name lookup
+    first to ensure freshness."""
+    return _customer_contacts_cache[1]
 
 
 
@@ -1448,14 +1485,72 @@ async def customer_frequency(
     request: Request,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
     user=Depends(get_current_user),
 ):
-    rows = await _safe_fetch("/customer-frequency", {
-        "date_from": date_from, "date_to": date_to,
-    })
-    # Aggregate buckets have no row-level PII; pass-through via mask_rows
-    # (no-op when fields are absent).
-    return mask_rows(rows or [], getattr(user, "role", None))
+    """Order-frequency buckets for the selected period, EXCLUDING walk-ins.
+
+    Walk-ins are detected via the same robust rule used elsewhere on the
+    Customers page: no customer_id, customer_type=Guest, missing both
+    phone & email in the upstream roster, or customer_name matching
+    "walk"/"vivo"/"safari"/<store name>. Including walk-ins skews the
+    one-order-only bucket and inflates the "8.2% repeat rate" reading.
+
+    Returns the same shape as upstream `/customer-frequency`:
+        [{"frequency_bucket": "1 order"|"2 orders"|...|"5+ orders",
+          "customer_count": int}]
+    so the existing chart + "Repeat Purchase Rate (legacy)" KPI keep
+    rendering, just with a now-meaningful denominator.
+    """
+    if not date_from or not date_to:
+        # No window — fall back to upstream pass-through (rare; the UI
+        # always supplies a window, but admin tooling sometimes hits
+        # this raw).
+        rows = await _safe_fetch("/customer-frequency", {
+            "date_from": date_from, "date_to": date_to,
+        })
+        return mask_rows(rows or [], getattr(user, "role", None))
+
+    orders_rows = await _orders_for_window(date_from, date_to, country, channel)
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _customer_contacts_cache[1]
+
+    # Count distinct order_ids per customer_id, dropping walk-ins.
+    cust_orders: Dict[str, set] = {}
+    for r in orders_rows:
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
+            continue
+        cid = str(r.get("customer_id") or "").strip()
+        if not cid:
+            continue
+        oid = r.get("order_id")
+        if oid is None:
+            continue
+        cust_orders.setdefault(cid, set()).add(oid)
+
+    # Bucket customers by their order count.
+    buckets = {"1 order": 0, "2 orders": 0, "3 orders": 0, "4 orders": 0, "5+ orders": 0}
+    for oids in cust_orders.values():
+        n = len(oids)
+        if n <= 0:
+            continue
+        if n == 1:
+            buckets["1 order"] += 1
+        elif n == 2:
+            buckets["2 orders"] += 1
+        elif n == 3:
+            buckets["3 orders"] += 1
+        elif n == 4:
+            buckets["4 orders"] += 1
+        else:
+            buckets["5+ orders"] += 1
+
+    out = [
+        {"frequency_bucket": k, "customer_count": v}
+        for k, v in buckets.items()
+    ]
+    return mask_rows(out, getattr(user, "role", None))
 
 
 # ---------------------------------------------------------------------------
@@ -1469,17 +1564,65 @@ async def customer_frequency(
 # enough for the dashboard while the data only ticks once a day upstream.
 _CUSTOMER_HIST_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _CUSTOMER_HIST_TTL = 600  # 10 minutes
-def _is_walk_in_order(r: Dict[str, Any]) -> bool:
-    """Walk-in detector — must match `walk-ins` endpoint logic.
-    A walk-in has either no customer_id, customer_type=Guest, or no
-    customer_name at all (some POS rows omit customer_id but include name).
+def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] = None,
+                      contact_lookup: Optional[Dict[str, Dict[str, bool]]] = None) -> bool:
+    """Robust walk-in detector — must match `walk-ins` endpoint logic.
+
+    A walk-in is any sale that can't be tied to a real, contactable
+    customer. Triggers if ANY of:
+      1. No customer_id at all.
+      2. customer_type tagged Guest / walk-in / anonymous.
+      3. customer_id resolves to a blank-name row in /top-customers
+         (the walk-in roster — ~379 such IDs).
+      4. customer_id has NEITHER a phone NOR an email in /top-customers
+         (anonymous transaction even if upstream auto-assigned an id).
+      5. customer_name contains "walk" (covers walk-in, walkin, walk in).
+      6. customer_name contains "vivo" / "safari" — staff sometimes
+         enter the brand or store name as the customer.
+      7. customer_name matches the POS / store / location name.
+
+    `name_lookup` and `contact_lookup` should be passed by callers that
+    have warmed `_get_customer_name_lookup` already; otherwise we fall
+    back to whatever has been cached and degrade gracefully (rule 4 only
+    fires when the lookup is populated — under-counts walk-ins is
+    safer than over-counts).
     """
     cid = r.get("customer_id")
-    ctype = (r.get("customer_type") or "").lower()
-    if not cid:
+    if cid is None or (isinstance(cid, str) and not cid.strip()):
         return True
-    if ctype == "guest":
+    ctype = (r.get("customer_type") or "").strip().lower()
+    if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
         return True
+    cid_s = str(cid).strip()
+    nm_lookup = name_lookup if name_lookup is not None else _customer_names_cache[1]
+    ct_lookup = contact_lookup if contact_lookup is not None else _customer_contacts_cache[1]
+    if cid_s in nm_lookup and not nm_lookup[cid_s]:
+        # Known customer in the roster but with blank name = walk-in.
+        return True
+    contact = ct_lookup.get(cid_s)
+    if contact is not None and not contact.get("has_phone") and not contact.get("has_email"):
+        # No phone AND no email in the roster — anonymous customer.
+        return True
+    cname = (r.get("customer_name") or nm_lookup.get(cid_s, "") or "").strip().lower()
+    if not cname:
+        # No name — can't apply name-pattern rules. cid is in the roster
+        # (rule 3 above already returned True for blank-name), so missing
+        # name here means lookup wasn't warmed. Treat as identified to
+        # avoid false positives.
+        return False
+    cname_clean = cname.replace("-", " ").replace("_", " ")
+    if "walk" in cname_clean:
+        return True
+    if "vivo" in cname_clean or "safari" in cname_clean:
+        return True
+    loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
+    if loc:
+        loc_clean = loc.replace("-", " ").replace("_", " ")
+        if cname_clean == loc_clean:
+            return True
+        tokens = [t for t in loc_clean.split() if len(t) >= 4 and t not in ("vivo", "safari", "mall", "shop", "store")]
+        if any(t in cname_clean for t in tokens):
+            return True
     return False
 
 
