@@ -41,6 +41,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_53** (2026-05-05) — **FX conversion now handled upstream in BigQuery — all server-side FX logic removed**:
+  - The upstream BI API now returns every monetary field already converted to KES (Uganda UGX→KES at 28.79, Rwanda RWF→KES at 11.27, etc.) at the data layer in BigQuery.
+  - Removed from `server.py` (~555 lines): `FX_OVERRIDES`, `_FX_FIELDS_ROW`, `_fx_rate_for`, `_fx_correct_orders`, `_fx_window_rate`, `_fx_apply_aggregate`, `_fx_correct_country_scoped`, `_fx_split_window`, `_fetch_kpis_with_fx_split`, `_fetch_rows_with_fx_split`, `_fx_correct_rows_per_country`. Endpoint `/api/admin/fx-overrides` removed.
+  - Simplified `/kpis`, `/sales-summary`, `/country-summary`, `/daily-trend`, `/top-skus`, `/sor`, `/subcategory-sales`, `/subcategory-stock-sales`, `/top-customers`, `/analytics/category-country-matrix` — they now pass upstream KES values straight through.
+  - Disk-persisted stale cache wiped (`/tmp/_kpi_stale_cache.json`) so old pre-correction values do not leak.
+  - Verified May 2026: Uganda 736,648 KES total_sales (matches Vivo Acacia 568,812 + Oasis Mall 167,836). Rwanda 682,431 KES (Kigali Heights). All-countries KPI = 12,635,691 KES with no double-counting / no inflation.
+
 - **Iter_52** (2026-05-05) — **/country-summary FX bug fix** (the "Country split" chart showed Uganda 21M, Rwanda 7.5M):
   - Root cause: my iter_49 refactor wired `/country-summary` through a per-country fan-out, but upstream's `/country-summary` IGNORES the `country` query param — it always returns all 4 countries. So each fan-out call got the full payload, and FX was applied to ALL rows (Kenya, Uganda, Rwanda, Online) with whichever country's rate the slice was for, before a "last-writer-wins" merge produced nonsense.
   - Fix: one single upstream call (as it should have been), then per-row correction using each row's own `country`. For straddling windows I make ONE extra call for the post-boundary sub-window only, derive pre = full − post_raw, FX-correct post, sum pre + corrected_post, and recompute `avg_basket_size` from the merged orders/total_sales.

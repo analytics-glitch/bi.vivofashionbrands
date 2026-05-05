@@ -295,345 +295,13 @@ async def admin_circuit_breaker_reset():
     return {"ok": True, "previously_open": n_open}
 
 
-# ─── FX rate overrides ────────────────────────────────────────────────
-# Vivo BI's upstream returns sales totals for Uganda and Rwanda in their
-# respective LOCAL currencies (UGX / RWF) for orders booked from
-# 2026-04-01 onwards — a recent change in their pipeline. We need to
-# divide these values by the agreed FX rates so all dashboard tiles
-# stay denominated in KES.
-#
-# Configured per-country with a `start` date so earlier history (which
-# is already in KES upstream) is left alone. Values come from the
-# user / finance team and are intentionally hard-coded — they don't
-# change often enough to warrant a full `dim_fx_rate` lookup yet.
-# When the rates change, just bump the dict and redeploy.
-FX_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "Uganda": {"start": "2026-05-01", "rate": 28.79},
-    "Rwanda": {"start": "2026-05-01", "rate": 11.27},
-}
-# Sales / monetary fields that should be FX-corrected on /orders rows.
-# Anything not in this set (units, customer_id, order_id, dates …) is
-# left untouched. We use a set rather than wildcard because upstream
-# also emits unit-priced fields (`unit_price_kes`) that need correcting.
-_FX_FIELDS_ROW = {
-    "total_sales", "total_sales_kes", "net_sales", "net_sales_kes",
-    "gross_sales", "gross_sales_kes", "sales_amount", "sales_amount_kes",
-    "amount", "amount_kes", "subtotal", "subtotal_kes", "discount",
-    "discount_kes", "unit_price", "unit_price_kes", "total_amount",
-    "total_amount_kes", "revenue", "revenue_kes",
-    # Currency-denominated derived fields — also need correction so the
-    # per-country basket / AOV columns line up with the corrected
-    # total_sales in the same row.
-    "avg_basket_size", "avg_basket", "avg_basket_kes",
-    "avg_order_value", "aov", "aov_kes",
-    "discounts", "returns",
-}
-
-
-def _fx_rate_for(country: Optional[str], date_iso: Optional[str]) -> Optional[float]:
-    """Return the divisor for (country, date) when an override applies,
-    else None. `date_iso` may be `YYYY-MM-DD` or longer (we slice the
-    first 10 chars). Country comparison is case-insensitive — upstream
-    sometimes lowercases.
-    """
-    if not country or not date_iso:
-        return None
-    key = country.title()
-    cfg = FX_OVERRIDES.get(key)
-    if not cfg:
-        return None
-    if date_iso[:10] < cfg["start"]:
-        return None
-    return float(cfg["rate"])
-
-
-def _fx_correct_orders(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Mutate every row in-place so every monetary field is divided by
-    the country/date-appropriate FX rate when an override applies.
-    Upstream returns the same row dict that downstream callers may keep
-    referencing, but mutation is fine here because callers always pull
-    from the cache, not the original list.
-
-    Skip rows where (country, order_date) doesn't trigger any override
-    so the no-op path is cheap.
-    """
-    for r in rows:
-        rate = _fx_rate_for(
-            r.get("country") or r.get("customer_country"),
-            r.get("order_date"),
-        )
-        if not rate:
-            continue
-        for k in _FX_FIELDS_ROW:
-            v = r.get(k)
-            if isinstance(v, (int, float)) and v:
-                r[k] = round(v / rate, 2)
-    return rows
-
-
-def _fx_window_rate(country: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> Optional[float]:
-    """For aggregated endpoints (`/kpis`, `/sales-summary`, …) we don't
-    have per-row dates. Apply the FX divisor IFF the entire requested
-    window starts on or after the override's `start` date. If the
-    window straddles the override boundary, refuse to apply (returns
-    None) so we never silently double-correct an already-converted
-    pre-override portion.
-
-    Caller is expected to log a warning when this returns None for a
-    boundary-spanning request so users can see why local-currency
-    figures might still appear for mixed-month queries.
-    """
-    if not country:
-        return None
-    cfg = FX_OVERRIDES.get(country.title())
-    if not cfg:
-        return None
-    if not date_from:
-        return None
-    if date_from[:10] < cfg["start"]:
-        return None
-    return float(cfg["rate"])
-
-
-def _fx_apply_aggregate(payload: Any, rate: float, fields: Optional[set] = None) -> Any:
-    """Divide every monetary field in a dict (or list of dicts) by `rate`.
-    Used for upstream-aggregated payloads (`/kpis`, `/sales-summary`, …)
-    where we already know the entire window qualifies for the override.
-    `fields` defaults to the same monetary-field allow-list used for
-    /orders rows.
-    """
-    field_set = fields or _FX_FIELDS_ROW
-    if isinstance(payload, list):
-        for row in payload:
-            if isinstance(row, dict):
-                _fx_apply_aggregate(row, rate, field_set)
-        return payload
-    if isinstance(payload, dict):
-        for k, v in list(payload.items()):
-            if k in field_set and isinstance(v, (int, float)) and v:
-                payload[k] = round(v / rate, 2)
-        return payload
-    return payload
-
-
-@api_router.get("/admin/fx-overrides")
-async def admin_fx_overrides():
-    """Return the active FX-override config for ops debugging."""
-    return {"overrides": FX_OVERRIDES, "fields": sorted(_FX_FIELDS_ROW)}
-
-
-def _fx_correct_country_scoped(
-    data: Any,
-    country: Optional[str],
-    date_from: Optional[str],
-    date_to: Optional[str],
-) -> Any:
-    """FX-correct a country-scoped upstream response when the whole
-    window qualifies for an FX override.
-
-    Used by wrappers around `/sor`, `/subcategory-sales`, `/top-skus`,
-    `/top-customers`, `/stock-to-sales-by-*` and similar — endpoints
-    that return monetary fields and were called with a single country
-    query param (so every row in the response is scoped to that
-    country). For all-country and multi-country calls we can't apply
-    a blanket rate and we fall back to the caller's explicit logic.
-
-    Returns a NEW list/dict with corrected values — never mutates the
-    upstream payload so the shared `_FETCH_CACHE` entry stays raw.
-    Straddling windows are silently skipped; callers that care about
-    straddling must use the explicit splitters (this helper is the
-    "safe default" for non-straddling country-scoped calls).
-    """
-    if not country or not date_from or not date_to:
-        return data
-    rate = _fx_window_rate(country, date_from, date_to)
-    if not rate:
-        return data
-    if isinstance(data, list):
-        return _fx_apply_aggregate([{**r} for r in data if isinstance(r, dict)], rate)
-    if isinstance(data, dict):
-        return _fx_apply_aggregate({**data}, rate)
-    return data
-
-
-def _fx_split_window(
-    country: Optional[str], date_from: Optional[str], date_to: Optional[str]
-) -> List[Tuple[str, str, Optional[float]]]:
-    """Slice [date_from, date_to] at the FX-override boundary for `country`.
-
-    Returns a list of ``(df, dt, rate)`` tuples where ``rate=None`` means
-    "no FX correction needed for this slice" and a float means "divide
-    every monetary field by this rate before aggregating".
-
-    Cases:
-      • No override for country  → ``[(df, dt, None)]``                    (1 slice)
-      • Window entirely BEFORE  → ``[(df, dt, None)]``                     (1 slice)
-      • Window entirely AT/AFTER → ``[(df, dt, rate)]``                    (1 slice)
-      • Window STRADDLES boundary →
-          ``[(df, day_before_start, None), (start, dt, rate)]``            (2 slices)
-
-    This is the linchpin fix for custom date ranges that span the
-    boundary (e.g. 27 Apr → 3 May 2026): without splitting, the entire
-    window inherits "no FX" and Uganda/Rwanda show local-currency totals.
-    """
-    if not country or not date_from or not date_to:
-        return [(date_from or "", date_to or "", None)]
-    cfg = FX_OVERRIDES.get(country.title())
-    if not cfg:
-        return [(date_from, date_to, None)]
-    start = cfg["start"]
-    rate = float(cfg["rate"])
-    if date_to[:10] < start:
-        return [(date_from, date_to, None)]
-    if date_from[:10] >= start:
-        return [(date_from, date_to, rate)]
-    # Straddles — split.
-    try:
-        pre_end = (datetime.fromisoformat(start).date() - timedelta(days=1)).isoformat()
-    except Exception:
-        return [(date_from, date_to, rate)]  # malformed start — fail safe to corrected
-    return [(date_from, pre_end, None), (start, date_to, rate)]
-
-
-async def _fetch_kpis_with_fx_split(
-    base_params: Dict[str, Any],
-    country: Optional[str],
-    date_from: str,
-    date_to: str,
-) -> Dict[str, Any]:
-    """Fetch ``/kpis`` for a single country, automatically splitting at
-    the FX-override boundary and aggregating into a single KES dict.
-    Used by the `/kpis` endpoint's per-country fan-out.
-
-    The aggregation re-uses ``agg_kpis`` (the same helper that combines
-    multi-country results) so weighted averages (avg_basket, ASP, MSI,
-    return_rate) recalculate correctly across the spliced halves.
-    """
-    slices = _fx_split_window(country, date_from, date_to)
-    if len(slices) == 1:
-        df, dt, rate = slices[0]
-        params = {**base_params, "date_from": df, "date_to": dt, "country": country}
-        data = await fetch("/kpis", params, timeout_sec=15.0, max_attempts=3)
-        if rate:
-            data = _fx_apply_aggregate({**data}, rate)
-        return data
-    # Two slices — fetch in parallel.
-    tasks = []
-    rates: List[Optional[float]] = []
-    for df, dt, rate in slices:
-        params = {**base_params, "date_from": df, "date_to": dt, "country": country}
-        tasks.append(fetch("/kpis", params, timeout_sec=15.0, max_attempts=3))
-        rates.append(rate)
-    raw = await asyncio.gather(*tasks)
-    corrected = []
-    for r, rate in zip(raw, rates):
-        if rate and isinstance(r, dict):
-            corrected.append(_fx_apply_aggregate({**r}, rate))
-        else:
-            corrected.append(r)
-    return agg_kpis(corrected)
-
-
-async def _fetch_rows_with_fx_split(
-    path: str,
-    base_params: Dict[str, Any],
-    country: Optional[str],
-    date_from: str,
-    date_to: str,
-    sum_fields: Tuple[str, ...] = (
-        "orders", "units_sold", "total_sales", "gross_sales", "net_sales",
-        "discounts", "returns",
-    ),
-    key_fn=lambda row: (row.get("country"), row.get("channel")),
-) -> List[Dict[str, Any]]:
-    """Fetch a row-list endpoint (``/sales-summary``, ``/country-summary``)
-    for a single country, splitting at the FX-override boundary and
-    summing the per-(country, channel) rows from each slice.
-
-    `avg_basket_size` is recomputed post-merge as ``total_sales / orders``
-    rather than averaged, since the input is already-merged volume buckets.
-    """
-    slices = _fx_split_window(country, date_from, date_to)
-    if len(slices) == 1:
-        df, dt, rate = slices[0]
-        params = {**base_params, "date_from": df, "date_to": dt}
-        if country:
-            params["country"] = country
-        data = await fetch(path, params, timeout_sec=15.0, max_attempts=3) or []
-        if rate:
-            data = _fx_apply_aggregate([{**r} for r in data if isinstance(r, dict)], rate)
-        return data
-    # Two slices — fetch + merge.
-    tasks = []
-    rates: List[Optional[float]] = []
-    for df, dt, rate in slices:
-        params = {**base_params, "date_from": df, "date_to": dt}
-        if country:
-            params["country"] = country
-        tasks.append(fetch(path, params, timeout_sec=15.0, max_attempts=3))
-        rates.append(rate)
-    raw_groups = await asyncio.gather(*tasks)
-    merged: Dict[Any, Dict[str, Any]] = {}
-    for group, rate in zip(raw_groups, rates):
-        for row in (group or []):
-            if not isinstance(row, dict):
-                continue
-            row_copy = {**row}
-            if rate:
-                _fx_apply_aggregate(row_copy, rate)
-            k = key_fn(row_copy)
-            if k not in merged:
-                merged[k] = row_copy
-            else:
-                # Sum-merge volume buckets; non-numeric fields keep first value.
-                for f in sum_fields:
-                    a = merged[k].get(f) or 0
-                    b = row_copy.get(f) or 0
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                        merged[k][f] = a + b
-    out = list(merged.values())
-    # Recompute avg_basket_size post-merge — averaging two pre-computed
-    # AOVs is wrong; we need the volume-weighted version.
-    for r in out:
-        orders = r.get("orders") or 0
-        if orders and r.get("total_sales") is not None:
-            r["avg_basket_size"] = round((r["total_sales"] or 0) / orders, 2)
-    return out
-
-
-def _fx_correct_rows_per_country(
-    rows: List[Dict[str, Any]],
-    date_from: Optional[str],
-    date_to: Optional[str],
-) -> List[Dict[str, Any]]:
-    """Apply FX correction to a list of per-country rows. Each row's
-    `country` field decides which (if any) override applies. Window-
-    overlap check is global to the request — same semantics as the
-    `/kpis` aggregated path.
-
-    IMPORTANT: rows are SHALLOW-COPIED before mutation. This wrapper is
-    invoked AFTER `fetch()` returns from cache, and the cached payload
-    must remain untouched — otherwise repeat callers would get the
-    payload divided again on every hit (cumulative drift to zero).
-    """
-    if not rows:
-        return rows
-    out: List[Dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            out.append(row)
-            continue
-        country = row.get("country")
-        rate = _fx_window_rate(country, date_from, date_to)
-        if rate:
-            new_row = {**row}
-            _fx_apply_aggregate(new_row, rate)
-            out.append(new_row)
-        else:
-            out.append(row)
-    return out
-
-
+# ─── FX handled upstream ──────────────────────────────────────────────
+# As of Feb 2026, all currency conversion (UGX→KES at 28.79,
+# RWF→KES at 11.27, etc.) is performed in BigQuery at the data layer.
+# Every monetary field returned by the upstream BI API is already in
+# KES — `total_sales_kes`, `gross_sales_kes`, `net_sales_kes`,
+# `discounts_kes`, `returns_kes`, `product_price_kes`. The dashboard
+# must NOT apply any further conversion.
 async def fetch(
     path: str,
     params: Optional[Dict[str, Any]] = None,
@@ -712,15 +380,6 @@ async def fetch(
             resp = await client.get(path, params=clean, timeout=req_timeout) if req_timeout else await client.get(path, params=clean)
             resp.raise_for_status()
             data = resp.json()
-            # Apply per-row FX correction for /orders BEFORE caching so
-            # downstream consumers (cache hits, derived analytics) all
-            # see KES values regardless of which path they arrived via.
-            # Mutation is safe here because we're working on the freshly
-            # parsed JSON before it's cached anywhere — the cache stores
-            # the *post-correction* dict, so subsequent cache hits return
-            # already-correct values without re-correcting.
-            if path == "/orders" and isinstance(data, list):
-                _fx_correct_orders(data)
             if cache_key is not None:
                 _FETCH_CACHE[cache_key] = (time.time(), data)
                 # Bound cache size to avoid unbounded growth (LRU-ish eviction).
@@ -881,96 +540,12 @@ async def get_country_summary(
 ):
     cache_key = ("/country-summary", date_from or "", date_to or "", "", "")
     try:
-        # IMPORTANT: upstream's `/country-summary` IGNORES any `country`
-        # query param — it always returns all four countries. Fanning
-        # out per-country like we do for /sales-summary was a bug: each
-        # fan-out call got the same full payload and FX got applied to
-        # non-matching rows. We now do a single upstream call and apply
-        # FX per-row based on each row's own `country`, splitting at
-        # the override boundary for windows that straddle it.
         data = await fetch(
             "/country-summary",
             {"date_from": date_from, "date_to": date_to},
             timeout_sec=15.0,
             max_attempts=3,
         )
-        if isinstance(data, list):
-            # Split each window-slice contribution per country. For a
-            # straddling window we need pre-boundary (no FX) + post-
-            # boundary (FX) sums — but we've already made only one
-            # upstream call covering the full window. To split correctly
-            # we re-query the post-boundary sub-window ONLY for the
-            # FX-overridden countries, then derive the pre-boundary
-            # numbers by subtraction. Much cheaper than a full per-
-            # country fan-out and doesn't hit the "country param
-            # ignored" trap.
-            out_rows: List[Dict[str, Any]] = []
-            fx_countries = [
-                c for c in FX_OVERRIDES
-                if any(rate for *_, rate in _fx_split_window(c, date_from, date_to))
-            ]
-            post_only_data = None
-            if fx_countries:
-                # Does any override straddle? Same start date for all
-                # current overrides; pick the earliest so we cover them
-                # all with a single post-only call.
-                earliest_start = min(FX_OVERRIDES[c]["start"] for c in fx_countries)
-                if date_from[:10] < earliest_start <= date_to[:10]:
-                    post_only_data = await fetch(
-                        "/country-summary",
-                        {"date_from": earliest_start, "date_to": date_to},
-                        timeout_sec=15.0,
-                        max_attempts=3,
-                    )
-            post_by_country = {
-                (r.get("country") or ""): r for r in (post_only_data or [])
-                if isinstance(r, dict)
-            }
-            for r in data:
-                if not isinstance(r, dict):
-                    out_rows.append(r)
-                    continue
-                country_name = r.get("country") or ""
-                slices = _fx_split_window(country_name, date_from, date_to)
-                # No override / entirely pre / entirely post → simple one-shot correction.
-                if len(slices) == 1:
-                    _, _, rate = slices[0]
-                    new_r = {**r}
-                    if rate:
-                        _fx_apply_aggregate(new_r, rate)
-                    out_rows.append(new_r)
-                    continue
-                # Straddle — need pre (no FX) + post (FX) halves. The
-                # full-window row minus the post-only row gives us the
-                # pre half. Post-only row gets FX-corrected, then we
-                # sum volume-like fields back together.
-                post_row = post_by_country.get(country_name)
-                if post_row is None:
-                    # Fall back: if upstream didn't return the post-only
-                    # sub-window for some reason, skip the correction
-                    # (worse to return wrong numbers silently).
-                    out_rows.append({**r})
-                    continue
-                rate = slices[-1][2]  # FX rate for the post slice
-                post_corrected = {**post_row}
-                _fx_apply_aggregate(post_corrected, rate)
-                # Pre = full - post (pre-correction); then pre + corrected post.
-                sum_fields = (
-                    "orders", "units_sold", "total_sales", "gross_sales",
-                    "net_sales", "discounts", "returns",
-                )
-                new_r: Dict[str, Any] = {**r}
-                for f in sum_fields:
-                    full_v = r.get(f) or 0
-                    post_raw = post_row.get(f) or 0
-                    post_corr = post_corrected.get(f) or 0
-                    new_r[f] = round((full_v - post_raw) + post_corr, 2)
-                # Recompute avg_basket_size from the corrected sums.
-                orders = new_r.get("orders") or 0
-                if orders:
-                    new_r["avg_basket_size"] = round((new_r.get("total_sales") or 0) / orders, 2)
-                out_rows.append(new_r)
-            data = out_rows
         _kpi_stale_cache[cache_key] = (time.time(), data)
         asyncio.create_task(_kpi_stale_save_async())
         return data
@@ -1002,54 +577,27 @@ async def get_kpis(
     cache_key = ("/kpis", date_from or "", date_to or "", country or "", channel or "")
     single = len(cs) <= 1 and len(chs) <= 1
 
-    # Detect "no country filter + FX override active" case. When the user
-    # picks "All countries", upstream's /kpis returns the global sum
-    # without converting UGX/RWF — Uganda's 3.15M UGX gets added to KES
-    # values as if they were the same currency, inflating the dashboard
-    # KPI cards by millions. Force a fan-out across every known country
-    # so each per-country payload can be FX-corrected before aggregation.
-    # Triggered when ANY slice of the window touches an override period
-    # (so straddling 27 Apr → 3 May counts), not just when the WHOLE
-    # window is post-boundary.
-    def _country_overlaps_fx(c: str) -> bool:
-        slices = _fx_split_window(c, date_from, date_to)
-        return any(rate for *_ , rate in slices)
-    needs_fx_fanout = (
-        not cs
-        and any(_country_overlaps_fx(c) for c in FX_OVERRIDES)
-    )
-    if needs_fx_fanout:
-        cs = ["Kenya", "Uganda", "Rwanda", "Online"]
-        single = False
-
     try:
         if single:
             country_for_call = cs[0] if cs else None
-            # Use the FX-aware splitter so windows that straddle the
-            # override boundary (e.g. 27 Apr → 3 May) get split into
-            # pre-boundary (no FX) + post-boundary (FX) halves and
-            # aggregated. For non-straddling windows this is one fetch
-            # plus a no-op rate=None / rate=float branch.
-            data = await _fetch_kpis_with_fx_split(
-                {**base, "channel": chs[0] if chs else None},
-                country_for_call,
-                date_from or "",
-                date_to or "",
+            data = await fetch(
+                "/kpis",
+                {**base, "country": country_for_call, "channel": chs[0] if chs else None},
+                timeout_sec=15.0,
+                max_attempts=3,
             )
         else:
             # Multi-country/channel fan-out — same per-call budget; in-flight
             # de-dup in fetch() collapses concurrent identical calls.
-            # Each per-country call runs through the FX splitter so
-            # straddling windows are handled per-country.
             tasks = []
             for c in (cs or [None]):
                 for ch in (chs or [None]):
                     tasks.append(
-                        _fetch_kpis_with_fx_split(
-                            {**base, "channel": ch} if ch else base,
-                            c,
-                            date_from or "",
-                            date_to or "",
+                        fetch(
+                            "/kpis",
+                            {**base, "country": c, "channel": ch},
+                            timeout_sec=15.0,
+                            max_attempts=3,
                         )
                     )
             results = await asyncio.gather(*tasks)
@@ -1079,42 +627,23 @@ async def get_sales_summary(
     chs = _split_csv(channel)
     cache_key = ("/sales-summary", date_from or "", date_to or "", country or "", channel or "")
     try:
-        # Always go through `_fetch_rows_with_fx_split` so windows that
-        # straddle the FX boundary are split into pre+post halves and
-        # correctly merged. For non-straddling windows the splitter
-        # makes a single fetch and returns immediately. We force the
-        # multi-country path whenever the window touches an FX-override
-        # period, so even a no-country-filter request fans out per-
-        # country and gets correct per-row corrections.
-        country_list = cs if cs else None
+        country_list = cs if cs else [None]
         chs_set = set(chs) if chs else None
-        if not country_list:
-            # No country filter — if any FX override applies we must
-            # still fan out per-country so each slice gets its rate.
-            def _country_overlaps_fx(c: str) -> bool:
-                return any(rate for *_, rate in _fx_split_window(c, date_from, date_to))
-            if any(_country_overlaps_fx(c) for c in FX_OVERRIDES):
-                country_list = ["Kenya", "Uganda", "Rwanda", "Online"]
-            else:
-                country_list = [None]
         per_country_groups = await asyncio.gather(*[
-            _fetch_rows_with_fx_split(
+            fetch(
                 "/sales-summary",
                 {"date_from": date_from, "date_to": date_to,
+                 **({"country": c} if c else {}),
                  **({"channel": chs[0]} if len(chs) == 1 else {})},
-                c,
-                date_from or "",
-                date_to or "",
-                sum_fields=("orders", "units_sold", "total_sales", "gross_sales",
-                            "net_sales", "discounts", "returns"),
-                key_fn=lambda row: (row.get("channel"), row.get("country")),
+                timeout_sec=15.0,
+                max_attempts=3,
             )
             for c in country_list
         ])
         out: List[Dict[str, Any]] = []
         seen = set()
         for g in per_country_groups:
-            for row in g:
+            for row in (g or []):
                 key = (row.get("channel"), row.get("country"))
                 if key in seen:
                     continue
@@ -1153,14 +682,10 @@ async def get_top_skus(
         data = await fetch("/top-skus", {
             **base, "country": cfc, "channel": chs[0] if chs else None,
         })
-        # FX correction — safe because every row in a country-scoped
-        # call belongs to that country.
-        data = _fx_correct_country_scoped(data, cfc, date_from, date_to)
         data = sorted(data or [], key=lambda r: r.get("total_sales") or 0, reverse=True)
         return data[:limit]
-    # Multi-country / multi-channel fan-out — apply FX per-payload
-    # using the per-country param before merging (same pattern as /kpis).
-    results_raw = await asyncio.gather(*[
+    # Multi-country / multi-channel fan-out — merge per-(country, channel) payloads.
+    results = await asyncio.gather(*[
         fetch("/top-skus", {
             **base,
             **({"country": c} if c else {}),
@@ -1169,14 +694,9 @@ async def get_top_skus(
         for c in (cs or [None])
         for ch in (chs or [None])
     ])
-    # Correlate each payload back to its country so we can FX it.
-    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
-    results: List[List[Dict[str, Any]]] = []
-    for g, c in zip(results_raw, iterator_countries):
-        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
-        for row in g:
+        for row in (g or []):
             sku = row.get("sku")
             if not sku:
                 continue
@@ -1212,10 +732,9 @@ async def get_sor(
         data = await fetch("/sor", {
             **base, "country": cfc, "channel": chs[0] if chs else None,
         })
-        data = _fx_correct_country_scoped(data, cfc, date_from, date_to)
         return sorted(data or [], key=lambda r: r.get("sor_percent") or 0, reverse=True)
-    # Multi-country fan-out — FX each payload before merge.
-    results_raw = await asyncio.gather(*[
+    # Multi-country fan-out — merge per-style.
+    results = await asyncio.gather(*[
         fetch("/sor", {
             **base,
             **({"country": c} if c else {}),
@@ -1224,13 +743,9 @@ async def get_sor(
         for c in (cs or [None])
         for ch in (chs or [None])
     ])
-    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
-    results: List[List[Dict[str, Any]]] = []
-    for g, c in zip(results_raw, iterator_countries):
-        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
-        for row in g:
+        for row in (g or []):
             style = row.get("style_name")
             if not style:
                 continue
@@ -1257,68 +772,17 @@ async def get_daily_trend(
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     cache_key = ("/daily-trend", date_from or "", date_to or "", country or "", "")
-    # Same "no country filter + FX override active" guard as /kpis.
-    # Without this, the upstream `/daily-trend` (no country) sums UGX/RWF
-    # in unconverted on top of KES values, inflating the daily-trend
-    # chart that drives the Overview page. Triggered when ANY slice of
-    # the window touches an override period (so straddling counts).
-    def _country_overlaps_fx(c: str) -> bool:
-        return any(rate for *_, rate in _fx_split_window(c, date_from, date_to))
-    needs_fx_fanout = (
-        not cs
-        and any(_country_overlaps_fx(c) for c in FX_OVERRIDES)
-    )
-    if needs_fx_fanout:
-        cs = ["Kenya", "Uganda", "Rwanda", "Online"]
     try:
         if len(cs) <= 1:
             country_for_call = cs[0] if cs else None
             data = await fetch("/daily-trend", {**base, "country": country_for_call}, timeout_sec=15.0, max_attempts=3)
-            # Single-country call — apply FX uniformly to every day-row
-            # using the per-day date for the boundary check (so a multi-
-            # month window still corrects only the override-period days).
-            # Shallow-copy each affected row so we don't mutate the
-            # cached upstream payload (which would compound on repeat).
-            if isinstance(data, list):
-                cfg = FX_OVERRIDES.get((country_for_call or "").title()) if country_for_call else None
-                if cfg:
-                    rate = float(cfg["rate"])
-                    start = cfg["start"]
-                    new_data = []
-                    for row in data:
-                        day_iso = (row.get("day") or "")[:10]
-                        if day_iso >= start:
-                            new_row = {**row}
-                            _fx_apply_aggregate(new_row, rate)
-                            new_data.append(new_row)
-                        else:
-                            new_data.append(row)
-                    data = new_data
         else:
-            # Multi-country: correct each per-country payload BEFORE
-            # merging, since the merged day-row loses the country
-            # dimension. Use the per-day boundary check too.
+            # Multi-country: merge per-country day rows.
             tasks = [fetch("/daily-trend", {**base, "country": c}, timeout_sec=15.0, max_attempts=3) for c in cs]
             raw_groups = await asyncio.gather(*tasks)
-            corrected_groups: List[List[Dict[str, Any]]] = []
-            for c, g in zip(cs, raw_groups):
-                cfg = FX_OVERRIDES.get((c or "").title())
-                if cfg:
-                    rate = float(cfg["rate"])
-                    start = cfg["start"]
-                    g2 = []
-                    for row in (g or []):
-                        day_iso = (row.get("day") or "")[:10]
-                        new_row = {**row}
-                        if day_iso >= start:
-                            _fx_apply_aggregate(new_row, rate)
-                        g2.append(new_row)
-                    corrected_groups.append(g2)
-                else:
-                    corrected_groups.append(g or [])
             merged: Dict[str, Dict[str, Any]] = {}
-            for g in corrected_groups:
-                for row in g:
+            for g in raw_groups:
+                for row in (g or []):
                     day = row.get("day")
                     if day not in merged:
                         merged[day] = {"day": day, "orders": 0, "gross_sales": 0.0, "net_sales": 0.0, "total_sales": 0.0}
@@ -1912,10 +1376,6 @@ async def get_top_customers(
         "date_from": date_from, "date_to": date_to,
         "country": country, "channel": channel, "limit": limit,
     })
-    # Top-customers is a PII + money endpoint. When called for a single
-    # FX-overridden country we divide by the local rate so the `total_spend`
-    # column on Customers page matches the dashboard elsewhere.
-    rows = _fx_correct_country_scoped(rows, country, date_from, date_to)
     return await mask_and_audit(rows or [], user=user, endpoint="/top-customers", request_ip=_client_ip(request))
 
 
@@ -2843,9 +2303,9 @@ async def get_subcategory_sales(
         data = await fetch("/subcategory-sales", {
             **base, "country": cfc, "channel": chs[0] if chs else None,
         })
-        return _fx_correct_country_scoped(data, cfc, date_from, date_to) or []
-    # Multi-country fan-out — FX each payload using its country before merge.
-    results_raw = await asyncio.gather(*[
+        return data or []
+    # Multi-country fan-out — merge per-subcategory.
+    results = await asyncio.gather(*[
         fetch("/subcategory-sales", {
             **base,
             **({"country": c} if c else {}),
@@ -2854,13 +2314,9 @@ async def get_subcategory_sales(
         for c in (cs or [None])
         for ch in (chs or [None])
     ])
-    iterator_countries = [c for c in (cs or [None]) for _ch in (chs or [None])]
-    results: List[List[Dict[str, Any]]] = []
-    for g, c in zip(results_raw, iterator_countries):
-        results.append(_fx_correct_country_scoped(g, c, date_from, date_to) or [])
     merged: Dict[str, Dict[str, Any]] = {}
     for g in results:
-        for r in g:
+        for r in (g or []):
             key = r.get("subcategory")
             if not key:
                 continue
@@ -2928,12 +2384,6 @@ async def get_category_country_matrix(
 
     # Parallel pull, one request per country.
     per_country = await asyncio.gather(*[_fetch_for(c) for c in _MATRIX_COUNTRIES])
-    # FX-correct each country's rows BEFORE building the matrix so UGX/RWF
-    # are divided and comparable to KES.
-    per_country = [
-        _fx_correct_country_scoped(rows, country, date_from, date_to) or []
-        for country, rows in zip(_MATRIX_COUNTRIES, per_country)
-    ]
 
     # Build the matrix: index every subcategory observed in any country.
     country_totals: Dict[str, float] = {c: 0.0 for c in _MATRIX_COUNTRIES}
@@ -2992,11 +2442,7 @@ async def get_subcategory_stock_sales(
         "country": norm_country if norm_country and "," not in norm_country else norm_country,
         "channel": channel,
     })
-    # FX-correct when the call is scoped to a single FX-overridden country
-    # (straddling windows fall through uncorrected — callers that care
-    # should split the window upstream).
-    single_country = norm_country if norm_country and "," not in norm_country else None
-    return _fx_correct_country_scoped(data, single_country, date_from, date_to)
+    return data
 
 
 # -------------------- Inventory helpers --------------------
