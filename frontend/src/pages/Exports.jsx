@@ -7,6 +7,7 @@ import SortableTable from "@/components/SortableTable";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import { DownloadSimple, MagnifyingGlass, Warning } from "@phosphor-icons/react";
 import ReplenishmentReport from "@/components/ReplenishmentReport";
+import SORReportExport from "@/components/SORReportExport";
 import {
   StoreKpisExport,
   PeriodPerformanceExport,
@@ -734,6 +735,16 @@ const Exports = () => {
         >
           Daily Replenishment
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("sor")}
+          data-testid="exports-tab-sor"
+          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
+            tab === "sor" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
+          }`}
+        >
+          SOR Report
+        </button>
       </div>
       {tab === "sales" && <SalesExport />}
       {tab === "inventory" && <InventoryExport />}
@@ -741,6 +752,7 @@ const Exports = () => {
       {tab === "period" && <PeriodPerformanceExport />}
       {tab === "stock" && <StockRebalancingExport />}
       {tab === "replen" && <ReplenishmentReport />}
+      {tab === "sor" && <SORReportExport />}
     </div>
   );
 };

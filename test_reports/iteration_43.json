@@ -1,0 +1,57 @@
+{
+  "summary": "Iter_43 — verified the 4 changes (visit-rule, Annual Targets, SOR Report tab, walk-in detector). Backend 5/5 pytest PASS. Frontend: Overview annual-targets-compact ✓, CEO Report annual-targets-full with full Q1-Q4 breakdown ✓, Customers repeat-customers-table ✓ (25 visible rows). CRITICAL FRONTEND BUG: Exports → SOR Report tab CRASHES with 'Cannot read properties of undefined (reading length)' from MultiSelect, because SORReportExport.jsx passes wrong prop names/shape to MultiSelect. The SOR table never renders, so neither sor-report-table nor sor-report-export-btn are reachable.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/sor-all-styles", "issue": "First cold-cache call returned 502 once during pytest; warm retry returned 200 with 1704 rows including new fields category and original_price. Carry-over from earlier iters."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "SORReportExport.jsx",
+        "issue": "MultiSelect prop API mismatch crashes the entire SOR Report tab. SORReportExport.jsx passes `selected={catSel}` (line 189), `selected={subcatSel}` (line 192), `selected={brandSel}` (line 195) but MultiSelect.jsx (line 12) expects prop `value`. MultiSelect accesses `value.length` (line 39) → 'Cannot read properties of undefined (reading length)' → React tree unmounts → red error overlay shown → sor-report-table and sor-report-export-btn never render. Additionally, MultiSelect expects options as `[{value,label,group?}]` (line 11, line 44 calls `o.value`), but SORReportExport passes plain string arrays from `useMemo` over `r.category` / `r.subcategory` / `r.brand` (lines 58-69). Even if the prop name is fixed, options will render as undefined labels.",
+        "selector": "[data-testid=\"exports-tab-sor\"] → [data-testid=\"sor-report-table\"]",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verifications": {
+    "change_1_visit_rule": "PASS. /api/analytics/repeat-customers Apr27-May4 = 176 customers (in spec band). Each visit has order_date+channel+order_id+order_id_count. Confirmed merged ids: e.g. one Oasis Mall visit on 2026-04-27 has order_id='11953034527086, 11953041310062' with order_id_count=2 — multiple orders same date+same channel collapsed to 1 visit. /customer-frequency total=2032, 1-order=1856, 2-orders=156, 3-orders=17, 4-orders=3, 5+=0. /customer-retention.repeat_customers=176 = (2032-1856) ✓ within ±2 of freq-derived.",
+    "change_2_annual_targets_backend": "PASS. /api/analytics/annual-targets returns 4 buckets {Kenya - Retail, Kenya - Online, Uganda, Rwanda} + total. total.target_annual=1,434,521,673 exactly. Each bucket has all 8 required fields + Q1..Q4.",
+    "change_2_annual_targets_overview": "PASS. annual-targets-compact testid present on Overview Insights section. Shows total KES 1,434,521,673, YTD KES 378,683,614 (26.4%), per-channel breakdown.",
+    "change_2_annual_targets_ceo": "PASS. annual-targets-full testid present at top of CEO Report. Shows projection 77.1%, projected year KES 1,105,756,153, gap KES 328,765,520, 11-row Channel × Q1..Q4 table.",
+    "change_3_sor_backend": "PASS. /api/analytics/sor-all-styles returns 1704 rows (>1000). Each row contains both new fields `category` and `original_price` plus all expected analytics fields (sales_6m, units_6m, units_3w, soh_total, soh_wh, pct_in_wh, asp_6m, days_since_last_sale, sor_6m, launch_date, weekly_avg, woc, style_age_weeks, etc).",
+    "change_3_sor_frontend": "FAIL. Exports tab `exports-tab-sor` is present and clickable, but the SORReportExport component crashes with the MultiSelect prop bug above. sor-report-table and sor-report-export-btn never mount. Tab is effectively unusable.",
+    "change_4_walkin_hardening": "PASS (indirect). Apr27-May4 customer-frequency totals 2032 customers (matches the user's stated post-hardening figure of ~2032; was ~2318 before). Confirms walk-in detector now consults roster across the 400-day window."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_43.py",
+    "/app/test_reports/pytest/iter43.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Fix SORReportExport.jsx MultiSelect usage. Two changes needed: (1) rename prop `selected` → `value` on all three MultiSelect invocations (lines 189, 192, 195). (2) Convert categories/subcategories/brands useMemo arrays from plain strings to `[{value, label}]` shape, e.g. `Array.from(s).sort().map(x => ({value: x, label: x}))`. Without both fixes the SOR Report tab will continue to crash with the runtime error overlay.",
+    "MEDIUM (carry-over): /analytics/sor-all-styles cold-cache 502 still occurs occasionally on first hit per worker. Consider warming the 30-min cache on backend startup."
+  ],
+  "critical_code_review_comments": [
+    "SORReportExport.jsx is the only component that uses the `selected=` prop on MultiSelect — every other call site (Exports.jsx, etc) uses `value=` correctly. A quick lint rule (or a PropTypes / TypeScript signature on MultiSelect) would have caught this at build time.",
+    "MultiSelect.jsx silently assumes both `value` and `options` are non-null arrays of objects. Adding a default (`value = []`) and a runtime guard (`if (!Array.isArray(value)) return null`) would make the component fail-soft and prevent the entire tab from white-screening.",
+    "SORReportExport's exportCsv uses r.units_6m for both 'Units Sold' (col 6) and 'Units Last 6 Months' (col 7). If these are intended to be different metrics per the spec, the CSV will show duplicated values. Worth confirming with product owner."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_43.py",
+    "/app/test_reports/iteration_43.json"
+  ],
+  "success_rate": {
+    "backend": "5/5 = 100%",
+    "frontend": "3/4 features verified. SOR Report tab BROKEN."
+  },
+  "test_credentials": "Admin: admin@vivofashiongroup.com / VivoAdmin!2026 (verified).",
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After main agent fixes SORReportExport.jsx (rename `selected`→`value` on lines 189/192/195 AND map category/subcategory/brand strings to `{value,label}` shape in the three useMemo blocks at lines 58-69), retest by clicking [data-testid='exports-tab-sor'] then verify [data-testid='sor-report-table'] mounts with >100 rows, [data-testid='sor-report-export-btn'] is enabled, and CSV download fires. /app/backend/tests/test_iteration_43.py covers all backend assertions for the 4 changes and can be re-run as a regression check.",
+  "rca_of_the_issue": "RCA — SORReportExport.jsx was authored against an older MultiSelect API (`selected` + plain string options) but MultiSelect.jsx in this codebase uses (`value` + `[{value,label}]`). React renders the component, MultiSelect destructures `value` (undefined), the toggle handler reads `value.includes` (still ok inside event), but the JSX path `value.length === 0 ? ... : value.length === 1 ...` crashes synchronously on render with TypeError. CRA's error boundary unmounts the subtree and shows the dev-mode overlay. The Exports tab DOM still has `[data-testid='exports-tab-sor']` because that lives in Exports.jsx, but the SOR component children never render."
+}

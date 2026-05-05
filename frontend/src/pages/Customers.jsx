@@ -1294,17 +1294,22 @@ const Customers = () => {
                             <table className="w-full text-[12px]" data-testid={`repeat-orders-${r.customer_id}`}>
                               <thead>
                                 <tr className="text-left text-muted border-b border-border">
-                                  <th className="py-1 pr-3">Order ID</th>
+                                  <th className="py-1 pr-3">Order IDs</th>
                                   <th className="py-1 pr-3">Date</th>
                                   <th className="py-1 pr-3">Channel</th>
                                   <th className="py-1 pr-3 text-right">Units</th>
-                                  <th className="py-1 pr-0 text-right">Order Total</th>
+                                  <th className="py-1 pr-0 text-right">Total</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {(r.orders || []).map((o) => (
-                                  <tr key={o.order_id} className="border-b border-border/50 last:border-0">
-                                    <td className="py-1 pr-3 font-mono text-[11px]">{o.order_id}</td>
+                                {(r.orders || []).map((o, i) => (
+                                  <tr key={`${o.order_date}-${o.channel}-${i}`} className="border-b border-border/50 last:border-0">
+                                    <td className="py-1 pr-3 font-mono text-[11px]">
+                                      {o.order_id || "—"}
+                                      {o.order_id_count > 1 && (
+                                        <span className="ml-1 text-[10px] text-muted">({o.order_id_count} ids)</span>
+                                      )}
+                                    </td>
                                     <td className="py-1 pr-3">{o.order_date}</td>
                                     <td className="py-1 pr-3">{o.channel || "—"}</td>
                                     <td className="py-1 pr-3 text-right num">{o.units}</td>

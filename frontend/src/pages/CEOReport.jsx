@@ -15,6 +15,7 @@ import {
   COUNTRY_FLAGS,
 } from "@/lib/api";
 import SORHeader from "@/components/SORHeader";
+import AnnualTargetsCard from "@/components/AnnualTargetsCard";
 import { Loading, ErrorBox } from "@/components/common";
 import { Printer, CalendarBlank } from "@phosphor-icons/react";
 import {
@@ -256,6 +257,10 @@ const CEOReport = () => {
           className="print-page bg-white border border-border rounded-2xl p-8 md:p-10 max-w-[1000px] mx-auto"
           data-testid="ceo-report-content"
         >
+          {/* Annual Targets — full-fidelity executive view */}
+          <div className="mb-6">
+            <AnnualTargetsCard variant="full" />
+          </div>
           {/* Header */}
           <div className="flex items-start justify-between gap-6 pb-5 border-b border-border">
             <div>

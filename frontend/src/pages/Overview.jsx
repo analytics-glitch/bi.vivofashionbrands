@@ -25,6 +25,7 @@ import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
 import Q2TargetsCard from "@/components/Q2TargetsCard";
+import AnnualTargetsCard from "@/components/AnnualTargetsCard";
 import KpiTrendChart from "@/components/KpiTrendChart";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
@@ -1173,6 +1174,7 @@ const Overview = () => {
                 channel={channels.length ? channels.join(",") : undefined}
                 dataVersion={dataVersion}
               />
+              <AnnualTargetsCard variant="compact" />
               <KpiTrendChart
                 dateFrom={dateFrom}
                 dateTo={dateTo}

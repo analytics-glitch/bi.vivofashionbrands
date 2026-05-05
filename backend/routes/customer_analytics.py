@@ -196,10 +196,11 @@ async def analytics_customer_retention(
     rows = await _orders_for_window(date_from, date_to, country, channel)
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _get_customer_contact_lookup_sync()
-    # Count DISTINCT order_ids per customer — not line items. /orders is
-    # line-item-grained, so a single 4-SKU basket emits 4 rows; counting
-    # rows over-stated repeaters by 4–10x and made this endpoint disagree
-    # with /customer-frequency on the same window.
+    # Count DISTINCT (order_date, channel) pairs per customer — not raw
+    # order_ids and not line items. A customer who buys twice in a single
+    # store on the same day = 1 visit; same day but different stores = 2;
+    # different days = 2. /orders is line-item-grained so we collapse
+    # same-day-same-channel rows into one visit before counting.
     by_cust: Dict[str, set] = {}
     walk_ins = 0
     for r in rows:
@@ -207,11 +208,14 @@ async def analytics_customer_retention(
             walk_ins += 1
             continue
         cid = r.get("customer_id")
-        oid = r.get("order_id")
-        if cid is None or oid is None:
+        if cid is None:
             continue
-        by_cust.setdefault(str(cid), set()).add(oid)
-    order_counts = {cid: len(oids) for cid, oids in by_cust.items()}
+        day = (r.get("order_date") or "")[:10]
+        chan = r.get("channel") or r.get("pos_location_name") or ""
+        if not day:
+            continue
+        by_cust.setdefault(str(cid), set()).add((day, chan))
+    order_counts = {cid: len(visits) for cid, visits in by_cust.items()}
     total = len(order_counts)
     repeat = sum(1 for n in order_counts.values() if n >= 2)
     vip = sum(1 for n in order_counts.values() if n >= 5)
@@ -397,9 +401,14 @@ async def analytics_repeat_customers(
     min_orders: int = Query(2, ge=1, le=50),
     user=Depends(get_current_user),
 ):
-    """List of identified customers with ≥ `min_orders` distinct orders in
-    the selected window. One row per customer, with a nested `orders`
-    list (order_id, order_date, total_kes) so the UI can drill in.
+    """List of identified customers with ≥ `min_orders` distinct VISITS in
+    the selected window. A "visit" is a unique (order_date, channel)
+    pair — multiple order_ids generated in the same store on the same
+    day collapse into one visit per the ops definition.
+
+    Returns one row per customer with a nested `orders` list of visits
+    (each carrying its rolled-up `order_id` list, total_kes, units, and
+    POS channel) so the UI can drill in.
 
     Walk-ins excluded via the same robust 7-rule detector used elsewhere.
     Output is masked by role like the other PII endpoints.
@@ -408,16 +417,19 @@ async def analytics_repeat_customers(
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _get_customer_contact_lookup_sync()
 
-    # Aggregate per (customer, order): sum line-items into one order total,
-    # keep the order_date (earliest non-empty), and collect the customer's
-    # contact / name fields from whichever row carries them.
+    # Aggregate per (customer, date, channel): collapse line items into a
+    # single visit total and collect every order_id that touched it. Carry
+    # the customer's contact / name fields from whichever row has them.
     by_cust: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         if _is_walk_in_order(r, name_lookup, contact_lookup):
             continue
         cid = r.get("customer_id")
-        oid = r.get("order_id")
-        if cid is None or oid is None:
+        if cid is None:
+            continue
+        day = (r.get("order_date") or "")[:10]
+        chan = r.get("channel") or r.get("pos_location_name") or ""
+        if not day:
             continue
         cid_s = str(cid)
         cust = by_cust.setdefault(cid_s, {
@@ -426,40 +438,46 @@ async def analytics_repeat_customers(
             "email": r.get("customer_email") or "",
             "mobile": r.get("customer_phone") or r.get("phone") or "",
             "country": r.get("country") or r.get("customer_country") or "",
-            "_orders": {},
+            "_visits": {},
         })
-        # Backfill name/email/phone from any row that has them.
         if not cust["customer_name"] and r.get("customer_name"):
             cust["customer_name"] = r["customer_name"]
         if not cust["email"] and r.get("customer_email"):
             cust["email"] = r["customer_email"]
         if not cust["mobile"] and (r.get("customer_phone") or r.get("phone")):
             cust["mobile"] = r.get("customer_phone") or r.get("phone")
-        order = cust["_orders"].setdefault(oid, {
-            "order_id": str(oid),
-            "order_date": (r.get("order_date") or "")[:10],
-            "channel": r.get("channel") or r.get("pos_location_name") or "",
+        visit_key = (day, chan)
+        visit = cust["_visits"].setdefault(visit_key, {
+            "order_date": day,
+            "channel": chan,
+            "order_ids": set(),
             "total_kes": 0.0,
             "units": 0,
         })
-        if not order["order_date"] and r.get("order_date"):
-            order["order_date"] = r["order_date"][:10]
-        order["total_kes"] += float(r.get("net_sales_kes") or r.get("total_sales_kes") or 0)
-        order["units"] += int(r.get("quantity") or 0)
+        oid = r.get("order_id")
+        if oid is not None:
+            visit["order_ids"].add(str(oid))
+        visit["total_kes"] += float(r.get("net_sales_kes") or r.get("total_sales_kes") or 0)
+        visit["units"] += int(r.get("quantity") or 0)
 
     out: List[Dict[str, Any]] = []
     for cust in by_cust.values():
-        orders = list(cust.pop("_orders").values())
-        if len(orders) < min_orders:
+        visits = list(cust.pop("_visits").values())
+        if len(visits) < min_orders:
             continue
-        orders.sort(key=lambda o: o["order_date"], reverse=True)
-        for o in orders:
-            o["total_kes"] = round(o["total_kes"], 2)
-        cust["orders"] = orders
-        cust["order_count"] = len(orders)
-        cust["total_spend_kes"] = round(sum(o["total_kes"] for o in orders), 2)
-        cust["first_order_date"] = min(o["order_date"] for o in orders) if orders else ""
-        cust["last_order_date"] = max(o["order_date"] for o in orders) if orders else ""
+        visits.sort(key=lambda v: v["order_date"], reverse=True)
+        for v in visits:
+            ids = sorted(v.pop("order_ids"))
+            # Surface the rolled-up id list as a comma-joined `order_id`
+            # field for the table, plus a count for the badge in the UI.
+            v["order_id"] = ", ".join(ids) if ids else ""
+            v["order_id_count"] = len(ids)
+            v["total_kes"] = round(v["total_kes"], 2)
+        cust["orders"] = visits  # field name kept as `orders` for FE compat
+        cust["order_count"] = len(visits)
+        cust["total_spend_kes"] = round(sum(v["total_kes"] for v in visits), 2)
+        cust["first_order_date"] = min(v["order_date"] for v in visits) if visits else ""
+        cust["last_order_date"] = max(v["order_date"] for v in visits) if visits else ""
         out.append(cust)
 
     out.sort(key=lambda c: (c["order_count"], c["total_spend_kes"]), reverse=True)

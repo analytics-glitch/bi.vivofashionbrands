@@ -1527,23 +1527,26 @@ async def customer_frequency(
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _customer_contacts_cache[1]
 
-    # Count distinct order_ids per customer_id, dropping walk-ins.
-    cust_orders: Dict[str, set] = {}
+    # Count distinct (order_date, channel) "visits" per customer. Same-day
+    # same-channel rows collapse to one visit; same-day different-channel
+    # counts as two. Walk-ins dropped per the standard rules.
+    cust_visits: Dict[str, set] = {}
     for r in orders_rows:
         if _is_walk_in_order(r, name_lookup, contact_lookup):
             continue
         cid = str(r.get("customer_id") or "").strip()
         if not cid:
             continue
-        oid = r.get("order_id")
-        if oid is None:
+        day = (r.get("order_date") or "")[:10]
+        chan = r.get("channel") or r.get("pos_location_name") or ""
+        if not day:
             continue
-        cust_orders.setdefault(cid, set()).add(oid)
+        cust_visits.setdefault(cid, set()).add((day, chan))
 
-    # Bucket customers by their order count.
+    # Bucket customers by their visit count.
     buckets = {"1 order": 0, "2 orders": 0, "3 orders": 0, "4 orders": 0, "5+ orders": 0}
-    for oids in cust_orders.values():
-        n = len(oids)
+    for visits in cust_visits.values():
+        n = len(visits)
         if n <= 0:
             continue
         if n == 1:
@@ -1758,6 +1761,152 @@ async def data_freshness():
         "etl_cadence": "Every 6 hours",
     }
 
+
+
+# -------------------- Annual targets --------------------
+# 2026 quarterly targets per channel-grouping. Provided by the Vivo
+# finance team in May 2026 — KES, gross sales (matches `total_sales`
+# in our /country-summary response). "Kenya - Retail" = country=Kenya
+# excluding the Online channel; "Kenya - Online" = the synthetic
+# "Online" country bucket in /country-summary; Uganda / Rwanda are
+# all-channels for those countries.
+ANNUAL_TARGETS_2026: Dict[str, Dict[str, float]] = {
+    "Kenya - Retail":  {"Q1": 235683270.17, "Q2": 268560234.85, "Q3": 311407943.27, "Q4": 344585011.94},
+    "Kenya - Online":  {"Q1": 23572899.43,  "Q2": 24678062.01,  "Q3": 23719608.11,  "Q4": 27552554.77},
+    "Uganda":          {"Q1": 26904396.37,  "Q2": 28253262.57,  "Q3": 28975737.76,  "Q4": 38830408.85},
+    "Rwanda":          {"Q1": 9780881.78,   "Q2": 11774964.60,  "Q3": 10543259.28,  "Q4": 19699177.34},
+}
+_QUARTER_BOUNDS_2026 = {
+    "Q1": ("2026-01-01", "2026-03-31"),
+    "Q2": ("2026-04-01", "2026-06-30"),
+    "Q3": ("2026-07-01", "2026-09-30"),
+    "Q4": ("2026-10-01", "2026-12-31"),
+}
+
+
+@api_router.get("/analytics/annual-targets")
+async def analytics_annual_targets(year: int = Query(2026, ge=2024, le=2030)):
+    """Annual sales targets vs actuals + run-rate projection.
+
+    Returns one bucket per channel-grouping (Kenya - Retail, Kenya - Online,
+    Uganda, Rwanda) plus a `total` row, each with:
+      - `target_annual` and per-quarter `quarters[Q1..Q4]` targets
+      - `actual_ytd` aggregated from /country-summary + /sales-summary
+      - `actual_quarters[Q1..Q4]` per-quarter actuals (so the UI can
+        flag any quarter that's already off-track)
+      - `projected_year` based on YTD daily run-rate × total year days
+      - `pct_of_target_ytd` and `pct_of_target_projected`
+
+    The "Kenya - Retail" actual is computed as country-summary `Kenya`
+    total MINUS the `Online` channel sales for Kenya (so we don't
+    double-count when the Online roll-up has Kenya orders mixed in).
+    """
+    import datetime as _dt
+    if year != 2026:
+        raise HTTPException(400, f"Targets only configured for 2026 (got {year})")
+    targets = ANNUAL_TARGETS_2026
+
+    today = _dt.date.today()
+    year_start = _dt.date(year, 1, 1)
+    year_end = _dt.date(year, 12, 31)
+    days_total = (year_end - year_start).days + 1
+    days_elapsed = max(0, (min(today, year_end) - year_start).days + 1)
+
+    # Pull YTD country-summary once + per-quarter actuals in parallel.
+    ytd_to = min(today, year_end).isoformat()
+    cs_tasks = [
+        fetch("/country-summary",
+              {"date_from": year_start.isoformat(), "date_to": ytd_to},
+              timeout_sec=20.0, max_attempts=2),
+    ]
+    quarter_tasks = []
+    quarter_keys = []
+    for qk, (qf, qt) in _QUARTER_BOUNDS_2026.items():
+        # Skip future quarters where actuals would be 0 anyway.
+        if qf > ytd_to:
+            continue
+        q_to = min(qt, ytd_to)
+        quarter_tasks.append(
+            fetch("/country-summary",
+                  {"date_from": qf, "date_to": q_to},
+                  timeout_sec=20.0, max_attempts=2)
+        )
+        quarter_keys.append(qk)
+    cs_ytd_raw, *quarter_results = await asyncio.gather(*cs_tasks, *quarter_tasks)
+
+    def _bucket_sales(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Convert a /country-summary list into the 4-bucket dict the
+        target board uses. Note: upstream returns 'Online' as its own
+        bucket, so 'Kenya - Retail' = Kenya's total. (No further
+        subtraction needed — Online is already separated upstream.)
+        """
+        out = {"Kenya - Retail": 0.0, "Kenya - Online": 0.0, "Uganda": 0.0, "Rwanda": 0.0}
+        for r in rows or []:
+            c = (r.get("country") or "").strip()
+            v = float(r.get("total_sales") or 0)
+            if c == "Kenya":
+                out["Kenya - Retail"] += v
+            elif c == "Online":
+                out["Kenya - Online"] += v
+            elif c == "Uganda":
+                out["Uganda"] += v
+            elif c == "Rwanda":
+                out["Rwanda"] += v
+        return out
+
+    actuals_ytd = _bucket_sales(cs_ytd_raw or [])
+    actuals_per_quarter: Dict[str, Dict[str, float]] = {qk: _bucket_sales(g or []) for qk, g in zip(quarter_keys, quarter_results)}
+
+    # Build per-bucket result.
+    buckets: List[Dict[str, Any]] = []
+    for name, q_targets in targets.items():
+        annual_target = sum(q_targets.values())
+        ytd_actual = actuals_ytd.get(name, 0.0)
+        # YTD run-rate projection: actual ÷ days_elapsed × days_total.
+        # Floors at the YTD actual so a year already past target stays high.
+        projected = (ytd_actual / days_elapsed * days_total) if days_elapsed else 0.0
+        q_actuals = {qk: actuals_per_quarter.get(qk, {}).get(name, 0.0) for qk in _QUARTER_BOUNDS_2026}
+        buckets.append({
+            "bucket": name,
+            "target_annual": round(annual_target, 2),
+            "quarters": {qk: round(v, 2) for qk, v in q_targets.items()},
+            "actual_ytd": round(ytd_actual, 2),
+            "actual_quarters": {qk: round(v, 2) for qk, v in q_actuals.items()},
+            "projected_year": round(projected, 2),
+            "pct_of_target_ytd": round((ytd_actual / annual_target * 100), 2) if annual_target else 0,
+            "pct_of_target_projected": round((projected / annual_target * 100), 2) if annual_target else 0,
+            "variance_projected": round(projected - annual_target, 2),
+        })
+
+    total_target = sum(b["target_annual"] for b in buckets)
+    total_actual = sum(b["actual_ytd"] for b in buckets)
+    total_projected = sum(b["projected_year"] for b in buckets)
+    total_q_actuals = {
+        qk: round(sum(b["actual_quarters"][qk] for b in buckets), 2)
+        for qk in _QUARTER_BOUNDS_2026
+    }
+    total_q_targets = {
+        qk: round(sum(b["quarters"][qk] for b in buckets), 2)
+        for qk in _QUARTER_BOUNDS_2026
+    }
+    return {
+        "year": year,
+        "as_of": today.isoformat(),
+        "days_elapsed": days_elapsed,
+        "days_total": days_total,
+        "completion_pct": round((days_elapsed / days_total * 100), 2) if days_total else 0,
+        "buckets": buckets,
+        "total": {
+            "target_annual": round(total_target, 2),
+            "quarters": total_q_targets,
+            "actual_ytd": round(total_actual, 2),
+            "actual_quarters": total_q_actuals,
+            "projected_year": round(total_projected, 2),
+            "pct_of_target_ytd": round((total_actual / total_target * 100), 2) if total_target else 0,
+            "pct_of_target_projected": round((total_projected / total_target * 100), 2) if total_target else 0,
+            "variance_projected": round(total_projected - total_target, 2),
+        },
+    }
 
 
 # -------------------- Sales projection --------------------
@@ -4602,6 +4751,36 @@ async def analytics_sor_all_styles(
     six_m_map = {r.get("style_name"): r for r in six_m_skus if r.get("style_name") in candidates}
     three_w_map = {r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates}
 
+    # ---- Original-price source: pull /products for catalog list prices ----
+    # `/products` upstream returns one row per (style_name, sku) with a
+    # `product_price_kes` field — the MSRP / list price before any
+    # discount. We aggregate to the style level by taking the modal price
+    # (some variants of the same style share a price; small variations
+    # are due to size / colour). Used by the SOR Report as
+    # "Original Price". Falls back to gross_sales/units_6m when /products
+    # has no row for that style (rare).
+    try:
+        products_rows = await fetch("/products", {"limit": 50000}, timeout_sec=20.0, max_attempts=2) or []
+    except Exception as e:
+        logger.warning("[sor-all-styles] /products fetch failed: %s — falling back to ASP gross", e)
+        products_rows = []
+    style_orig_price: Dict[str, float] = {}
+    style_price_counts: Dict[str, Dict[float, int]] = defaultdict(lambda: defaultdict(int))
+    for r in products_rows:
+        s = r.get("style_name")
+        if not s or s not in candidates:
+            continue
+        p = r.get("product_price_kes") or r.get("product_price") or r.get("price")
+        try:
+            p = float(p) if p else 0
+        except (TypeError, ValueError):
+            p = 0
+        if p > 0:
+            style_price_counts[s][p] += 1
+    for s, counts in style_price_counts.items():
+        # Pick the most-common price (handles SKUs at slightly different prices).
+        style_orig_price[s] = max(counts.items(), key=lambda kv: kv[1])[0]
+
     soh_store: Dict[str, float] = defaultdict(float)
     soh_wh: Dict[str, float] = defaultdict(float)
     sku_for_style: Dict[str, str] = {}
@@ -4681,6 +4860,7 @@ async def analytics_sor_all_styles(
             "style_name": s,
             "brand": sm.get("brand"),
             "collection": sm.get("collection"),
+            "category": category_of(sm.get("product_type")),
             "subcategory": sm.get("product_type"),
             "style_number": sku_for_style.get(s, ""),
             "sales_6m": round(sales_6m, 2),
@@ -4691,6 +4871,11 @@ async def analytics_sor_all_styles(
             "soh_store": round(store, 2),
             "pct_in_wh": round(pct_in_wh, 1),
             "asp_6m": round(asp_6m, 2),
+            "original_price": round(
+                style_orig_price.get(s)
+                or (float(sm.get("gross_sales") or 0) / units_6m if units_6m else 0),
+                2,
+            ),
             "days_since_last_sale": days_since_last,
             "sor_6m": round(sor_6m, 2),
             "launch_date": launch_date_iso,
