@@ -41,6 +41,15 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_56** (2026-05-05) — **SOR Report drill-down: Color × Size + per-Location panes**:
+  - **New**: clicking any row in the SOR Report tab now does TWO things in parallel:
+    1. Expands inline showing the **Color × Size SKU breakdown** ([data-testid=sor-sku-breakdown]) with units 6M, % of style, units 3W, SOH, SOH WH, % In WH per variant.
+    2. Updates the **per-Location pane** on the right ([data-testid=sor-location-pane]) with location, units 6M, SOH, and SOR per location — exactly matching the screenshot the user shared.
+  - Backend: new endpoint `GET /api/analytics/style-location-breakdown` and refactored `_compute_style_breakdowns` helper that does ONE /orders fan-out and populates BOTH the SKU and location caches in a single pass. Frontend fires both endpoints concurrently; the second one hits warm cache (<200ms) once the first finishes.
+  - **Performance fix (cold scans + 60s ingress timeout)**: rare styles' /orders fan-out exceeds the 60s gateway timeout. Solved with an `asyncio.shield`'d background task pattern — first call returns either 200 with data (if scan finishes in <50s) OR HTTP 202 with `{computing: true, retry_after: 15}`. Frontend polls every 15s for up to 2 minutes. The shared task means polling either endpoint resolves both. Tested at 60-90s scan completion for non-popular styles.
+  - **SortableTable** now supports `rowClassName` (function returning per-row Tailwind classes — used for the amber selected-row highlight) and dual-fires `onRowClick` even when `renderExpanded` is set (so a click both expands the row AND selects it).
+  - **Tested via testing_agent (Iter_46)**: Backend 6/6 PASS, Frontend integration confirmed — cold-cache clicks trigger two 202s, polling timer re-issues every 15s, both panes populate at t≈110s.
+
 - **Iter_55** (2026-05-05) — **Visit-rule + Annual Targets + SOR Report on Exports + walk-in detector hardening**:
   - **Order-counting rule changed**: A "visit" is now a unique `(order_date, channel)` pair per customer. Same date AND same channel = 1 visit (multiple order_ids merge); same date, different channels = 2 visits. Affects `/api/customer-frequency`, `/api/analytics/customer-retention`, and `/api/analytics/repeat-customers`. The expanded "orders" list on the repeat-customers table now shows the rolled-up `order_id` field (comma-joined when more than one) plus an `order_id_count` badge.
   - **Annual Targets endpoint** `GET /api/analytics/annual-targets` returns 2026 quarterly targets (Kenya - Retail / Kenya - Online / Uganda / Rwanda) totalling KES 1,434,521,673, plus YTD actuals from `/country-summary`, per-quarter actuals, run-rate projection, and variance to target. Verified: total target matches finance spreadsheet exactly.
