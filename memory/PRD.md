@@ -41,6 +41,15 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 ## Recently Shipped (2026-04-26 / 27 / 28 / 29 / 30 / 5-1 / 5-4 / 5-5)
 ## Recently Shipped
+- **Iter_55** (2026-05-05) — **Repeat Customers Detail table + walk-in detector hardening**:
+  - Backend: New endpoint `GET /api/analytics/repeat-customers` returns one row per identified customer with ≥ `min_orders` (default 2) **distinct order_id** in window, with a nested `orders` array (order_id, order_date, channel, total_kes, units).
+  - Backend bug fix: `/analytics/customer-retention` was counting LINE-ITEMS instead of distinct orders (so a 4-SKU basket bumped the customer to "≥2 orders" wrongly, inflating repeat_customers from 273 → 1,245 on 27-Apr-04-May). Fixed to count distinct `order_id` per customer; both endpoints now agree.
+  - Walk-in detector hardened:
+    - `_get_customer_name_lookup` now pulls a 400-day window (was default — which only returned ~1,261 most-recent customers, missing tens of thousands of legitimate customers and falsely flagging them as walk-ins).
+    - Added rule (4): "no phone AND no email anywhere" — checked across both `/orders` row AND the `/top-customers` roster. Catches POS-internal placeholder IDs like `443578` that had 38 orders all from one store.
+  - Frontend: New "Repeat Customers Detail" card on the Customers page (between Loyalty Distribution and Top N) showing the 4-tile summary (Repeat customers count, Total orders, Total spend, Avg spend/customer) plus a sortable, paginated table. Each row expands to reveal its full order list (Order ID, Date, Channel, Units, Order Total). CSV export emits one row per (customer × order) so finance can pivot in Sheets.
+  - Verified Apr27-May4: 2,032 identified customers (was 2,318 before tighter walk-in rule), 216 repeaters, **10.6% repeat rate**. Both `/customer-frequency` and `/analytics/customer-retention` now match exactly. Top spender: Gabriela Favour Lagum, 5 orders, KES 114,731.
+
 - **Iter_54** (2026-05-05) — **Walk-in detection unified across Customers page (fixes Avg Spend mismatch + Repeat Purchase Rate inflated by anonymous traffic)**:
   - **Bug**: Avg Spend / Customer card showed KES 9,695 while New (KES 5,721) + Returning (KES 8,758) buckets, weighted by their customer counts (141 + 882 = 1,023), came out to ~KES 8,341. Mismatch = walk-in revenue counted in the numerator (`/kpis.total_sales` includes anonymous transactions) but excluded from the denominator (upstream `/customers.total_customers` is identified-only).
   - **Bug 2**: Repeat Purchase Rate (legacy) showed 8.2% because `/customer-frequency` upstream returns ALL customers including walk-ins, who almost always have only 1 "order" — collapsing the repeat-rate denominator.

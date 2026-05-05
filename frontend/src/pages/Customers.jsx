@@ -127,6 +127,8 @@ const Customers = () => {
   const [topSkus, setTopSkus] = useState([]);
   const [retention, setRetention] = useState(null);
   const [spendByType, setSpendByType] = useState(null);
+  const [repeatCustomers, setRepeatCustomers] = useState([]);
+  const [repeatCustomersLoading, setRepeatCustomersLoading] = useState(false);
   const [unchurned, setUnchurned] = useState(null);
   const [unchurnedDays, setUnchurnedDays] = useState(90); // 30 / 60 / 90 / 180
   const [unchurnedLoading, setUnchurnedLoading] = useState(false);
@@ -183,15 +185,25 @@ const Customers = () => {
       // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
       ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
       ["spendByType", api.get("/analytics/avg-spend-by-customer-type", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
+      // Identified customers with ≥2 distinct orders in the window — drives
+      // the "Repeat Customers Detail" expandable table.
+      ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
       topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
       retention: setRetention, spendByType: setSpendByType,
+      repeatCustomers: setRepeatCustomers,
     };
+    setRepeatCustomersLoading(true);
     for (const [key, p] of rest) {
-      p.then((r) => { if (!cancelled) setters[key](r.data || (key === "prev" ? null : [])); });
+      p.then((r) => {
+        if (!cancelled) {
+          setters[key](r.data || (key === "prev" ? null : []));
+          if (key === "repeatCustomers") setRepeatCustomersLoading(false);
+        }
+      });
     }
 
     // Churn rate is computed in a separate endpoint because its upstream
@@ -1171,6 +1183,140 @@ const Customers = () => {
                         </span>
                       )}
                     </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ---- Repeat Customers Detail (≥2 distinct orders in window) ---- */}
+          {(() => {
+            const rows = repeatCustomers || [];
+            const total = rows.length;
+            const totalSpend = rows.reduce((s, r) => s + (r.total_spend_kes || 0), 0);
+            const totalOrders = rows.reduce((s, r) => s + (r.order_count || 0), 0);
+            const csvFor = () => {
+              const out = [["Customer ID", "Name", "Mobile", "Email", "Orders in window", "Total Spend (KES)",
+                            "First Order", "Last Order", "Order ID", "Order Date", "Channel", "Order Total (KES)", "Units"]];
+              for (const c of rows) {
+                for (const o of (c.orders || [])) {
+                  out.push([c.customer_id, c.customer_name || "", c.mobile || "", c.email || "",
+                            c.order_count, c.total_spend_kes, c.first_order_date, c.last_order_date,
+                            o.order_id, o.order_date, o.channel || "", o.total_kes, o.units]);
+                }
+              }
+              return out.map((r) => r.map((v) => {
+                const s = v == null ? "" : String(v);
+                return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+              }).join(",")).join("\n");
+            };
+            const downloadCsv = () => {
+              const blob = new Blob([csvFor()], { type: "text/csv;charset=utf-8" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `repeat-customers_${dateFrom}_to_${dateTo}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            };
+            return (
+              <div className="card-white p-5" data-testid="repeat-customers-table">
+                <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+                  <div>
+                    <SectionTitle>Repeat Customers Detail</SectionTitle>
+                    <div className="text-[12px] text-muted mt-0.5">
+                      Identified customers with <strong>≥ 2 distinct orders</strong> in the selected window — these are the {repeatCustomersLoading ? "…" : <strong>{fmtNum(total)}</strong>} customers behind the {retention ? `${retention.repeat_rate_pct.toFixed(1)}%` : "repeat"} repeat-rate above. Walk-ins excluded. Click any row to expand.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={downloadCsv}
+                    disabled={!rows.length}
+                    className="text-[11px] font-bold px-3 py-1.5 rounded-md border border-border hover:bg-panel disabled:opacity-50"
+                    data-testid="repeat-customers-export-btn"
+                  >
+                    Export CSV
+                  </button>
+                </div>
+                {repeatCustomersLoading && total === 0 ? (
+                  <div className="text-[12px] text-muted py-4">Loading repeat customers (~30s on cold cache)…</div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                      <div className="rounded-xl border border-border p-3">
+                        <div className="eyebrow">Repeat Customers</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{fmtNum(total)}</div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3">
+                        <div className="eyebrow">Total Orders</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{fmtNum(totalOrders)}</div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3">
+                        <div className="eyebrow">Total Spend</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">{fmtKES(totalSpend)}</div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3">
+                        <div className="eyebrow">Avg Spend / Customer</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5">
+                          {total ? fmtKES(totalSpend / total) : "—"}
+                        </div>
+                      </div>
+                    </div>
+                    <SortableTable
+                      testId="repeat-customers-list"
+                      columns={[
+                        { key: "customer_id", label: "Customer ID", sortable: true,
+                          render: (r) => <span className="font-mono text-[11px]">{r.customer_id}</span> },
+                        { key: "customer_name", label: "Name", sortable: true,
+                          render: (r) => r.customer_name || <span className="text-muted">(no name)</span> },
+                        { key: "mobile", label: "Mobile", sortable: true,
+                          render: (r) => r.mobile || <span className="text-muted">—</span> },
+                        { key: "email", label: "Email", sortable: true,
+                          render: (r) => r.email || <span className="text-muted">—</span> },
+                        { key: "order_count", label: "# Orders", sortable: true, align: "right",
+                          render: (r) => <strong>{r.order_count}</strong> },
+                        { key: "total_spend_kes", label: "Total Spend", sortable: true, align: "right",
+                          render: (r) => fmtKES(r.total_spend_kes) },
+                        { key: "first_order_date", label: "First Order", sortable: true,
+                          render: (r) => r.first_order_date || "—" },
+                        { key: "last_order_date", label: "Last Order", sortable: true,
+                          render: (r) => r.last_order_date || "—" },
+                      ]}
+                      rows={rows}
+                      defaultSort={{ key: "order_count", dir: "desc" }}
+                      pageSize={25}
+                      renderExpanded={(r) => (
+                        <div className="px-2 py-1">
+                          <div className="text-[11px] font-bold uppercase text-muted mb-2">
+                            Orders ({r.order_count})
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[12px]" data-testid={`repeat-orders-${r.customer_id}`}>
+                              <thead>
+                                <tr className="text-left text-muted border-b border-border">
+                                  <th className="py-1 pr-3">Order ID</th>
+                                  <th className="py-1 pr-3">Date</th>
+                                  <th className="py-1 pr-3">Channel</th>
+                                  <th className="py-1 pr-3 text-right">Units</th>
+                                  <th className="py-1 pr-0 text-right">Order Total</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(r.orders || []).map((o) => (
+                                  <tr key={o.order_id} className="border-b border-border/50 last:border-0">
+                                    <td className="py-1 pr-3 font-mono text-[11px]">{o.order_id}</td>
+                                    <td className="py-1 pr-3">{o.order_date}</td>
+                                    <td className="py-1 pr-3">{o.channel || "—"}</td>
+                                    <td className="py-1 pr-3 text-right num">{o.units}</td>
+                                    <td className="py-1 pr-0 text-right num font-semibold">{fmtKES(o.total_kes)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    />
                   </>
                 )}
               </div>

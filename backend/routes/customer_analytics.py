@@ -196,19 +196,26 @@ async def analytics_customer_retention(
     rows = await _orders_for_window(date_from, date_to, country, channel)
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _get_customer_contact_lookup_sync()
-    by_cust: Dict[str, int] = defaultdict(int)
+    # Count DISTINCT order_ids per customer — not line items. /orders is
+    # line-item-grained, so a single 4-SKU basket emits 4 rows; counting
+    # rows over-stated repeaters by 4–10x and made this endpoint disagree
+    # with /customer-frequency on the same window.
+    by_cust: Dict[str, set] = {}
     walk_ins = 0
     for r in rows:
         if _is_walk_in_order(r, name_lookup, contact_lookup):
             walk_ins += 1
             continue
         cid = r.get("customer_id")
-        if cid:
-            by_cust[str(cid)] += 1
-    total = len(by_cust)
-    repeat = sum(1 for n in by_cust.values() if n >= 2)
-    vip = sum(1 for n in by_cust.values() if n >= 5)
-    returner_orders = sum(n for n in by_cust.values() if n >= 2)
+        oid = r.get("order_id")
+        if cid is None or oid is None:
+            continue
+        by_cust.setdefault(str(cid), set()).add(oid)
+    order_counts = {cid: len(oids) for cid, oids in by_cust.items()}
+    total = len(order_counts)
+    repeat = sum(1 for n in order_counts.values() if n >= 2)
+    vip = sum(1 for n in order_counts.values() if n >= 5)
+    returner_orders = sum(n for n in order_counts.values() if n >= 2)
     avg_orders_per_returner = (returner_orders / repeat) if repeat else 0
     return {
         "total_customers": total,
@@ -377,4 +384,83 @@ async def analytics_recently_unchurned(
             "total_spend_kes_window": round(spend, 2),
         })
     out.sort(key=lambda x: x["gap_days"], reverse=True)
+    return mask_rows(out, getattr(user, "role", None))
+
+
+# ─── /analytics/repeat-customers ──────────────────────────────────────
+@api_router.get("/analytics/repeat-customers")
+async def analytics_repeat_customers(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    min_orders: int = Query(2, ge=1, le=50),
+    user=Depends(get_current_user),
+):
+    """List of identified customers with ≥ `min_orders` distinct orders in
+    the selected window. One row per customer, with a nested `orders`
+    list (order_id, order_date, total_kes) so the UI can drill in.
+
+    Walk-ins excluded via the same robust 7-rule detector used elsewhere.
+    Output is masked by role like the other PII endpoints.
+    """
+    rows = await _orders_for_window(date_from, date_to, country, channel)
+    name_lookup = await _get_customer_name_lookup()
+    contact_lookup = _get_customer_contact_lookup_sync()
+
+    # Aggregate per (customer, order): sum line-items into one order total,
+    # keep the order_date (earliest non-empty), and collect the customer's
+    # contact / name fields from whichever row carries them.
+    by_cust: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        if _is_walk_in_order(r, name_lookup, contact_lookup):
+            continue
+        cid = r.get("customer_id")
+        oid = r.get("order_id")
+        if cid is None or oid is None:
+            continue
+        cid_s = str(cid)
+        cust = by_cust.setdefault(cid_s, {
+            "customer_id": cid_s,
+            "customer_name": r.get("customer_name") or name_lookup.get(cid_s, "") or "",
+            "email": r.get("customer_email") or "",
+            "mobile": r.get("customer_phone") or r.get("phone") or "",
+            "country": r.get("country") or r.get("customer_country") or "",
+            "_orders": {},
+        })
+        # Backfill name/email/phone from any row that has them.
+        if not cust["customer_name"] and r.get("customer_name"):
+            cust["customer_name"] = r["customer_name"]
+        if not cust["email"] and r.get("customer_email"):
+            cust["email"] = r["customer_email"]
+        if not cust["mobile"] and (r.get("customer_phone") or r.get("phone")):
+            cust["mobile"] = r.get("customer_phone") or r.get("phone")
+        order = cust["_orders"].setdefault(oid, {
+            "order_id": str(oid),
+            "order_date": (r.get("order_date") or "")[:10],
+            "channel": r.get("channel") or r.get("pos_location_name") or "",
+            "total_kes": 0.0,
+            "units": 0,
+        })
+        if not order["order_date"] and r.get("order_date"):
+            order["order_date"] = r["order_date"][:10]
+        order["total_kes"] += float(r.get("net_sales_kes") or r.get("total_sales_kes") or 0)
+        order["units"] += int(r.get("quantity") or 0)
+
+    out: List[Dict[str, Any]] = []
+    for cust in by_cust.values():
+        orders = list(cust.pop("_orders").values())
+        if len(orders) < min_orders:
+            continue
+        orders.sort(key=lambda o: o["order_date"], reverse=True)
+        for o in orders:
+            o["total_kes"] = round(o["total_kes"], 2)
+        cust["orders"] = orders
+        cust["order_count"] = len(orders)
+        cust["total_spend_kes"] = round(sum(o["total_kes"] for o in orders), 2)
+        cust["first_order_date"] = min(o["order_date"] for o in orders) if orders else ""
+        cust["last_order_date"] = max(o["order_date"] for o in orders) if orders else ""
+        out.append(cust)
+
+    out.sort(key=lambda c: (c["order_count"], c["total_spend_kes"]), reverse=True)
     return mask_rows(out, getattr(user, "role", None))

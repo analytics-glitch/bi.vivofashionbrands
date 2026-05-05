@@ -1077,23 +1077,34 @@ _CUSTOMER_NAMES_TTL = 60 * 60 * 6  # 6 hours
 
 async def _get_customer_name_lookup() -> Dict[str, str]:
     """Returns customer_id → customer_name. Cached for 6h. Pulled from
-    /top-customers (the only upstream endpoint that exposes both the id and
-    the human name in bulk). The roster is ~7,800 customers today — fits
-    comfortably in memory in a single 1-call fetch.
+    /top-customers with a 400-day look-back so we capture roughly every
+    customer who has transacted in the past year. Without explicit date
+    bounds, upstream defaults to a tiny "last few days" window and only
+    returns ~1,261 customers — wildly under-counts the identified
+    customer base and misclassifies real customers as walk-ins.
 
     A SENTINEL of empty-string is recorded for known customer_ids whose
     name in the upstream database is blank — that's the actual walk-in
     marker in the dataset (~379 such IDs vs 2 IDs whose name contains
     "walk"). The walk-in detector relies on this distinction to distinguish
     "anonymous walk-in customer" from "customer not yet loaded".
+
+    Also populates `_customer_contacts_cache` (customer_id → {has_phone,
+    has_email}) so the walk-in detector can apply the "no phone AND no
+    email = walk-in" ops rule.
     """
     import time as _time
     global _customer_names_cache, _customer_contacts_cache
     ts, cache = _customer_names_cache
     if cache and _time.time() - ts < _CUSTOMER_NAMES_TTL:
         return cache
+    today = datetime.now(timezone.utc).date()
+    look_from = (today - timedelta(days=400)).isoformat()
+    look_to = today.isoformat()
     try:
-        rows = await _safe_fetch("/top-customers", {"limit": 20000}) or []
+        rows = await _safe_fetch("/top-customers", {
+            "date_from": look_from, "date_to": look_to, "limit": 200000,
+        }) or []
     except Exception as e:
         logger.warning("[customer-names] /top-customers failed: %s", e)
         return cache or {}
@@ -1574,18 +1585,17 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
       2. customer_type tagged Guest / walk-in / anonymous.
       3. customer_id resolves to a blank-name row in /top-customers
          (the walk-in roster — ~379 such IDs).
-      4. customer_id has NEITHER a phone NOR an email in /top-customers
-         (anonymous transaction even if upstream auto-assigned an id).
+      4. NEITHER phone NOR email known anywhere — checked across both
+         the /orders row itself AND the /top-customers roster. This is
+         the canonical ops definition: "a walk-in is a customer without
+         both phone number and email".
       5. customer_name contains "walk" (covers walk-in, walkin, walk in).
       6. customer_name contains "vivo" / "safari" — staff sometimes
          enter the brand or store name as the customer.
       7. customer_name matches the POS / store / location name.
 
     `name_lookup` and `contact_lookup` should be passed by callers that
-    have warmed `_get_customer_name_lookup` already; otherwise we fall
-    back to whatever has been cached and degrade gracefully (rule 4 only
-    fires when the lookup is populated — under-counts walk-ins is
-    safer than over-counts).
+    have warmed `_get_customer_name_lookup` already.
     """
     cid = r.get("customer_id")
     if cid is None or (isinstance(cid, str) and not cid.strip()):
@@ -1599,16 +1609,22 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
     if cid_s in nm_lookup and not nm_lookup[cid_s]:
         # Known customer in the roster but with blank name = walk-in.
         return True
-    contact = ct_lookup.get(cid_s)
-    if contact is not None and not contact.get("has_phone") and not contact.get("has_email"):
-        # No phone AND no email in the roster — anonymous customer.
+    # Rule 4 — "no phone AND no email" anywhere. Check the row first,
+    # then the roster. If both come up empty, it's a walk-in regardless
+    # of whether we found the cid in the roster at all (a customer not
+    # in top-customers and with no contact on the order row is by
+    # definition unreachable / anonymous).
+    row_phone = r.get("customer_phone") or r.get("phone")
+    row_email = r.get("customer_email") or r.get("email")
+    has_row_phone = bool(row_phone and str(row_phone).strip())
+    has_row_email = bool(row_email and str(row_email).strip())
+    contact = ct_lookup.get(cid_s) or {}
+    has_roster_phone = bool(contact.get("has_phone"))
+    has_roster_email = bool(contact.get("has_email"))
+    if not (has_row_phone or has_row_email or has_roster_phone or has_roster_email):
         return True
     cname = (r.get("customer_name") or nm_lookup.get(cid_s, "") or "").strip().lower()
     if not cname:
-        # No name — can't apply name-pattern rules. cid is in the roster
-        # (rule 3 above already returned True for blank-name), so missing
-        # name here means lookup wasn't warmed. Treat as identified to
-        # avoid false positives.
         return False
     cname_clean = cname.replace("-", " ").replace("_", " ")
     if "walk" in cname_clean:
