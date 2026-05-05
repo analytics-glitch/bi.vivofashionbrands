@@ -1,40 +1,48 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
-import { DownloadSimple, MagnifyingGlass } from "@phosphor-icons/react";
+import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 /**
- * SOR Report — catalog-wide style sell-through report. One row per
- * style with the 19 columns finance + buying ops use (matches the
- * legacy PowerBI SOR report layout):
- *   Style Name, Category, Sub Category, Style Number,
- *   Sales Last 6 Months, Units Sold, Units Last 6 Months,
- *   Units Last 3 Weeks, SOH, SOH Warehouse, % In WH,
- *   ASP 6 Months, Original Price, Days Since Last Sale,
- *   6 Months SOR, Style Launch Date, Weekly Average,
- *   Weeks of Cover, Style Age (Weeks)
+ * SOR Report — catalog-wide style sell-through report.
  *
- * Data source: /api/analytics/sor-all-styles (catalog-wide; 1.7K rows;
- * cached server-side for 30 minutes). Honours the country / channel /
- * brand filters from the global filter bar.
+ * Master table: one row per style with the 19-column finance/buying-ops
+ * layout. Each row expands to a Color × Size SKU breakdown (matches the
+ * SOR L-10 drill-down pattern).
+ *
+ * Detail pane (right side): when a row is selected, shows a per-location
+ * table with units sold (6m), SOH, and per-location SOR — so the user
+ * can answer "where did this style sell, and where's it sitting now?"
+ * in one view.
  */
 const SORReport = () => {
   const { applied } = useFilters();
   const { countries, channels } = applied;
+  const countryParam = countries?.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
+  const channelParam = channels?.length ? channels.join(",") : undefined;
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Local filters for this tab.
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [catSel, setCatSel] = useState([]);
   const [subcatSel, setSubcatSel] = useState([]);
   const [brandSel, setBrandSel] = useState([]);
+  const [selectedStyle, setSelectedStyle] = useState(null);
+
+  // Per-style SKU breakdown cache (for row expand). Keyed by style_name.
+  const [skuCache, setSkuCache] = useState({});
+  const [skuLoading, setSkuLoading] = useState({});
+
+  // Per-style location breakdown cache (for the detail pane).
+  const [locCache, setLocCache] = useState({});
+  const [locLoading, setLocLoading] = useState(false);
+  const [locError, setLocError] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 150);
@@ -46,14 +54,22 @@ const SORReport = () => {
     setLoading(true);
     setError(null);
     const params = {};
-    if (countries?.length) params.country = countries.map((c) => c.toLowerCase()).join(",");
-    if (channels?.length) params.channel = channels.join(",");
+    if (countryParam) params.country = countryParam;
+    if (channelParam) params.channel = channelParam;
     api.get("/analytics/sor-all-styles", { params })
       .then((r) => { if (!cancelled) setRows(Array.isArray(r.data) ? r.data : []); })
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [JSON.stringify(countries), JSON.stringify(channels)]); // eslint-disable-line
+  }, [countryParam, channelParam]);
+
+  // Drop the per-style caches when the country/channel filters change so
+  // we don't show a Kenya-scoped breakdown for an Online-scoped table.
+  useEffect(() => {
+    setSkuCache({});
+    setLocCache({});
+    setSelectedStyle(null);
+  }, [countryParam, channelParam]);
 
   const categories = useMemo(() => {
     const s = new Set(rows.map((r) => r.category).filter(Boolean));
@@ -83,16 +99,58 @@ const SORReport = () => {
     });
   }, [rows, search, catSel, subcatSel, brandSel]);
 
-  // Summary KPIs.
   const stats = useMemo(() => {
     const totalSales = filtered.reduce((s, r) => s + (r.sales_6m || 0), 0);
     const totalUnits = filtered.reduce((s, r) => s + (r.units_6m || 0), 0);
     const totalSOH = filtered.reduce((s, r) => s + (r.soh_total || 0), 0);
-    const wSor =
-      filtered.reduce((s, r) => s + (r.units_6m || 0), 0) /
-      Math.max(1, filtered.reduce((s, r) => s + ((r.units_6m || 0) + (r.soh_total || 0)), 0));
-    return { totalSales, totalUnits, totalSOH, wSor: wSor * 100, n: filtered.length };
+    const denom = filtered.reduce((s, r) => s + ((r.units_6m || 0) + (r.soh_total || 0)), 0);
+    const wSor = denom > 0 ? totalUnits / denom * 100 : 0;
+    return { totalSales, totalUnits, totalSOH, wSor, n: filtered.length };
   }, [filtered]);
+
+  // Lazy-load SKU breakdown when a row expands.
+  const loadSku = (style) => {
+    if (!style || skuCache[style] || skuLoading[style]) return;
+    setSkuLoading((s) => ({ ...s, [style]: true }));
+    api.get("/analytics/style-sku-breakdown", {
+      params: { style_name: style, country: countryParam, channel: channelParam },
+    })
+      .then((r) => setSkuCache((c) => ({ ...c, [style]: r.data?.skus || [] })))
+      .catch(() => setSkuCache((c) => ({ ...c, [style]: [] })))
+      .finally(() => setSkuLoading((s) => ({ ...s, [style]: false })));
+  };
+
+  // Lazy-load location breakdown when a style is selected.
+  const loadLocations = (style) => {
+    if (!style) return;
+    if (locCache[style]) return;
+    setLocLoading(true);
+    setLocError(null);
+    api.get("/analytics/style-location-breakdown", {
+      params: { style_name: style, country: countryParam, channel: channelParam },
+    })
+      .then((r) => setLocCache((c) => ({ ...c, [style]: r.data?.locations || [] })))
+      .catch((e) => setLocError(e?.response?.data?.detail || e.message))
+      .finally(() => setLocLoading(false));
+  };
+
+  // Auto-select first row when results change so the side pane never
+  // shows "pick a style" unless the table is empty.
+  const lastFirst = useRef(null);
+  useEffect(() => {
+    const first = filtered[0]?.style_name || null;
+    if (first && first !== lastFirst.current) {
+      lastFirst.current = first;
+      if (!selectedStyle) {
+        setSelectedStyle(first);
+      }
+    }
+  }, [filtered, selectedStyle]);
+
+  useEffect(() => {
+    if (selectedStyle) loadLocations(selectedStyle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStyle]);
 
   const exportCsv = () => {
     const header = [
@@ -106,25 +164,12 @@ const SORReport = () => {
     const lines = [header];
     for (const r of filtered) {
       lines.push([
-        r.style_name || "",
-        r.category || "",
-        r.subcategory || "",
-        r.style_number || "",
-        r.sales_6m ?? "",
-        r.units_6m ?? "",
-        r.units_6m ?? "",
-        r.units_3w ?? "",
-        r.soh_total ?? "",
-        r.soh_wh ?? "",
-        r.pct_in_wh ?? "",
-        r.asp_6m ?? "",
-        r.original_price ?? "",
-        r.days_since_last_sale ?? "",
-        r.sor_6m ?? "",
-        r.launch_date || "",
-        r.weekly_avg ?? "",
-        r.woc ?? "",
-        r.style_age_weeks ?? "",
+        r.style_name || "", r.category || "", r.subcategory || "", r.style_number || "",
+        r.sales_6m ?? "", r.units_6m ?? "", r.units_6m ?? "", r.units_3w ?? "",
+        r.soh_total ?? "", r.soh_wh ?? "", r.pct_in_wh ?? "",
+        r.asp_6m ?? "", r.original_price ?? "", r.days_since_last_sale ?? "",
+        r.sor_6m ?? "", r.launch_date || "", r.weekly_avg ?? "",
+        r.woc ?? "", r.style_age_weeks ?? "",
       ]);
     }
     const csv = lines
@@ -150,6 +195,7 @@ const SORReport = () => {
             <SectionTitle>SOR Report — Catalog-wide</SectionTitle>
             <div className="text-[12px] text-muted mt-0.5">
               Every style with sales in the last 6 months. {stats.n.toLocaleString()} of {rows.length.toLocaleString()} styles after filters.
+              Click any row to expand its Color × Size SKU breakdown, or select a style to see its per-location sales & stock on the right.
             </div>
           </div>
           <button
@@ -163,7 +209,6 @@ const SORReport = () => {
           </button>
         </div>
 
-        {/* Summary tiles */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
           <Tile label="Styles" value={fmtNum(stats.n)} />
           <Tile label="Total Sales" value={fmtKES(stats.totalSales)} />
@@ -172,7 +217,6 @@ const SORReport = () => {
           <Tile label="Weighted SOR" value={`${stats.wSor.toFixed(1)}%`} />
         </div>
 
-        {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
           <div className="md:col-span-3 relative">
             <MagnifyingGlass size={14} className="absolute left-2.5 top-2.5 text-muted" />
@@ -203,63 +247,90 @@ const SORReport = () => {
         ) : !filtered.length ? (
           <Empty>No styles match the current filters.</Empty>
         ) : (
-          <SortableTable
-            testId="sor-report-table"
-            columns={[
-              { key: "style_name", label: "Style Name", sortable: true,
-                render: (r) => <span className="font-semibold">{r.style_name}</span> },
-              { key: "category", label: "Category", sortable: true,
-                render: (r) => r.category || "—" },
-              { key: "subcategory", label: "Sub Category", sortable: true,
-                render: (r) => r.subcategory || "—" },
-              { key: "style_number", label: "Style #", sortable: true,
-                render: (r) => <span className="font-mono text-[11px]">{r.style_number || "—"}</span> },
-              { key: "sales_6m", label: "Sales 6M", sortable: true, align: "right",
-                render: (r) => fmtKES(r.sales_6m) },
-              { key: "units_6m", label: "Units 6M", sortable: true, align: "right",
-                render: (r) => fmtNum(r.units_6m) },
-              { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
-                render: (r) => fmtNum(r.units_3w) },
-              { key: "soh_total", label: "SOH", sortable: true, align: "right",
-                render: (r) => fmtNum(r.soh_total) },
-              { key: "soh_wh", label: "SOH WH", sortable: true, align: "right",
-                render: (r) => fmtNum(r.soh_wh) },
-              { key: "pct_in_wh", label: "% In WH", sortable: true, align: "right",
-                render: (r) => `${r.pct_in_wh.toFixed(1)}%` },
-              { key: "asp_6m", label: "ASP 6M", sortable: true, align: "right",
-                render: (r) => fmtKES(r.asp_6m) },
-              { key: "original_price", label: "Orig Price", sortable: true, align: "right",
-                render: (r) => fmtKES(r.original_price) },
-              { key: "days_since_last_sale", label: "Days Since Sale", sortable: true, align: "right",
-                render: (r) => {
-                  const d = r.days_since_last_sale;
-                  const cls = d > 60 ? "text-rose-600 font-bold" : d > 30 ? "text-amber-600" : "";
-                  return <span className={cls}>{d}d</span>;
-                } },
-              { key: "sor_6m", label: "6M SOR", sortable: true, align: "right",
-                render: (r) => {
-                  const v = r.sor_6m || 0;
-                  const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
-                  return <span className={cls}>{v.toFixed(1)}%</span>;
-                } },
-              { key: "launch_date", label: "Launch", sortable: true,
-                render: (r) => r.launch_date ? fmtDate(r.launch_date) : "—" },
-              { key: "weekly_avg", label: "Weekly Avg", sortable: true, align: "right",
-                render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
-              { key: "woc", label: "WoC", sortable: true, align: "right",
-                render: (r) => {
-                  if (r.woc == null) return "—";
-                  const cls = r.woc < 12 ? "text-rose-600 font-bold" : r.woc < 26 ? "" : "text-amber-600";
-                  return <span className={cls}>{r.woc.toFixed(1)}w</span>;
-                } },
-              { key: "style_age_weeks", label: "Age (W)", sortable: true, align: "right",
-                render: (r) => `${r.style_age_weeks.toFixed(1)}w` },
-            ]}
-            rows={filtered}
-            defaultSort={{ key: "sales_6m", dir: "desc" }}
-            pageSize={50}
-            stickyFirstCol
-          />
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            {/* Master table — 2 columns wide on xl */}
+            <div className="xl:col-span-2 min-w-0">
+              <SortableTable
+                testId="sor-report-table"
+                onRowClick={(row) => {
+                  setSelectedStyle(row.style_name);
+                  loadSku(row.style_name);
+                }}
+                rowClassName={(row) => row.style_name === selectedStyle ? "bg-amber-50/60" : ""}
+                columns={[
+                  { key: "style_name", label: "Style Name", sortable: true,
+                    render: (r) => <span className="font-semibold">{r.style_name}</span> },
+                  { key: "category", label: "Category", sortable: true,
+                    render: (r) => r.category || "—" },
+                  { key: "subcategory", label: "Sub Category", sortable: true,
+                    render: (r) => r.subcategory || "—" },
+                  { key: "style_number", label: "Style #", sortable: true,
+                    render: (r) => <span className="font-mono text-[11px]">{r.style_number || "—"}</span> },
+                  { key: "sales_6m", label: "Sales 6M", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.sales_6m) },
+                  { key: "units_6m", label: "Units 6M", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_6m) },
+                  { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_3w) },
+                  { key: "soh_total", label: "SOH", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.soh_total) },
+                  { key: "soh_wh", label: "SOH WH", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.soh_wh) },
+                  { key: "pct_in_wh", label: "% In WH", sortable: true, align: "right",
+                    render: (r) => `${r.pct_in_wh.toFixed(1)}%` },
+                  { key: "asp_6m", label: "ASP 6M", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.asp_6m) },
+                  { key: "original_price", label: "Orig Price", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.original_price) },
+                  { key: "days_since_last_sale", label: "Days Since Sale", sortable: true, align: "right",
+                    render: (r) => {
+                      const d = r.days_since_last_sale;
+                      const cls = d > 60 ? "text-rose-600 font-bold" : d > 30 ? "text-amber-600" : "";
+                      return <span className={cls}>{d}d</span>;
+                    } },
+                  { key: "sor_6m", label: "6M SOR", sortable: true, align: "right",
+                    render: (r) => {
+                      const v = r.sor_6m || 0;
+                      const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
+                      return <span className={cls}>{v.toFixed(1)}%</span>;
+                    } },
+                  { key: "launch_date", label: "Launch", sortable: true,
+                    render: (r) => r.launch_date ? fmtDate(r.launch_date) : "—" },
+                  { key: "weekly_avg", label: "Weekly Avg", sortable: true, align: "right",
+                    render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
+                  { key: "woc", label: "WoC", sortable: true, align: "right",
+                    render: (r) => {
+                      if (r.woc == null) return "—";
+                      const cls = r.woc < 12 ? "text-rose-600 font-bold" : r.woc < 26 ? "" : "text-amber-600";
+                      return <span className={cls}>{r.woc.toFixed(1)}w</span>;
+                    } },
+                  { key: "style_age_weeks", label: "Age (W)", sortable: true, align: "right",
+                    render: (r) => `${r.style_age_weeks.toFixed(1)}w` },
+                ]}
+                rows={filtered}
+                defaultSort={{ key: "sales_6m", dir: "desc" }}
+                pageSize={50}
+                stickyFirstCol
+                renderExpanded={(row) => (
+                  <SkuBreakdown
+                    rows={skuCache[row.style_name]}
+                    loading={skuLoading[row.style_name]}
+                  />
+                )}
+              />
+            </div>
+
+            {/* Location detail pane */}
+            <div className="xl:col-span-1 min-w-0">
+              <LocationPane
+                style={selectedStyle}
+                rows={locCache[selectedStyle]}
+                loading={locLoading}
+                error={locError}
+                onClear={() => setSelectedStyle(null)}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -272,5 +343,138 @@ const Tile = ({ label, value }) => (
     <div className="font-extrabold text-[16px] num mt-0.5">{value}</div>
   </div>
 );
+
+// ---- SKU breakdown (Color × Size) ----
+const SkuBreakdown = ({ rows, loading }) => {
+  if (loading && (!rows || rows.length === 0)) {
+    return <div className="text-[12px] text-muted py-2">Loading SKU breakdown… (~30s on cold cache)</div>;
+  }
+  if (!rows || !rows.length) {
+    return <div className="text-[12px] text-muted py-2">No SKU detail available for this style.</div>;
+  }
+  const totalUnits = rows.reduce((s, r) => s + (r.units_6m || 0), 0);
+  return (
+    <div className="px-2 py-1" data-testid="sor-sku-breakdown">
+      <div className="text-[11px] font-bold uppercase text-muted mb-2">
+        Color × Size — {rows.length} variant{rows.length === 1 ? "" : "s"}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="text-left text-muted border-b border-border">
+              <th className="py-1 pr-3">Color</th>
+              <th className="py-1 pr-3">Size</th>
+              <th className="py-1 pr-3 font-mono">SKU</th>
+              <th className="py-1 pr-3 text-right">Units 6M</th>
+              <th className="py-1 pr-3 text-right">% of Style</th>
+              <th className="py-1 pr-3 text-right">Units 3W</th>
+              <th className="py-1 pr-3 text-right">SOH</th>
+              <th className="py-1 pr-3 text-right">SOH WH</th>
+              <th className="py-1 pr-0 text-right">% In WH</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.sku}-${i}`} className="border-b border-border/40 last:border-0">
+                <td className="py-1 pr-3">{r.color || "—"}</td>
+                <td className="py-1 pr-3">{r.size || "—"}</td>
+                <td className="py-1 pr-3 font-mono text-[11px]">{r.sku || "—"}</td>
+                <td className="py-1 pr-3 text-right num font-semibold">{fmtNum(r.units_6m)}</td>
+                <td className="py-1 pr-3 text-right num text-muted">
+                  {totalUnits ? ((r.units_6m / totalUnits) * 100).toFixed(1) : "0.0"}%
+                </td>
+                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
+                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
+                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
+                <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ---- Location pane (right side) ----
+const LocationPane = ({ style, rows, loading, error, onClear }) => {
+  if (!style) {
+    return (
+      <div className="rounded-xl border border-border p-4 text-[12px] text-muted text-center" data-testid="sor-location-pane-empty">
+        Click any style on the left to see where it sold and where it's stocked.
+      </div>
+    );
+  }
+  const totals = (rows || []).reduce(
+    (a, r) => ({
+      units_6m: a.units_6m + (r.units_6m || 0),
+      sales_6m: a.sales_6m + (r.sales_6m || 0),
+      soh_total: a.soh_total + (r.soh_total || 0),
+    }),
+    { units_6m: 0, sales_6m: 0, soh_total: 0 },
+  );
+  return (
+    <div className="rounded-xl border border-border bg-white" data-testid="sor-location-pane">
+      <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-border">
+        <div className="min-w-0">
+          <div className="eyebrow">Where did it sell?</div>
+          <div className="font-bold text-[14px] truncate" title={style}>{style}</div>
+          {(rows && rows.length > 0) && (
+            <div className="text-[11px] text-muted mt-1">
+              {rows.length} location{rows.length === 1 ? "" : "s"} ·{" "}
+              {fmtNum(totals.units_6m)} units · {fmtKES(totals.sales_6m)} · {fmtNum(totals.soh_total)} SOH
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-muted hover:text-foreground p-1"
+          aria-label="Clear selection"
+          data-testid="sor-location-pane-clear"
+        >
+          <X size={14} weight="bold" />
+        </button>
+      </div>
+      <div className="px-2 py-2 max-h-[640px] overflow-y-auto">
+        {loading ? (
+          <div className="text-[12px] text-muted px-2 py-3">Loading… (~30s on cold cache)</div>
+        ) : error ? (
+          <div className="text-[12px] text-rose-600 px-2 py-3">{error}</div>
+        ) : (!rows || rows.length === 0) ? (
+          <div className="text-[12px] text-muted px-2 py-3">No location data for this style.</div>
+        ) : (
+          <table className="w-full text-[12px]" data-testid="sor-location-table">
+            <thead>
+              <tr className="text-left text-muted border-b border-border">
+                <th className="py-1 pr-2">Location</th>
+                <th className="py-1 pr-2 text-right">Units 6M</th>
+                <th className="py-1 pr-2 text-right">SOH</th>
+                <th className="py-1 pr-0 text-right">SOR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const sor = r.sor_6m || 0;
+                const sorCls = sor >= 70 ? "text-emerald-600 font-bold"
+                  : sor >= 50 ? "text-emerald-500"
+                  : sor < 25 ? "text-rose-600"
+                  : "";
+                return (
+                  <tr key={r.location} className="border-b border-border/40 last:border-0">
+                    <td className="py-1.5 pr-2 truncate max-w-[160px]" title={r.location}>{r.location}</td>
+                    <td className="py-1.5 pr-2 text-right num">{fmtNum(r.units_6m)}</td>
+                    <td className="py-1.5 pr-2 text-right num">{fmtNum(r.soh_total)}</td>
+                    <td className={`py-1.5 pr-0 text-right num ${sorCls}`}>{sor.toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export default SORReport;

@@ -5017,6 +5017,130 @@ async def analytics_style_sku_breakdown(
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Per-location breakdown for a single style — powers the "Where did this
+# style sell?" side panel on the SOR Report. Returns one row per location
+# with units sold (6m), current SOH, and SOR%. Lazy-loaded by the FE per
+# selected style and shares the same cache as the SKU breakdown so a
+# user clicking a row gets the per-SKU and per-location panes for free
+# from one /orders fan-out.
+# ---------------------------------------------------------------------------
+_location_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_LOCATION_BREAKDOWN_TTL = 60 * 30  # 30 minutes
+
+
+@api_router.get("/analytics/style-location-breakdown")
+async def analytics_style_location_breakdown(
+    style_name: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    """Per-location sales + SOH for one style.
+
+    Output: `{style_name, locations: [{location, units_6m, units_3w,
+    sales_6m, soh_total, soh_store, soh_wh, sor_6m}]}`. SOR is computed
+    per-location as `units_6m / (units_6m + soh_total) * 100`. Sorted by
+    `units_6m` desc.
+
+    Cached per (style, country, channel) for 30 minutes — re-uses the
+    same 6-month /orders fan-out as `/style-sku-breakdown` (both share
+    the underlying `_FETCH_CACHE`).
+    """
+    import time as _time
+    cache_key = f"{style_name}|{country or ''}|{channel or ''}"
+    if cache_key in _location_breakdown_cache:
+        ts, payload = _location_breakdown_cache[cache_key]
+        if _time.time() - ts < _LOCATION_BREAKDOWN_TTL:
+            return payload
+
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    # Same chunk strategy as `/style-sku-breakdown` — 30-day chunks to
+    # respect the 50k upstream cap.
+    chunks: List[Tuple[date, date]] = []
+    cur = six_m_from
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(df: date, dt: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": df.isoformat(), "date_to": dt.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    chunks_data: List[List[Dict[str, Any]]] = []
+    for df_, dt_ in chunks:
+        chunks_data.append(await _orders_chunk(df_, dt_))
+    inv = await fetch_all_inventory(country=country)
+
+    needle = style_name.strip()
+    per_loc: Dict[str, Dict[str, Any]] = {}
+    for chunk in chunks_data:
+        for r in (chunk or []):
+            if (r.get("style_name") or "").strip() != needle:
+                continue
+            order_date = (r.get("order_date") or "")[:10]
+            loc = r.get("channel") or r.get("pos_location_name") or "—"
+            qty = int(r.get("quantity") or 0)
+            sales = float(r.get("total_sales_kes") or 0)
+            b = per_loc.setdefault(loc, {"location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+            b["units_6m"] += qty
+            b["sales_6m"] += sales
+            if order_date and order_date >= three_w_from.isoformat():
+                b["units_3w"] += qty
+
+    # SOH per location from current inventory.
+    soh_per_loc: Dict[str, Dict[str, float]] = {}
+    for r in (inv or []):
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        loc = r.get("location_name") or "—"
+        if len(chs) >= 1 and loc not in chs:
+            continue
+        avail = float(r.get("available") or 0)
+        b = soh_per_loc.setdefault(loc, {"store": 0.0, "wh": 0.0})
+        if is_warehouse_location(loc):
+            b["wh"] += avail
+        else:
+            b["store"] += avail
+
+    # Merge sales (channel-keyed) with SOH (location-keyed). Locations
+    # that sold but have no current stock still appear; locations with
+    # stock but no recent sales also appear so the user can spot dead
+    # stock.
+    keys = set(per_loc.keys()) | set(soh_per_loc.keys())
+    rows: List[Dict[str, Any]] = []
+    for k in keys:
+        sales_row = per_loc.get(k, {"location": k, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+        soh_row = soh_per_loc.get(k, {"store": 0.0, "wh": 0.0})
+        soh_total = soh_row["store"] + soh_row["wh"]
+        units_6m = sales_row["units_6m"]
+        denom = units_6m + soh_total
+        sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
+        rows.append({
+            "location": k,
+            "units_6m": int(units_6m),
+            "units_3w": int(sales_row["units_3w"]),
+            "sales_6m": round(sales_row["sales_6m"], 2),
+            "soh_store": round(soh_row["store"], 2),
+            "soh_wh": round(soh_row["wh"], 2),
+            "soh_total": round(soh_total, 2),
+            "sor_6m": round(sor_6m, 2),
+        })
+    rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
+    payload = {"style_name": style_name, "locations": rows}
+    _location_breakdown_cache[cache_key] = (_time.time(), payload)
+    return payload
+
+
 @api_router.get("/analytics/style-sku-breakdown-bulk")
 async def analytics_style_sku_breakdown_bulk(
     style_names: str = Query(..., description="Comma-separated style names"),

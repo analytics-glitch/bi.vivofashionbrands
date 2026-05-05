@@ -1,0 +1,35 @@
+{
+  "summary": "Tested iter-45 SOR Report features: Color×Size row-expand SKU breakdown + per-Location detail pane. Backend endpoint /api/analytics/style-location-breakdown works correctly (3/3 pytest) when cache is warm. Frontend wiring is correct — SKU breakdown expansion, row highlight (bg-amber-50/60), clear button, auto-select, and pane population ALL behave as designed. However, cold-cache calls exceed the ingress gateway's ~100s timeout and surface as a 502 error in the UI (location pane shows 'Request failed with status code 502'). This also affects the auto-selected first row on first load of the SOR tab.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/analytics/style-location-breakdown", "issue": "Cold-cache call takes >100s and is killed by the ingress gateway with HTTP 502 before the backend can respond. Backend DOES finish and populate the in-memory cache, so subsequent calls for the same style succeed in <1s. Net effect: every unseen style shows a 502 error to the user on first click. Consider (a) pre-warming the _location_breakdown_cache at startup for the top-N styles, (b) returning a partial/streaming response, or (c) increasing the ingress proxy_read_timeout for this route.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "SOR Report → first click on cold-cache style", "issue": "Location pane surfaces 'Request failed with status code 502' because the auto-select triggers /style-location-breakdown which exceeds the ingress timeout. After the backend finishes in the background and cache is populated, re-clicking the same row works — but the UI doesn't retry automatically. Consider adding an auto-retry (1 retry after 60s) or a 'Retry' button in the error state, or at minimum a friendlier message like 'This style is still being calculated — please try again in 30 seconds.'", "affected_selectors": ["[data-testid='sor-location-pane']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration_45_location_breakdown.py", "/app/test_reports/pytest/iter45.xml"],
+  "action_items": [
+    "Address the cold-cache ingress 502 on /api/analytics/style-location-breakdown (pre-warm cache or increase gateway timeout for this route).",
+    "Add retry/friendlier-error handling in LocationPane when the API returns 502/504 so the user understands the backend is still computing.",
+    "OPTIONAL: Same cold-cache pattern likely applies to /style-sku-breakdown — consider pre-warming it too."
+  ],
+  "critical_code_review_comments": [
+    "SORReportExport.jsx loadLocations() and loadSku() do not retry on transient 502. Cold-cache UX is broken on first click because backend computation time > ingress timeout.",
+    "Auto-select-first-style effect (useEffect at ~line 140) immediately triggers the slow endpoint on tab entry; this makes the 502 the DEFAULT experience for any user whose first-sorted style isn't already in the cache.",
+    "The exportCsv() helper in SORReportExport.jsx emits Units column twice (units_6m used for both 'Units Sold' and 'Units Last 6 Months' in the header — header has 19 columns but body row also has 19 values, so alignment holds, but the data is duplicated. Minor.)"
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_45_location_breakdown.py"],
+  "success_rate": {"backend": "100% (3/3 once cache warm)", "frontend": "70% (SKU expand + highlight + clear + auto-select work; cold-cache location fetch surfaces 502)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Confirmed via pytest that /api/analytics/style-location-breakdown returns the expected shape ({style_name, locations:[{location,units_6m,units_3w,sales_6m,soh_total,soh_store,soh_wh,sor_6m}]}) with 29 entries for 'Vivo Basic Sienna Waterfall' and [] for nonexistent styles. Frontend DOM wiring (data-testids: sor-report-table, sor-location-pane, sor-location-pane-clear, sor-location-pane-empty, sor-location-table, sor-sku-breakdown) is all in place and rendered. Row highlight via rowClassName is applied. SortableTable dual-fire (expand + onRowClick) confirmed in SortableTable.jsx line 278-290 and works in DOM. Regression test on Customers page repeat-customers-table was not completed due to time — but since SortableTable changes are additive (new rowClassName prop defaults to null; renderExpanded+onRowClick both fire only if both present), no regression expected. The only blocker is the cold-cache 502 pattern, which is a backend/infra concern, not a code-wiring concern.",
+  "rca of the issue": "Root cause — /api/analytics/style-location-breakdown performs a 6-month /orders fan-out per style with no pre-warming. Backend takes 30-90s per cold style; ingress (probably k8s nginx) has a ~100s read timeout and returns 502 to the client. Backend keeps running and populates _location_breakdown_cache, so the SECOND request for the same style returns in <1s. Reproduction: (1) open SOR Report tab, (2) observe auto-selected first row shows 'Request failed with status code 502' in the location pane, (3) wait ~60s, (4) click the same row — location table now populates correctly. Mitigation options: pre-warm cache on startup for top-N styles by sales, batch the computation, or route this specific endpoint through a higher-timeout ingress rule."
+}

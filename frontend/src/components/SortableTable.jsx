@@ -131,6 +131,10 @@ export const SortableTable = ({
   renderExpanded = null,
   /** Stable key getter for expanded-state tracking. Defaults to row index. */
   rowKey = null,
+  /** Optional `(row) => string` returning extra Tailwind classes to apply
+   * to a specific row's `<tr>`. Used by master/detail tables (e.g. SOR
+   * Report) to highlight the row selected in a side panel. */
+  rowClassName = null,
   /** Optional tiebreaker sort applied after the primary `sort`. Useful for
    * grouped views like "sort by Category, then Units Sold desc within each
    * category" — set `secondarySort={{ key: 'units_sold', dir: 'desc' }}` and
@@ -266,17 +270,24 @@ export const SortableTable = ({
             {visible.map((r, i) => {
               const key = rowKey ? rowKey(r) : i;
               const isOpen = expanded.has(key);
+              const customRowCls = typeof rowClassName === "function" ? rowClassName(r) : "";
               return (
                 <React.Fragment key={key}>
                   <tr
-                    className={`${onRowClick || renderExpanded ? "cursor-pointer hover:bg-panel" : ""} ${isOpen ? "bg-panel/60" : ""}`}
+                    className={`${onRowClick || renderExpanded ? "cursor-pointer hover:bg-panel" : ""} ${isOpen ? "bg-panel/60" : ""} ${customRowCls}`}
                     onClick={
                       renderExpanded
-                        ? () => setExpanded((s) => {
-                            const n = new Set(s);
-                            if (n.has(key)) n.delete(key); else n.add(key);
-                            return n;
-                          })
+                        ? () => {
+                            // Both: toggle the SKU expansion AND fire
+                            // onRowClick (used by the SOR Report to mark
+                            // the selected row for the location pane).
+                            setExpanded((s) => {
+                              const n = new Set(s);
+                              if (n.has(key)) n.delete(key); else n.add(key);
+                              return n;
+                            });
+                            if (onRowClick) onRowClick(r);
+                          }
                         : (onRowClick ? () => onRowClick(r) : undefined)
                     }
                   >
