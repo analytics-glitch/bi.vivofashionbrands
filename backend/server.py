@@ -1,5 +1,6 @@
 import asyncio
-from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Body
+import json
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Body, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
@@ -379,7 +380,16 @@ async def fetch(
         try:
             resp = await client.get(path, params=clean, timeout=req_timeout) if req_timeout else await client.get(path, params=clean)
             resp.raise_for_status()
-            data = resp.json()
+            try:
+                data = resp.json()
+            except json.JSONDecodeError as je:
+                # Upstream sometimes returns 200 with an empty body when
+                # under load. Treat as a transient empty response —
+                # retry, then degrade to []. Caller's existing `or []`
+                # idiom handles it.
+                logger.warning("[%s] empty/non-JSON body (status=%s, len=%d): %s — treating as transient",
+                               path, resp.status_code, len(resp.content or b""), str(je)[:80])
+                data = []
             if cache_key is not None:
                 _FETCH_CACHE[cache_key] = (time.time(), data)
                 # Bound cache size to avoid unbounded growth (LRU-ish eviction).
@@ -4889,6 +4899,176 @@ async def analytics_sor_all_styles(
 
 
 # ---------------------------------------------------------------------------
+# Shared style-drill helper. Computes BOTH the per-SKU and per-location
+# breakdowns from one /orders fan-out so the SOR Report drill-down (which
+# fires both endpoints concurrently) only triggers a single cold scan.
+#
+# Cache: results live in `_sku_breakdown_cache` AND
+# `_location_breakdown_cache` keyed by the same (style, country, channel)
+# triple. Either endpoint reads its slice from the cached payload; if the
+# cache is empty the helper runs and populates both caches at once.
+# ---------------------------------------------------------------------------
+async def _compute_style_breakdowns(
+    style_name: str, country: Optional[str], channel: Optional[str]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return ({style_name, skus}, {style_name, locations}). Pulls from
+    cache if present (per-endpoint TTL), else runs the 6-month /orders
+    fan-out + inventory scan once and writes BOTH caches.
+    """
+    import time as _time
+    cache_key = f"{style_name}|{country or ''}|{channel or ''}"
+    sku_hit = _sku_breakdown_cache.get(cache_key)
+    loc_hit = _location_breakdown_cache.get(cache_key)
+    now = _time.time()
+    if sku_hit and loc_hit and (now - sku_hit[0] < _SKU_BREAKDOWN_TTL) and (now - loc_hit[0] < _LOCATION_BREAKDOWN_TTL):
+        return sku_hit[1], loc_hit[1]
+
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    # 30-day chunks (50k cap on /orders).
+    chunks: List[Tuple[date, date]] = []
+    cur = six_m_from
+    while cur <= today:
+        end = min(cur + timedelta(days=29), today)
+        chunks.append((cur, end))
+        cur = end + timedelta(days=1)
+
+    async def _orders_chunk(df: date, dt: date) -> List[Dict[str, Any]]:
+        return await _safe_fetch("/orders", {
+            "date_from": df.isoformat(), "date_to": dt.isoformat(),
+            "limit": 50000,
+            "country": cs[0] if len(cs) == 1 else None,
+            "channel": chs[0] if len(chs) == 1 else None,
+        }) or []
+
+    # Parallel fan-out with concurrency=3 — full serial was hitting the
+    # 60s gateway timeout on cold cache (~60-90s for 6 sequential /orders
+    # calls). 3-way parallel cuts wall-clock to ~25s while staying under
+    # the upstream's rate limit. Going higher triggers 503s.
+    sem = asyncio.Semaphore(3)
+    async def _bounded(df: date, dt: date) -> List[Dict[str, Any]]:
+        async with sem:
+            return await _orders_chunk(df, dt)
+    chunks_data = await asyncio.gather(*[_bounded(df_, dt_) for df_, dt_ in chunks])
+    inv = await fetch_all_inventory(country=country)
+
+    needle = style_name.strip()
+
+    # Single pass building both per-SKU AND per-location indexes from
+    # the same /orders chunks. /orders is line-item-grained so we get
+    # color/size AND channel on every row. The location accumulation is
+    # nearly free (one extra dict update per row) and means a click in
+    # the SOR Report only triggers ONE /orders fan-out, not two.
+    per_sku: Dict[tuple, Dict[str, Any]] = {}
+    per_loc_sales: Dict[str, Dict[str, Any]] = {}
+    for chunk in chunks_data:
+        for r in (chunk or []):
+            if (r.get("style_name") or "").strip() != needle:
+                continue
+            order_date = (r.get("order_date") or "")[:10]
+            qty = int(r.get("quantity") or 0)
+            sales = float(r.get("total_sales_kes") or 0)
+            color = r.get("color_print") or r.get("color") or "—"
+            size = r.get("size") or "—"
+            sku = r.get("sku") or ""
+            sku_key = (color, size, sku)
+            b = per_sku.setdefault(sku_key, {
+                "sku": sku, "color": color, "size": size,
+                "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+            })
+            b["units_6m"] += qty
+            b["sales_6m"] += sales
+            if order_date and order_date >= three_w_from.isoformat():
+                b["units_3w"] += qty
+            loc = r.get("channel") or r.get("pos_location_name") or "—"
+            lb = per_loc_sales.setdefault(loc, {"location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+            lb["units_6m"] += qty
+            lb["sales_6m"] += sales
+            if order_date and order_date >= three_w_from.isoformat():
+                lb["units_3w"] += qty
+
+    # Inventory walk — populate BOTH SKU-level and location-level SOH
+    # indexes at once.
+    soh_per_sku: Dict[tuple, Dict[str, float]] = {}
+    soh_per_loc: Dict[str, Dict[str, float]] = {}
+    for r in (inv or []):
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        loc_name = r.get("location_name") or ""
+        if len(chs) >= 1 and loc_name not in chs:
+            continue
+        color = r.get("color_print") or r.get("color") or "—"
+        size = r.get("size") or "—"
+        sku = r.get("sku") or ""
+        sku_key = (color, size, sku)
+        avail = float(r.get("available") or 0)
+        sb = soh_per_sku.setdefault(sku_key, {"store": 0.0, "wh": 0.0})
+        lb = soh_per_loc.setdefault(loc_name, {"store": 0.0, "wh": 0.0})
+        if is_warehouse_location(loc_name):
+            sb["wh"] += avail
+            lb["wh"] += avail
+        else:
+            sb["store"] += avail
+            lb["store"] += avail
+
+    # Build per-SKU output.
+    sku_rows: List[Dict[str, Any]] = []
+    for k in (set(per_sku.keys()) | set(soh_per_sku.keys())):
+        sr = per_sku.get(k, {"sku": k[2], "color": k[0], "size": k[1],
+                             "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+        ih = soh_per_sku.get(k, {"store": 0.0, "wh": 0.0})
+        soh_total = ih["store"] + ih["wh"]
+        sku_rows.append({
+            "sku": sr["sku"], "color": sr["color"], "size": sr["size"],
+            "units_6m": int(sr["units_6m"]), "units_3w": int(sr["units_3w"]),
+            "sales_6m": round(sr["sales_6m"], 2),
+            "soh_store": round(ih["store"], 2),
+            "soh_wh": round(ih["wh"], 2),
+            "soh_total": round(soh_total, 2),
+            "pct_in_wh": round((ih["wh"] / soh_total * 100), 1) if soh_total else 0.0,
+        })
+    sku_rows.sort(key=lambda r: r["units_6m"], reverse=True)
+    sku_payload = {"style_name": style_name, "skus": sku_rows}
+
+    # Build per-location output from the same /orders pass.
+    loc_rows: List[Dict[str, Any]] = []
+    for k in (set(per_loc_sales.keys()) | set(soh_per_loc.keys())):
+        sr = per_loc_sales.get(k, {"location": k, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+        ih = soh_per_loc.get(k, {"store": 0.0, "wh": 0.0})
+        soh_total = ih["store"] + ih["wh"]
+        units_6m = sr["units_6m"]
+        denom = units_6m + soh_total
+        sor = (units_6m / denom * 100.0) if denom > 0 else 0.0
+        loc_rows.append({
+            "location": k,
+            "units_6m": int(units_6m),
+            "units_3w": int(sr["units_3w"]),
+            "sales_6m": round(sr["sales_6m"], 2),
+            "soh_store": round(ih["store"], 2),
+            "soh_wh": round(ih["wh"], 2),
+            "soh_total": round(soh_total, 2),
+            "sor_6m": round(sor, 2),
+        })
+    loc_rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
+    loc_payload = {"style_name": style_name, "locations": loc_rows}
+
+    _sku_breakdown_cache[cache_key] = (now, sku_payload)
+    _location_breakdown_cache[cache_key] = (now, loc_payload)
+    return sku_payload, loc_payload
+
+
+# Forward declaration of caches (definitions below); kept here so the
+# helper above can reference them. Python lookups happen at call time so
+# the order doesn't matter — these will resolve to the dicts below.
+_location_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_LOCATION_BREAKDOWN_TTL = 60 * 30  # 30 minutes
+
+
+# ---------------------------------------------------------------------------
 # SKU-level breakdown for a single style — powers the "+ Color" / "+ Size"
 # drill-down toggles on both SOR tables. Returns one row per unique
 # (color_print, size, sku) variant with units sold (6m + 3w), current SOH,
@@ -4899,246 +5079,118 @@ async def analytics_style_sku_breakdown(
     style_name: str,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    response: Response = None,
 ):
     """Per-SKU sales + SOH for one style. SKU = (color_print, size).
 
-    Output: list of rows {sku, color, size, units_6m, units_3w,
+    Output (200): list of rows {sku, color, size, units_6m, units_3w,
     soh_total, soh_store, soh_wh, pct_in_wh}. Sorted by units_6m desc.
-    Cached for 30 minutes per (style_name, country, channel) — the
-    underlying /orders fan-out is the slowest call in the dashboard
-    (~30-45 s cold) so we want one cold pull then warm hits.
+    Cached for 30 minutes per (style_name, country, channel).
+
+    For cold callers the underlying /orders fan-out can exceed the 60s
+    ingress timeout; in that case returns HTTP 202 with
+    `{computing: true, retry_after: 15}` so the frontend can poll.
     """
     import time as _time
     cache_key = f"{style_name}|{country or ''}|{channel or ''}"
-    if cache_key in _sku_breakdown_cache:
-        ts, payload = _sku_breakdown_cache[cache_key]
-        if _time.time() - ts < _SKU_BREAKDOWN_TTL:
-            return payload
-    today = datetime.now(timezone.utc).date()
-    six_m_from = today - timedelta(days=180)
-    three_w_from = today - timedelta(days=21)
+    cached = _sku_breakdown_cache.get(cache_key)
+    if cached and (_time.time() - cached[0] < _SKU_BREAKDOWN_TTL):
+        return cached[1]
+    task = await _start_or_join_style_scan(style_name, country, channel)
+    try:
+        payload, _ = await asyncio.wait_for(asyncio.shield(task), timeout=50.0)
+        return payload
+    except asyncio.TimeoutError:
+        if response is not None:
+            response.status_code = 202
+        return {"computing": True, "style_name": style_name, "retry_after": 15}
 
-    cs = _split_csv(country)
-    chs = _split_csv(channel)
 
-    # Fan out /orders by 7-day chunks to avoid the 50k cap on long windows.
-    chunks: List[Tuple[date, date]] = []
-    cur = six_m_from
-    while cur <= today:
-        end = min(cur + timedelta(days=29), today)
-        chunks.append((cur, end))
-        cur = end + timedelta(days=1)
+# In-flight scans for the location-breakdown drill-down. Each entry is
+# an asyncio Task that resolves to the same payload tuple as
+# `_compute_style_breakdowns`. Lets us return "still computing" 202s on
+# the first 50s (under the 60s ingress timeout) while the actual scan
+# continues in the background. Subsequent polls either join the same
+# task or hit the populated `_location_breakdown_cache`.
+_style_breakdown_inflight: Dict[str, "asyncio.Task[Tuple[Dict[str, Any], Dict[str, Any]]]"] = {}
 
-    async def _orders_chunk(df: date, dt: date) -> List[Dict[str, Any]]:
-        return await _safe_fetch("/orders", {
-            "date_from": df.isoformat(), "date_to": dt.isoformat(),
-            "limit": 50000,
-            "country": cs[0] if len(cs) == 1 else None,
-            "channel": chs[0] if len(chs) == 1 else None,
-        }) or []
 
-    # Serialize the chunk fan-out — 6× parallel /orders calls (each pulls
-    # 30-50k rows) overwhelms the upstream and yields 503s. With a 30 s
-    # response cache (`_FETCH_CACHE`) per chunk-window, a second user
-    # opening the same drill-down hits warm cache for the ~30 s pull.
-    chunks_data: List[List[Dict[str, Any]]] = []
-    for df_, dt_ in chunks:
-        chunks_data.append(await _orders_chunk(df_, dt_))
-    inv = await fetch_all_inventory(country=country)
+async def _start_or_join_style_scan(style_name: str, country: Optional[str], channel: Optional[str]) -> "asyncio.Task[Tuple[Dict[str, Any], Dict[str, Any]]]":
+    """Return the running Task for this (style, country, channel), or
+    spawn a fresh one. Tasks self-clean from `_style_breakdown_inflight`
+    when done."""
+    cache_key = f"{style_name}|{country or ''}|{channel or ''}"
+    existing = _style_breakdown_inflight.get(cache_key)
+    if existing and not existing.done():
+        return existing
 
-    # Aggregate orders for THIS style only, keyed by (color, size, sku).
-    per_sku: Dict[tuple, Dict[str, Any]] = {}
-    needle = style_name.strip()
-    for chunk in chunks_data:
-        for r in (chunk or []):
-            if (r.get("style_name") or "").strip() != needle:
-                continue
-            order_date = (r.get("order_date") or "")[:10]
-            color = r.get("color_print") or r.get("color") or "—"
-            size = r.get("size") or "—"
-            sku = r.get("sku") or ""
-            key = (color, size, sku)
-            b = per_sku.setdefault(key, {
-                "sku": sku, "color": color, "size": size,
-                "units_6m": 0, "units_3w": 0,
-                "sales_6m": 0.0,
-            })
-            qty = int(r.get("quantity") or 0)
-            sales = float(r.get("total_sales_kes") or 0)
-            b["units_6m"] += qty
-            b["sales_6m"] += sales
-            if order_date and order_date >= three_w_from.isoformat():
-                b["units_3w"] += qty
+    async def _run():
+        try:
+            return await _compute_style_breakdowns(style_name, country, channel)
+        finally:
+            _style_breakdown_inflight.pop(cache_key, None)
 
-    # Inventory: walk inv rows for this style.
-    soh_per_sku: Dict[tuple, Dict[str, float]] = {}
-    for r in (inv or []):
-        if (r.get("style_name") or "").strip() != needle:
-            continue
-        # Channel filter (single-channel mode only — multi already passed
-        # to /orders above; SOH is global by default).
-        if len(chs) >= 1 and r.get("location_name") not in chs:
-            continue
-        color = r.get("color_print") or r.get("color") or "—"
-        size = r.get("size") or "—"
-        sku = r.get("sku") or ""
-        key = (color, size, sku)
-        avail = float(r.get("available") or 0)
-        loc = r.get("location_name") or ""
-        b = soh_per_sku.setdefault(key, {"store": 0.0, "wh": 0.0})
-        if is_warehouse_location(loc):
-            b["wh"] += avail
-        else:
-            b["store"] += avail
-
-    # Merge — emit one row per (color, size, sku) seen anywhere.
-    keys = set(per_sku.keys()) | set(soh_per_sku.keys())
-    rows: List[Dict[str, Any]] = []
-    for k in keys:
-        sales_row = per_sku.get(k, {"sku": k[2], "color": k[0], "size": k[1],
-                                     "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
-        soh_row = soh_per_sku.get(k, {"store": 0.0, "wh": 0.0})
-        soh_total = soh_row["store"] + soh_row["wh"]
-        rows.append({
-            "sku": sales_row["sku"],
-            "color": sales_row["color"],
-            "size": sales_row["size"],
-            "units_6m": int(sales_row["units_6m"]),
-            "units_3w": int(sales_row["units_3w"]),
-            "sales_6m": round(sales_row["sales_6m"], 2),
-            "soh_store": round(soh_row["store"], 2),
-            "soh_wh": round(soh_row["wh"], 2),
-            "soh_total": round(soh_total, 2),
-            "pct_in_wh": round((soh_row["wh"] / soh_total * 100), 1) if soh_total else 0.0,
-        })
-    rows.sort(key=lambda r: r["units_6m"], reverse=True)
-    payload = {"style_name": style_name, "skus": rows}
-    _sku_breakdown_cache[cache_key] = (_time.time(), payload)
-    return payload
+    task = asyncio.create_task(_run())
+    _style_breakdown_inflight[cache_key] = task
+    return task
 
 
 # ---------------------------------------------------------------------------
 # Per-location breakdown for a single style — powers the "Where did this
 # style sell?" side panel on the SOR Report. Returns one row per location
-# with units sold (6m), current SOH, and SOR%. Lazy-loaded by the FE per
-# selected style and shares the same cache as the SKU breakdown so a
-# user clicking a row gets the per-SKU and per-location panes for free
-# from one /orders fan-out.
+# with units sold (6m), current SOH, and SOR%. Shares the
+# `_compute_style_breakdowns` /orders fan-out with the SKU endpoint so a
+# click in the SOR Report (which fires both endpoints) triggers exactly
+# one /orders fan-out, not two.
+#
+# The /orders fan-out can take 60-90s on cold cache for popular styles
+# (the 30-day chunks each pull 30-50k line items). To stay under the
+# ingress's 60s gateway timeout, we kick off the scan as a background
+# task and either: (a) wait up to 50s and return the result, or (b)
+# return HTTP 202 with `{computing: true}` so the frontend can poll.
+# Subsequent polls join the same in-flight task or hit the warmed cache.
 # ---------------------------------------------------------------------------
-_location_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_LOCATION_BREAKDOWN_TTL = 60 * 30  # 30 minutes
-
-
 @api_router.get("/analytics/style-location-breakdown")
 async def analytics_style_location_breakdown(
     style_name: str,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    response: Response = None,
 ):
     """Per-location sales + SOH for one style.
 
-    Output: `{style_name, locations: [{location, units_6m, units_3w,
-    sales_6m, soh_total, soh_store, soh_wh, sor_6m}]}`. SOR is computed
-    per-location as `units_6m / (units_6m + soh_total) * 100`. Sorted by
-    `units_6m` desc.
+    Returns:
+      • 200 with `{style_name, locations: [...]}` when the cache is
+        populated or the in-flight scan finished within ~50s.
+      • 202 with `{computing: true, style_name, retry_after: 15}` when
+        the scan is still running. Frontend should poll every 15s.
 
-    Cached per (style, country, channel) for 30 minutes — re-uses the
-    same 6-month /orders fan-out as `/style-sku-breakdown` (both share
-    the underlying `_FETCH_CACHE`).
+    Output schema for the success case:
+      `{style_name, locations: [{location, units_6m, units_3w,
+      sales_6m, soh_total, soh_store, soh_wh, sor_6m}]}`. SOR computed
+      per-location as `units_6m / (units_6m + soh_total) * 100`.
+      Sorted by units desc.
     """
     import time as _time
     cache_key = f"{style_name}|{country or ''}|{channel or ''}"
-    if cache_key in _location_breakdown_cache:
-        ts, payload = _location_breakdown_cache[cache_key]
-        if _time.time() - ts < _LOCATION_BREAKDOWN_TTL:
-            return payload
 
-    today = datetime.now(timezone.utc).date()
-    six_m_from = today - timedelta(days=180)
-    three_w_from = today - timedelta(days=21)
-    cs = _split_csv(country)
-    chs = _split_csv(channel)
+    # Fast path: warm cache.
+    cached = _location_breakdown_cache.get(cache_key)
+    if cached and (_time.time() - cached[0] < _LOCATION_BREAKDOWN_TTL):
+        return cached[1]
 
-    # Same chunk strategy as `/style-sku-breakdown` — 30-day chunks to
-    # respect the 50k upstream cap.
-    chunks: List[Tuple[date, date]] = []
-    cur = six_m_from
-    while cur <= today:
-        end = min(cur + timedelta(days=29), today)
-        chunks.append((cur, end))
-        cur = end + timedelta(days=1)
-
-    async def _orders_chunk(df: date, dt: date) -> List[Dict[str, Any]]:
-        return await _safe_fetch("/orders", {
-            "date_from": df.isoformat(), "date_to": dt.isoformat(),
-            "limit": 50000,
-            "country": cs[0] if len(cs) == 1 else None,
-            "channel": chs[0] if len(chs) == 1 else None,
-        }) or []
-
-    chunks_data: List[List[Dict[str, Any]]] = []
-    for df_, dt_ in chunks:
-        chunks_data.append(await _orders_chunk(df_, dt_))
-    inv = await fetch_all_inventory(country=country)
-
-    needle = style_name.strip()
-    per_loc: Dict[str, Dict[str, Any]] = {}
-    for chunk in chunks_data:
-        for r in (chunk or []):
-            if (r.get("style_name") or "").strip() != needle:
-                continue
-            order_date = (r.get("order_date") or "")[:10]
-            loc = r.get("channel") or r.get("pos_location_name") or "—"
-            qty = int(r.get("quantity") or 0)
-            sales = float(r.get("total_sales_kes") or 0)
-            b = per_loc.setdefault(loc, {"location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
-            b["units_6m"] += qty
-            b["sales_6m"] += sales
-            if order_date and order_date >= three_w_from.isoformat():
-                b["units_3w"] += qty
-
-    # SOH per location from current inventory.
-    soh_per_loc: Dict[str, Dict[str, float]] = {}
-    for r in (inv or []):
-        if (r.get("style_name") or "").strip() != needle:
-            continue
-        loc = r.get("location_name") or "—"
-        if len(chs) >= 1 and loc not in chs:
-            continue
-        avail = float(r.get("available") or 0)
-        b = soh_per_loc.setdefault(loc, {"store": 0.0, "wh": 0.0})
-        if is_warehouse_location(loc):
-            b["wh"] += avail
-        else:
-            b["store"] += avail
-
-    # Merge sales (channel-keyed) with SOH (location-keyed). Locations
-    # that sold but have no current stock still appear; locations with
-    # stock but no recent sales also appear so the user can spot dead
-    # stock.
-    keys = set(per_loc.keys()) | set(soh_per_loc.keys())
-    rows: List[Dict[str, Any]] = []
-    for k in keys:
-        sales_row = per_loc.get(k, {"location": k, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
-        soh_row = soh_per_loc.get(k, {"store": 0.0, "wh": 0.0})
-        soh_total = soh_row["store"] + soh_row["wh"]
-        units_6m = sales_row["units_6m"]
-        denom = units_6m + soh_total
-        sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
-        rows.append({
-            "location": k,
-            "units_6m": int(units_6m),
-            "units_3w": int(sales_row["units_3w"]),
-            "sales_6m": round(sales_row["sales_6m"], 2),
-            "soh_store": round(soh_row["store"], 2),
-            "soh_wh": round(soh_row["wh"], 2),
-            "soh_total": round(soh_total, 2),
-            "sor_6m": round(sor_6m, 2),
-        })
-    rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
-    payload = {"style_name": style_name, "locations": rows}
-    _location_breakdown_cache[cache_key] = (_time.time(), payload)
-    return payload
+    # Start (or join) the background scan and wait up to 50s.
+    task = await _start_or_join_style_scan(style_name, country, channel)
+    try:
+        _, payload = await asyncio.wait_for(asyncio.shield(task), timeout=50.0)
+        return payload
+    except asyncio.TimeoutError:
+        # Scan still running — tell the frontend to poll. The Task is NOT
+        # cancelled (we used asyncio.shield), so it'll finish in the
+        # background and populate the cache within the next 30-60s.
+        if response is not None:
+            response.status_code = 202
+        return {"computing": True, "style_name": style_name, "retry_after": 15}
 
 
 @api_router.get("/analytics/style-sku-breakdown-bulk")

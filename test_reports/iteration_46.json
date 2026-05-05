@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 46 SOR Report retest after the asyncio shielded background-task + 202 polling fix. Backend pytest 6/6 PASSED — both /api/analytics/style-location-breakdown and /api/analytics/style-sku-breakdown correctly return 200 with data within 50s OR HTTP 202 {computing:true, retry_after:15} on cold cache, and polling resolves to 200 within ~120s (well under the 2-min frontend cap). The shared scan correctly populates BOTH caches from one /orders fan-out (test_shared_scan_warms_both_caches confirms second call <5s). Frontend manual flow passed: clicking a cold-cache row in the SOR table triggers two 202s, the SORReportExport polling timer keeps re-issuing every 15s, and at t≈110s both the SKU breakdown ([data-testid=sor-sku-breakdown]) and location pane ([data-testid=sor-location-table]) populated with 200 data. Clear button [data-testid=sor-location-pane-clear] still works. Regression on Customers page repeat-customers-table also passed (1 row + 9 sortable headers, sort click did not crash).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "SOR Report tab → auto-select first row on initial load", "issue": "Inconsistent: in run-1 the first row WAS auto-expanded with 'Loading SKU breakdown… (~30s on cold cache)' and the right pane showed 'Loading… (~30s on cold cache)' for 'Vivo Azawi 3/4 Sleeve Top'. In run-2 (same browser, fresh login) NO auto-select API call fired in the first 120s and the right pane stayed in the default 'Click any style on the left…' state. The first sorted row by sales_6m desc would be a popular style; relying on the unsorted DOM order means the auto-selected style may be a low-sale one that still takes ~60s to scan. Once the user clicks any row, polling works correctly.", "affected_selectors": ["[data-testid='sor-report-table']", "[data-testid='sor-sku-breakdown']", "[data-testid='sor-location-pane']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration_46_sor_polling.py", "/app/test_reports/pytest/iter46.xml"],
+  "action_items": [
+    "OPTIONAL: Make the SOR auto-select-first-row effect deterministic — sort the SOR table by sales_6m desc (or units_6m desc) before reading rows[0], so the auto-warmed style is always a popular one whose cache is more likely already hot.",
+    "OPTIONAL: Surface the polling state visually in the right pane (e.g. 'Computing… attempt 3/8') so users on slow cold-cache fetches understand the request is still in-flight rather than stuck. Currently it shows 'Loading… (~30s on cold cache)' which under-promises the actual ~110s observed."
+  ],
+  "critical_code_review_comments": [
+    "SORReportExport.jsx loadSku/loadLocations polling caps at attempt<8 with 15s interval = max 120s; combined with the initial 50s server-side wait, total real-world cold-cache settle time is ~130s (50s first response that returns 202 immediately + 8 polls × 15s). For the very first poll, server already wait_for_timeout(50)s before returning 202, so polls 2-8 cumulatively wait another 105s. Worst-case observed: cold style settles at attempt 6-7 (~95-110s polling time) which is borderline. If the underlying scan ever takes >150s the user will see permanent 'Still computing — try again in a minute.'",
+    "_start_or_join_style_scan correctly uses asyncio.shield to keep the background task alive when wait_for times out — good. Confirmed by test_rare_style_polls_or_returns_empty.",
+    "Same shared cache_key format `{style}|{country}|{channel}` used in both endpoints — consistent; no key drift risk."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_46_sor_polling.py"],
+  "success_rate": {"backend": "100% (6/6 pytest)", "frontend": "85% — core polling+populate flow works on click, auto-select-on-load is non-deterministic"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Pytest file /app/backend/tests/test_iteration_46_sor_polling.py covers both endpoints + warm-cache speed + regression on /api/customers/repeat. Fixture login uses admin creds; uses REACT_APP_BACKEND_URL from env (export it before pytest: `export $(grep -v '^#' /app/frontend/.env | xargs)`). Frontend testing observation: when polling on 202, the network shows /api/analytics/style-{sku,location}-breakdown?style_name=...&_t=<epoch> hitting every 15s; the cache-buster `_t` query param is added by the frontend axios instance. Backend cache_key strips the `_t` param naturally because it only reads style_name/country/channel. Verified end-to-end on cold style 'Soko Square Signet Pinky Ring 4.5': first 2 calls 202, then 200 after ~110s, both panes populated.",
+  "rca of the issue": "Previous iteration (45) cold-cache 502: ROOT CAUSE was a single synchronous /orders fan-out that exceeded the ingress 60s read-timeout. FIX in iter-46: server.py now wraps the fan-out in `_start_or_join_style_scan` which spawns an asyncio.Task and returns either (a) the resolved payload within 50s, or (b) HTTP 202 `{computing: true, retry_after: 15}` so the request always completes under the gateway timeout. asyncio.shield ensures the background task survives the wait_for cancellation and finishes populating both _sku_breakdown_cache and _location_breakdown_cache from ONE /orders pass. Subsequent polls (or a reload) hit the warm cache in <200ms. Frontend SORReportExport.jsx loadSku/loadLocations now check r.data?.computing and re-issue every retry_after seconds up to 8 attempts. CONFIRMED working via pytest (2 endpoints × 3 scenarios = 6 passes) and Playwright (click row → 202 → poll → 200 → render at t≈110s)."
+}

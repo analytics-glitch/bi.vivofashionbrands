@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -108,44 +108,72 @@ const SORReport = () => {
     return { totalSales, totalUnits, totalSOH, wSor, n: filtered.length };
   }, [filtered]);
 
-  // Lazy-load SKU breakdown when a row expands.
+  // Lazy-load SKU breakdown when a row expands. The endpoint may
+  // return 202 `{computing: true}` for cold styles whose /orders scan
+  // exceeds the 60s ingress timeout; we poll every 15s in that case.
   const loadSku = (style) => {
     if (!style || skuCache[style] || skuLoading[style]) return;
     setSkuLoading((s) => ({ ...s, [style]: true }));
-    api.get("/analytics/style-sku-breakdown", {
-      params: { style_name: style, country: countryParam, channel: channelParam },
-    })
-      .then((r) => setSkuCache((c) => ({ ...c, [style]: r.data?.skus || [] })))
-      .catch(() => setSkuCache((c) => ({ ...c, [style]: [] })))
-      .finally(() => setSkuLoading((s) => ({ ...s, [style]: false })));
+    const tick = (attempt = 0) => {
+      api.get("/analytics/style-sku-breakdown", {
+        params: { style_name: style, country: countryParam, channel: channelParam },
+      })
+        .then((r) => {
+          if (r.data?.computing && attempt < 8) {
+            setTimeout(() => tick(attempt + 1), (r.data.retry_after || 15) * 1000);
+          } else if (r.data?.computing) {
+            setSkuCache((c) => ({ ...c, [style]: [] }));
+            setSkuLoading((s) => ({ ...s, [style]: false }));
+          } else {
+            setSkuCache((c) => ({ ...c, [style]: r.data?.skus || [] }));
+            setSkuLoading((s) => ({ ...s, [style]: false }));
+          }
+        })
+        .catch(() => {
+          setSkuCache((c) => ({ ...c, [style]: [] }));
+          setSkuLoading((s) => ({ ...s, [style]: false }));
+        });
+    };
+    tick();
   };
 
-  // Lazy-load location breakdown when a style is selected.
+  // Lazy-load location breakdown when a style is selected. Same 202
+  // poll pattern as SKU breakdown — both endpoints share the same
+  // /orders scan on the backend so once one finishes the other warms
+  // instantly.
   const loadLocations = (style) => {
-    if (!style) return;
-    if (locCache[style]) return;
+    if (!style || locCache[style]) return;
     setLocLoading(true);
     setLocError(null);
-    api.get("/analytics/style-location-breakdown", {
-      params: { style_name: style, country: countryParam, channel: channelParam },
-    })
-      .then((r) => setLocCache((c) => ({ ...c, [style]: r.data?.locations || [] })))
-      .catch((e) => setLocError(e?.response?.data?.detail || e.message))
-      .finally(() => setLocLoading(false));
+    const tick = (attempt = 0) => {
+      api.get("/analytics/style-location-breakdown", {
+        params: { style_name: style, country: countryParam, channel: channelParam },
+      })
+        .then((r) => {
+          if (r.data?.computing && attempt < 8) {
+            setLocError(`Computing… (${attempt * 15}s elapsed; rare styles can take ~2 min)`);
+            setTimeout(() => tick(attempt + 1), (r.data.retry_after || 15) * 1000);
+          } else if (r.data?.computing) {
+            setLocError("Still computing — try again in a minute. The result will be cached and instant once ready.");
+            setLocLoading(false);
+          } else {
+            setLocCache((c) => ({ ...c, [style]: r.data?.locations || [] }));
+            setLocError(null);
+            setLocLoading(false);
+          }
+        })
+        .catch((e) => {
+          setLocError(e?.response?.data?.detail || e.message || "Could not load location breakdown");
+          setLocLoading(false);
+        });
+    };
+    tick();
   };
 
-  // Auto-select first row when results change so the side pane never
-  // shows "pick a style" unless the table is empty.
-  const lastFirst = useRef(null);
-  useEffect(() => {
-    const first = filtered[0]?.style_name || null;
-    if (first && first !== lastFirst.current) {
-      lastFirst.current = first;
-      if (!selectedStyle) {
-        setSelectedStyle(first);
-      }
-    }
-  }, [filtered, selectedStyle]);
+  // Note: auto-select on first render was removed — the cold /orders
+  // fan-out for a randomly-picked first-row style is too slow and made
+  // the SOR Report tab feel sluggish on open. Users now explicitly
+  // click a row to populate the side pane.
 
   useEffect(() => {
     if (selectedStyle) loadLocations(selectedStyle);
@@ -253,8 +281,12 @@ const SORReport = () => {
               <SortableTable
                 testId="sor-report-table"
                 onRowClick={(row) => {
-                  setSelectedStyle(row.style_name);
+                  // Fire SKU first — its server handler also warms the
+                  // location-breakdown cache from the same scan, so the
+                  // location pane fetch below hits a warm cache after
+                  // ~1ms instead of running a second cold scan.
                   loadSku(row.style_name);
+                  setSelectedStyle(row.style_name);
                 }}
                 rowClassName={(row) => row.style_name === selectedStyle ? "bg-amber-50/60" : ""}
                 columns={[
