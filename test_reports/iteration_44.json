@@ -1,0 +1,31 @@
+{
+  "summary": "Iter_44 — retest of the SOR Report tab after main agent's fix to SORReportExport.jsx (prop `selected`→`value` + options mapped to `[{value,label}]`). Verdict: FIX VERIFIED. The SOR Report tab now renders without crashes. Table mounts with 1,706 total styles (50 DOM rows visible due to pageSize=50), all three MultiSelect filters open with correctly labeled options, search filter trims rows, and the Export CSV button is visible and enabled.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verifications": {
+    "sor_tab_renders": "PASS. [data-testid='exports-tab-sor'] clickable, no React error overlay, no console pageerror.",
+    "sor_report_table": "PASS. [data-testid='sor-report-table'] mounts. Header says '1,706 of 1,706 styles after filters'; 50 rows visible in DOM (matches pageSize=50). Well above the '>=100 rows in dataset' acceptance bar.",
+    "sor_filters_render": "PASS. sor-cat-filter, sor-subcat-filter, sor-brand-filter all present. Dropdowns open on click. Category dropdown shows 10 options (first='Accessories', label populated — no undefined labels), subcategory shows 35 options, brand shows 4 options. Confirms the `{value,label}` shape fix worked.",
+    "sor_search_filters_rows": "PASS. Typing 'zz_nonexistent_xxx' into [data-testid='sor-report-search'] collapses table from 50→0 DOM rows; clearing restores them.",
+    "sor_export_btn": "PASS. [data-testid='sor-report-export-btn'] visible, not disabled (disabled attribute null because filtered.length > 0).",
+    "console_errors": "CLEAN. 0 pageerrors. 1 console error but it's an unrelated '401 Failed to load resource' (not MultiSelect / not SORReportExport)."
+  },
+  "test_report_links": ["/app/test_reports/iteration_43.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Carry-over from iter_43 — MultiSelect.jsx still has no default for `value` (no `value = []`) nor runtime guard. A future caller passing the wrong prop will white-screen the tab the same way. Consider adding `value = []` default + PropTypes.",
+    "Carry-over — SORReportExport.exportCsv writes r.units_6m into both 'Units Sold' (col 6) and 'Units Last 6 Months' (col 7); product owner should confirm duplication is intentional."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not retested this iter)", "frontend": "6/6 = 100% for SOR Report tab"},
+  "test_credentials": "Admin admin@vivofashiongroup.com / VivoAdmin!2026 — worked.",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "SOR Report tab fully working. MultiSelect prop API issue closed. No further retest required for this bug. If any MultiSelect regression appears elsewhere, check every call site uses prop `value=` + options in `[{value,label}]` shape.",
+  "rca_of_the_issue": "RCA confirmed and closed: SORReportExport.jsx was using the legacy MultiSelect API (`selected` + plain string options). MultiSelect.jsx expects `value` (string[]) + `options` as `[{value,label,group?}]`, and crashes at render when `value` is undefined (`value.length` TypeError). Main agent's fix — (1) rename `selected`→`value` on the three MultiSelect invocations; (2) map category/subcategory/brand sets through `.map(v => ({value: v, label: v}))` — resolves both the crash and the would-be undefined labels. Verified live."
+}

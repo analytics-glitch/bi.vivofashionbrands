@@ -57,15 +57,15 @@ const SORReport = () => {
 
   const categories = useMemo(() => {
     const s = new Set(rows.map((r) => r.category).filter(Boolean));
-    return Array.from(s).sort();
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
   }, [rows]);
   const subcategories = useMemo(() => {
     const s = new Set(rows.map((r) => r.subcategory).filter(Boolean));
-    return Array.from(s).sort();
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
   }, [rows]);
   const brands = useMemo(() => {
     const s = new Set(rows.map((r) => r.brand).filter(Boolean));
-    return Array.from(s).sort();
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
   }, [rows]);
 
   const filtered = useMemo(() => {
@@ -186,13 +186,13 @@ const SORReport = () => {
             />
           </div>
           <div className="md:col-span-3">
-            <MultiSelect options={categories} selected={catSel} onChange={setCatSel} placeholder="All Categories" testId="sor-cat-filter" />
+            <MultiSelect options={categories} value={catSel} onChange={setCatSel} placeholder="All Categories" testId="sor-cat-filter" />
           </div>
           <div className="md:col-span-3">
-            <MultiSelect options={subcategories} selected={subcatSel} onChange={setSubcatSel} placeholder="All Subcategories" testId="sor-subcat-filter" />
+            <MultiSelect options={subcategories} value={subcatSel} onChange={setSubcatSel} placeholder="All Subcategories" testId="sor-subcat-filter" />
           </div>
           <div className="md:col-span-3">
-            <MultiSelect options={brands} selected={brandSel} onChange={setBrandSel} placeholder="All Brands" testId="sor-brand-filter" />
+            <MultiSelect options={brands} value={brandSel} onChange={setBrandSel} placeholder="All Brands" testId="sor-brand-filter" />
           </div>
         </div>
 
