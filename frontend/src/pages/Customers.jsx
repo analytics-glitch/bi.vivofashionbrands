@@ -103,7 +103,7 @@ const Customers = () => {
     setRevealing(true);
     setRevealError(null);
     try {
-      const r = await api.post("/auth/verify-password", { email: "ignored", password: revealPassword });
+      const r = await api.post("/auth/verify-password", { password: revealPassword });
       const tok = r?.data?.reveal_token;
       if (!tok) throw new Error("Server did not return a reveal token.");
       setRevealToken(tok);
@@ -271,7 +271,27 @@ const Customers = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN, revealToken]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
+
+  // PII reveal cascade — when the user verifies the reveal password the
+  // /churned-customers endpoint must be re-fetched with the reveal token
+  // header so unmasked phone/email come back. We do this in a SEPARATE
+  // effect (rather than re-running the whole page-fetch) so the page
+  // doesn't go blank during the refresh — the previous masked rows stay
+  // visible until the unmasked rows arrive. Skip the run on initial
+  // mount when revealToken is null (the main effect already loaded the
+  // masked list).
+  useEffect(() => {
+    if (!revealToken) return;
+    let cancelled = false;
+    api.get("/churned-customers", {
+      params: { days: churnDays, limit: 500, reveal: true },
+      headers: { "X-PII-Reveal-Token": revealToken },
+    })
+      .then((r) => { if (!cancelled) setChurned(r.data || []); })
+      .catch(() => { /* keep masked rows on failure */ });
+    return () => { cancelled = true; };
+  }, [revealToken, churnDays]);
 
   // Recently-unchurned table — re-fetches whenever the slider days change,
   // independent of the main page fetch since it can be slow (10-min cache).
@@ -2077,16 +2097,16 @@ const Customers = () => {
                     onClick={(e) => { if (e.target === e.currentTarget) setRevealModalOpen(false); }}
                   >
                     <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
-                      <div className="font-extrabold text-[16px] mb-1">Confirm your password</div>
+                      <div className="font-extrabold text-[16px] mb-1">Enter PII reveal password</div>
                       <div className="text-[12px] text-muted mb-4">
-                        This unmasks customer phone numbers and emails for the next 10 minutes. Each access is audit-logged.
+                        This is the shared ops password (not your login). Unmasks customer phone numbers and emails for the next 10 minutes. Each access is audit-logged.
                       </div>
                       <input
                         type="password"
                         value={revealPassword}
                         onChange={(e) => setRevealPassword(e.target.value)}
                         onKeyDown={(e) => { if (e.key === "Enter") doReveal(); }}
-                        placeholder="Your password"
+                        placeholder="PII reveal password"
                         autoFocus
                         data-testid="reveal-password-input"
                         className="w-full px-3 py-2 rounded-lg border border-border text-[13px] mb-3"
@@ -2158,12 +2178,14 @@ const Customers = () => {
                         render: (r) => {
                           if (!r.phone) return <span className="text-muted" title="No contact on file">— ⚠️</span>;
                           const href = telHref(r.phone);
-                          const masked = maskPhone(r.phone);
+                          // Show raw phone only when the user has unlocked PII;
+                          // otherwise apply the standard 4-3 mask.
+                          const display = revealToken ? r.phone : maskPhone(r.phone);
                           return href
-                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{masked}</a>
-                            : <span className="text-muted">{masked}</span>;
+                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{display}</a>
+                            : <span className="text-muted">{display}</span>;
                         },
-                        csv: (r) => maskPhone(r.phone),
+                        csv: (r) => revealToken ? r.phone : maskPhone(r.phone),
                       },
                       { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
                       {

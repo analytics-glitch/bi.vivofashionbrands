@@ -69,6 +69,13 @@ class LoginBody(BaseModel):
     password: str
 
 
+class PasswordOnlyBody(BaseModel):
+    """Used by /verify-password — the PII-reveal step-up flow takes
+    only a shared password, not an email. Keeping LoginBody intact so
+    /login still enforces a valid email format."""
+    password: str
+
+
 class GoogleCallbackBody(BaseModel):
     session_id: str
 
@@ -285,24 +292,26 @@ def verify_pii_reveal_token(user_id: Optional[str], token: Optional[str]) -> boo
 
 
 @auth_router.post("/verify-password")
-async def verify_password(body: LoginBody, user: User = Depends(get_current_user)):
-    """Confirm the current session-user's own password — used as a
-    "step-up" gate before revealing PII (full mobile / email of churned
-    customers, the masked-by-default Top-N customers list, etc.).
-    Returns `{ok: True, reveal_token, expires_at}` on match. Always
-    responds 401 on mismatch.
+async def verify_password(body: PasswordOnlyBody, user: User = Depends(get_current_user)):
+    """Confirm the shared PII-reveal password — used as a "step-up" gate
+    before unmasking PII (full mobile / email of churned customers, the
+    masked-by-default Top-N customers list, etc.). Returns
+    `{ok: True, reveal_token, expires_at}` on match, 401 on mismatch.
+
+    The password is a SHARED ops-team secret (`PII_REVEAL_PASSWORD` env
+    or default `Vivo@2033!!!`) — distinct from each user's own login
+    password — so the team can rotate it independently of staff access
+    without forcing password resets for everyone. Every successful
+    verification still logs `user_id` so we know WHO unmasked.
 
     The `reveal_token` is short-lived (10 min) and HMAC-signed against
     the user's `user_id`. Frontends pass it as the
     `X-PII-Reveal-Token` header on subsequent calls to PII endpoints
     (e.g. `/churned-customers?reveal=true`).
     """
-    user_doc = await db.users.find_one({"user_id": user.user_id})
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    ph = user_doc.get("password_hash")
-    if not ph or not pwd.verify(body.password, ph):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    expected = _auth_os.environ.get("PII_REVEAL_PASSWORD") or "Vivo@2033!!!"
+    if not body.password or not _hmac.compare_digest(str(body.password), expected):
+        raise HTTPException(status_code=401, detail="Invalid PII reveal password")
     token, exp = _make_pii_reveal_token(user.user_id)
     return {
         "ok": True,
