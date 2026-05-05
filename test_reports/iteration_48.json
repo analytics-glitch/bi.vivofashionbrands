@@ -1,0 +1,31 @@
+{
+  "summary": "Iter-48 verified the TDZ ReferenceError fix on Inventory.jsx and re-tested the Sienna products-search cascade onto sales-side metrics. The TDZ bug is FIXED — Inventory page now mounts cleanly with no React 'Uncaught runtime errors' overlay, no console pageerrors, headline 'Inventory' visible (3 occurrences), and [data-testid='inv-search'] is present and interactive. Filter pill 'Filtered — 267 SKUs · 405 units' renders correctly when typing 'Sienna'. Cascade behaviour is mathematically correct: units_sold in both inv-sts-subcat and inv-sts-cat tables drops from baseline category totals to ONLY the visible (Sienna-matching) styles' sales. Case-insensitive search confirmed (lowercase 'sienna' returns identical 267 SKUs · 405 units). However, Sienna styles report 0 units sold in /top-skus across both Today and Last 90-days windows — see action_items: not a cascade bug, likely a data-side observation worth confirming with main agent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/top-skus", "issue": "Sienna-named styles return 0 sold-units across Today + Last 90-days windows. Cascade math depends on this endpoint, so the 'Sienna sales' override resolves to 0 instead of the 'few dozen-to-hundred' units described in the request. Either Sienna is a recent launch with no sales yet, or top-skus is top-N capped and Sienna styles never reach the cap. Worth confirming with main agent."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Confirm whether Sienna styles are expected to register non-zero sales. The cascade math is correct, but every Sienna-matching style returns 0 units_sold from /api/analytics/top-skus on both Today and Last 90-day ranges. If Sienna is supposed to have sales, /top-skus may need its limit raised or a different sales source consulted; otherwise the request's expected 'few dozen-to-hundred' range is unattainable for this brand."
+  ],
+  "critical_code_review_comments": [
+    "Inventory.jsx is now ~1,255 lines — still over the 700-line guideline. Splitting into useInventoryFilters + useStockToSales hooks would surface forward-reference bugs at lint time and prevent future TDZ regressions.",
+    "Adding `eslint-plugin-react-hooks` + `no-use-before-define` to the frontend ESLint config would have blocked the iter-47 TDZ at build time.",
+    "Cascade logic (salesByVisibleSubcat → salesByVisibleCategory → filteredStsByCat → filteredSubcatSS → understockedSubcats) is correct but tightly chained; consider memoising by a single derivation hook to make ordering errors impossible."
+  ],
+  "updated_files": ["/app/test_reports/iteration_48.json"],
+  "success_rate": {"backend": "n/a (frontend-only retest)", "frontend": "100% — TDZ fix verified, cascade pipeline working end-to-end. The only outstanding question is the data observation (Sienna=0 sales in /top-skus), not a code bug."},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "TDZ ReferenceError on /inventory is fixed (understockedSubcats useMemo now correctly placed AFTER filteredSubcatSS at line 461 vs 439). Page renders cleanly. Cascade pipeline (salesByVisibleSubcat/Category override) is wired correctly: when [data-testid='inv-search'] has a value, units_sold in inv-sts-cat + inv-sts-subcat is restricted to ONLY the visible (matching) styles' sales from /top-skus. Case-insensitive search confirmed. Filter pill 'Filtered — N SKUs · M units' renders. Outstanding observation: Sienna-styles show 0 units_sold in /top-skus on both Today and Last 90-days — main agent should confirm whether this is expected (recent-launch brand) or a data-source issue.",
+  "rca of the issue": "TDZ FIX VERIFIED. Iter-47 root cause: const declarations in JS function bodies are in temporal-dead-zone until their declaration line; understockedSubcats (was line 292) closed over filteredSubcatSS (was line 451), throwing on every render. Fix applied between iter-47 and iter-48: understockedSubcats useMemo block was relocated to AFTER filteredSubcatSS declaration. Confirmed in /app/frontend/src/pages/Inventory.jsx — filteredSubcatSS is now at line 439 and understockedSubcats at line 461 (461 > 439 = no TDZ). Browser test on the live preview URL confirmed: 0 React error overlays, 0 console pageerrors, search box reachable, full cascade working."
+}

@@ -289,19 +289,7 @@ const Inventory = () => {
       .sort((a, b) => a.available - b.available);
   }, [filteredInv]);
 
-  const understockedSubcats = useMemo(() => {
-    return filteredSubcatSS
-      .map((r) => ({
-        ...r,
-        understock_pct: (r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0),
-      }))
-      .filter((r) => r.understock_pct > 0.5)
-      .sort((a, b) => b.understock_pct - a.understock_pct);
-  }, [filteredSubcatSS]);
-
   // Set of visible categories (derived from visible subcats) — used to
-  // restrict the Inventory-by-Category chart and Stock-to-Sales-by-Category
-  // table when a search / brand / subcategory filter is active.
   const visibleCategories = useMemo(() => {
     if (!filtersActive) return null;
     const s = new Set();
@@ -469,6 +457,16 @@ const Inventory = () => {
       };
     });
   }, [subcatSS, filtersActive, visibleSubcats, salesByVisibleSubcat]);
+
+  const understockedSubcats = useMemo(() => {
+    return filteredSubcatSS
+      .map((r) => ({
+        ...r,
+        understock_pct: (r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0),
+      }))
+      .filter((r) => r.understock_pct > 0.5)
+      .sort((a, b) => b.understock_pct - a.understock_pct);
+  }, [filteredSubcatSS]);
 
   const kpiTotal = filtersActive ? totalFilteredUnits : (summary?.total_units || 0);
   const kpiStore = filtersActive ? storeVsWarehouse.store : (summary?.store_units || 0);
