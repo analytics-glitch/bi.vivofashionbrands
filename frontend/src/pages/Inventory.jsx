@@ -47,6 +47,12 @@ const Inventory = () => {
   const [stsByCat, setStsByCat] = useState([]);
   const [weeksOfCover, setWeeksOfCover] = useState([]);
   const [sellThrough, setSellThrough] = useState([]);
+  // Style-level sales (units + KES) for the configured date range —
+  // sourced from /top-skus. Used when the products search filter is
+  // active so the Stock-to-Sales tables re-aggregate sales numbers
+  // from ONLY the visible styles instead of the upstream's
+  // subcategory-wide rollup.
+  const [topSkus, setTopSkus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -95,8 +101,10 @@ const Inventory = () => {
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
       api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
         .catch(() => ({ data: [] })),
+      api.get("/top-skus", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, channel: locationsCsv, limit: 5000 } })
+        .catch(() => ({ data: [] })),
     ])
-      .then(([s, i, st, sc, cat, woc, str]) => {
+      .then(([s, i, st, sc, cat, woc, str, tsk]) => {
         if (cancelled) return;
         setSummary(s.data);
         setInv(i.data || []);
@@ -105,6 +113,7 @@ const Inventory = () => {
         setStsByCat(cat.data || []);
         setWeeksOfCover(woc.data || []);
         setSellThrough(str.data || []);
+        setTopSkus(tsk.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -281,16 +290,14 @@ const Inventory = () => {
   }, [filteredInv]);
 
   const understockedSubcats = useMemo(() => {
-    return subcatSS
-      .filter((r) => isMerchandise(r.subcategory))
-      .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory))
+    return filteredSubcatSS
       .map((r) => ({
         ...r,
         understock_pct: (r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0),
       }))
       .filter((r) => r.understock_pct > 0.5)
       .sort((a, b) => b.understock_pct - a.understock_pct);
-  }, [subcatSS, filtersActive, visibleSubcats]);
+  }, [filteredSubcatSS]);
 
   // Set of visible categories (derived from visible subcats) — used to
   // restrict the Inventory-by-Category chart and Stock-to-Sales-by-Category
@@ -378,6 +385,41 @@ const Inventory = () => {
     [agingRows]
   );
 
+  // Style-level sales rollups computed from /top-skus. Used to override
+  // the upstream subcategory-aggregated numbers when a search/brand
+  // filter is active, so the Stock-to-Sales tables show "Sienna sales"
+  // (not "all Waterfalls sales") when the user searches "Sienna".
+  // Map: subcategory → { units_sold, total_sales }
+  const salesByVisibleSubcat = useMemo(() => {
+    if (!filtersActive) return null;
+    const m = new Map();
+    for (const r of topSkus || []) {
+      const style = r.style_name;
+      if (!style || !visibleStyles.has(style)) continue;
+      const sub = r.product_type || r.subcategory;
+      if (!sub) continue;
+      const e = m.get(sub) || { units_sold: 0, total_sales: 0 };
+      e.units_sold += r.units_sold || 0;
+      e.total_sales += r.total_sales || 0;
+      m.set(sub, e);
+    }
+    return m;
+  }, [filtersActive, topSkus, visibleStyles]);
+
+  // Same but rolled up to merch category.
+  const salesByVisibleCategory = useMemo(() => {
+    if (!filtersActive || !salesByVisibleSubcat) return null;
+    const m = new Map();
+    for (const [sub, v] of salesByVisibleSubcat.entries()) {
+      const cat = categoryFor(sub) || "Other";
+      const e = m.get(cat) || { units_sold: 0, total_sales: 0 };
+      e.units_sold += v.units_sold;
+      e.total_sales += v.total_sales;
+      m.set(cat, e);
+    }
+    return m;
+  }, [filtersActive, salesByVisibleSubcat]);
+
   const filteredSts = useMemo(
     () => (filtersActive ? sts.filter((r) => visibleLocations.has(r.location)) : sts),
     [sts, filtersActive, visibleLocations]
@@ -386,15 +428,47 @@ const Inventory = () => {
   const filteredStsByCat = useMemo(() => {
     let src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
     if (visibleCategories) src = src.filter((r) => visibleCategories.has(r.category));
-    return src;
-  }, [stsByCat, visibleCategories]);
+    if (!filtersActive || !salesByVisibleCategory) return src;
+    // Override units_sold + recompute %-shares from the visible-styles
+    // numbers so the tile reflects only the searched styles.
+    const totUnits = src.reduce((s, r) => s + (salesByVisibleCategory.get(r.category)?.units_sold || 0), 0);
+    const totStock = src.reduce((s, r) => s + (r.current_stock || 0), 0);
+    return src.map((r) => {
+      const v = salesByVisibleCategory.get(r.category) || { units_sold: 0, total_sales: 0 };
+      const pctSold = totUnits ? (v.units_sold / totUnits) * 100 : 0;
+      const pctStock = totStock ? ((r.current_stock || 0) / totStock) * 100 : 0;
+      return {
+        ...r,
+        units_sold: v.units_sold,
+        total_sales: v.total_sales,
+        pct_of_total_sold: pctSold,
+        pct_of_total_stock: pctStock,
+        variance: pctSold - pctStock,
+      };
+    });
+  }, [stsByCat, visibleCategories, filtersActive, salesByVisibleCategory]);
 
-  const filteredSubcatSS = useMemo(
-    () => subcatSS
+  const filteredSubcatSS = useMemo(() => {
+    const base = subcatSS
       .filter((r) => isMerchandise(r.subcategory))
-      .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory)),
-    [subcatSS, filtersActive, visibleSubcats]
-  );
+      .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory));
+    if (!filtersActive || !salesByVisibleSubcat) return base;
+    const totUnits = base.reduce((s, r) => s + (salesByVisibleSubcat.get(r.subcategory)?.units_sold || 0), 0);
+    const totStock = base.reduce((s, r) => s + (r.current_stock || 0), 0);
+    return base.map((r) => {
+      const v = salesByVisibleSubcat.get(r.subcategory) || { units_sold: 0, total_sales: 0 };
+      const pctSold = totUnits ? (v.units_sold / totUnits) * 100 : 0;
+      const pctStock = totStock ? ((r.current_stock || 0) / totStock) * 100 : 0;
+      return {
+        ...r,
+        units_sold: v.units_sold,
+        total_sales: v.total_sales,
+        pct_of_total_sold: pctSold,
+        pct_of_total_stock: pctStock,
+        variance: pctSold - pctStock,
+      };
+    });
+  }, [subcatSS, filtersActive, visibleSubcats, salesByVisibleSubcat]);
 
   const kpiTotal = filtersActive ? totalFilteredUnits : (summary?.total_units || 0);
   const kpiStore = filtersActive ? storeVsWarehouse.store : (summary?.store_units || 0);
@@ -580,10 +654,8 @@ const Inventory = () => {
               // where sales-share outpaces stock-share by more than 3 pp
               // (variance > 3). Lower is better; 0% means everything is
               // healthy. Denominator = visible merchandise subcats.
-              const merch = (subcatSS || []).filter((r) => isMerchandise(r.subcategory));
-              const visible = filtersActive
-                ? merch.filter((r) => visibleSubcats.has(r.subcategory))
-                : merch;
+              const merch = (filteredSubcatSS || []);
+              const visible = merch;
               const understocked = visible.filter(
                 (r) => ((r.pct_of_total_sold || 0) - (r.pct_of_total_stock || 0)) > 3
               );

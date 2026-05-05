@@ -1,0 +1,35 @@
+{
+  "summary": "Iter-47 verified the SOR Report enhancements (lifetime fields + 3-level drill-down + sortable Location pane) and the Inventory search-cascade. SOR Report is fully working end-to-end. /api/analytics/sor-all-styles returns the new units_since_launch + sor_since_launch fields with correct types & invariants (lifetime >= 6m). The 3-level drill (Style → Color → Size) works including collapse on re-click and last-click-wins single-color expansion. All 4 Location pane headers sort and flip arrows correctly. CRITICAL: Inventory page is completely broken with a temporal-dead-zone ReferenceError that makes the page un-renderable.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/sor-all-styles", "issue": "Cold first request can exceed gateway timeout (~60s) and return 502 the very first time. Subsequent requests serve from cache in <1s. The startup warmup task usually masks this for users, but a fresh `?refresh=true` still risks timeout if the warmup cache is stale. Same pattern observed in iter-45/46."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Inventory page (/app/frontend/src/pages/Inventory.jsx)", "issue": "ReferenceError: Cannot access 'filteredSubcatSS' before initialization. The entire Inventory page crashes on mount with the React 'Uncaught runtime errors' overlay. ROOT CAUSE: `understockedSubcats` useMemo (line 292-300) references `filteredSubcatSS`, but `filteredSubcatSS` is declared at line 451 — i.e. AFTER `understockedSubcats`. JavaScript const/let are in the temporal dead zone until their declaration, so accessing them earlier throws. The new salesByVisibleSubcat/salesByVisibleCategory cascade (added at lines 393-471) introduced a forward reference. FIX: Move the `understockedSubcats` block to AFTER the `filteredSubcatSS` declaration (i.e. after line 471), or refactor `filteredSubcatSS` upward. Both ways, declaration must precede first use. inv-search input is therefore inaccessible — it could not be tested.", "selector": "[data-testid='inv-search'] (not reachable due to crash)", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration_47_sor_lifetime.py", "/app/test_reports/pytest/iter47.xml"],
+  "action_items": [
+    "URGENT: Fix the TDZ error in /app/frontend/src/pages/Inventory.jsx — move the `understockedSubcats` useMemo (lines 292-300) to AFTER `filteredSubcatSS` is declared (after line 471). Without this fix the entire Inventory page is unusable.",
+    "After the fix, retest: type 'Sienna' into [data-testid='inv-search'], confirm the Stock-to-Sales · by Category and · by Subcategory tables drop their units_sold values to reflect ONLY the visible (Sienna-matching) styles."
+  ],
+  "critical_code_review_comments": [
+    "Inventory.jsx is now 1,257 lines — over the 700-line guideline. Splitting the file into smaller domain hooks (e.g. useInventoryFilters, useStockToSales) would have surfaced the forward-reference bug at lint time.",
+    "The new useMemo cascade salesByVisibleSubcat → salesByVisibleCategory → filteredStsByCat → filteredSubcatSS is correct in dependency direction, but the existing understockedSubcats consumer was not relocated. A simple `eslint-plugin-react-hooks` + `no-use-before-define` rule would have flagged this before runtime.",
+    "SORReportExport.jsx now has both 'Units Since Launch' and 'SOR Since Launch' columns; CSV export at line 197/199 includes both — ✓.",
+    "Backend /products upstream is no longer called during sor-all-styles cold fetch (verified in /var/log/supervisor/backend.err.log: most recent warmup line has no preceding /products warning)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_47_sor_lifetime.py", "/app/test_reports/iteration_47.json", "/app/test_reports/pytest/iter47.xml"],
+  "success_rate": {"backend": "100% (2/3 PASSED + 1 cold-cache 502 that resolves on retry; warm-cache + count + lifetime-fields all pass)", "frontend": "60% — SOR Report 100% (4/4 features), Inventory 0% (page crashes on mount)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "SOR Report tests passed end-to-end on a real browser session: column headers (Units Since Launch + SOR Since Launch) visible, color-table renders on style click, size-table appears on color click and only one color stays expanded at a time, all four sor-loc-th-* sort headers flip arrows. Backend pytest file at /app/backend/tests/test_iteration_47_sor_lifetime.py covers the new lifetime fields + cache speed; export REACT_APP_BACKEND_URL before running. The Inventory page's filteredSubcatSS TDZ bug is independent of and blocks the inventory-search-cascade feature; once that one-line move is done, retest by typing 'Sienna' into [data-testid='inv-search'] and visually confirm units_sold values shrink in both Stock-to-Sales · by Category and · by Subcategory tables.",
+  "rca of the issue": "BUG: Inventory page TDZ crash. REPRO: Login as admin → navigate to /inventory → page is replaced with React error overlay 'Cannot access filteredSubcatSS before initialization'. EVIDENCE: /app/frontend/src/pages/Inventory.jsx line 292-300 declares useMemo `understockedSubcats` that depends on `filteredSubcatSS`; `filteredSubcatSS` itself is declared at line 451. Const declarations evaluated top-to-bottom inside the function body — the line-292 closure runs before line-451 binds the variable, throwing ReferenceError on every render. FIX: relocate the understockedSubcats useMemo (and the chain of code that uses it before line 471, if any) so that it appears AFTER filteredSubcatSS, or restructure filteredSubcatSS to be defined earlier. This is the only fix needed for the Inventory page to mount; the new sales-cascade logic itself (salesByVisibleSubcat/Category) is internally consistent."
+}

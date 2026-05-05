@@ -4769,9 +4769,15 @@ async def analytics_sor_all_styles(
                         merged[s]["collection"] = r.get("collection")
         return list(merged.values())
 
-    six_m_skus, three_w_skus, inventory, style_dates = await asyncio.gather(
+    # Lifetime window (3 years) for "since launch" metrics. The launch
+    # date is defined as the first date a style sold (per ops). A 3-year
+    # cap is plenty for a fashion catalog where SKUs rarely outlive a year.
+    lifetime_from = today - timedelta(days=1095)
+
+    six_m_skus, three_w_skus, lifetime_skus, inventory, style_dates = await asyncio.gather(
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
+        _topskus(lifetime_from.isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
         _get_style_first_last_sale(country, channel, days=180),
     )
@@ -4780,36 +4786,13 @@ async def analytics_sor_all_styles(
 
     six_m_map = {r.get("style_name"): r for r in six_m_skus if r.get("style_name") in candidates}
     three_w_map = {r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates}
+    lifetime_map = {r.get("style_name"): r for r in lifetime_skus if r.get("style_name") in candidates}
 
-    # ---- Original-price source: pull /products for catalog list prices ----
-    # `/products` upstream returns one row per (style_name, sku) with a
-    # `product_price_kes` field — the MSRP / list price before any
-    # discount. We aggregate to the style level by taking the modal price
-    # (some variants of the same style share a price; small variations
-    # are due to size / colour). Used by the SOR Report as
-    # "Original Price". Falls back to gross_sales/units_6m when /products
-    # has no row for that style (rare).
-    try:
-        products_rows = await fetch("/products", {"limit": 50000}, timeout_sec=20.0, max_attempts=2) or []
-    except Exception as e:
-        logger.warning("[sor-all-styles] /products fetch failed: %s — falling back to ASP gross", e)
-        products_rows = []
+    # Original price = modal unit price observed across the lifetime
+    # /top-skus pull (gross_sales ÷ units_sold ≈ ASP at full price for
+    # styles that haven't been heavily discounted). Falls back to the
+    # 6-month ASP when lifetime data is missing for a style.
     style_orig_price: Dict[str, float] = {}
-    style_price_counts: Dict[str, Dict[float, int]] = defaultdict(lambda: defaultdict(int))
-    for r in products_rows:
-        s = r.get("style_name")
-        if not s or s not in candidates:
-            continue
-        p = r.get("product_price_kes") or r.get("product_price") or r.get("price")
-        try:
-            p = float(p) if p else 0
-        except (TypeError, ValueError):
-            p = 0
-        if p > 0:
-            style_price_counts[s][p] += 1
-    for s, counts in style_price_counts.items():
-        # Pick the most-common price (handles SKUs at slightly different prices).
-        style_orig_price[s] = max(counts.items(), key=lambda kv: kv[1])[0]
 
     soh_store: Dict[str, float] = defaultdict(float)
     soh_wh: Dict[str, float] = defaultdict(float)
@@ -4835,8 +4818,14 @@ async def analytics_sor_all_styles(
     for s in candidates:
         sm = six_m_map.get(s, {})
         tw = three_w_map.get(s, {})
+        lt = lifetime_map.get(s, {})
         units_6m = float(sm.get("units_sold") or 0)
         sales_6m = float(sm.get("total_sales") or 0)
+        units_lt = float(lt.get("units_sold") or units_6m)  # fall back to 6m if missing
+        gross_lt = float(lt.get("gross_sales") or 0)
+        # Original price: modal lifetime ASP (gross / units), else 6m ASP.
+        if units_lt > 0 and gross_lt > 0:
+            style_orig_price[s] = gross_lt / units_lt
         asp_6m = (sales_6m / units_6m) if units_6m else 0.0
         store = soh_store.get(s, 0)
         wh = soh_wh.get(s, 0)
@@ -4844,6 +4833,11 @@ async def analytics_sor_all_styles(
         pct_in_wh = (wh / soh_total * 100.0) if soh_total > 0 else 0.0
         denom = units_6m + soh_total
         sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
+        # Lifetime SOR — same formula but with 3-year units. SOH is the
+        # same "current on-hand", so this answers "of everything ever
+        # made of this style, what % has sold through?".
+        denom_lt = units_lt + soh_total
+        sor_since_launch = (units_lt / denom_lt * 100.0) if denom_lt > 0 else 0.0
         # Real age + last-sale lookup. The 180-day helper returns ISO
         # strings; only styles that actually traded in the window are
         # present, so absence => style is older than 180 days OR sold
@@ -4908,6 +4902,8 @@ async def analytics_sor_all_styles(
             ),
             "days_since_last_sale": days_since_last,
             "sor_6m": round(sor_6m, 2),
+            "units_since_launch": int(units_lt),
+            "sor_since_launch": round(sor_since_launch, 2),
             "launch_date": launch_date_iso,
             "weekly_avg": round(weekly_avg, 2),
             "woc": round(woc, 1) if woc is not None else None,

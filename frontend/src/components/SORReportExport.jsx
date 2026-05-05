@@ -184,19 +184,19 @@ const SORReport = () => {
     const header = [
       "Style Name", "Category", "Sub Category", "Style Number",
       "Sales Last 6 Months", "Units Sold", "Units Last 6 Months",
-      "Units Last 3 Weeks", "SOH", "SOH Warehouse", "% In WH",
-      "ASP 6 Months", "Original Price", "Days Since Last Sale",
-      "6 Months SOR", "Style Launch Date", "Weekly Average",
-      "Weeks of Cover", "Style Age (Weeks)",
+      "Units Last 3 Weeks", "Units Since Launch", "SOH", "SOH Warehouse",
+      "% In WH", "ASP 6 Months", "Original Price", "Days Since Last Sale",
+      "6 Months SOR", "SOR Since Launch", "Style Launch Date",
+      "Weekly Average", "Weeks of Cover", "Style Age (Weeks)",
     ];
     const lines = [header];
     for (const r of filtered) {
       lines.push([
         r.style_name || "", r.category || "", r.subcategory || "", r.style_number || "",
         r.sales_6m ?? "", r.units_6m ?? "", r.units_6m ?? "", r.units_3w ?? "",
-        r.soh_total ?? "", r.soh_wh ?? "", r.pct_in_wh ?? "",
+        r.units_since_launch ?? "", r.soh_total ?? "", r.soh_wh ?? "", r.pct_in_wh ?? "",
         r.asp_6m ?? "", r.original_price ?? "", r.days_since_last_sale ?? "",
-        r.sor_6m ?? "", r.launch_date || "", r.weekly_avg ?? "",
+        r.sor_6m ?? "", r.sor_since_launch ?? "", r.launch_date || "", r.weekly_avg ?? "",
         r.woc ?? "", r.style_age_weeks ?? "",
       ]);
     }
@@ -304,6 +304,8 @@ const SORReport = () => {
                     render: (r) => fmtNum(r.units_6m) },
                   { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
                     render: (r) => fmtNum(r.units_3w) },
+                  { key: "units_since_launch", label: "Units Since Launch", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_since_launch) },
                   { key: "soh_total", label: "SOH", sortable: true, align: "right",
                     render: (r) => fmtNum(r.soh_total) },
                   { key: "soh_wh", label: "SOH WH", sortable: true, align: "right",
@@ -323,6 +325,12 @@ const SORReport = () => {
                   { key: "sor_6m", label: "6M SOR", sortable: true, align: "right",
                     render: (r) => {
                       const v = r.sor_6m || 0;
+                      const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
+                      return <span className={cls}>{v.toFixed(1)}%</span>;
+                    } },
+                  { key: "sor_since_launch", label: "SOR Since Launch", sortable: true, align: "right",
+                    render: (r) => {
+                      const v = r.sor_since_launch || 0;
                       const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
                       return <span className={cls}>{v.toFixed(1)}%</span>;
                     } },
@@ -376,27 +384,65 @@ const Tile = ({ label, value }) => (
   </div>
 );
 
-// ---- SKU breakdown (Color × Size) ----
+// ---- SKU breakdown (Color → Size, 2-level drill) ----
+//
+// Outer rows = each unique color with rolled-up totals across its sizes.
+// Click a color to expand the per-size SKU rows for that color.
+// Picks the heaviest row design constraint: a "Maxi Dress" with 8 colors ×
+// 5 sizes is 40 SKUs flat — too noisy. Grouping to color first lets the
+// merch team scan colour performance, then drill into the lagging size.
 const SkuBreakdown = ({ rows, loading }) => {
+  const [openColor, setOpenColor] = useState(null);
+
   if (loading && (!rows || rows.length === 0)) {
     return <div className="text-[12px] text-muted py-2">Loading SKU breakdown… (~30s on cold cache)</div>;
   }
   if (!rows || !rows.length) {
     return <div className="text-[12px] text-muted py-2">No SKU detail available for this style.</div>;
   }
+  // Roll up by color
   const totalUnits = rows.reduce((s, r) => s + (r.units_6m || 0), 0);
+  const colorMap = new Map();
+  for (const r of rows) {
+    const c = r.color || "—";
+    const bucket = colorMap.get(c) || {
+      color: c,
+      units_6m: 0,
+      units_3w: 0,
+      soh_total: 0,
+      soh_wh: 0,
+      sizes: [],
+    };
+    bucket.units_6m += r.units_6m || 0;
+    bucket.units_3w += r.units_3w || 0;
+    bucket.soh_total += r.soh_total || 0;
+    bucket.soh_wh += r.soh_wh || 0;
+    bucket.sizes.push(r);
+    colorMap.set(c, bucket);
+  }
+  const colors = Array.from(colorMap.values()).sort((a, b) => (b.units_6m || 0) - (a.units_6m || 0));
+  // Stable size sort within each color (XS→S→M→L→XL→XXL→F, else alpha).
+  const sizeOrder = { XS: 1, S: 2, M: 3, L: 4, XL: 5, XXL: 6, "3XL": 7, F: 99 };
+  for (const c of colors) {
+    c.sizes.sort((a, b) => {
+      const ax = sizeOrder[a.size] ?? 50;
+      const bx = sizeOrder[b.size] ?? 50;
+      if (ax !== bx) return ax - bx;
+      return (a.size || "").localeCompare(b.size || "");
+    });
+  }
+
   return (
     <div className="px-2 py-1" data-testid="sor-sku-breakdown">
       <div className="text-[11px] font-bold uppercase text-muted mb-2">
-        Color × Size — {rows.length} variant{rows.length === 1 ? "" : "s"}
+        Color × Size — {colors.length} color{colors.length === 1 ? "" : "s"} · {rows.length} variant{rows.length === 1 ? "" : "s"}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-[12px]">
+        <table className="w-full text-[12px]" data-testid="sor-color-table">
           <thead>
             <tr className="text-left text-muted border-b border-border">
+              <th className="py-1 pr-3 w-5"></th>
               <th className="py-1 pr-3">Color</th>
-              <th className="py-1 pr-3">Size</th>
-              <th className="py-1 pr-3 font-mono">SKU</th>
               <th className="py-1 pr-3 text-right">Units 6M</th>
               <th className="py-1 pr-3 text-right">% of Style</th>
               <th className="py-1 pr-3 text-right">Units 3W</th>
@@ -406,21 +452,68 @@ const SkuBreakdown = ({ rows, loading }) => {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.sku}-${i}`} className="border-b border-border/40 last:border-0">
-                <td className="py-1 pr-3">{r.color || "—"}</td>
-                <td className="py-1 pr-3">{r.size || "—"}</td>
-                <td className="py-1 pr-3 font-mono text-[11px]">{r.sku || "—"}</td>
-                <td className="py-1 pr-3 text-right num font-semibold">{fmtNum(r.units_6m)}</td>
-                <td className="py-1 pr-3 text-right num text-muted">
-                  {totalUnits ? ((r.units_6m / totalUnits) * 100).toFixed(1) : "0.0"}%
-                </td>
-                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
-                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
-                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
-                <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
-              </tr>
-            ))}
+            {colors.map((c) => {
+              const isOpen = openColor === c.color;
+              const pctInWh = c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0;
+              return (
+                <React.Fragment key={c.color}>
+                  <tr
+                    className="border-b border-border/40 last:border-0 cursor-pointer hover:bg-panel/60"
+                    onClick={() => setOpenColor(isOpen ? null : c.color)}
+                    data-testid={`sor-color-row-${c.color}`}
+                  >
+                    <td className="py-1 pr-3 text-muted">
+                      <span className={`inline-block transition-transform ${isOpen ? "rotate-90" : ""}`}>▸</span>
+                    </td>
+                    <td className="py-1 pr-3 font-semibold">{c.color}</td>
+                    <td className="py-1 pr-3 text-right num font-semibold">{fmtNum(c.units_6m)}</td>
+                    <td className="py-1 pr-3 text-right num text-muted">
+                      {totalUnits ? ((c.units_6m / totalUnits) * 100).toFixed(1) : "0.0"}%
+                    </td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.units_3w)}</td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.soh_total)}</td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.soh_wh)}</td>
+                    <td className="py-1 pr-0 text-right num">{pctInWh.toFixed(1)}%</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={8} className="bg-panel/30 px-3 py-2">
+                        <table className="w-full text-[11.5px]" data-testid={`sor-size-table-${c.color}`}>
+                          <thead>
+                            <tr className="text-left text-muted border-b border-border/60">
+                              <th className="py-1 pr-3">Size</th>
+                              <th className="py-1 pr-3 font-mono">SKU</th>
+                              <th className="py-1 pr-3 text-right">Units 6M</th>
+                              <th className="py-1 pr-3 text-right">% of Color</th>
+                              <th className="py-1 pr-3 text-right">Units 3W</th>
+                              <th className="py-1 pr-3 text-right">SOH</th>
+                              <th className="py-1 pr-3 text-right">SOH WH</th>
+                              <th className="py-1 pr-0 text-right">% In WH</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {c.sizes.map((r, i) => (
+                              <tr key={`${r.sku}-${i}`} className="border-b border-border/30 last:border-0">
+                                <td className="py-1 pr-3">{r.size || "—"}</td>
+                                <td className="py-1 pr-3 font-mono text-[10.5px]">{r.sku || "—"}</td>
+                                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_6m)}</td>
+                                <td className="py-1 pr-3 text-right num text-muted">
+                                  {c.units_6m ? ((r.units_6m / c.units_6m) * 100).toFixed(1) : "0.0"}%
+                                </td>
+                                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
+                                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
+                                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
+                                <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -428,8 +521,52 @@ const SkuBreakdown = ({ rows, loading }) => {
   );
 };
 
-// ---- Location pane (right side) ----
+// ---- Location pane (right side) — sortable by clicking headers ----
 const LocationPane = ({ style, rows, loading, error, onClear }) => {
+  const [sortKey, setSortKey] = useState("units_6m");
+  const [sortDir, setSortDir] = useState("desc");
+
+  const sorted = useMemo(() => {
+    if (!rows || !rows.length) return rows || [];
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      // String compare for `location`, numeric otherwise
+      if (sortKey === "location") {
+        const r = String(av || "").localeCompare(String(bv || ""));
+        return sortDir === "asc" ? r : -r;
+      }
+      const an = Number(av) || 0;
+      const bn = Number(bv) || 0;
+      return sortDir === "asc" ? an - bn : bn - an;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "location" ? "asc" : "desc");
+    }
+  };
+
+  const SortHeader = ({ keyName, label, align = "left" }) => {
+    const active = sortKey === keyName;
+    const arrow = active ? (sortDir === "asc" ? "▲" : "▼") : "";
+    return (
+      <th
+        onClick={() => toggleSort(keyName)}
+        className={`py-1 pr-2 cursor-pointer hover:text-foreground select-none ${align === "right" ? "text-right" : "text-left"}`}
+        data-testid={`sor-loc-th-${keyName}`}
+      >
+        {label} <span className="text-[9px]">{arrow}</span>
+      </th>
+    );
+  };
+
   if (!style) {
     return (
       <div className="rounded-xl border border-border p-4 text-[12px] text-muted text-center" data-testid="sor-location-pane-empty">
@@ -478,15 +615,15 @@ const LocationPane = ({ style, rows, loading, error, onClear }) => {
         ) : (
           <table className="w-full text-[12px]" data-testid="sor-location-table">
             <thead>
-              <tr className="text-left text-muted border-b border-border">
-                <th className="py-1 pr-2">Location</th>
-                <th className="py-1 pr-2 text-right">Units 6M</th>
-                <th className="py-1 pr-2 text-right">SOH</th>
-                <th className="py-1 pr-0 text-right">SOR</th>
+              <tr className="text-muted border-b border-border">
+                <SortHeader keyName="location" label="Location" />
+                <SortHeader keyName="units_6m" label="Units 6M" align="right" />
+                <SortHeader keyName="soh_total" label="SOH" align="right" />
+                <SortHeader keyName="sor_6m" label="SOR" align="right" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {sorted.map((r) => {
                 const sor = r.sor_6m || 0;
                 const sorCls = sor >= 70 ? "text-emerald-600 font-bold"
                   : sor >= 50 ? "text-emerald-500"

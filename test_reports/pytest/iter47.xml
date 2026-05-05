@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="3" time="63.903" timestamp="2026-05-05T13:36:56.717698+00:00" hostname="agent-env-08a75415-0b0e-4c37-9b31-a096a60f524b"><testcase classname="backend.tests.test_iteration_47_sor_lifetime" name="test_sor_all_styles_returns_lifetime_fields" time="60.743"><failure message="AssertionError: expected 200, got 502: The preview environment is not responding. It may be starting up.&#10;  &#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration_47_sor_lifetime.py:36: in test_sor_all_styles_returns_lifetime_fields
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text[:300]}"
+E   AssertionError: expected 200, got 502: The preview environment is not responding. It may be starting up.
+E     
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration_47_sor_lifetime" name="test_sor_all_styles_warm_cache_fast" time="2.713" /><testcase classname="backend.tests.test_iteration_47_sor_lifetime" name="test_sor_all_styles_count" time="0.275" /></testsuite></testsuites>
