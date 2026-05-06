@@ -6977,6 +6977,7 @@ async def exports_stock_rebalancing(
 # include_router copies the route table at call time.
 from routes import customer_analytics  # noqa: F401, E402
 from routes import analytics_inventory  # noqa: F401, E402
+from routes import monthly_targets  # noqa: F401, E402
 
 app.include_router(api_router)
 app.include_router(recommendations_router)

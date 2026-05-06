@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, COUNTRY_FLAGS } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
 import AnnualTargetsCard from "@/components/AnnualTargetsCard";
+import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
+import TotalSalesSummary from "@/components/TotalSalesSummary";
 import { Target, TrendUp, CalendarBlank } from "@phosphor-icons/react";
 
 /**
@@ -314,6 +316,11 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, prior
 
 export default function TargetsTracker() {
   const year = 2026;
+  // Current month YYYY-MM-01 — drives the monthly tracker + summary.
+  const currentMonthIso = useMemo(() => {
+    const d = new Date();
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  }, []);
   const [data, setData] = useState(null);
   const [priorYearData, setPriorYearData] = useState(null);
   const [error, setError] = useState(null);
@@ -509,6 +516,12 @@ export default function TargetsTracker() {
       <div data-testid="detailed-target-breakdown">
         <AnnualTargetsCard variant="full" year={year} />
       </div>
+
+      {/* Total Sales Summary — current month per-store rollup. */}
+      <TotalSalesSummary month={currentMonthIso} />
+
+      {/* Monthly daily-budget tracker per store. */}
+      <MonthlyTargetsTracker month={currentMonthIso} />
     </div>
   );
 }
