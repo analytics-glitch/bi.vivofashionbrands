@@ -101,7 +101,7 @@ class UpdateUserBody(BaseModel):
 _VIEWER = ["overview", "locations", "footfall", "customers", "customer-details"]
 _STORE_MANAGER = _VIEWER + ["inventory", "re-order", "ibt"]
 _ANALYST = _STORE_MANAGER + ["products", "pricing", "data-quality"]
-_EXEC = _ANALYST + ["ceo-report", "exports"]
+_EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
 _ADMIN = _EXEC + ["admin-users", "admin-activity-logs"]
 ROLE_PAGES = {
     "viewer": _VIEWER,

@@ -12,7 +12,7 @@
 const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details"];
 const STORE_MANAGER = [...VIEWER, "inventory", "re-order", "ibt"];
 const ANALYST = [...STORE_MANAGER, "products", "pricing", "data-quality"];
-const EXEC = [...ANALYST, "ceo-report", "exports"];
+const EXEC = [...ANALYST, "ceo-report", "targets", "exports"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs"];
 
 export const ROLE_PAGES = {
@@ -59,6 +59,7 @@ export const homePageFor = (user) => {
     "ibt": "/ibt",
     "pricing": "/pricing",
     "ceo-report": "/ceo-report",
+    "targets": "/targets",
     "data-quality": "/data-quality",
     "exports": "/exports",
     "admin-users": "/admin/users",

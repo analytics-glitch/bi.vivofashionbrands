@@ -24,8 +24,7 @@ import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
-import Q2TargetsCard from "@/components/Q2TargetsCard";
-import AnnualTargetsCard from "@/components/AnnualTargetsCard";
+// Q2TargetsCard + AnnualTargetsCard moved to /targets (Targets Tracker page).
 import KpiTrendChart from "@/components/KpiTrendChart";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useNavigate } from "react-router-dom";
@@ -1174,14 +1173,12 @@ const Overview = () => {
                 channel={channels.length ? channels.join(",") : undefined}
                 dataVersion={dataVersion}
               />
-              <AnnualTargetsCard variant="compact" />
               <KpiTrendChart
                 dateFrom={dateFrom}
                 dateTo={dateTo}
                 countries={countries}
                 dataVersion={dataVersion}
               />
-              <Q2TargetsCard />
               <DataFreshness />
             </div>
           </div>

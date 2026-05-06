@@ -12,6 +12,7 @@ import Customers from "@/pages/Customers";
 import CustomerDetails from "@/pages/CustomerDetails";
 import Footfall from "@/pages/Footfall";
 import CEOReport from "@/pages/CEOReport";
+import TargetsTracker from "@/pages/TargetsTracker";
 import ReOrder from "@/pages/ReOrder";
 import IBT from "@/pages/IBT";
 import Pricing from "@/pages/Pricing";
@@ -85,6 +86,7 @@ function App() {
               <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
               <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
               <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
+              <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
               <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
               <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
               <Route path="/pricing" element={<ProtectedShell pageId="pricing"><Pricing /></ProtectedShell>} />
