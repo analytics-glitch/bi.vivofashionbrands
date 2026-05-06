@@ -198,7 +198,10 @@ const Customers = () => {
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message));
 
     const rest = [
-      ["top", api.get("/top-customers", { params: { ...dateP, limit: topN } }).catch(() => ({ data: [] }))],
+      ["top", api.get("/top-customers", {
+        params: { ...dateP, limit: topN, ...(revealToken ? { reveal: true } : {}) },
+        ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
+      }).catch(() => ({ data: [] }))],
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", {
@@ -274,24 +277,37 @@ const Customers = () => {
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
 
   // PII reveal cascade — when the user verifies the reveal password the
-  // /churned-customers endpoint must be re-fetched with the reveal token
-  // header so unmasked phone/email come back. We do this in a SEPARATE
-  // effect (rather than re-running the whole page-fetch) so the page
-  // doesn't go blank during the refresh — the previous masked rows stay
-  // visible until the unmasked rows arrive. Skip the run on initial
-  // mount when revealToken is null (the main effect already loaded the
-  // masked list).
+  // /churned-customers AND /top-customers endpoints must be re-fetched
+  // with the reveal token header so unmasked phone/email come back. We
+  // do this in a SEPARATE effect (rather than re-running the whole
+  // page-fetch) so the page doesn't go blank during the refresh — the
+  // previous masked rows stay visible until the unmasked rows arrive.
+  // Skip the run on initial mount when revealToken is null (the main
+  // effect already loaded the masked lists).
   useEffect(() => {
     if (!revealToken) return;
     let cancelled = false;
-    api.get("/churned-customers", {
-      params: { days: churnDays, limit: 500, reveal: true },
-      headers: { "X-PII-Reveal-Token": revealToken },
-    })
-      .then((r) => { if (!cancelled) setChurned(r.data || []); })
-      .catch(() => { /* keep masked rows on failure */ });
+    const headers = { "X-PII-Reveal-Token": revealToken };
+    const dateP = { date_from: dateFrom, date_to: dateTo,
+      country: countries.length ? countries.join(",") : undefined,
+      channel: channels.length ? channels.join(",") : undefined };
+    Promise.all([
+      api.get("/churned-customers", {
+        params: { days: churnDays, limit: 500, reveal: true },
+        headers,
+      }).catch(() => ({ data: null })),
+      api.get("/top-customers", {
+        params: { ...dateP, limit: topN, reveal: true },
+        headers,
+      }).catch(() => ({ data: null })),
+    ]).then(([ch, tc]) => {
+      if (cancelled) return;
+      if (ch?.data) setChurned(ch.data);
+      if (tc?.data) setTop(tc.data);
+    });
     return () => { cancelled = true; };
-  }, [revealToken, churnDays]);
+    // eslint-disable-next-line
+  }, [revealToken, churnDays, topN]);
 
   // Recently-unchurned table — re-fetches whenever the slider days change,
   // independent of the main page fetch since it can be slow (10-min cache).
@@ -314,7 +330,10 @@ const Customers = () => {
     const timer = setTimeout(async () => {
       setSearching(true);
       try {
-        const { data } = await api.get("/customer-search", { params: { q: searchQ.trim() } });
+        const { data } = await api.get("/customer-search", {
+          params: { q: searchQ.trim(), ...(revealToken ? { reveal: true } : {}) },
+          ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
+        });
         setSearchResults(data || []);
       } catch {
         setSearchResults([]);
@@ -323,7 +342,7 @@ const Customers = () => {
       }
     }, 400);
     return () => clearTimeout(timer);
-  }, [searchQ]);
+  }, [searchQ, revealToken]);
 
   const openCustomer = async (c) => {
     setSelectedCustomer(c);
@@ -358,12 +377,92 @@ const Customers = () => {
 
   return (
     <div className="space-y-6" data-testid="customers-page">
-      <div>
-        <div className="eyebrow">Dashboard · Customers</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
-          Customers
-        </h1>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="eyebrow">Dashboard · Customers</div>
+          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+            Customers
+          </h1>
+        </div>
+
+        {/* ---- Global PII reveal gate -------------------------------- */}
+        <div className="flex items-center gap-2 flex-wrap" data-testid="global-reveal-strip">
+          {revealToken ? (
+            <>
+              <span className="text-[11.5px] font-bold text-emerald-700 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300">
+                ✓ Contacts visible · session expires in ~10 min
+              </span>
+              <button
+                type="button"
+                onClick={() => { setRevealToken(null); setRevealError(null); }}
+                data-testid="global-hide-contacts-btn"
+                className="text-[11.5px] font-medium px-2.5 py-1 rounded-md border border-border hover:bg-panel"
+              >
+                Hide contacts
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setRevealModalOpen(true); setRevealError(null); setRevealPassword(""); }}
+              data-testid="global-show-contacts-btn"
+              className="text-[12px] font-bold px-3 py-1.5 rounded-md border border-brand text-brand hover:bg-brand hover:text-white transition-colors"
+            >
+              🔒 Show contacts (password required)
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Global reveal-password modal — same modal as before, just hoisted
+          so it works from the page header. The Reactivation strip continues
+          to render its own button (kept for discoverability) but they all
+          drive the same revealToken / modal. */}
+      {revealModalOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          data-testid="reveal-modal"
+          onClick={(e) => { if (e.target === e.currentTarget) setRevealModalOpen(false); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
+            <div className="font-extrabold text-[16px] mb-1">Enter PII reveal password</div>
+            <div className="text-[12px] text-muted mb-4">
+              This is the shared ops password (not your login). Unmasks every customer phone &amp; email on this page (Top Customers, Reactivation, Customer Details, Search) for the next 10 minutes. Each access is audit-logged.
+            </div>
+            <input
+              type="password"
+              value={revealPassword}
+              onChange={(e) => setRevealPassword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") doReveal(); }}
+              placeholder="PII reveal password"
+              autoFocus
+              data-testid="reveal-password-input"
+              className="w-full px-3 py-2 rounded-lg border border-border text-[13px] mb-3"
+            />
+            {revealError && (
+              <div className="text-[12px] text-rose-600 mb-3" data-testid="reveal-error">{revealError}</div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setRevealModalOpen(false)}
+                className="text-[12px] font-semibold px-3 py-1.5 rounded-md border border-border hover:bg-panel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={doReveal}
+                disabled={revealing || !revealPassword}
+                data-testid="reveal-submit-btn"
+                className="btn-primary disabled:opacity-50"
+              >
+                {revealing ? "Verifying…" : "Show contacts"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
@@ -413,7 +512,7 @@ const Customers = () => {
                       <UserCircle size={20} className="text-brand" weight="fill" />
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-[13px] truncate">{r.customer_name || "—"}</div>
-                        <div className="text-[11.5px] text-muted truncate">{r.phone ? maskPhone(r.phone) : (r.email || "—")}</div>
+                        <div className="text-[11.5px] text-muted truncate">{r.phone ? (revealToken ? r.phone : maskPhone(r.phone)) : (r.email || "—")}</div>
                       </div>
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-1 text-[11px]">
@@ -435,7 +534,7 @@ const Customers = () => {
                   <div className="eyebrow">Customer detail</div>
                   <div className="font-bold text-[16px] mt-0.5">{selectedCustomer.customer_name || "—"}</div>
                   <div className="text-[12px] text-muted">
-                    {[selectedCustomer.phone ? maskPhone(selectedCustomer.phone) : null, selectedCustomer.email, selectedCustomer.city].filter(Boolean).join(" · ") || "—"}
+                    {[selectedCustomer.phone ? (revealToken ? selectedCustomer.phone : maskPhone(selectedCustomer.phone)) : null, selectedCustomer.email, selectedCustomer.city].filter(Boolean).join(" · ") || "—"}
                   </div>
                 </div>
                 <button type="button" onClick={() => { setSelectedCustomer(null); setCustomerProducts([]); }} className="p-1.5 rounded hover:bg-panel">
@@ -1563,12 +1662,13 @@ const Customers = () => {
                         render: (r) => {
                           if (!r.phone) return <span className="text-muted">—</span>;
                           const href = telHref(r.phone);
-                          const masked = maskPhone(r.phone);
+                          // Show raw phone when PII unlocked, masked otherwise.
+                          const display = revealToken ? r.phone : maskPhone(r.phone);
                           return href
-                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{masked}</a>
-                            : <span className="text-muted">{masked}</span>;
+                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{display}</a>
+                            : <span className="text-muted">{display}</span>;
                         },
-                        csv: (r) => maskPhone(r.phone),
+                        csv: (r) => revealToken ? r.phone : maskPhone(r.phone),
                       },
                       { key: "city", label: "City", align: "left", render: (r) => r.city || <span className="text-muted">—</span>, csv: (r) => r.city || "" },
                       { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
@@ -2089,52 +2189,6 @@ const Customers = () => {
                     Contacts are masked by default. Re-enter your password to reveal full mobile + email and enable export.
                   </span>
                 </div>
-
-                {revealModalOpen && (
-                  <div
-                    className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
-                    data-testid="reveal-modal"
-                    onClick={(e) => { if (e.target === e.currentTarget) setRevealModalOpen(false); }}
-                  >
-                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
-                      <div className="font-extrabold text-[16px] mb-1">Enter PII reveal password</div>
-                      <div className="text-[12px] text-muted mb-4">
-                        This is the shared ops password (not your login). Unmasks customer phone numbers and emails for the next 10 minutes. Each access is audit-logged.
-                      </div>
-                      <input
-                        type="password"
-                        value={revealPassword}
-                        onChange={(e) => setRevealPassword(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") doReveal(); }}
-                        placeholder="PII reveal password"
-                        autoFocus
-                        data-testid="reveal-password-input"
-                        className="w-full px-3 py-2 rounded-lg border border-border text-[13px] mb-3"
-                      />
-                      {revealError && (
-                        <div className="text-[12px] text-rose-600 mb-3" data-testid="reveal-error">{revealError}</div>
-                      )}
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          type="button"
-                          onClick={() => setRevealModalOpen(false)}
-                          className="text-[12px] font-semibold px-3 py-1.5 rounded-md border border-border hover:bg-panel"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={doReveal}
-                          disabled={revealing || !revealPassword}
-                          data-testid="reveal-submit-btn"
-                          className="btn-primary disabled:opacity-50"
-                        >
-                          {revealing ? "Verifying…" : "Show contacts"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 {decorated.length === 0 ? (
                   <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">

@@ -1428,21 +1428,50 @@ async def get_top_customers(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     limit: int = 20,
+    reveal: bool = False,
     user=Depends(get_current_user),
 ):
     rows = await _safe_fetch("/top-customers", {
         "date_from": date_from, "date_to": date_to,
         "country": country, "channel": channel, "limit": limit,
-    })
-    return await mask_and_audit(rows or [], user=user, endpoint="/top-customers", request_ip=_client_ip(request))
+    }) or []
+    if reveal:
+        token = request.headers.get("X-PII-Reveal-Token") or request.headers.get("x-pii-reveal-token")
+        from auth import verify_pii_reveal_token
+        if not verify_pii_reveal_token(getattr(user, "user_id", None), token):
+            raise HTTPException(status_code=403, detail="Reveal token missing or expired — re-enter password")
+        from pii import log_unmasked_access, _row_id, _CONTACT_FIELDS  # type: ignore
+        await log_unmasked_access(
+            user=user,
+            endpoint="/top-customers?reveal=true",
+            row_ids=[rid for rid in (_row_id(r) for r in rows) if rid],
+            fields=list(_CONTACT_FIELDS),
+            request_ip=_client_ip(request),
+        )
+        return rows
+    return await mask_and_audit(rows, user=user, endpoint="/top-customers", request_ip=_client_ip(request))
 
 
 @api_router.get("/customer-search")
-async def customer_search(request: Request, q: str, user=Depends(get_current_user)):
+async def customer_search(request: Request, q: str, reveal: bool = False, user=Depends(get_current_user)):
     if not q or not q.strip():
         return []
-    rows = await _safe_fetch("/customer-search", {"q": q.strip()})
-    return await mask_and_audit(rows or [], user=user, endpoint="/customer-search", request_ip=_client_ip(request))
+    rows = await _safe_fetch("/customer-search", {"q": q.strip()}) or []
+    if reveal:
+        token = request.headers.get("X-PII-Reveal-Token") or request.headers.get("x-pii-reveal-token")
+        from auth import verify_pii_reveal_token
+        if not verify_pii_reveal_token(getattr(user, "user_id", None), token):
+            raise HTTPException(status_code=403, detail="Reveal token missing or expired — re-enter password")
+        from pii import log_unmasked_access, _row_id, _CONTACT_FIELDS  # type: ignore
+        await log_unmasked_access(
+            user=user,
+            endpoint="/customer-search?reveal=true",
+            row_ids=[rid for rid in (_row_id(r) for r in rows) if rid],
+            fields=list(_CONTACT_FIELDS),
+            request_ip=_client_ip(request),
+        )
+        return rows
+    return await mask_and_audit(rows, user=user, endpoint="/customer-search", request_ip=_client_ip(request))
 
 
 @api_router.get("/customer-products")
