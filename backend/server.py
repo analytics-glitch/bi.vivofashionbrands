@@ -4289,9 +4289,42 @@ async def analytics_new_styles(
 
     period_map: Dict[str, Dict[str, Any]] = {r.get("style_name"): r for r in period if r.get("style_name")}
 
+    # Location-scoped stock override. Upstream `/sor` returns global
+    # current_stock regardless of the `channel` filter — so without this
+    # override the New-Styles Performance "Current Stock" column would
+    # show the same number whether the user is looking at Vivo Sarit or
+    # all locations. Recompute it from the inventory feed scoped to the
+    # selected POS list (if any) so the column tells the truth.
+    stock_by_style: Optional[Dict[str, float]] = None
+    if chs or cs:
+        try:
+            inv = await fetch_all_inventory(
+                country=country,
+                locations=chs if chs else None,
+            ) or []
+            stock_by_style = defaultdict(float)
+            for r in inv:
+                s = r.get("style_name")
+                if not s:
+                    continue
+                stock_by_style[s] += float(r.get("available") or 0)
+        except Exception as e:
+            logger.warning("[/analytics/new-styles] inventory override failed: %s", e)
+            stock_by_style = None
+
     out: List[Dict[str, Any]] = []
     for r in new_styles:
         p = period_map.get(r.get("style_name")) or {}
+        # Location-scoped stock override (when channel/country filter active).
+        if stock_by_style is not None:
+            current_stock = float(stock_by_style.get(r.get("style_name"), 0))
+        else:
+            current_stock = float(r.get("current_stock") or 0)
+        # Re-compute SOR from the (possibly-overridden) location-scoped
+        # numerator so SOR matches the displayed stock + units.
+        units_recent = float(r.get("units_sold") or 0)
+        denom = units_recent + current_stock
+        sor = (units_recent / denom * 100.0) if denom > 0 else 0.0
         out.append({
             "style_name": r.get("style_name"),
             "brand": r.get("brand"),
@@ -4301,10 +4334,10 @@ async def analytics_new_styles(
             "units_sold_period": p.get("units_sold") or 0,
             "total_sales_period": p.get("total_sales") or 0,
             # Since launch (last 90d)
-            "units_sold_launch": r.get("units_sold") or 0,
+            "units_sold_launch": units_recent,
             "total_sales_launch": r.get("total_sales") or 0,
-            "current_stock": r.get("current_stock") or 0,
-            "sor_percent": r.get("sor_percent") or 0,
+            "current_stock": current_stock,
+            "sor_percent": round(sor, 1) if stock_by_style is not None else (r.get("sor_percent") or 0),
         })
     out.sort(key=lambda x: x.get("total_sales_period") or 0, reverse=True)
     return out
