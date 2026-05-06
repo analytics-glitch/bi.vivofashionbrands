@@ -61,7 +61,16 @@ async def analytics_replenish_by_color(
     Source data: re-uses the cached SOR list from /sor (new + repeat
     styles) plus the BULK SKU breakdown so we don't fan out per-style.
     """
+    # Pull /sor with an explicit 6-month window. Upstream defaults to a
+    # tiny "last few days" window when no dates are passed — Zena's
+    # 6-month units_sold=417 / sor=81.8% becomes 33 / 26.2% in the
+    # default window, dropping every replen candidate before we even
+    # start. Always anchor SOR to a stable 6-month period instead.
+    today = datetime.now(timezone.utc).date()
+    sor_from = (today - timedelta(days=180)).isoformat()
+    sor_to = today.isoformat()
     sor_rows = await _safe_fetch("/sor", {
+        "date_from": sor_from, "date_to": sor_to,
         "country": country, "channel": channel, "limit": 5000,
     }) or []
 
@@ -100,7 +109,6 @@ async def analytics_replenish_by_color(
     # SKU breakdown. We use it to compute per-(style, color) recent sell-
     # through. 30 days is enough for an 8-week-cover replen calc since
     # we still have meaningful daily run-rates without overwhelming upstream.
-    today = datetime.now(timezone.utc).date()
     look_from = (today - timedelta(days=30)).isoformat()
     sales_rows = await _orders_for_window(look_from, today.isoformat(), country, channel)
 
