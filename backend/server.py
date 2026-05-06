@@ -5234,10 +5234,11 @@ async def analytics_style_location_breakdown(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     color: Optional[str] = None,
+    size: Optional[str] = None,
     response: Response = None,
 ):
     """Per-location sales + SOH for one style, optionally filtered to
-    rows of a single colour.
+    rows of a single colour and / or size.
 
     Returns:
       • 200 with `{style_name, locations: [...]}` when the cache is
@@ -5245,32 +5246,32 @@ async def analytics_style_location_breakdown(
       • 202 with `{computing: true, style_name, retry_after: 15}` when
         the scan is still running. Frontend should poll every 15s.
 
-    When `color` is supplied the response is filtered down to only
-    rows where the SKU's `color_print` matches — useful for the
-    SOR Report color drill: clicking "Black" inside a Style row
-    re-renders the Where-did-it-sell pane to show black-only sales /
-    SOH per location. We re-aggregate from the cached orders +
-    inventory so this is essentially free once the style scan ran
-    once. No new upstream calls.
+    When `color` and / or `size` are supplied the response is filtered
+    accordingly. Used by the SOR Report color/size drill: clicking
+    "Black" inside a Style row → re-renders Where-did-it-sell with
+    Black-only numbers. Clicking a specific size SKU within Black →
+    further narrows to that colour+size at every location. Re-aggregated
+    from the cached orders + inventory so this is essentially free
+    once the style scan ran once. No new upstream calls.
     """
     import time as _time
     cache_key = f"{style_name}|{country or ''}|{channel or ''}"
 
-    # Fast path: warm cache (style-level only — colour filter is
-    # always applied on top of the cached raw scan, see below).
+    # Fast path: warm cache (style-level only — colour/size filters
+    # are always applied on top of the cached raw scan, see below).
     cached = _location_breakdown_cache.get(cache_key)
     if cached and (_time.time() - cached[0] < _LOCATION_BREAKDOWN_TTL):
-        if not color:
+        if not color and not size:
             return cached[1]
-        return await _filter_locations_by_color(style_name, country, channel, color)
+        return await _filter_locations_by_color(style_name, country, channel, color, size)
 
     # Start (or join) the background scan and wait up to 50s.
     task = await _start_or_join_style_scan(style_name, country, channel)
     try:
         _, payload = await asyncio.wait_for(asyncio.shield(task), timeout=50.0)
-        if not color:
+        if not color and not size:
             return payload
-        return await _filter_locations_by_color(style_name, country, channel, color)
+        return await _filter_locations_by_color(style_name, country, channel, color, size)
     except asyncio.TimeoutError:
         # Scan still running — tell the frontend to poll. The Task is NOT
         # cancelled (we used asyncio.shield), so it'll finish in the
@@ -5280,13 +5281,13 @@ async def analytics_style_location_breakdown(
         return {"computing": True, "style_name": style_name, "retry_after": 15}
 
 
-# ─── Color-filtered location aggregator ──────────────────────────────
+# ─── Color/size-filtered location aggregator ─────────────────────────
 #
 # The bulk style scan caches per-style location aggregates in
-# `_location_breakdown_cache`. For colour-filtered views we re-walk the
-# already-cached raw orders + inventory windows for that style once.
-# Result is cached in `_location_color_cache` keyed by
-# (style, country, channel, color) so repeat clicks are instant.
+# `_location_breakdown_cache`. For colour/size-filtered views we
+# re-walk the already-cached raw orders + inventory windows for that
+# style once. Result is cached in `_location_color_cache` keyed by
+# (style, country, channel, color, size) so repeat clicks are instant.
 _location_color_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _LOCATION_COLOR_TTL = 600  # 10 minutes — same as the style-level cache.
 
@@ -5295,10 +5296,11 @@ async def _filter_locations_by_color(
     style_name: str,
     country: Optional[str],
     channel: Optional[str],
-    color: str,
+    color: Optional[str],
+    size: Optional[str] = None,
 ) -> Dict[str, Any]:
     import time as _time
-    key = f"{style_name}|{country or ''}|{channel or ''}|{color}"
+    key = f"{style_name}|{country or ''}|{channel or ''}|{color or ''}|{size or ''}"
     hit = _location_color_cache.get(key)
     if hit and (_time.time() - hit[0] < _LOCATION_COLOR_TTL):
         return hit[1]
@@ -5315,13 +5317,19 @@ async def _filter_locations_by_color(
 
     needle = (style_name or "").strip()
     target_color = (color or "").strip()
+    target_size = (size or "").strip()
     per_loc_sales: Dict[str, Dict[str, Any]] = {}
     for r in orders:
         if (r.get("style_name") or "").strip() != needle:
             continue
-        rc = (r.get("color_print") or r.get("color") or "—").strip()
-        if rc != target_color:
-            continue
+        if target_color:
+            rc = (r.get("color_print") or r.get("color") or "—").strip()
+            if rc != target_color:
+                continue
+        if target_size:
+            rs = (r.get("size") or "—").strip()
+            if rs != target_size:
+                continue
         order_date = (r.get("order_date") or "")[:10]
         qty = int(r.get("quantity") or 0)
         sales = float(r.get("total_sales_kes") or 0)
@@ -5338,9 +5346,14 @@ async def _filter_locations_by_color(
     for r in (inv or []):
         if (r.get("style_name") or "").strip() != needle:
             continue
-        rc = (r.get("color_print") or r.get("color") or "—").strip()
-        if rc != target_color:
-            continue
+        if target_color:
+            rc = (r.get("color_print") or r.get("color") or "—").strip()
+            if rc != target_color:
+                continue
+        if target_size:
+            rs = (r.get("size") or "—").strip()
+            if rs != target_size:
+                continue
         loc_name = r.get("location_name") or ""
         if chs and loc_name not in chs:
             continue
@@ -5370,7 +5383,7 @@ async def _filter_locations_by_color(
             "sor_6m": round(sor, 2),
         })
     loc_rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
-    payload = {"style_name": style_name, "color": color, "locations": loc_rows}
+    payload = {"style_name": style_name, "color": color, "size": size, "locations": loc_rows}
     _location_color_cache[key] = (_time.time(), payload)
     return payload
 

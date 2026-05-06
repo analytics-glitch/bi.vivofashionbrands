@@ -35,14 +35,16 @@ const SORReport = () => {
   const [brandSel, setBrandSel] = useState([]);
   const [selectedStyle, setSelectedStyle] = useState(null);
   const [selectedColor, setSelectedColor] = useState(null);
+  const [selectedSize, setSelectedSize] = useState(null);
 
   // Per-style SKU breakdown cache (for row expand). Keyed by style_name.
   const [skuCache, setSkuCache] = useState({});
   const [skuLoading, setSkuLoading] = useState({});
 
-  // Per-style location breakdown cache. Keyed by `style|color` (color="" for
-  // the all-colors view) so the same style can show both an "all colors"
-  // breakdown and any number of per-color drills without re-fetching.
+  // Per-style location breakdown cache. Keyed by `style|color|size`
+  // (color/size = "" for the all-rollup view) so the same style can
+  // show all-colours, per-colour, AND per-(colour+size) drills without
+  // re-fetching when toggling between them.
   const [locCache, setLocCache] = useState({});
   const [locLoading, setLocLoading] = useState(false);
   const [locError, setLocError] = useState(null);
@@ -140,14 +142,14 @@ const SORReport = () => {
     tick();
   };
 
-  // Lazy-load location breakdown when a style (and optionally a color)
-  // is selected. Same 202 poll pattern as SKU breakdown — both endpoints
-  // share the same /orders scan on the backend so once one finishes the
-  // other warms instantly. Color filter cache key is `style|color` so
-  // toggling between "all colors" and "Black" doesn't refetch each.
-  const loadLocations = (style, color) => {
+  // Lazy-load location breakdown when a style (and optionally color +
+  // size) is selected. Same 202 poll pattern as SKU breakdown — both
+  // endpoints share the same /orders scan on the backend so once one
+  // finishes the other warms instantly. Cache key is `style|color|size`
+  // so toggling between any of the three drill levels doesn't refetch.
+  const loadLocations = (style, color, size) => {
     if (!style) return;
-    const key = `${style}|${color || ""}`;
+    const key = `${style}|${color || ""}|${size || ""}`;
     if (locCache[key]) return;
     setLocLoading(true);
     setLocError(null);
@@ -158,6 +160,7 @@ const SORReport = () => {
           country: countryParam,
           channel: channelParam,
           ...(color ? { color } : {}),
+          ...(size ? { size } : {}),
         },
       })
         .then((r) => {
@@ -187,9 +190,9 @@ const SORReport = () => {
   // click a row to populate the side pane.
 
   useEffect(() => {
-    if (selectedStyle) loadLocations(selectedStyle, selectedColor);
+    if (selectedStyle) loadLocations(selectedStyle, selectedColor, selectedSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStyle, selectedColor]);
+  }, [selectedStyle, selectedColor, selectedSize]);
 
   const exportCsv = () => {
     const header = [
@@ -297,11 +300,12 @@ const SORReport = () => {
                   // location pane fetch below hits a warm cache after
                   // ~1ms instead of running a second cold scan.
                   loadSku(row.style_name);
-                  // Reset the per-color drill whenever the user picks a
-                  // different style — colours from the previous style
-                  // would no longer match.
+                  // Reset the per-color and per-size drills whenever
+                  // the user picks a different style — colours/sizes
+                  // from the previous style would no longer match.
                   if (row.style_name !== selectedStyle) {
                     setSelectedColor(null);
+                    setSelectedSize(null);
                   }
                   setSelectedStyle(row.style_name);
                 }}
@@ -373,12 +377,22 @@ const SORReport = () => {
                     rows={skuCache[row.style_name]}
                     loading={skuLoading[row.style_name]}
                     selectedColor={row.style_name === selectedStyle ? selectedColor : null}
+                    selectedSize={row.style_name === selectedStyle ? selectedSize : null}
                     onColorClick={(color) => {
                       // Anchor the location pane to this style first so
                       // useEffect re-fires the loader. Toggling: same
-                      // colour clicked again clears the colour filter.
+                      // colour clicked again clears both filters.
                       setSelectedStyle(row.style_name);
+                      setSelectedSize(null);  // changing color always resets size
                       setSelectedColor((prev) => (prev === color ? null : color));
+                    }}
+                    onSizeClick={(color, size) => {
+                      // Drill to color+size for this style. Toggling:
+                      // same size clicked again clears just the size,
+                      // keeping the colour filter active.
+                      setSelectedStyle(row.style_name);
+                      setSelectedColor(color);
+                      setSelectedSize((prev) => (prev === size ? null : size));
                     }}
                   />
                 )}
@@ -390,11 +404,13 @@ const SORReport = () => {
               <LocationPane
                 style={selectedStyle}
                 color={selectedColor}
-                rows={locCache[`${selectedStyle}|${selectedColor || ""}`]}
+                size={selectedSize}
+                rows={locCache[`${selectedStyle}|${selectedColor || ""}|${selectedSize || ""}`]}
                 loading={locLoading}
                 error={locError}
-                onClear={() => { setSelectedStyle(null); setSelectedColor(null); }}
-                onClearColor={() => setSelectedColor(null)}
+                onClear={() => { setSelectedStyle(null); setSelectedColor(null); setSelectedSize(null); }}
+                onClearColor={() => { setSelectedColor(null); setSelectedSize(null); }}
+                onClearSize={() => setSelectedSize(null)}
               />
             </div>
           </div>
@@ -418,7 +434,7 @@ const Tile = ({ label, value }) => (
 // Picks the heaviest row design constraint: a "Maxi Dress" with 8 colors ×
 // 5 sizes is 40 SKUs flat — too noisy. Grouping to color first lets the
 // merch team scan colour performance, then drill into the lagging size.
-const SkuBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
+const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick, onSizeClick }) => {
   const [openColor, setOpenColor] = useState(null);
 
   if (loading && (!rows || rows.length === 0)) {
@@ -526,8 +542,18 @@ const SkuBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
                             </tr>
                           </thead>
                           <tbody>
-                            {c.sizes.map((r, i) => (
-                              <tr key={`${r.sku}-${i}`} className="border-b border-border/30 last:border-0">
+                            {c.sizes.map((r, i) => {
+                              const isSizeSel = isLocFiltered && selectedSize === r.size;
+                              return (
+                              <tr
+                                key={`${r.sku}-${i}`}
+                                className={`border-b border-border/30 last:border-0 cursor-pointer hover:bg-amber-50/60 ${isSizeSel ? "bg-amber-200/50" : ""}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();  // don't toggle the parent color row
+                                  if (onSizeClick) onSizeClick(c.color, r.size);
+                                }}
+                                data-testid={`sor-size-row-${c.color}-${r.size}`}
+                              >
                                 <td className="py-1 pr-3">{r.size || "—"}</td>
                                 <td className="py-1 pr-3 font-mono text-[10.5px]">{r.sku || "—"}</td>
                                 <td className="py-1 pr-3 text-right num">{fmtNum(r.units_6m)}</td>
@@ -539,7 +565,8 @@ const SkuBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
                                 <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
                                 <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </td>
@@ -556,7 +583,7 @@ const SkuBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
 };
 
 // ---- Location pane (right side) — sortable by clicking headers ----
-const LocationPane = ({ style, color, rows, loading, error, onClear, onClearColor }) => {
+const LocationPane = ({ style, color, size, rows, loading, error, onClear, onClearColor, onClearSize }) => {
   const [sortKey, setSortKey] = useState("units_6m");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -622,16 +649,32 @@ const LocationPane = ({ style, color, rows, loading, error, onClear, onClearColo
         <div className="min-w-0">
           <div className="eyebrow">Where did it sell?</div>
           <div className="font-bold text-[14px] truncate" title={style}>{style}</div>
-          {color && (
-            <div className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-300 text-amber-900 text-[10.5px] font-bold" data-testid="sor-loc-color-pill">
-              <span>Color filter: {color}</span>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); if (onClearColor) onClearColor(); }}
-                className="hover:text-rose-700"
-                aria-label="Clear color filter"
-                data-testid="sor-loc-clear-color-btn"
-              >×</button>
+          {(color || size) && (
+            <div className="mt-1 flex flex-wrap gap-1.5" data-testid="sor-loc-filter-pills">
+              {color && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-300 text-amber-900 text-[10.5px] font-bold" data-testid="sor-loc-color-pill">
+                  <span>Color: {color}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); if (onClearColor) onClearColor(); }}
+                    className="hover:text-rose-700"
+                    aria-label="Clear color filter"
+                    data-testid="sor-loc-clear-color-btn"
+                  >×</button>
+                </span>
+              )}
+              {size && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-50 border border-sky-300 text-sky-900 text-[10.5px] font-bold" data-testid="sor-loc-size-pill">
+                  <span>Size: {size}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); if (onClearSize) onClearSize(); }}
+                    className="hover:text-rose-700"
+                    aria-label="Clear size filter"
+                    data-testid="sor-loc-clear-size-btn"
+                  >×</button>
+                </span>
+              )}
             </div>
           )}
           {(rows && rows.length > 0) && (
