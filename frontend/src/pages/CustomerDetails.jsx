@@ -6,6 +6,7 @@ import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
 import { MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
 import { Users } from "@phosphor-icons/react";
+import { usePiiReveal, piiHeaders, maskPhone, maskEmail } from "@/lib/usePiiReveal";
 
 /**
  * Customer Details — one row per identified customer with first / last
@@ -27,6 +28,7 @@ const CustomerDetails = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const { revealToken, setRevealToken, openModal, modal } = usePiiReveal();
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +44,9 @@ const CustomerDetails = () => {
           category: merchCats.length ? merchCats.join(",") : undefined,
           subcategory: merchSubs.length ? merchSubs.join(",") : undefined,
           limit: 2000,
+          ...(revealToken ? { reveal: true } : {}),
         },
+        headers: piiHeaders(revealToken),
         timeout: 240000,
       })
       .then((r) => { if (!cancelled) setRows(r.data || []); })
@@ -50,7 +54,7 @@ const CustomerDetails = () => {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(merchCats), JSON.stringify(merchSubs), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(merchCats), JSON.stringify(merchSubs), dataVersion, revealToken]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -69,17 +73,47 @@ const CustomerDetails = () => {
 
   return (
     <div className="space-y-6" data-testid="customer-details-page">
-      <div>
-        <div className="eyebrow">Customers · Details</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1 inline-flex items-center gap-2">
-          <Users size={22} weight="duotone" className="text-[#1a5c38]" />
-          Customer Details
-        </h1>
-        <p className="text-muted text-[13px] mt-1">
-          One row per identified customer. Walk-ins (no customer_id) are
-          excluded. Filter by category, subcategory, POS or date range
-          using the global filter bar above.
-        </p>
+      {modal}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="eyebrow">Customers · Details</div>
+          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1 inline-flex items-center gap-2">
+            <Users size={22} weight="duotone" className="text-[#1a5c38]" />
+            Customer Details
+          </h1>
+          <p className="text-muted text-[13px] mt-1">
+            One row per identified customer. Walk-ins (no customer_id) are
+            excluded. Filter by category, subcategory, POS or date range
+            using the global filter bar above.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap pt-1" data-testid="cd-reveal-strip">
+          {revealToken ? (
+            <>
+              <span className="text-[11.5px] font-bold text-emerald-700 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300">
+                ✓ Contacts visible · session expires in ~10 min
+              </span>
+              <button
+                type="button"
+                onClick={() => setRevealToken(null)}
+                data-testid="cd-hide-contacts-btn"
+                className="text-[11.5px] font-medium px-2.5 py-1 rounded-md border border-border hover:bg-panel"
+              >
+                Hide contacts
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={openModal}
+              data-testid="cd-show-contacts-btn"
+              className="text-[12px] font-bold px-3 py-1.5 rounded-md border border-brand text-brand hover:bg-brand hover:text-white transition-colors"
+            >
+              🔒 Show contacts (password required)
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="card-white p-5">
@@ -149,13 +183,20 @@ const CustomerDetails = () => {
               { key: "last_name", label: "Last Name", align: "left",
                 render: (r) => r.last_name || <span className="text-muted text-[11px]">—</span> },
               { key: "email", label: "Email", align: "left",
-                render: (r) => r.email
-                  ? <a href={`mailto:${r.email}`} className="text-[#1a5c38] hover:underline">{r.email}</a>
-                  : <span className="text-muted text-[11px]">—</span>,
-                csv: (r) => r.email },
+                render: (r) => {
+                  if (!r.email) return <span className="text-muted text-[11px]">—</span>;
+                  const display = revealToken ? r.email : maskEmail(r.email);
+                  return revealToken
+                    ? <a href={`mailto:${r.email}`} className="text-[#1a5c38] hover:underline">{display}</a>
+                    : <span className="text-muted">{display}</span>;
+                },
+                csv: (r) => revealToken ? r.email : maskEmail(r.email) },
               { key: "mobile", label: "Mobile", align: "left",
-                render: (r) => r.mobile || <span className="text-muted text-[11px]">—</span>,
-                csv: (r) => r.mobile },
+                render: (r) => {
+                  if (!r.mobile) return <span className="text-muted text-[11px]">—</span>;
+                  return revealToken ? r.mobile : maskPhone(r.mobile);
+                },
+                csv: (r) => revealToken ? r.mobile : maskPhone(r.mobile) },
               { key: "accepts_sms_marketing", label: "SMS Opt-in",
                 render: (r) => (
                   <span className="text-muted text-[10.5px]" title="Upstream BI does not yet expose this field. Will populate automatically once available.">

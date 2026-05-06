@@ -19,7 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, Query
+from fastapi import Depends, Query, Request, HTTPException
 
 # Late imports — server.py imports this module AFTER its helpers exist.
 from server import (
@@ -30,16 +30,18 @@ from server import (
     _get_customer_contact_lookup_sync,
     _safe_fetch,
     _split_csv,
+    _client_ip,
     category_of,
     logger,
 )
-from auth import get_current_user
-from pii import mask_rows
+from auth import get_current_user, verify_pii_reveal_token
+from pii import mask_rows, log_unmasked_access, _row_id, _CONTACT_FIELDS  # type: ignore
 
 
 # ─── /analytics/customer-details ──────────────────────────────────────
 @api_router.get("/analytics/customer-details")
 async def analytics_customer_details(
+    request: Request,
     date_from: str,
     date_to: str,
     country: Optional[str] = None,
@@ -47,6 +49,7 @@ async def analytics_customer_details(
     category: Optional[str] = None,  # CSV of merch categories
     subcategory: Optional[str] = None,  # CSV of merch subcategories
     limit: int = Query(500, ge=1, le=5000),
+    reveal: bool = False,
     user=Depends(get_current_user),
 ):
     """Customer details list — one row per identified customer with basic
@@ -167,6 +170,19 @@ async def analytics_customer_details(
         agg["last_name"] = " ".join(parts[1:]) if len(parts) > 1 else ""
         agg["accepts_sms_marketing"] = None
         agg["accepts_email_marketing"] = None
+
+    if reveal:
+        token = request.headers.get("X-PII-Reveal-Token") or request.headers.get("x-pii-reveal-token")
+        if not verify_pii_reveal_token(getattr(user, "user_id", None), token):
+            raise HTTPException(status_code=403, detail="Reveal token missing or expired — re-enter password")
+        await log_unmasked_access(
+            user=user,
+            endpoint="/analytics/customer-details?reveal=true",
+            row_ids=[rid for rid in (_row_id(r) for r in out) if rid],
+            fields=list(_CONTACT_FIELDS),
+            request_ip=_client_ip(request),
+        )
+        return out
 
     return mask_rows(out, getattr(user, "role", None))
 
