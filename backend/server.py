@@ -5233,9 +5233,11 @@ async def analytics_style_location_breakdown(
     style_name: str,
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    color: Optional[str] = None,
     response: Response = None,
 ):
-    """Per-location sales + SOH for one style.
+    """Per-location sales + SOH for one style, optionally filtered to
+    rows of a single colour.
 
     Returns:
       • 200 with `{style_name, locations: [...]}` when the cache is
@@ -5243,25 +5245,32 @@ async def analytics_style_location_breakdown(
       • 202 with `{computing: true, style_name, retry_after: 15}` when
         the scan is still running. Frontend should poll every 15s.
 
-    Output schema for the success case:
-      `{style_name, locations: [{location, units_6m, units_3w,
-      sales_6m, soh_total, soh_store, soh_wh, sor_6m}]}`. SOR computed
-      per-location as `units_6m / (units_6m + soh_total) * 100`.
-      Sorted by units desc.
+    When `color` is supplied the response is filtered down to only
+    rows where the SKU's `color_print` matches — useful for the
+    SOR Report color drill: clicking "Black" inside a Style row
+    re-renders the Where-did-it-sell pane to show black-only sales /
+    SOH per location. We re-aggregate from the cached orders +
+    inventory so this is essentially free once the style scan ran
+    once. No new upstream calls.
     """
     import time as _time
     cache_key = f"{style_name}|{country or ''}|{channel or ''}"
 
-    # Fast path: warm cache.
+    # Fast path: warm cache (style-level only — colour filter is
+    # always applied on top of the cached raw scan, see below).
     cached = _location_breakdown_cache.get(cache_key)
     if cached and (_time.time() - cached[0] < _LOCATION_BREAKDOWN_TTL):
-        return cached[1]
+        if not color:
+            return cached[1]
+        return await _filter_locations_by_color(style_name, country, channel, color)
 
     # Start (or join) the background scan and wait up to 50s.
     task = await _start_or_join_style_scan(style_name, country, channel)
     try:
         _, payload = await asyncio.wait_for(asyncio.shield(task), timeout=50.0)
-        return payload
+        if not color:
+            return payload
+        return await _filter_locations_by_color(style_name, country, channel, color)
     except asyncio.TimeoutError:
         # Scan still running — tell the frontend to poll. The Task is NOT
         # cancelled (we used asyncio.shield), so it'll finish in the
@@ -5269,6 +5278,101 @@ async def analytics_style_location_breakdown(
         if response is not None:
             response.status_code = 202
         return {"computing": True, "style_name": style_name, "retry_after": 15}
+
+
+# ─── Color-filtered location aggregator ──────────────────────────────
+#
+# The bulk style scan caches per-style location aggregates in
+# `_location_breakdown_cache`. For colour-filtered views we re-walk the
+# already-cached raw orders + inventory windows for that style once.
+# Result is cached in `_location_color_cache` keyed by
+# (style, country, channel, color) so repeat clicks are instant.
+_location_color_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_LOCATION_COLOR_TTL = 600  # 10 minutes — same as the style-level cache.
+
+
+async def _filter_locations_by_color(
+    style_name: str,
+    country: Optional[str],
+    channel: Optional[str],
+    color: str,
+) -> Dict[str, Any]:
+    import time as _time
+    key = f"{style_name}|{country or ''}|{channel or ''}|{color}"
+    hit = _location_color_cache.get(key)
+    if hit and (_time.time() - hit[0] < _LOCATION_COLOR_TTL):
+        return hit[1]
+
+    today = datetime.now(timezone.utc).date()
+    six_m_from = today - timedelta(days=180)
+    three_w_from = today - timedelta(days=21)
+    chs = _split_csv(channel)
+
+    orders = await _orders_for_window(
+        six_m_from.isoformat(), today.isoformat(), country, channel,
+    )
+    inv = await fetch_all_inventory(country=country) or []
+
+    needle = (style_name or "").strip()
+    target_color = (color or "").strip()
+    per_loc_sales: Dict[str, Dict[str, Any]] = {}
+    for r in orders:
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        rc = (r.get("color_print") or r.get("color") or "—").strip()
+        if rc != target_color:
+            continue
+        order_date = (r.get("order_date") or "")[:10]
+        qty = int(r.get("quantity") or 0)
+        sales = float(r.get("total_sales_kes") or 0)
+        loc = r.get("channel") or r.get("pos_location_name") or "—"
+        b = per_loc_sales.setdefault(loc, {
+            "location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+        })
+        b["units_6m"] += qty
+        b["sales_6m"] += sales
+        if order_date and order_date >= three_w_from.isoformat():
+            b["units_3w"] += qty
+
+    soh_per_loc: Dict[str, Dict[str, float]] = {}
+    for r in (inv or []):
+        if (r.get("style_name") or "").strip() != needle:
+            continue
+        rc = (r.get("color_print") or r.get("color") or "—").strip()
+        if rc != target_color:
+            continue
+        loc_name = r.get("location_name") or ""
+        if chs and loc_name not in chs:
+            continue
+        avail = float(r.get("available") or 0)
+        b = soh_per_loc.setdefault(loc_name, {"store": 0.0, "wh": 0.0})
+        if is_warehouse_location(loc_name):
+            b["wh"] += avail
+        else:
+            b["store"] += avail
+
+    loc_rows: List[Dict[str, Any]] = []
+    for loc in (set(per_loc_sales.keys()) | set(soh_per_loc.keys())):
+        sr = per_loc_sales.get(loc, {"location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+        ih = soh_per_loc.get(loc, {"store": 0.0, "wh": 0.0})
+        soh_total = ih["store"] + ih["wh"]
+        units_6m = sr["units_6m"]
+        denom = units_6m + soh_total
+        sor = (units_6m / denom * 100.0) if denom > 0 else 0.0
+        loc_rows.append({
+            "location": loc,
+            "units_6m": int(units_6m),
+            "units_3w": int(sr["units_3w"]),
+            "sales_6m": round(sr["sales_6m"], 2),
+            "soh_store": round(ih["store"], 2),
+            "soh_wh": round(ih["wh"], 2),
+            "soh_total": round(soh_total, 2),
+            "sor_6m": round(sor, 2),
+        })
+    loc_rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
+    payload = {"style_name": style_name, "color": color, "locations": loc_rows}
+    _location_color_cache[key] = (_time.time(), payload)
+    return payload
 
 
 @api_router.get("/analytics/style-sku-breakdown-bulk")

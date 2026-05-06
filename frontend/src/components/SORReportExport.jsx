@@ -34,12 +34,15 @@ const SORReport = () => {
   const [subcatSel, setSubcatSel] = useState([]);
   const [brandSel, setBrandSel] = useState([]);
   const [selectedStyle, setSelectedStyle] = useState(null);
+  const [selectedColor, setSelectedColor] = useState(null);
 
   // Per-style SKU breakdown cache (for row expand). Keyed by style_name.
   const [skuCache, setSkuCache] = useState({});
   const [skuLoading, setSkuLoading] = useState({});
 
-  // Per-style location breakdown cache (for the detail pane).
+  // Per-style location breakdown cache. Keyed by `style|color` (color="" for
+  // the all-colors view) so the same style can show both an "all colors"
+  // breakdown and any number of per-color drills without re-fetching.
   const [locCache, setLocCache] = useState({});
   const [locLoading, setLocLoading] = useState(false);
   const [locError, setLocError] = useState(null);
@@ -137,17 +140,25 @@ const SORReport = () => {
     tick();
   };
 
-  // Lazy-load location breakdown when a style is selected. Same 202
-  // poll pattern as SKU breakdown — both endpoints share the same
-  // /orders scan on the backend so once one finishes the other warms
-  // instantly.
-  const loadLocations = (style) => {
-    if (!style || locCache[style]) return;
+  // Lazy-load location breakdown when a style (and optionally a color)
+  // is selected. Same 202 poll pattern as SKU breakdown — both endpoints
+  // share the same /orders scan on the backend so once one finishes the
+  // other warms instantly. Color filter cache key is `style|color` so
+  // toggling between "all colors" and "Black" doesn't refetch each.
+  const loadLocations = (style, color) => {
+    if (!style) return;
+    const key = `${style}|${color || ""}`;
+    if (locCache[key]) return;
     setLocLoading(true);
     setLocError(null);
     const tick = (attempt = 0) => {
       api.get("/analytics/style-location-breakdown", {
-        params: { style_name: style, country: countryParam, channel: channelParam },
+        params: {
+          style_name: style,
+          country: countryParam,
+          channel: channelParam,
+          ...(color ? { color } : {}),
+        },
       })
         .then((r) => {
           if (r.data?.computing && attempt < 8) {
@@ -157,7 +168,7 @@ const SORReport = () => {
             setLocError("Still computing — try again in a minute. The result will be cached and instant once ready.");
             setLocLoading(false);
           } else {
-            setLocCache((c) => ({ ...c, [style]: r.data?.locations || [] }));
+            setLocCache((c) => ({ ...c, [key]: r.data?.locations || [] }));
             setLocError(null);
             setLocLoading(false);
           }
@@ -176,9 +187,9 @@ const SORReport = () => {
   // click a row to populate the side pane.
 
   useEffect(() => {
-    if (selectedStyle) loadLocations(selectedStyle);
+    if (selectedStyle) loadLocations(selectedStyle, selectedColor);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStyle]);
+  }, [selectedStyle, selectedColor]);
 
   const exportCsv = () => {
     const header = [
@@ -286,6 +297,12 @@ const SORReport = () => {
                   // location pane fetch below hits a warm cache after
                   // ~1ms instead of running a second cold scan.
                   loadSku(row.style_name);
+                  // Reset the per-color drill whenever the user picks a
+                  // different style — colours from the previous style
+                  // would no longer match.
+                  if (row.style_name !== selectedStyle) {
+                    setSelectedColor(null);
+                  }
                   setSelectedStyle(row.style_name);
                 }}
                 rowClassName={(row) => row.style_name === selectedStyle ? "bg-amber-50/60" : ""}
@@ -355,6 +372,14 @@ const SORReport = () => {
                   <SkuBreakdown
                     rows={skuCache[row.style_name]}
                     loading={skuLoading[row.style_name]}
+                    selectedColor={row.style_name === selectedStyle ? selectedColor : null}
+                    onColorClick={(color) => {
+                      // Anchor the location pane to this style first so
+                      // useEffect re-fires the loader. Toggling: same
+                      // colour clicked again clears the colour filter.
+                      setSelectedStyle(row.style_name);
+                      setSelectedColor((prev) => (prev === color ? null : color));
+                    }}
                   />
                 )}
               />
@@ -364,10 +389,12 @@ const SORReport = () => {
             <div className="xl:col-span-1 min-w-0">
               <LocationPane
                 style={selectedStyle}
-                rows={locCache[selectedStyle]}
+                color={selectedColor}
+                rows={locCache[`${selectedStyle}|${selectedColor || ""}`]}
                 loading={locLoading}
                 error={locError}
-                onClear={() => setSelectedStyle(null)}
+                onClear={() => { setSelectedStyle(null); setSelectedColor(null); }}
+                onClearColor={() => setSelectedColor(null)}
               />
             </div>
           </div>
@@ -391,7 +418,7 @@ const Tile = ({ label, value }) => (
 // Picks the heaviest row design constraint: a "Maxi Dress" with 8 colors ×
 // 5 sizes is 40 SKUs flat — too noisy. Grouping to color first lets the
 // merch team scan colour performance, then drill into the lagging size.
-const SkuBreakdown = ({ rows, loading }) => {
+const SkuBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
   const [openColor, setOpenColor] = useState(null);
 
   if (loading && (!rows || rows.length === 0)) {
@@ -454,12 +481,19 @@ const SkuBreakdown = ({ rows, loading }) => {
           <tbody>
             {colors.map((c) => {
               const isOpen = openColor === c.color;
+              const isLocFiltered = selectedColor === c.color;
               const pctInWh = c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0;
               return (
                 <React.Fragment key={c.color}>
                   <tr
-                    className="border-b border-border/40 last:border-0 cursor-pointer hover:bg-panel/60"
-                    onClick={() => setOpenColor(isOpen ? null : c.color)}
+                    className={`border-b border-border/40 last:border-0 cursor-pointer hover:bg-panel/60 ${isLocFiltered ? "bg-amber-100/70" : ""}`}
+                    onClick={() => {
+                      setOpenColor(isOpen ? null : c.color);
+                      // Drive the right-hand "Where did it sell?" pane
+                      // to colour-filter on this colour. Same handler
+                      // toggles off when the user re-clicks.
+                      if (onColorClick) onColorClick(c.color);
+                    }}
                     data-testid={`sor-color-row-${c.color}`}
                   >
                     <td className="py-1 pr-3 text-muted">
@@ -522,7 +556,7 @@ const SkuBreakdown = ({ rows, loading }) => {
 };
 
 // ---- Location pane (right side) — sortable by clicking headers ----
-const LocationPane = ({ style, rows, loading, error, onClear }) => {
+const LocationPane = ({ style, color, rows, loading, error, onClear, onClearColor }) => {
   const [sortKey, setSortKey] = useState("units_6m");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -588,6 +622,18 @@ const LocationPane = ({ style, rows, loading, error, onClear }) => {
         <div className="min-w-0">
           <div className="eyebrow">Where did it sell?</div>
           <div className="font-bold text-[14px] truncate" title={style}>{style}</div>
+          {color && (
+            <div className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-300 text-amber-900 text-[10.5px] font-bold" data-testid="sor-loc-color-pill">
+              <span>Color filter: {color}</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); if (onClearColor) onClearColor(); }}
+                className="hover:text-rose-700"
+                aria-label="Clear color filter"
+                data-testid="sor-loc-clear-color-btn"
+              >×</button>
+            </div>
+          )}
           {(rows && rows.length > 0) && (
             <div className="text-[11px] text-muted mt-1">
               {rows.length} location{rows.length === 1 ? "" : "s"} ·{" "}
