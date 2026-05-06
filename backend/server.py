@@ -5429,6 +5429,12 @@ async def analytics_style_sku_breakdown_bulk(
     needle_set = set(needles)
     # Per-style aggregation: { style_name: { (color, size, sku): {...} } }
     per_style_sales: Dict[str, Dict[tuple, Dict[str, Any]]] = {n: {} for n in needles}
+    # ALSO build per-style location aggregates from the same orders pass
+    # so we can stamp `_location_breakdown_cache` and have the SOR
+    # Report's "Where did it sell?" pane open instantly on row click.
+    # Without this, every row click triggered a fresh 30-60s cold scan.
+    per_style_loc_sales: Dict[str, Dict[str, Dict[str, Any]]] = {n: {} for n in needles}
+    three_w_iso = three_w_from.isoformat()
     for r in chunk_rows:
         sn = (r.get("style_name") or "").strip()
         if sn not in needle_set:
@@ -5446,10 +5452,21 @@ async def analytics_style_sku_breakdown_bulk(
         sales = float(r.get("total_sales_kes") or 0)
         b["units_6m"] += qty
         b["sales_6m"] += sales
-        if order_date and order_date >= three_w_from.isoformat():
+        is_recent = order_date and order_date >= three_w_iso
+        if is_recent:
             b["units_3w"] += qty
+        loc = r.get("channel") or r.get("pos_location_name") or "—"
+        lb = per_style_loc_sales[sn].setdefault(loc, {
+            "location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
+        })
+        lb["units_6m"] += qty
+        lb["sales_6m"] += sales
+        if is_recent:
+            lb["units_3w"] += qty
 
     per_style_soh: Dict[str, Dict[tuple, Dict[str, float]]] = {n: {} for n in needles}
+    # And per-style location SOH for the location cache stamp.
+    per_style_loc_soh: Dict[str, Dict[str, Dict[str, float]]] = {n: {} for n in needles}
     chs = _split_csv(channel)
     for r in inv:
         sn = (r.get("style_name") or "").strip()
@@ -5464,10 +5481,13 @@ async def analytics_style_sku_breakdown_bulk(
         avail = float(r.get("available") or 0)
         loc = r.get("location_name") or ""
         b = per_style_soh[sn].setdefault(key, {"store": 0.0, "wh": 0.0})
+        lb = per_style_loc_soh[sn].setdefault(loc, {"store": 0.0, "wh": 0.0})
         if is_warehouse_location(loc):
             b["wh"] += avail
+            lb["wh"] += avail
         else:
             b["store"] += avail
+            lb["store"] += avail
 
     out_styles: Dict[str, List[Dict[str, Any]]] = {}
     missing: List[str] = []
@@ -5500,10 +5520,38 @@ async def analytics_style_sku_breakdown_bulk(
         out_styles[sn] = rows
         if not rows:
             missing.append(sn)
-        # Warm the single-style cache so subsequent ?style_name=… calls
+        # Warm the single-style SKU cache so subsequent ?style_name=… calls
         # hit it instantly.
         ck = f"{sn}|{country or ''}|{channel or ''}"
         _sku_breakdown_cache[ck] = (now_ts, {"style_name": sn, "skus": rows})
+
+        # Build & stamp the location-breakdown cache too — this is the
+        # whole reason we extended the bulk endpoint. Identical logic to
+        # the single-style path so the "Where did it sell?" pane returns
+        # exactly the same numbers regardless of cache origin.
+        loc_sales = per_style_loc_sales[sn]
+        loc_soh = per_style_loc_soh[sn]
+        loc_keys = set(loc_sales.keys()) | set(loc_soh.keys())
+        loc_rows: List[Dict[str, Any]] = []
+        for loc_k in loc_keys:
+            sr = loc_sales.get(loc_k, {"location": loc_k, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
+            ih = loc_soh.get(loc_k, {"store": 0.0, "wh": 0.0})
+            soh_total = ih["store"] + ih["wh"]
+            units_6m = sr["units_6m"]
+            denom = units_6m + soh_total
+            sor = (units_6m / denom * 100.0) if denom > 0 else 0.0
+            loc_rows.append({
+                "location": loc_k,
+                "units_6m": int(units_6m),
+                "units_3w": int(sr["units_3w"]),
+                "sales_6m": round(sr["sales_6m"], 2),
+                "soh_store": round(ih["store"], 2),
+                "soh_wh": round(ih["wh"], 2),
+                "soh_total": round(soh_total, 2),
+                "sor_6m": round(sor, 2),
+            })
+        loc_rows.sort(key=lambda r: (r["units_6m"], r["soh_total"]), reverse=True)
+        _location_breakdown_cache[ck] = (now_ts, {"style_name": sn, "locations": loc_rows})
 
     return {"styles": out_styles, "missing": missing}
 
@@ -6970,6 +7018,39 @@ async def startup():
                 return_exceptions=True,
             )
             logger.info("[warmup] sor-all-styles + new-styles-curve + replenishment cache warmed")
+
+            # Pre-warm the SKU + Location breakdown caches for every
+            # style in the SOR Report so row clicks on the Exports page
+            # are <50ms instead of triggering a 30-60s cold scan each.
+            # The bulk endpoint does ONE 6-month /orders fan-out (the
+            # _orders_for_window cache is already populated by the
+            # analytics_sor_all_styles call above, so this is essentially
+            # an in-memory aggregation pass) and stamps both caches per
+            # style. Done in chunks so a single Python sweep doesn't
+            # block the event loop for too long.
+            try:
+                # The SOR all-styles cache is keyed by (country, channel, brand);
+                # the warmup call above used no filters, so look it up there.
+                _ck = "all|||"
+                _hit = _all_styles_cache.get(_ck)
+                sor_rows = _hit[1] if _hit else None
+                if isinstance(sor_rows, list) and sor_rows:
+                    style_names = [r.get("style_name") for r in sor_rows if r.get("style_name")]
+                    # Aggregate-only path: feed the bulk endpoint chunks
+                    # of 500 names each. With ~1700 styles total this is
+                    # 4 quick aggregation passes over the same cached
+                    # /orders feed — no extra upstream calls.
+                    CHUNK = 500
+                    for i in range(0, len(style_names), CHUNK):
+                        await analytics_style_sku_breakdown_bulk(
+                            style_names=",".join(style_names[i:i + CHUNK]),
+                        )
+                    logger.info(
+                        "[warmup] SOR drill-down caches pre-warmed for %d styles "
+                        "(SKU + location)", len(style_names),
+                    )
+            except Exception as e:
+                logger.warning("[warmup] SOR drill-down warmup failed: %s", e)
             # Pre-load the customer-history cache for MTD + last-30 windows
             # so the new analytics endpoints (customer-retention, avg-spend,
             # recently-unchurned, customer-details, replen-by-color) don't
