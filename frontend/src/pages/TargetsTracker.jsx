@@ -94,12 +94,29 @@ function ProgressRing({ pct, size = 88, stroke = 8, color = "#00c853", trackColo
 function TargetTile({
   label, achieved, target, projected, daysLeft,
   isOverall, testId, daysLabel = "days left", closedLabel = "closed",
+  // Comparison values (optional). All passed through from the page.
+  // `paceExpected` is the expected achieved KES at today's pace
+  // (target × elapsed/total) — used for the "ahead/behind pace" pill.
+  // `prior` is the comparison-period absolute KES (last year for the
+  // annual card, prior quarter for the quarter cards). When provided
+  // we render a "+X% YoY" / "+X% vs Q1" line on the tile.
+  paceExpected = null,
+  prior = null,
+  priorLabel = "vs prior",
 }) {
   const achievedPct = target ? (achieved / target) * 100 : 0;
   const projectedPct = target ? (projected / target) * 100 : 0;
   const onPace = projectedPct >= 100;
   const ringColor = onPace ? "#00c853" : projectedPct >= 70 ? "#d97706" : "#dc2626";
   const flag = !isOverall ? (COUNTRY_FLAGS?.[label] || "") : "";
+  // Delta vs target (percentage points). Positive = ahead of pace.
+  const deltaPp = projectedPct - 100;
+  // Delta vs prior period (% growth). Skip when prior is 0 or missing
+  // (avoids "+infinity%" when the prior period had no sales recorded).
+  const priorDeltaPct = (prior != null && prior > 0) ? ((achieved - prior) / prior) * 100 : null;
+  // Pace-expected delta: how much ahead/behind today's pace.
+  const paceDeltaPct = (paceExpected != null && paceExpected > 0)
+    ? ((achieved - paceExpected) / paceExpected) * 100 : null;
   return (
     <div
       className={`relative overflow-hidden rounded-xl border p-4 transition-transform hover:-translate-y-0.5 ${
@@ -152,6 +169,19 @@ function TargetTile({
           <div className={`text-[10.5px] mt-1 ${isOverall ? "text-white/65" : "text-[#6b7280]"}`}>
             {achievedPct.toFixed(1)}% of target
           </div>
+          {priorDeltaPct != null && (
+            <div
+              className={`text-[10.5px] mt-0.5 font-bold tabular-nums ${
+                isOverall
+                  ? "text-white/85"
+                  : priorDeltaPct >= 0 ? "text-[#166534]" : "text-[#9f1239]"
+              }`}
+              data-testid={`${testId}-prior-delta`}
+              title={`${priorLabel}: ${fmtKESCompact(prior)}`}
+            >
+              {priorDeltaPct >= 0 ? "▲" : "▼"} {priorDeltaPct >= 0 ? "+" : ""}{priorDeltaPct.toFixed(1)}% {priorLabel}
+            </div>
+          )}
         </div>
       </div>
 
@@ -170,6 +200,32 @@ function TargetTile({
             {fmtKESCompact(projected)}
           </span>
         </div>
+        {/* On / off target delta (always shown — clearer than the bare projection %). */}
+        <div className="flex items-center justify-between text-[11px]">
+          <span className={isOverall ? "text-white/65" : "text-[#6b7280]"}>vs Target</span>
+          <span
+            className={`font-bold tabular-nums ${
+              isOverall ? "text-white" : deltaPp >= 0 ? "text-[#00c853]" : deltaPp >= -15 ? "text-[#d97706]" : "text-[#dc2626]"
+            }`}
+            data-testid={`${testId}-delta-pp`}
+          >
+            {deltaPp >= 0 ? "+" : ""}{deltaPp.toFixed(1)}pp {deltaPp >= 0 ? "ahead" : "behind"}
+          </span>
+        </div>
+        {paceDeltaPct != null && (
+          <div className="flex items-center justify-between text-[11px]">
+            <span className={isOverall ? "text-white/65" : "text-[#6b7280]"}>vs Pace</span>
+            <span
+              className={`font-bold tabular-nums ${
+                isOverall ? "text-white" : paceDeltaPct >= 0 ? "text-[#00c853]" : "text-[#dc2626]"
+              }`}
+              data-testid={`${testId}-pace-delta`}
+              title={`Expected at today's pace: ${fmtKESCompact(paceExpected)}`}
+            >
+              {paceDeltaPct >= 0 ? "+" : ""}{paceDeltaPct.toFixed(1)}%
+            </span>
+          </div>
+        )}
         {daysLeft != null && (
           <div className={`text-[10px] mt-1 ${isOverall ? "text-white/55" : "text-[#9ca3af]"}`}>
             {daysLeft > 0 ? `${daysLeft} ${daysLabel}` : closedLabel}
@@ -217,7 +273,7 @@ function TargetsCardShell({ title, badge, subtitle, daysLeft, daysLabel, childre
   );
 }
 
-function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug }) {
+function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, priorLabel }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
       {rows.map((r) => (
@@ -227,6 +283,9 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug }) {
           achieved={r.achieved}
           target={r.target}
           projected={r.projected}
+          paceExpected={r.paceExpected}
+          prior={r.prior}
+          priorLabel={priorLabel}
           daysLeft={daysLeft}
           daysLabel={daysLabel}
           closedLabel={closedLabel}
@@ -238,6 +297,9 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug }) {
         achieved={overall.achieved}
         target={overall.target}
         projected={overall.projected}
+        paceExpected={overall.paceExpected}
+        prior={overall.prior}
+        priorLabel={priorLabel}
         daysLeft={daysLeft}
         daysLabel={daysLabel}
         closedLabel={closedLabel}
@@ -253,16 +315,26 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug }) {
 export default function TargetsTracker() {
   const year = 2026;
   const [data, setData] = useState(null);
+  const [priorYearData, setPriorYearData] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    api.get("/analytics/annual-targets", { params: { year } })
-      .then((r) => { if (!cancelled) setData(r.data); })
-      .catch((e) => {
-        if (!cancelled) setError(e?.response?.data?.detail || e?.message || "Failed to load targets");
-      });
+    // Fetch current + prior year in parallel. Prior year is best-effort
+    // — if the endpoint has no targets / actuals for that year we just
+    // skip the YoY column rather than blocking the page.
+    Promise.all([
+      api.get("/analytics/annual-targets", { params: { year } }),
+      api.get("/analytics/annual-targets", { params: { year: year - 1 } })
+        .catch(() => ({ data: null })),
+    ]).then(([curr, prev]) => {
+      if (cancelled) return;
+      setData(curr.data);
+      setPriorYearData(prev.data);
+    }).catch((e) => {
+      if (!cancelled) setError(e?.response?.data?.detail || e?.message || "Failed to load targets");
+    });
     return () => { cancelled = true; };
   }, [year]);
 
@@ -270,6 +342,9 @@ export default function TargetsTracker() {
   const cards = useMemo(() => {
     if (!data || !Array.isArray(data.buckets)) return null;
     const byBucket = Object.fromEntries(data.buckets.map((b) => [b.bucket, b]));
+    const byBucketPrev = priorYearData && Array.isArray(priorYearData.buckets)
+      ? Object.fromEntries(priorYearData.buckets.map((b) => [b.bucket, b]))
+      : {};
     const wins = QUARTER_WINDOWS(year);
     const now = new Date();
     const cq = currentQuarter(now);  // 1..4
@@ -283,6 +358,10 @@ export default function TargetsTracker() {
     const annualLeft = Math.max(0, annualTotal - annualElapsed);
 
     // Tile rows for one quarter or for the full year.
+    //
+    // Returns each row with `paceExpected` (target × elapsed/total) and
+    // `prior` (the comparison-period absolute KES — last-year YTD for
+    // annual cards, prior quarter actual for the quarter cards).
     const buildRows = (mode) => {
       let elapsed = 0, total = 0;
       if (mode === "annual") { elapsed = annualElapsed; total = annualTotal; }
@@ -293,43 +372,61 @@ export default function TargetsTracker() {
       }
       const rows = BUCKETS.map(({ source, label }) => {
         const b = byBucket[source];
-        if (!b) return { label, achieved: 0, target: 0, projected: 0 };
-        let target, achieved;
+        if (!b) return { label, achieved: 0, target: 0, projected: 0, paceExpected: 0, prior: null };
+        let target, achieved, prior = null;
         if (mode === "annual") {
           target = b.target_annual || 0;
           achieved = b.actual_ytd || 0;
+          // YoY: compare to prior year's actual_ytd (same calendar date).
+          // The /analytics/annual-targets endpoint returns actual_ytd
+          // bounded by today's date even when looking up year-1, so
+          // this is an apples-to-apples year-to-date comparison.
+          const bp = byBucketPrev[source];
+          prior = bp ? (bp.actual_ytd || 0) : null;
         } else {
           target = (b.quarters || {})[mode] || 0;
           achieved = (b.actual_quarters || {})[mode] || 0;
+          // QoQ: compare to the prior quarter's full actual. For Q1 we
+          // fall back to last year's Q4 to give the user something to
+          // compare against on the quarter card.
+          const priorQuarter = mode === "Q1" ? "Q4" : `Q${parseInt(mode.slice(1), 10) - 1}`;
+          const sourceForPrior = mode === "Q1" ? byBucketPrev[source] : b;
+          if (sourceForPrior) {
+            prior = (sourceForPrior.actual_quarters || {})[priorQuarter] || 0;
+          }
         }
-        // Pace-based projection: scale achieved over the period to total days.
-        // If period is over (elapsed === total) projection = achieved.
-        // If period hasn't started, projection = 0.
+        // Pace-based projection.
         let projected;
         if (elapsed <= 0) projected = 0;
         else if (elapsed >= total) projected = achieved;
         else projected = (achieved / elapsed) * total;
-        return { label, achieved, target, projected };
+        // Expected at today's pace = target × completion fraction.
+        const paceExpected = target * (Math.min(elapsed, total) / total);
+        return { label, achieved, target, projected, paceExpected, prior };
       });
       const overall = rows.reduce(
         (a, r) => ({
           achieved: a.achieved + r.achieved,
           target: a.target + r.target,
           projected: a.projected + r.projected,
+          paceExpected: a.paceExpected + (r.paceExpected || 0),
+          prior: r.prior != null ? a.prior + r.prior : a.prior,
         }),
-        { achieved: 0, target: 0, projected: 0 }
+        { achieved: 0, target: 0, projected: 0, paceExpected: 0, prior: 0 }
       );
       return { rows, overall, elapsed, total, daysLeft: Math.max(0, total - elapsed) };
     };
 
+    const priorQOf = (q) => q === "Q1" ? `Q4 ${year - 1}` : `Q${parseInt(q.slice(1), 10) - 1} ${year}`;
+
     return {
       annual: { ...buildRows("annual"), label: `${year}` },
-      current: prevLabel || cq ? { ...buildRows(cqLabel), label: cqLabel } : null,
-      previous: prevLabel ? { ...buildRows(prevLabel), label: prevLabel } : null,
+      current: cq ? { ...buildRows(cqLabel), label: cqLabel, priorLabel: `vs ${priorQOf(cqLabel)}` } : null,
+      previous: prevLabel ? { ...buildRows(prevLabel), label: prevLabel, priorLabel: `vs ${priorQOf(prevLabel)}` } : null,
       annualLeft,
       cqLabel, prevLabel,
     };
-  }, [data, year]);
+  }, [data, priorYearData, year]);
 
   if (error) return <ErrorBox message={error} />;
   if (!cards) return (
@@ -347,7 +444,7 @@ export default function TargetsTracker() {
       <TargetsCardShell
         title={`Annual Target ${year}`}
         badge="Year-to-date pace"
-        subtitle={`Jan 1 – Dec 31, ${year} · pace-based projection`}
+        subtitle={`Jan 1 – Dec 31, ${year} · pace-based projection · YoY vs ${year - 1} YTD`}
         daysLeft={cards.annualLeft}
         daysLabel="days left in year"
         testId="annual-targets-card"
@@ -359,6 +456,7 @@ export default function TargetsTracker() {
           daysLabel="days left in year"
           closedLabel="Year closed"
           slug="annual"
+          priorLabel="YoY"
         />
       </TargetsCardShell>
 
@@ -367,7 +465,7 @@ export default function TargetsTracker() {
         <TargetsCardShell
           title={`Current Quarter — ${cards.cqLabel} ${year}`}
           badge="In progress"
-          subtitle={`Pace-based projection · ${cards.current.elapsed}/${cards.current.total} days complete`}
+          subtitle={`Pace-based projection · ${cards.current.elapsed}/${cards.current.total} days complete · ${cards.current.priorLabel}`}
           daysLeft={cards.current.daysLeft}
           daysLabel={`days left in ${cards.cqLabel}`}
           testId="current-quarter-targets-card"
@@ -379,6 +477,7 @@ export default function TargetsTracker() {
             daysLabel={`days left in ${cards.cqLabel}`}
             closedLabel={`${cards.cqLabel} closed`}
             slug="current-q"
+            priorLabel={cards.current.priorLabel}
           />
         </TargetsCardShell>
       )}
@@ -388,7 +487,7 @@ export default function TargetsTracker() {
         <TargetsCardShell
           title={`Previous Quarter — ${cards.prevLabel} ${year}`}
           badge="Closed"
-          subtitle={`Final achieved figures (no projection — quarter has ended)`}
+          subtitle={`Final achieved figures (no projection — quarter has ended) · ${cards.previous.priorLabel}`}
           daysLeft={null}
           testId="previous-quarter-targets-card"
         >
@@ -399,6 +498,7 @@ export default function TargetsTracker() {
             daysLabel=""
             closedLabel={`${cards.prevLabel} closed`}
             slug="previous-q"
+            priorLabel={cards.previous.priorLabel}
           />
         </TargetsCardShell>
       )}

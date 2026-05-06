@@ -1844,7 +1844,7 @@ _QUARTER_BOUNDS_2026 = {
 
 
 @api_router.get("/analytics/annual-targets")
-async def analytics_annual_targets(year: int = Query(2026, ge=2024, le=2030)):
+async def analytics_annual_targets(year: int = Query(2026, ge=2020, le=2030)):
     """Annual sales targets vs actuals + run-rate projection.
 
     Returns one bucket per channel-grouping (Kenya - Retail, Kenya - Online,
@@ -1859,32 +1859,57 @@ async def analytics_annual_targets(year: int = Query(2026, ge=2024, le=2030)):
     The "Kenya - Retail" actual is computed as country-summary `Kenya`
     total MINUS the `Online` channel sales for Kenya (so we don't
     double-count when the Online roll-up has Kenya orders mixed in).
+
+    Years other than 2026 are supported in **actuals-only** mode — the
+    `target_annual` and per-quarter targets default to 0 (the leadership
+    board is set yearly, only 2026 is on file). This is so the
+    Targets Tracker page can fetch year-1 actuals for YoY comparison.
     """
     import datetime as _dt
-    if year != 2026:
-        raise HTTPException(400, f"Targets only configured for 2026 (got {year})")
-    targets = ANNUAL_TARGETS_2026
+    targets = ANNUAL_TARGETS_2026 if year == 2026 else {
+        "Kenya - Retail": {"Q1": 0.0, "Q2": 0.0, "Q3": 0.0, "Q4": 0.0},
+        "Kenya - Online": {"Q1": 0.0, "Q2": 0.0, "Q3": 0.0, "Q4": 0.0},
+        "Uganda":         {"Q1": 0.0, "Q2": 0.0, "Q3": 0.0, "Q4": 0.0},
+        "Rwanda":         {"Q1": 0.0, "Q2": 0.0, "Q3": 0.0, "Q4": 0.0},
+    }
 
     today = _dt.date.today()
     year_start = _dt.date(year, 1, 1)
     year_end = _dt.date(year, 12, 31)
     days_total = (year_end - year_start).days + 1
-    days_elapsed = max(0, (min(today, year_end) - year_start).days + 1)
+    # YoY anchor: when looking at a past year, cap the "as-of" date to
+    # the same month/day as today so it's an apples-to-apples YTD.
+    if year < today.year:
+        anchor = _dt.date(year, today.month, today.day)
+    else:
+        anchor = today
+    days_elapsed = max(0, (min(anchor, year_end) - year_start).days + 1)
+    ytd_to_iso = min(anchor, year_end).isoformat()
+
+    # Per-year quarter bounds (only 2026 has them hardcoded; for other
+    # years synthesise the windows on the fly).
+    if year == 2026:
+        q_bounds = _QUARTER_BOUNDS_2026
+    else:
+        q_bounds = {
+            "Q1": (f"{year}-01-01", f"{year}-03-31"),
+            "Q2": (f"{year}-04-01", f"{year}-06-30"),
+            "Q3": (f"{year}-07-01", f"{year}-09-30"),
+            "Q4": (f"{year}-10-01", f"{year}-12-31"),
+        }
 
     # Pull YTD country-summary once + per-quarter actuals in parallel.
-    ytd_to = min(today, year_end).isoformat()
     cs_tasks = [
         fetch("/country-summary",
-              {"date_from": year_start.isoformat(), "date_to": ytd_to},
+              {"date_from": year_start.isoformat(), "date_to": ytd_to_iso},
               timeout_sec=20.0, max_attempts=2),
     ]
     quarter_tasks = []
     quarter_keys = []
-    for qk, (qf, qt) in _QUARTER_BOUNDS_2026.items():
-        # Skip future quarters where actuals would be 0 anyway.
-        if qf > ytd_to:
+    for qk, (qf, qt) in q_bounds.items():
+        if qf > ytd_to_iso:
             continue
-        q_to = min(qt, ytd_to)
+        q_to = min(qt, ytd_to_iso)
         quarter_tasks.append(
             fetch("/country-summary",
                   {"date_from": qf, "date_to": q_to},
@@ -1950,7 +1975,7 @@ async def analytics_annual_targets(year: int = Query(2026, ge=2024, le=2030)):
     }
     return {
         "year": year,
-        "as_of": today.isoformat(),
+        "as_of": anchor.isoformat(),
         "days_elapsed": days_elapsed,
         "days_total": days_total,
         "completion_pct": round((days_elapsed / days_total * 100), 2) if days_total else 0,
