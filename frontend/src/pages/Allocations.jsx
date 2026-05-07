@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
-import { Stack, Calculator, Cube } from "@phosphor-icons/react";
+import AllocationRunsHistory from "@/components/AllocationRunsHistory";
+import { Stack, Calculator, Cube, FloppyDisk, ArrowCounterClockwise } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 
 /**
@@ -13,6 +15,7 @@ import { useFilters } from "@/lib/filters";
  */
 const Allocations = () => {
   const { applied } = useFilters();
+  const { user } = useAuth();
   const { dateFrom, dateTo } = applied;
   const [packTable, setPackTable] = useState({});
   const [subcategory, setSubcategory] = useState("");
@@ -27,6 +30,16 @@ const Allocations = () => {
   const [calculating, setCalculating] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [allocationType, setAllocationType] = useState("new"); // "new" | "replenishment"
+  const [styleName, setStyleName] = useState("");
+  const [styleOptions, setStyleOptions] = useState([]);
+  const [stylesLoading, setStylesLoading] = useState(false);
+  // Per-store overrides keyed by store name. Each value is the user-
+  // typed pack count which overrides the auto-allocation.
+  const [packOverrides, setPackOverrides] = useState({});
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [savingRun, setSavingRun] = useState(false);
+  const [savedToast, setSavedToast] = useState(null);
 
   // Bootstrap: pack table + subcategory list + store list.
   useEffect(() => {
@@ -73,6 +86,10 @@ const Allocations = () => {
       setError("Pick a subcategory, at least one size, and a units total ≥ 1.");
       return;
     }
+    if (allocationType === "replenishment" && !styleName.trim()) {
+      setError("Pick the existing style you want to replenish.");
+      return;
+    }
     if (packUnitSize > units) {
       setError(`A pack of these sizes is ${packUnitSize} units — you only have ${units}.`);
       return;
@@ -80,6 +97,7 @@ const Allocations = () => {
     setCalculating(true);
     setError(null);
     setResult(null);
+    setPackOverrides({});
     try {
       const { data } = await api.post("/allocations/calculate", {
         subcategory,
@@ -90,6 +108,8 @@ const Allocations = () => {
         date_to: dateTo,
         velocity_weight: Number(velocityWeight),
         excluded_stores: excludedStores,
+        style_name: styleName.trim() || null,
+        allocation_type: allocationType,
       }, { timeout: 120000 });
       setResult(data);
     } catch (e) {
@@ -99,17 +119,139 @@ const Allocations = () => {
     }
   };
 
+  // Load existing styles when user switches to "replenishment" or
+  // changes the subcategory. Cached in styleOptions until subcat
+  // changes.
+  useEffect(() => {
+    if (allocationType !== "replenishment" || !subcategory) {
+      setStyleOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setStylesLoading(true);
+    api.get("/allocations/styles", { params: { subcategory } })
+      .then((r) => { if (!cancelled) setStyleOptions(r.data?.styles || []); })
+      .catch(() => { if (!cancelled) setStyleOptions([]); })
+      .finally(() => { if (!cancelled) setStylesLoading(false); });
+    return () => { cancelled = true; };
+  }, [allocationType, subcategory]);
+
+  // Effective rows = original rows merged with manual overrides.
+  // Each row's packs_allocated, units_allocated and sizes are
+  // recalculated when an override is present. The original auto-
+  // suggestion is stashed under suggested_packs / suggested_units so
+  // the export can show suggested vs allocated.
+  const effectiveRows = useMemo(() => {
+    if (!result?.rows) return [];
+    const sizeKeys = Object.keys(result.pack_breakdown || {});
+    return result.rows.map((r) => {
+      const override = packOverrides[r.store];
+      const finalPacks = override === undefined ? r.packs_allocated : Math.max(0, parseInt(override, 10) || 0);
+      const sizes = {};
+      sizeKeys.forEach((sz) => { sizes[sz] = finalPacks * (result.pack_breakdown[sz] || 0); });
+      const units = Object.values(sizes).reduce((s, v) => s + v, 0);
+      return {
+        ...r,
+        suggested_packs: r.packs_allocated,
+        suggested_units: r.units_allocated,
+        packs_allocated: finalPacks,
+        units_allocated: units,
+        sizes,
+        is_overridden: override !== undefined && override !== r.packs_allocated,
+      };
+    });
+  }, [result, packOverrides]);
+
+  const overriddenCount = useMemo(
+    () => effectiveRows.filter((r) => r.is_overridden).length,
+    [effectiveRows]
+  );
+  const totalAllocatedAfterOverrides = useMemo(
+    () => effectiveRows.reduce((s, r) => s + r.units_allocated, 0),
+    [effectiveRows]
+  );
+
+  const setPackOverride = (store, value) => {
+    setPackOverrides((prev) => {
+      const next = { ...prev };
+      if (value === "" || value == null) { delete next[store]; }
+      else { next[store] = value; }
+      return next;
+    });
+  };
+  const resetOverrides = () => setPackOverrides({});
+
+  const saveRun = async () => {
+    if (!result || effectiveRows.length === 0) return;
+    if (!styleName.trim()) {
+      setError("Add a style name before saving the allocation run.");
+      return;
+    }
+    setSavingRun(true);
+    setError(null);
+    try {
+      await api.post("/allocations/save", {
+        style_name: styleName.trim(),
+        allocation_type: allocationType,
+        subcategory,
+        color: color || null,
+        units_total: Number(units),
+        pack_unit_size: result.pack_unit_size,
+        pack_breakdown: result.pack_breakdown,
+        velocity_weight: Number(velocityWeight),
+        date_from: dateFrom,
+        date_to: dateTo,
+        rows: effectiveRows.map((r) => ({
+          store: r.store,
+          suggested_packs: r.suggested_packs,
+          suggested_units: r.suggested_units,
+          allocated_packs: r.packs_allocated,
+          allocated_units: r.units_allocated,
+          sizes: r.sizes,
+          delta_units: r.units_allocated - r.suggested_units,
+        })),
+      });
+      setHistoryRefresh((n) => n + 1);
+      setSavedToast("Allocation saved · check the Recent Allocations table below");
+      setTimeout(() => setSavedToast(null), 3500);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Failed to save allocation");
+    } finally {
+      setSavingRun(false);
+    }
+  };
+
   const exportCsv = () => {
-    if (!result?.rows?.length) return;
+    if (!effectiveRows.length) return;
     const sizeKeys = Object.keys(result.pack_breakdown);
-    const header = ["Store", "Packs", "Total Units", ...sizeKeys.map((s) => `${s} units`), "Velocity Score", "Low-Stock Score", "Sold (window)", "Current SOH"];
-    const lines = [header.join(",")];
-    result.rows.forEach((r) => {
+    const header = [
+      "Store",
+      "Suggested Packs", "Suggested Units",
+      "Allocated Packs", "Allocated Units",
+      "Delta Units",
+      ...sizeKeys.map((s) => `${s} units`),
+      "Velocity Score", "Low-Stock Score", "Sold (window)", "Current SOH",
+    ];
+    const lines = [
+      `Style:,"${styleName.replace(/"/g, '""')}"`,
+      `Type:,${allocationType}`,
+      `Subcategory:,"${subcategory}"`,
+      `Color:,"${color || "all"}"`,
+      `Units total:,${units}`,
+      `Pack size:,${result.pack_unit_size}`,
+      `Generated:,${new Date().toISOString()}`,
+      "",
+      header.join(","),
+    ];
+    effectiveRows.forEach((r) => {
       lines.push([
         `"${r.store.replace(/"/g, '""')}"`,
+        r.suggested_packs, r.suggested_units,
         r.packs_allocated, r.units_allocated,
+        r.units_allocated - r.suggested_units,
         ...sizeKeys.map((s) => r.sizes[s] || 0),
-        r.velocity_score.toFixed(4), r.low_stock_score.toFixed(4),
+        r.velocity_score?.toFixed?.(4) ?? r.velocity_score,
+        r.low_stock_score?.toFixed?.(4) ?? r.low_stock_score,
         r.units_sold_window, r.current_soh,
       ].join(","));
     });
@@ -139,6 +281,64 @@ const Allocations = () => {
       </div>
 
       <div className="card-white p-5 space-y-4" data-testid="allocation-form">
+        {/* Type toggle */}
+        <div>
+          <label className="eyebrow block mb-1.5">Allocation type</label>
+          <div className="inline-flex rounded-full border border-border overflow-hidden" data-testid="alloc-type">
+            {[
+              { k: "new", label: "New style" },
+              { k: "replenishment", label: "Replenishment (existing)" },
+            ].map((opt) => {
+              const active = allocationType === opt.k;
+              return (
+                <button
+                  key={opt.k}
+                  type="button"
+                  onClick={() => { setAllocationType(opt.k); setStyleName(""); }}
+                  data-testid={`alloc-type-${opt.k}`}
+                  className={`px-3 py-1 text-[11.5px] font-semibold transition-colors ${
+                    active ? "bg-[#1a5c38] text-white" : "bg-white text-[#374151] hover:bg-gray-100"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Style name */}
+        <div>
+          <label className="eyebrow block mb-1">
+            Style name {allocationType === "replenishment" ? "(pick existing)" : "(free text)"}
+          </label>
+          {allocationType === "replenishment" ? (
+            <select
+              value={styleName}
+              onChange={(e) => setStyleName(e.target.value)}
+              disabled={!subcategory || stylesLoading}
+              className="input-pill w-full"
+              data-testid="alloc-style-select"
+            >
+              <option value="">{stylesLoading ? "Loading styles…" : `— pick from ${styleOptions.length} styles —`}</option>
+              {styleOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          ) : (
+            <input
+              value={styleName}
+              onChange={(e) => setStyleName(e.target.value)}
+              placeholder="e.g. Vivo Linen Maxi Dress · Spring 26"
+              className="input-pill w-full"
+              data-testid="alloc-style-input"
+            />
+          )}
+          {allocationType === "replenishment" && styleName && (
+            <p className="text-[10.5px] text-muted mt-0.5">
+              Velocity + low-stock score will be computed for <b>{styleName}</b> only (style-specific).
+            </p>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <label className="eyebrow block mb-1">Subcategory</label>
@@ -281,27 +481,87 @@ const Allocations = () => {
         <div className="card-white p-5" data-testid="allocation-result">
           <div className="flex flex-wrap items-center gap-3 mb-3">
             <h2 className="font-extrabold text-[14px] text-[#0f3d24]">
-              Suggested allocation · {result.allocated_units}/{result.requested_units} units
+              {styleName ? <>Allocation for <span className="text-brand">{styleName}</span></> : "Suggested allocation"}
+              {" · "}
+              {totalAllocatedAfterOverrides}/{result.requested_units} units
             </h2>
             <span className="text-[11px] text-muted">
-              {result.available_packs} packs · {result.leftover_units} units leftover
+              {result.available_packs} packs available · pack = {result.pack_unit_size} units
+              {overriddenCount > 0 && (
+                <> · <b className="text-amber-700">{overriddenCount} stores manually overridden</b></>
+              )}
             </span>
+            <div className="ml-auto flex items-center gap-2">
+              {overriddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={resetOverrides}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-amber-700 border border-amber-300 hover:bg-amber-50 px-2.5 py-1.5 rounded-md"
+                  data-testid="alloc-reset-overrides"
+                >
+                  <ArrowCounterClockwise size={12} weight="bold" /> Reset to suggested
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={saveRun}
+                disabled={savingRun || !styleName.trim()}
+                title={!styleName.trim() ? "Add a style name above before saving" : "Save this allocation to the report log"}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+                data-testid="alloc-save-run"
+              >
+                <FloppyDisk size={12} weight="bold" /> {savingRun ? "Saving…" : "Save allocation"}
+              </button>
+            </div>
           </div>
-          {result.rows.length === 0 ? (
+          {savedToast && (
+            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800 mb-3">
+              {savedToast}
+            </div>
+          )}
+          {effectiveRows.length === 0 ? (
             <Empty label="No stores to allocate to with the current filters." />
           ) : (
             <SortableTable
               testId="allocation-table"
               initialSort={{ key: "units_allocated", dir: "desc" }}
-              rows={result.rows}
+              rows={effectiveRows}
               columns={[
                 {
                   key: "store", label: "Store", align: "left", mobilePrimary: true,
-                  render: (r) => <span className="font-medium">{r.store}</span>,
+                  render: (r) => (
+                    <span className="font-medium">
+                      {r.store}
+                      {r.is_overridden && (
+                        <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1 py-0.5 rounded">
+                          edited
+                        </span>
+                      )}
+                    </span>
+                  ),
                 },
                 {
-                  key: "packs_allocated", label: "Packs", numeric: true,
-                  render: (r) => <span className="pill-green font-bold">{r.packs_allocated}</span>,
+                  key: "suggested_packs", label: "Suggested", numeric: true,
+                  render: (r) => <span className="num text-muted">{r.suggested_packs} pk</span>,
+                  csv: (r) => r.suggested_packs,
+                },
+                {
+                  key: "packs_allocated", label: "Packs (editable)", numeric: true, sortable: false,
+                  render: (r) => (
+                    <input
+                      type="number"
+                      min={0}
+                      value={packOverrides[r.store] ?? r.packs_allocated}
+                      onChange={(e) => setPackOverride(r.store, e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      className={`w-16 px-1.5 py-0.5 text-right text-[12px] tabular-nums border rounded font-bold ${
+                        r.is_overridden
+                          ? "bg-amber-50 border-amber-400 text-amber-900"
+                          : "bg-white border-border text-emerald-700"
+                      }`}
+                      data-testid={`alloc-packs-input-${r.store}`}
+                    />
+                  ),
                   csv: (r) => r.packs_allocated,
                 },
                 {
@@ -335,6 +595,8 @@ const Allocations = () => {
           )}
         </div>
       )}
+
+      <AllocationRunsHistory refreshKey={historyRefresh} />
     </div>
   );
 };

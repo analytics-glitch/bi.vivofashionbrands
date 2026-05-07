@@ -21,7 +21,7 @@ in whole packs to keep the floor mix intact).
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -79,15 +79,20 @@ def _norm_size(s: Optional[str]) -> str:
 # ── Models ────────────────────────────────────────────────────────────
 class AllocationRequest(BaseModel):
     subcategory: str = Field(..., min_length=1)
-    color: Optional[str] = None  # optional — if provided, restricts
-                                 # velocity + SOH to that colour only.
-    sizes: List[str] = Field(..., min_items=1)  # e.g. ["S", "M", "L"]
+    color: Optional[str] = None
+    sizes: List[str] = Field(..., min_items=1)
     units_total: int = Field(..., ge=1, le=100000)
     date_from: str
     date_to: str
     velocity_weight: float = Field(0.5, ge=0, le=1)
-    # 0 = pure low-stock fill, 1 = pure velocity. Default 0.5 = blend.
     excluded_stores: List[str] = []
+    # New fields
+    style_name: Optional[str] = None  # free-text label, persisted with
+                                      # the saved run for the report.
+    allocation_type: str = Field("new", pattern="^(new|replenishment)$")
+    # When allocation_type == "replenishment", we filter velocity + SOH
+    # by this exact style name (in addition to subcategory) so the
+    # signal is style-specific, not subcategory-wide.
 
 
 class StoreAllocationRow(BaseModel):
@@ -186,6 +191,7 @@ async def calculate_allocation(
     target_subcat = body.subcategory.strip().lower()
     target_color = (body.color or "").strip().lower() or None
     excluded = {s.strip() for s in body.excluded_stores if s and s.strip()}
+    target_style = (body.style_name or "").strip().lower() if body.allocation_type == "replenishment" else None
 
     def _row_matches(r: dict) -> bool:
         sub = (r.get("product_type") or r.get("subcategory") or "").strip().lower()
@@ -194,6 +200,11 @@ async def calculate_allocation(
         if target_color:
             color = (r.get("color_print") or r.get("color") or "").strip().lower()
             if target_color not in color:
+                return False
+        # Replenishment: style-specific signal.
+        if target_style:
+            style = (r.get("style_name") or r.get("title") or "").strip().lower()
+            if target_style not in style:
                 return False
         return True
 
@@ -204,6 +215,10 @@ async def calculate_allocation(
         if target_color:
             color = (r.get("color_print") or r.get("color") or "").strip().lower()
             if target_color not in color:
+                return False
+        if target_style:
+            style = (r.get("style_name") or r.get("title") or "").strip().lower()
+            if target_style not in style:
                 return False
         return True
 
@@ -307,6 +322,112 @@ async def calculate_allocation(
         leftover_units=body.units_total - allocated,
         rows=rows,
     )
+
+
+# ── Replenishment style picker + saved runs ─────────────────────────
+import os
+import uuid as _uuid
+from datetime import datetime, timezone
+from motor.motor_asyncio import AsyncIOMotorClient
+
+_alloc_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+_alloc_db = _alloc_client[os.environ["DB_NAME"]]
+_alloc_runs = _alloc_db.allocation_runs
+
+
+@api_router.get("/allocations/styles")
+async def list_replenishment_styles(
+    subcategory: Optional[str] = None,
+    _: User = Depends(get_current_user),
+):
+    """Return distinct style names the user can pick for a
+    REPLENISHMENT allocation. Sourced from current inventory rows so we
+    only surface styles that actually exist somewhere in stock right
+    now. When `subcategory` is given, narrow to that subcategory.
+    """
+    inv = await fetch_all_inventory()
+    if not inv:
+        return {"styles": []}
+    target = (subcategory or "").strip().lower()
+    seen = set()
+    for r in inv:
+        sub = (r.get("product_type") or r.get("subcategory") or "").strip().lower()
+        if target and sub != target:
+            continue
+        st = (r.get("style_name") or r.get("title") or "").strip()
+        if st:
+            seen.add(st)
+    return {"styles": sorted(seen)}
+
+
+class SaveAllocationRun(BaseModel):
+    style_name: str = Field(..., min_length=1, max_length=300)
+    allocation_type: str = Field("new", pattern="^(new|replenishment)$")
+    subcategory: str
+    color: Optional[str] = None
+    units_total: int
+    pack_unit_size: int
+    pack_breakdown: Dict[str, int]
+    velocity_weight: float
+    date_from: str
+    date_to: str
+    rows: List[Dict[str, Any]]
+    # rows must include both `suggested_units` and `allocated_units`
+    # per store so the variance report can compare them later.
+
+
+@api_router.post("/allocations/save")
+async def save_allocation_run(
+    body: SaveAllocationRun,
+    user: User = Depends(get_current_user),
+):
+    """Persist a finalised allocation run to `allocation_runs` so we
+    can render a history of past allocations on the page.
+    """
+    rid = str(_uuid.uuid4())
+    suggested_total = sum(int(r.get("suggested_units") or 0) for r in body.rows)
+    allocated_total = sum(int(r.get("allocated_units") or 0) for r in body.rows)
+    doc = {
+        "id": rid,
+        "style_name": body.style_name.strip(),
+        "allocation_type": body.allocation_type,
+        "subcategory": body.subcategory,
+        "color": body.color,
+        "units_total": body.units_total,
+        "pack_unit_size": body.pack_unit_size,
+        "pack_breakdown": body.pack_breakdown,
+        "velocity_weight": body.velocity_weight,
+        "date_from": body.date_from,
+        "date_to": body.date_to,
+        "rows": body.rows,
+        "suggested_total": suggested_total,
+        "allocated_total": allocated_total,
+        "delta_total": allocated_total - suggested_total,
+        "created_at": datetime.now(timezone.utc),
+        "created_by_user_id": user.user_id,
+        "created_by_email": user.email,
+        "created_by_name": user.name,
+    }
+    await _alloc_runs.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/allocations/runs")
+async def list_allocation_runs(_: User = Depends(get_current_user)):
+    """Return the latest 200 saved allocation runs so the front-end
+    can show a 'Recent allocations' table."""
+    cursor = _alloc_runs.find({}, {"_id": 0}).sort("created_at", -1).limit(200)
+    return [doc async for doc in cursor]
+
+
+@api_router.get("/allocations/runs/{run_id}")
+async def get_allocation_run(run_id: str, _: User = Depends(get_current_user)):
+    """Return a single allocation run for export rendering."""
+    doc = await _alloc_runs.find_one({"id": run_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Allocation run not found")
+    return doc
 
 
 # Lightweight re-export so server.py picks this module up; importing

@@ -11,6 +11,7 @@ import { useOutliers } from "@/lib/useOutliers";
 import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill";
 import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
+import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -683,6 +684,13 @@ const Locations = () => {
                 returnStats={returnStats}
                 compareMode={compareMode}
               />
+
+              {/* Monthly Sales Target Tracker — duplicate of the
+                  Targets-page block so store managers and exec users
+                  can see daily progress without leaving the locations
+                  view. The tracker is self-fetching off /analytics/
+                  monthly-targets so the date range is the current month. */}
+              <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
             </>
 
           {/* Store deep-dive slide-over — the audit's "single biggest missed

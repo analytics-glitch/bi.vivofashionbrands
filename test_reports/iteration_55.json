@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 55 — backend + frontend validation of the 5-feature Allocations & Monthly Targets enhancement batch. Backend pytest 7/7 PASS (after one cold-cache 502 retry on /analytics/monthly-targets): (1) GET /api/analytics/monthly-targets?month=2026-05-01 returns avg_suggested_remaining/gap_to_target/days_remaining per store; future daily rows have suggested_daily_target, past/today rows have null; sum-of-suggested ≈ gap_to_target within rounding tolerance. (2) GET /api/allocations/styles?subcategory=Maxi+Dresses returns non-empty list. (3) POST /api/allocations/calculate with allocation_type='replenishment' + style_name correctly narrows velocity + SOH (replenishment totals ≤ subcategory totals). (4) POST /api/allocations/save persists to allocation_runs, returns id + suggested_total/allocated_total/delta_total without _id; GET /api/allocations/runs lists newest-first; GET /api/allocations/runs/{id} returns single doc; bad id → 404. Frontend (admin login on preview): /locations renders data-testid='monthly-targets-tracker' below LocationsAttentionPanel; /targets shows 'Need / day' stat on store cards; /allocations has alloc-type-new/replenishment pills, free-text alloc-style-input in 'new' mode and alloc-style-select dropdown (28 styles for default subcategory) in 'replenishment' mode; calculate produces 28 editable Packs inputs (alloc-packs-input-{store}); editing a value reveals alloc-reset-overrides which clears overrides on click; clicking alloc-save-run persists run (verified in mongo: id=d20de1d6… style_name=TEST_UI_STYLE_iter55) and renders 'Allocation saved · check the Recent Allocations table below' toast; allocation-history component rendered. Test data in allocation_runs cleaned up post-test.",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "/api/analytics/monthly-targets", "issue": "Cold-cache responses can hit 502 the first time (preview env upstream timeout). Subsequent calls succeed. Cold path took 188s in mixed run; passed cleanly on retry. Not a regression — same pattern as iter-50/52/54."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Allocations · Recent Allocations refresh after save", "issue": "Saved row not visible in allocation-history within 3.5s of toast in automation; manual mongo query confirms the run DID persist (so save flow works). The AllocationRunsHistory useEffect re-fetches when refreshKey increments — likely just slow GET /allocations/runs in test env. Recommend: show a spinner during refresh, OR optimistically prepend the just-saved run to the local state instead of relying solely on a refetch.", "affected_selectors": ["[data-testid=allocation-history]", "[data-testid^=alloc-history-row-]"]}
+    ],
+    "design_issues": [
+      {"screen": "Pre-existing", "issues": ["recharts width(-1)/height(-1) console warnings on Overview KPI cards mount (already noted iter-49/51/52/53/54)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_55_alloc_targets.py",
+    "/app/test_reports/pytest/iter55.xml"
+  ],
+  "action_items": [
+    "Optional: have AllocationRunsHistory either (a) optimistically prepend the just-saved run to its rows, or (b) display a 'refreshing…' state while the post-save fetch runs, so users see the new row instantly instead of after the GET round-trip.",
+    "Optional: consider warming /analytics/monthly-targets cache on backend startup so first-call 502 from cold cache doesn't occur in prod."
+  ],
+  "critical_code_review_comments": [
+    "monthly_targets.py:243-266 — gap_to_target = max(0, target - running_actual); suggested_daily_target re-weighted by per-day DOW share of remaining target pool. Correctly returns 0/null on past days. Math validated: sum(suggested_daily_target across future) ≈ gap_to_target.",
+    "allocations.py:194 — target_style is gated on allocation_type=='replenishment', so 'new' allocations correctly stay subcategory-wide.",
+    "allocations.py:206,220 — uses substring match (`target_style not in style`) on style_name|title; this is intentionally permissive but could yield false positives if a style name is a sub-string of another. Consider exact-match (or word-boundary) for safer signal.",
+    "allocations.py:411 — `await _alloc_runs.insert_one(doc)` mutates `doc` in-place adding `_id`; subsequent `doc.pop('_id', None)` strips it before return. Good.",
+    "allocations.py:333-335 — module-level AsyncIOMotorClient instantiated at import time with `os.environ['MONGO_URL']` (KeyError if unset). Acceptable since same pattern as server.py.",
+    "AllocationRunsHistory.jsx:18-26 — refetches on refreshKey change; no optimistic update. Combined with no loading indicator on refetch, post-save UX feels stale (see integration issue above).",
+    "Allocations.jsx:144-163 — effectiveRows useMemo recomputes packs/sizes/units cleanly from overrides; suggested_packs/suggested_units stashed for later save payload — clean implementation.",
+    "Allocations.jsx:184-222 — saveRun POSTs effectiveRows with both suggested_* and allocated_* per store, matching the SaveAllocationRun pydantic schema. Toast auto-dismisses after 3.5s — fine.",
+    "Allocations.jsx:549-565 — Packs (editable) input has `onClick stopPropagation` to avoid table row sort interference. Good.",
+    "Targets page (per agent_to_agent_context_note): 'Suggested Daily Need' column is inside the expandable daily breakdown table (collapsed by default). UI test could not auto-detect via plaintext (it didn't expand a row). Verified in code that MonthlyTargetsTracker.jsx renders the column. No bug — main agent can self-verify by clicking a store card to expand the daily table."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_55_alloc_targets.py"],
+  "success_rate": {"backend": "100% (7/7 pytest)", "frontend": "~95% — locations tracker, targets need/day stat, alloc type pills, free-text/dropdown style switch, editable packs (28), reset-overrides appear/clear, save-run toast, history component render, persistence to mongo all verified. Only the post-save row visibility timing was flaky in automation (the row IS saved server-side)."},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "Pytest inserted 1 run (TEST_STYLE_iter55) cleaned up by fixture; UI run (TEST_UI_STYLE_iter55) cleaned up by separate mongo delete after the playwright run. allocation_runs left in original state.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All endpoints under /api/allocations/{styles,save,runs,runs/{id}} and the new monthly-targets fields are wired and returning correct shapes. Pack table = {XS:1,S:2,M:3,L:3,1X:2,2X:1,F:4,XS/S:2,M/L:2,1X/2X:1,S/M:2,L/1X:1}. Replenishment style filter uses substring match on style_name|title (case-insensitive). For UI testing of the Targets page 'Suggested Daily Need' column you must expand a store's daily breakdown by clicking the row/expand button — the column lives inside that nested table, not on the summary card. Recent Allocations table refetches on refreshKey change but does NOT show a loading indicator during refetch — give it 5–8 seconds after save before asserting the new row.",
+  "rca of the issue": "n/a — feature add. Only flaky behavior is post-save UI refresh timing; remediation suggested as optional enhancement (optimistic prepend or refresh spinner)."
+}

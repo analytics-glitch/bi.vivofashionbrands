@@ -225,11 +225,45 @@ async def analytics_monthly_targets(
 
         # Project month-end based on pace: run-rate × days remaining.
         days_complete = sum(1 for r in daily_rows if not r["is_future"])
+        days_remaining = days_in - days_complete
         if days_complete >= 1 and running_target > 0:
             # Use ratio-weighted run-rate: actual_ytd × (full_target / target_ytd)
             projected_landing = target * (running_actual / running_target) if running_target else running_actual
         else:
             projected_landing = 0.0
+
+        # Suggested daily run-rate to still hit target. The remaining
+        # daily rows still have their DOW-weighted target stamped on
+        # them (sum equals `target_remaining`). To "catch up" we need
+        # the gap divided across the remaining days, then re-spread
+        # via DOW weights so a Saturday gets a heavier suggested
+        # number than a Tuesday. This makes the suggestion realistic
+        # — telling a store "do KES X every day" is mis-leading when
+        # weekends carry 2× weekday share.
+        target_remaining_dow = sum(
+            r["daily_target"] for r in daily_rows if r["is_future"]
+        ) or 0.0
+        gap_to_target = max(0.0, target - running_actual)
+        for r in daily_rows:
+            if not r["is_future"]:
+                r["suggested_daily_target"] = None
+                continue
+            if target_remaining_dow > 0 and days_remaining > 0:
+                # Re-weight the gap by this day's share of the
+                # remaining DOW pool.
+                share = r["daily_target"] / target_remaining_dow
+                r["suggested_daily_target"] = round(gap_to_target * share, 2)
+            else:
+                r["suggested_daily_target"] = round(
+                    gap_to_target / days_remaining, 2,
+                ) if days_remaining > 0 else 0.0
+
+        # Headline number — what's needed PER DAY on average across
+        # remaining days. Frontend renders this in the new column.
+        avg_suggested_remaining = (
+            round(gap_to_target / days_remaining, 2)
+            if days_remaining > 0 else None
+        )
 
         stores.append({
             "channel": ch,
@@ -237,11 +271,14 @@ async def analytics_monthly_targets(
             "month": m.isoformat(),
             "days_in_month": days_in,
             "days_complete": days_complete,
+            "days_remaining": days_remaining,
             "mtd_actual": round(running_actual, 2),
             "mtd_target": round(running_target, 2),
             "projected_landing": round(projected_landing, 2),
             "pct_of_target_projected": round((projected_landing / target * 100), 2) if target else 0.0,
             "ksh_variance_total": round(running_var, 2),
+            "gap_to_target": round(gap_to_target, 2),
+            "avg_suggested_remaining": avg_suggested_remaining,
             "daily": daily_rows,
         })
     stores.sort(key=lambda s: s["sales_target"], reverse=True)

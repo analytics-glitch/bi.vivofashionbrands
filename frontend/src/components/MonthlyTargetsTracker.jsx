@@ -43,6 +43,13 @@ function StoreCard({ store }) {
           <Stat label="Variance MTD" value={fmtSignedKES(store.ksh_variance_total)}
                 valueClass={store.ksh_variance_total >= 0 ? "text-[#00c853]" : "text-[#dc2626]"} />
           <Stat label="Days" value={`${store.days_complete}/${store.days_in_month}`} />
+          {store.avg_suggested_remaining != null && store.days_remaining > 0 && (
+            <Stat
+              label="Need / day"
+              value={fmtKES(store.avg_suggested_remaining)}
+              valueClass={`font-bold ${store.gap_to_target > 0 ? "text-[#dc2626]" : "text-[#166534]"}`}
+            />
+          )}
         </div>
       </div>
 
@@ -55,6 +62,12 @@ function StoreCard({ store }) {
                 <th className="text-left px-3 py-2">Day</th>
                 <th className="text-right px-3 py-2">Ratio</th>
                 <th className="text-right px-3 py-2">Daily Budget</th>
+                <th
+                  className="text-right px-3 py-2 bg-amber-200/70"
+                  title="What you need to do per day on remaining days to still hit the monthly target — re-weighted by the day-of-week pattern."
+                >
+                  Suggested Daily Need
+                </th>
                 <th className="text-right px-3 py-2">Actual</th>
                 <th className="text-right px-3 py-2">Variance %</th>
                 <th className="text-right px-3 py-2">Ksh variance (Daily)</th>
@@ -74,6 +87,17 @@ function StoreCard({ store }) {
                     <td className="px-3 py-1.5 text-right tabular-nums">{r.ratio.toFixed(1)}%</td>
                     <td className="px-3 py-1.5 text-right tabular-nums font-medium text-[#dc2626]">
                       {fmtKES(r.daily_target)}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right tabular-nums ${
+                      future
+                        ? r.suggested_daily_target > r.daily_target * 1.5
+                          ? "bg-rose-200 text-rose-900 font-bold"
+                          : r.suggested_daily_target > r.daily_target
+                            ? "bg-amber-100 text-amber-900 font-semibold"
+                            : "bg-emerald-50 text-emerald-900 font-semibold"
+                        : "text-muted/60"
+                    }`}>
+                      {future && r.suggested_daily_target != null ? fmtKES(r.suggested_daily_target) : "—"}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">
                       {future ? <span className="text-muted/60">—</span> : fmtKES(r.actual)}
