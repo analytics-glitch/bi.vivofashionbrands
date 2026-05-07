@@ -21,6 +21,9 @@ import Login from "@/pages/Login";
 import AuthCallback from "@/pages/AuthCallback";
 import Users from "@/pages/Users";
 import ActivityLogs from "@/pages/ActivityLogs";
+import Feedback from "@/pages/Feedback";
+import AdminFeedback from "@/pages/AdminFeedback";
+import Allocations from "@/pages/Allocations";
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
@@ -91,8 +94,11 @@ function App() {
               <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
               <Route path="/pricing" element={<ProtectedShell pageId="pricing"><Pricing /></ProtectedShell>} />
               <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
+              <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
+              <Route path="/allocations" element={<ProtectedShell pageId="allocations"><Allocations /></ProtectedShell>} />
               <Route path="/admin/users" element={<ProtectedShell adminOnly pageId="admin-users"><Users /></ProtectedShell>} />
               <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
+              <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </FiltersProvider>

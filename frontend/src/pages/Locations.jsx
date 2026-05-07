@@ -262,7 +262,7 @@ const Locations = () => {
     <div className="space-y-6" data-testid="locations-page">
       <div>
         <div className="eyebrow">Dashboard · Locations</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
           Locations
         </h1>
       </div>

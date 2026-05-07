@@ -1,0 +1,46 @@
+{
+  "summary": "Iter-51 verified the 7 Vivo BI feature drop: Allocations API + page, Feedback API + Feedback page + Admin Feedback inbox, IBT warehouse-to-store online exclusion, page-header clamp() typography, CEO Top-10 Best SOR Accessories+Zoya exclusion, Total Sales Summary PDF/PNG/CSV downloads, sidebar nav. Backend: 11/11 pytests PASSED in 33.7s — /api/allocations/sizes returns the documented 12-ratio table exactly (XS:1, S:2, M:3, L:3, 1X:2, 2X:1, F:4, XS/S:2, M/L:2, 1X/2X:1, S/M:2, L/1X:1); /api/allocations/stores excludes online/shop zetu/studio/wholesale/warehouse; /api/allocations/calculate {Maxi Dresses, S/M/L, 400 units} returns pack_unit_size=8, available_packs=50, sum(packs_allocated)=50 (largest-remainder invariant), per-row units == packs * pack_breakdown[size] for every size, no online destinations; velocity_weight=1.0 vs 0.0 produce different leaders; bad-size + units<pack return 400 with helpful messages; /api/analytics/ibt-warehouse-to-store has zero online destinations; feedback POST/GET/PATCH/mine work with admin-only enforcement on list+patch (viewer 403). Frontend: admin login → /allocations renders form with subcategory <select>, color input, units input, S/M/L pills active by default, velocity-weight slider, Calculate button → 29-row result table with Packs/Units columns + CSV button (verified end-to-end). /feedback page submits successfully (POST 200) and refreshes 'Your past submissions' list with the new entry. /admin/feedback inbox loads with 5 'Mark resolved' buttons + status filter selector. Targets page exposes all 3 export buttons CSV+PDF+PNG with data-testid='sales-summary-download-pdf' / -png / -csv; PDF download triggered (sales-summary_2026-05-01.pdf), PNG download triggered (sales-summary_2026-05-01.png). CEO Report Best SOR header text contains '(excludes Accessories & Zoya)'; rendered table has 0 Accessories rows, 0 Zoya rows. /ibt H1 class is 'font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]' (no fixed text-[22px]) — confirmed via getComputedStyle. Sidebar shows Allocations + Feedback nav links and admin user-menu dropdown shows 'Feedback Inbox' link.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/allocations/calculate", "issue": "Cold first-call latency on 2-month window can take 30-60s+; gateway returned 502 in one cold run on date_from=2026-03-01 to 2026-04-30. Subsequent calls are fast. Consider memoising fetch_all_inventory + _orders_for_window per request batch or paginating the orders fetch."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CEOReport / Top 10 Best SOR table", "issue": "Column header click is wired (no error thrown) but rendered tbody row order does NOT change after clicking SOR or Style th. No aria-sort attribute is set on th and no asc/desc arrow indicator becomes visible. Either toggleBestSort handler is not bound to th, or bestSorSorted state is not driving the tbody render. Confirmed by capturing top-3 rows before/after click — identical.", "selector": "th:has-text(\"SOR\")", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview KPI Trend chart", "issues": ["Pre-existing recharts width(-1)/height(-1) console warnings on initial mount — cosmetic, already flagged in iter-49."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_51_allocations_feedback.py",
+    "/app/test_reports/pytest/iter51.xml"
+  ],
+  "action_items": [
+    "CEO Report Top-10 Best SOR sortable headers: verify toggleBestSort handler is wired to <th onClick> (or a wrapping button) and that bestSorSorted state actually drives the rendered .map; add aria-sort + visible arrow indicator (e.g. ▲/▼) so the sort state is discoverable. Currently clicks register but rows do not reorder.",
+    "(Minor perf) /api/allocations/calculate cold call on multi-month window can hit 60s+; consider request-scoped caching of fetch_all_inventory and _orders_for_window or projecting only needed fields."
+  ],
+  "critical_code_review_comments": [
+    "routes/allocations.py — largest-remainder pack allocation (lines 268-279) is correctly implemented: floors + remainder ranking + leftover bonus. Verified sum(packs_allocated) == available_packs across the test response.",
+    "routes/allocations.py — SOH/sales matchers both use product_type OR subcategory (case-insensitive trim) — robust to upstream field naming.",
+    "routes/allocations.py — ONLINE_DEST_KEYS=('online','shop zetu','studio','wholesale') applied symmetrically in /stores AND in soh_by_store + sold_by_store loops; matches the IBT warehouse→store exclusion. Good consistency.",
+    "feedback.py — clean admin-only guard via Depends(require_admin) on list + PATCH; submit + /mine use Depends(get_current_user). PATCH correctly clears resolved_by/resolved_at when toggling resolved=false. Mongo _id stripped via projection={'_id':0}.",
+    "TotalSalesSummary.jsx — PDF + PNG + CSV all trigger real browser downloads; data-testids correctly attached for each. PNG download fires html2canvas at windowWidth:1400 + scale:3 — tested without errors.",
+    "All-pages clamp() header sweep — verified on /ibt H1 ('Inter-Branch Transfer Recommendations') class contains 'leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]' and no fixed text-[22px]/sm:text-[28px]. computed font-size at 1280-wide viewport = 26px (upper clamp bound)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_51_allocations_feedback.py",
+    "/app/test_reports/iteration_51.json",
+    "/app/test_reports/pytest/iter51.xml"
+  ],
+  "success_rate": {"backend": "100% (11/11 pytests passed)", "frontend": "~92% — 7/8 features verified end-to-end; CEO Best SOR sort handler is the one wiring gap"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 ; viewer@vivofashiongroup.com / Viewer!2026",
+  "seed_data_creation": "Created TEST_iter51 feedback entries via API + UI flow (admin user). They show as 'Open' / 'Resolved' in /feedback past-submissions and /admin/feedback inbox; safe to ignore or clean later.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend tests: /app/backend/tests/test_iteration_51_allocations_feedback.py (11 tests, 33s) covers /api/allocations/{sizes,stores,calculate} happy-path + invariants + 400 errors, /api/feedback CRUD + admin enforcement, /api/analytics/ibt-warehouse-to-store online-channel exclusion. Run with REACT_APP_BACKEND_URL=https://bi-platform-2.preview.emergentagent.com python -m pytest backend/tests/test_iteration_51_allocations_feedback.py -v. Allocations subcategory dropdown is a <select> not <input> — use page.select_option(label='Maxi Dresses'), data-testid='alloc-subcategory'. Feedback page: 'Your past submissions' list refreshes within ~3s of POST. CEO Best SOR table is found via heading 'Best SOR' walking up to nearest table; rendered tbody row order doesn't change on column-header click — main agent needs to wire toggleBestSort to th and re-render bestSorSorted into the tbody.map. Header clamp() pattern verified on /ibt H1; same regex 'text-[clamp(18px,2.2vw,26px)]' should apply across pages — spot-check 2-3 more pages (CEO Report, Targets, Customers) if needed.",
+  "rca of the issue": "CEO Best SOR sort UX: Iter-51 brief explicitly required clicking SOR column toggles asc/desc indicator. Frontend test confirmed the handler binds (no JS error) but bestSorSorted state is not driving tbody render OR toggleBestSort isn't attached to the actual th element. To reproduce: log in as admin → /ceo-report → scroll to 'Top 10 Best SOR' table → click SOR header twice → row order remains identical, no aria-sort attribute toggles, no arrow appears. Likely fix: confirm <th onClick={() => toggleBestSort('sor')}> wires correctly, change rows.map source from raw bestSor array to bestSorSorted, and add a visible indicator (e.g. {sortKey==='sor' && (sortDir==='desc'?'▼':'▲')})."
+}

@@ -2448,8 +2448,15 @@ async def analytics_ibt_warehouse_to_store(
         sales_by_style_store[(style, store)] += float(r.get("quantity") or 0)
 
     suggestions: List[Dict[str, Any]] = []
+    # Online channels never receive physical inventory transfers — they
+    # ship from the warehouse directly to customers. Surface only
+    # bricks-and-mortar destinations so floor-replenishment teams aren't
+    # confused by Shop Zetu / Online Safari rows.
+    _ONLINE_DEST_KEYS = ("online", "shop zetu", "studio", "wholesale")
     for (style, store), units in sales_by_style_store.items():
         if units <= 0:
+            continue
+        if any(k in (store or "").lower() for k in _ONLINE_DEST_KEYS):
             continue
         daily = units / window_days
         if daily < min_daily_velocity:
@@ -7155,6 +7162,7 @@ async def exports_stock_rebalancing(
 from routes import customer_analytics  # noqa: F401, E402
 from routes import analytics_inventory  # noqa: F401, E402
 from routes import monthly_targets  # noqa: F401, E402
+from routes import allocations as _allocations  # noqa: F401, E402
 
 app.include_router(api_router)
 app.include_router(recommendations_router)
@@ -7163,6 +7171,10 @@ app.include_router(thumbnails_router)
 app.include_router(notifications_router)
 app.include_router(search_router)
 app.include_router(ask_router)
+
+# Feedback router — users submit dashboard feedback; admins toggle resolved.
+from feedback import router as feedback_router  # noqa: E402
+app.include_router(feedback_router)
 
 
 @app.get("/api/health")

@@ -9,11 +9,13 @@
  * only pages use the `admin-` prefix.
  */
 
-const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details"];
-const STORE_MANAGER = [...VIEWER, "inventory", "re-order", "ibt"];
-const ANALYST = [...STORE_MANAGER, "products", "pricing", "data-quality"];
+const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details", "feedback"];
+// Store managers see ONLY: Locations (retail), Exports (inventory only),
+// IBT, Feedback. Per-page filters enforced inside the page components.
+const STORE_MANAGER = ["locations", "ibt", "exports", "feedback"];
+const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations"];
 const EXEC = [...ANALYST, "ceo-report", "targets", "exports"];
-const ADMIN = [...EXEC, "admin-users", "admin-activity-logs"];
+const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback"];
 
 export const ROLE_PAGES = {
   viewer: VIEWER,
@@ -62,8 +64,11 @@ export const homePageFor = (user) => {
     "targets": "/targets",
     "data-quality": "/data-quality",
     "exports": "/exports",
+    "feedback": "/feedback",
+    "allocations": "/allocations",
     "admin-users": "/admin/users",
     "admin-activity-logs": "/admin/activity-logs",
+    "admin-feedback": "/admin/feedback",
   };
   return routeMap[first] || "/";
 };

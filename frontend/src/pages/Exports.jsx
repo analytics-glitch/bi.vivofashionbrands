@@ -670,7 +670,7 @@ const Exports = () => {
     <div className="space-y-5" data-testid="exports-page">
       <div>
         <div className="eyebrow">Dashboard · Exports</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
           Exports (Sales, Inventory)
         </h1>
       </div>

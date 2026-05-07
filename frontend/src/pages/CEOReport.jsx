@@ -185,8 +185,48 @@ const CEOReport = () => {
     () => [...sor].sort((a, b) => (b.sor_percent || 0) - (a.sor_percent || 0)),
     [sor]
   );
-  const bestSor = sortedSor.slice(0, 10);
+  // Top 10 best — exclude Accessories category and any style/brand
+  // containing "Zoya" (per-leadership request — these inflate the
+  // top-SOR list with non-merchandise / sub-brand picks that aren't
+  // actionable signals). Bottom-10 keeps everything because slow
+  // movers still need surfacing for clearance/markdown decisions.
+  const bestSor = useMemo(() => {
+    const isAccessory = (r) =>
+      ((r.product_type || r.subcategory || "")
+        .toLowerCase()
+        .includes("accessor"));
+    const isZoya = (r) =>
+      ((r.style_name || "") + " " + (r.brand || "") + " " + (r.collection || ""))
+        .toLowerCase()
+        .includes("zoya");
+    return sortedSor.filter((r) => !isAccessory(r) && !isZoya(r)).slice(0, 10);
+  }, [sortedSor]);
   const worstSor = sortedSor.slice(-10).reverse();
+  // Sort key for the Top 10 table — user can click column headers to
+  // re-sort. Stored in component state so the toggle persists across
+  // rerenders. Default = sor_percent desc.
+  const [bestSortKey, setBestSortKey] = useState("sor_percent");
+  const [bestSortDir, setBestSortDir] = useState("desc");
+  const bestSorSorted = useMemo(() => {
+    const key = bestSortKey;
+    const dir = bestSortDir === "asc" ? 1 : -1;
+    return [...bestSor].sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "string") return av.localeCompare(bv) * dir;
+      return ((Number(av) || 0) - (Number(bv) || 0)) * dir;
+    });
+  }, [bestSor, bestSortKey, bestSortDir]);
+  const toggleBestSort = (key) => {
+    if (bestSortKey === key) {
+      setBestSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setBestSortKey(key);
+      setBestSortDir(key === "style_name" ? "asc" : "desc");
+    }
+  };
   const starsCount = sor.filter((r) => (r.sor_percent || 0) > 80).length;
   const slowCount = sor.filter((r) => (r.sor_percent || 0) < 20).length;
   const avgSor = sor.length
@@ -236,7 +276,7 @@ const CEOReport = () => {
       <div className="flex items-center justify-between pb-4 border-b border-border no-print mb-4">
         <div>
           <div className="eyebrow">Dashboard · Executive</div>
-          <h1 className="font-extrabold text-[26px] tracking-tight mt-1">
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.4vw,26px)]">
             CEO Report
           </h1>
         </div>
@@ -261,7 +301,7 @@ const CEOReport = () => {
           <div className="flex items-start justify-between gap-6 pb-5 border-b border-border">
             <div>
               <div className="eyebrow text-brand-deep">Vivo Fashion Group</div>
-              <h1 className="font-extrabold text-[26px] tracking-tight mt-1">
+              <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.4vw,26px)]">
                 Executive Sales Report
               </h1>
               <div className="text-[12.5px] text-muted mt-2 flex items-center gap-3">
@@ -525,18 +565,42 @@ const CEOReport = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="card-white p-4 border-2 border-brand-strong/40">
-              <h3 className="font-bold text-[13px] mb-2 text-brand-deep">Top 10 Best SOR</h3>
-              <table className="w-full data">
+              <h3 className="font-bold text-[13px] mb-2 text-brand-deep">Top 10 Best SOR <span className="text-[11px] font-normal text-muted">(excludes Accessories &amp; Zoya)</span></h3>
+              <table className="w-full data" data-testid="ceo-best-sor-table">
                 <thead>
                   <tr>
-                    <th>Style</th>
-                    <th className="text-right">Units</th>
-                    <th className="text-right">Stock</th>
-                    <th className="text-right"><SORHeader /></th>
+                    <th
+                      className="cursor-pointer select-none hover:text-brand"
+                      onClick={() => toggleBestSort("style_name")}
+                      data-testid="best-sor-sort-style"
+                    >
+                      Style {bestSortKey === "style_name" ? (bestSortDir === "asc" ? "▲" : "▼") : ""}
+                    </th>
+                    <th
+                      className="text-right cursor-pointer select-none hover:text-brand"
+                      onClick={() => toggleBestSort("units_sold")}
+                      data-testid="best-sor-sort-units"
+                    >
+                      Units {bestSortKey === "units_sold" ? (bestSortDir === "asc" ? "▲" : "▼") : ""}
+                    </th>
+                    <th
+                      className="text-right cursor-pointer select-none hover:text-brand"
+                      onClick={() => toggleBestSort("current_stock")}
+                      data-testid="best-sor-sort-stock"
+                    >
+                      Stock {bestSortKey === "current_stock" ? (bestSortDir === "asc" ? "▲" : "▼") : ""}
+                    </th>
+                    <th
+                      className="text-right cursor-pointer select-none hover:text-brand"
+                      onClick={() => toggleBestSort("sor_percent")}
+                      data-testid="best-sor-sort-sor"
+                    >
+                      <SORHeader /> {bestSortKey === "sor_percent" ? (bestSortDir === "asc" ? "▲" : "▼") : ""}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {bestSor.map((r, i) => (
+                  {bestSorSorted.map((r, i) => (
                     <tr key={(r.style_name || "") + i}>
                       <td className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.style_name}>
                         {r.style_name}

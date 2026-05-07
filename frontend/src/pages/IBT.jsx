@@ -115,7 +115,7 @@ const IBT = () => {
     <div className="space-y-6" data-testid="ibt-page">
       <div>
         <div className="eyebrow">Dashboard · Inter-Branch Transfer</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
           Inter-Branch Transfer Recommendations
         </h1>
         <p className="text-muted text-[13px] mt-1 max-w-3xl">

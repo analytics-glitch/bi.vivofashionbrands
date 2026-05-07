@@ -98,11 +98,16 @@ class UpdateUserBody(BaseModel):
 # `admin-` prefix. The frontend hides nav items it can't access; ProtectedRoute
 # also redirects on direct URL hits. Backend stays the source of truth via
 # /auth/me which echoes the user's `allowed_pages` list.
-_VIEWER = ["overview", "locations", "footfall", "customers", "customer-details"]
-_STORE_MANAGER = _VIEWER + ["inventory", "re-order", "ibt"]
-_ANALYST = _STORE_MANAGER + ["products", "pricing", "data-quality"]
+_VIEWER = ["overview", "locations", "footfall", "customers", "customer-details", "feedback"]
+# Store managers see ONLY:
+#   - Locations (retail-only restricted via the page itself, not here)
+#   - Exports (inventory-only restricted via the page itself, not here)
+#   - IBT (full)
+#   - Feedback (so they can submit issues)
+_STORE_MANAGER = ["locations", "ibt", "exports", "feedback"]
+_ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations"]
 _EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
-_ADMIN = _EXEC + ["admin-users", "admin-activity-logs"]
+_ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback"]
 ROLE_PAGES = {
     "viewer": _VIEWER,
     "store_manager": _STORE_MANAGER,

@@ -380,7 +380,7 @@ const Customers = () => {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="eyebrow">Dashboard · Customers</div>
-          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
             Customers
           </h1>
         </div>

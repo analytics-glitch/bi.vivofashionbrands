@@ -19,6 +19,8 @@ import {
   DownloadSimple,
   CurrencyCircleDollar,
   Target,
+  Stack,
+  ChatCircleDots,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -37,11 +39,13 @@ const tabs = [
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
+  { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations" },
   { to: "/pricing", label: "Pricing", icon: CurrencyCircleDollar, id: "pricing" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports" },
+  { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback" },
 ];
 
 const relativeTime = (d) => {
@@ -110,6 +114,13 @@ const UserMenu = () => {
                 data-testid="menu-logs"
               >
                 <ClockClockwise size={13} /> Activity Logs
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/feedback"); }}
+                data-testid="menu-feedback-inbox"
+              >
+                <ChatCircleDots size={13} /> Feedback Inbox
               </button>
               <div className="h-px bg-border my-1" />
             </>

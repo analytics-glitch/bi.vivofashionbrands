@@ -188,7 +188,7 @@ const Products = () => {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="eyebrow">Dashboard · Products</div>
-          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Products</h1>
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">Products</h1>
           <p className="text-muted text-[13px] mt-0.5">For Head of Products — style & subcategory performance</p>
         </div>
         <div className="flex flex-wrap items-end gap-3" data-testid="products-filters">

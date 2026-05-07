@@ -607,7 +607,7 @@ const Overview = () => {
       <div className="flex flex-wrap items-baseline gap-3">
         <div>
           <div className="eyebrow">Dashboard · Overview</div>
-          <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1">Overview</h1>
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">Overview</h1>
           <p className="text-muted text-[13px] mt-0.5">
             {fmtDate(dateFrom)} → {fmtDate(dateTo)}
             {compareMode !== "none" && compareLbl && (

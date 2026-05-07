@@ -523,7 +523,7 @@ function Header() {
     <div className="flex items-start gap-3 flex-wrap">
       <div>
         <div className="eyebrow">Dashboard · Targets</div>
-        <h1 className="font-extrabold text-[22px] sm:text-[28px] tracking-tight mt-1 inline-flex items-center gap-2">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)] inline-flex items-center gap-2">
           <CalendarBlank size={22} weight="duotone" className="text-[#1a5c38]" />
           Targets Tracker
         </h1>

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 import { api, fmtKES } from "@/lib/api";
 import { Loading } from "@/components/common";
-import { Table, DownloadSimple, FileCsv } from "@phosphor-icons/react";
+import { Table, DownloadSimple, FileCsv, FilePdf } from "@phosphor-icons/react";
 
 /**
  * Total Sales Summary — PDF-style monthly snapshot.
@@ -271,11 +272,25 @@ export default function TotalSalesSummary({ month }) {
     if (!tableRef.current) return;
     setExporting(true);
     try {
+      // Render at fixed desktop width (1400px) regardless of viewport so
+      // the PNG comes out sharp on mobile screens too. windowWidth +
+      // forced .style.width on the clone gives html2canvas a stable
+      // layout to capture from. scale=3 keeps it crisp on retina/zoom.
       const canvas = await html2canvas(tableRef.current, {
-        scale: 2,
+        scale: 3,
         backgroundColor: "#ffffff",
         useCORS: true,
         logging: false,
+        windowWidth: 1400,
+        width: 1400,
+        onclone: (doc) => {
+          const el = doc.querySelector('[data-snapshot-target="true"]');
+          if (el) {
+            el.style.width = "1400px";
+            el.style.maxWidth = "1400px";
+            el.style.minWidth = "1400px";
+          }
+        },
       });
       canvas.toBlob((blob) => {
         if (!blob) return;
@@ -287,6 +302,65 @@ export default function TotalSalesSummary({ month }) {
         link.remove();
         URL.revokeObjectURL(link.href);
       }, "image/png");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const doDownloadPdf = async () => {
+    if (!tableRef.current) return;
+    setExporting(true);
+    try {
+      // Render the snapshot block at desktop width, then fit it to a
+      // landscape A4 page so the PDF is print-clean for management
+      // distribution.
+      const canvas = await html2canvas(tableRef.current, {
+        scale: 2,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+        logging: false,
+        windowWidth: 1400,
+        width: 1400,
+        onclone: (doc) => {
+          const el = doc.querySelector('[data-snapshot-target="true"]');
+          if (el) {
+            el.style.width = "1400px";
+            el.style.maxWidth = "1400px";
+            el.style.minWidth = "1400px";
+          }
+        },
+      });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      // Scale the snapshot to fit the page width with a 6mm margin.
+      const margin = 6;
+      const drawW = pageW - margin * 2;
+      const drawH = (canvas.height / canvas.width) * drawW;
+      // If the table is too tall, paginate vertically.
+      if (drawH <= pageH - margin * 2) {
+        pdf.addImage(imgData, "PNG", margin, margin, drawW, drawH, undefined, "FAST");
+      } else {
+        // Multi-page: slice the canvas vertically.
+        const sliceHpx = Math.floor((pageH - margin * 2) * (canvas.width / drawW));
+        let yPx = 0;
+        let first = true;
+        while (yPx < canvas.height) {
+          const sliceCanvas = document.createElement("canvas");
+          sliceCanvas.width = canvas.width;
+          sliceCanvas.height = Math.min(sliceHpx, canvas.height - yPx);
+          const ctx = sliceCanvas.getContext("2d");
+          ctx.drawImage(canvas, 0, yPx, canvas.width, sliceCanvas.height, 0, 0, canvas.width, sliceCanvas.height);
+          const sliceImg = sliceCanvas.toDataURL("image/png");
+          const sliceDrawH = (sliceCanvas.height / sliceCanvas.width) * drawW;
+          if (!first) pdf.addPage();
+          pdf.addImage(sliceImg, "PNG", margin, margin, drawW, sliceDrawH, undefined, "FAST");
+          yPx += sliceHpx;
+          first = false;
+        }
+      }
+      pdf.save(`sales-summary_${data?.month || "report"}.pdf`);
     } finally {
       setExporting(false);
     }
@@ -324,11 +398,21 @@ export default function TotalSalesSummary({ month }) {
           </button>
           <button
             type="button"
+            onClick={doDownloadPdf}
+            disabled={exporting}
+            data-testid="sales-summary-download-pdf"
+            className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-brand-deep border border-brand-deep/30 hover:bg-brand-deep/5 px-2.5 py-1.5 rounded-md disabled:opacity-50"
+            title="Download as PDF — landscape A4, paginated for long tables"
+          >
+            <FilePdf size={14} /> PDF
+          </button>
+          <button
+            type="button"
             onClick={doDownloadPng}
             disabled={exporting}
             data-testid="sales-summary-download-png"
             className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
-            title="Download as PNG image — perfect for daily WhatsApp / email blasts"
+            title="Download as PNG image — full table at desktop width, sharp even on mobile"
           >
             <DownloadSimple size={14} /> {exporting ? "Capturing…" : "Download PNG"}
           </button>
@@ -336,7 +420,7 @@ export default function TotalSalesSummary({ month }) {
       </div>
 
       {/* Wrapped in a div so html2canvas can snapshot it cleanly. */}
-      <div ref={tableRef} className="overflow-x-auto bg-white p-4 rounded-lg border border-gray-200">
+      <div ref={tableRef} data-snapshot-target="true" className="overflow-x-auto bg-white p-4 rounded-lg border border-gray-200">
         <div className="mb-3">
           <div className="text-[15px] font-extrabold text-[#0f3d24] uppercase tracking-tight">
             Sales Summary as at {currLong}
