@@ -44,7 +44,7 @@ import SortableTable from "@/components/SortableTable";
 
 const Footfall = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, dataVersion } = applied;
 
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
@@ -61,7 +61,7 @@ const Footfall = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const prevP = comparePeriod(dateFrom, dateTo, compareMode);
+    const prevP = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
     Promise.all([
       api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } }),
       prevP
@@ -86,7 +86,7 @@ const Footfall = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, compareMode, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   // Authoritative per-location sales come from /sales-summary (matches
   // /kpis). Upstream /footfall returns a different `total_sales` per row —

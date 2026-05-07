@@ -71,7 +71,7 @@ const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 const Overview = () => {
   const { applied, touchLastUpdated, lastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, channelGroup, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, channelGroup, dataVersion } = applied;
   const isOnlineOnly = channelGroup === "online";
   const filters = { dateFrom, dateTo, countries, channels };
   const isMobile = useIsMobile();
@@ -114,7 +114,7 @@ const Overview = () => {
     setLoading(true);
     setError(null);
     const p = buildParams(filters);
-    const prev = comparePeriod(dateFrom, dateTo, compareMode);
+    const prev = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
 
     const countriesToChart = countries.length ? countries : ALL_COUNTRIES;
 
@@ -175,7 +175,7 @@ const Overview = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
 
   // --- Paired-bars data for single-day range ---
   // Fetches KPIs for:  Today, Same Day Last Week, Same Day Last Month,

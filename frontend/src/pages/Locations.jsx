@@ -15,7 +15,7 @@ import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, dataVersion } = applied;
   const filters = { dateFrom, dateTo, countries, channels };
 
   // Shared KPI state — guarantees Total Sales/Orders/Units match Overview & CEO Report.
@@ -46,7 +46,7 @@ const Locations = () => {
     setLoading(true);
     setError(null);
     const p = buildParams(filters);
-    const prev = comparePeriod(dateFrom, dateTo, compareMode);
+    const prev = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
     const prevP = prev
       ? buildParams({ ...filters, dateFrom: prev.date_from, dateTo: prev.date_to })
       : null;
@@ -75,7 +75,7 @@ const Locations = () => {
       cancelled = true;
     };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
 
   const prevMap = useMemo(() => {
     const m = new Map();

@@ -76,8 +76,14 @@ export function invalidateKpis() {
   kpiCache.clear();
 }
 
-function computePrevRange(dateFrom, dateTo, mode) {
+function computePrevRange(dateFrom, dateTo, mode, customFrom, customTo) {
   if (!mode || mode === "none") return null;
+  if (mode === "custom") {
+    // User picked an explicit comparison window from the FilterBar.
+    // Honour it as-is; if either bound is missing we can't compare.
+    if (!customFrom || !customTo) return null;
+    return { date_from: customFrom, date_to: customTo };
+  }
   const f = new Date(dateFrom);
   const t = new Date(dateTo);
   let df;
@@ -116,7 +122,7 @@ export function useKpis({ compare = false } = {}) {
     const params = buildKpiParams(applied);
     const calls = [fetchKpis(params)];
     if (compare) {
-      const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode);
+      const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo);
       calls.push(prev ? fetchKpis({ ...params, ...prev }) : Promise.resolve(null));
     }
     Promise.all(calls)
@@ -135,6 +141,8 @@ export function useKpis({ compare = false } = {}) {
     JSON.stringify(applied.countries),
     JSON.stringify(applied.channels),
     applied.compareMode,
+    applied.compareDateFrom,
+    applied.compareDateTo,
     applied.dataVersion,
     compare,
   ]);
