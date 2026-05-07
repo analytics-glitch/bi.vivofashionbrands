@@ -9,11 +9,22 @@ import { ClockCounterClockwise, DownloadSimple, CaretDown, CaretRight } from "@p
  * Click a row to expand and see the per-store suggested-vs-allocated
  * detail. Each run also has a "Download CSV" button.
  */
-const AllocationRunsHistory = ({ refreshKey }) => {
+const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+
+  // Optimistic prepend: when a run is just saved, parent passes it in
+  // as `optimisticRun`. We surface it instantly while the GET round-
+  // trip catches up.
+  useEffect(() => {
+    if (!optimisticRun) return;
+    setRuns((prev) => {
+      if (prev.some((r) => r.id === optimisticRun.id)) return prev;
+      return [optimisticRun, ...prev];
+    });
+  }, [optimisticRun]);
 
   useEffect(() => {
     let cancelled = false;

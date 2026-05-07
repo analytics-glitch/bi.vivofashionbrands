@@ -38,6 +38,7 @@ const Allocations = () => {
   // typed pack count which overrides the auto-allocation.
   const [packOverrides, setPackOverrides] = useState({});
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [optimisticRun, setOptimisticRun] = useState(null);
   const [savingRun, setSavingRun] = useState(false);
   const [savedToast, setSavedToast] = useState(null);
 
@@ -190,7 +191,7 @@ const Allocations = () => {
     setSavingRun(true);
     setError(null);
     try {
-      await api.post("/allocations/save", {
+      const { data: saved } = await api.post("/allocations/save", {
         style_name: styleName.trim(),
         allocation_type: allocationType,
         subcategory,
@@ -211,6 +212,11 @@ const Allocations = () => {
           delta_units: r.units_allocated - r.suggested_units,
         })),
       });
+      // Optimistic prepend so the user sees their just-saved run
+      // appear in the history table immediately. The history table
+      // also re-fetches via refreshKey but that adds ~1-3s latency
+      // in slow envs.
+      setOptimisticRun(saved);
       setHistoryRefresh((n) => n + 1);
       setSavedToast("Allocation saved · check the Recent Allocations table below");
       setTimeout(() => setSavedToast(null), 3500);
@@ -596,7 +602,7 @@ const Allocations = () => {
         </div>
       )}
 
-      <AllocationRunsHistory refreshKey={historyRefresh} />
+      <AllocationRunsHistory refreshKey={historyRefresh} optimisticRun={optimisticRun} />
     </div>
   );
 };

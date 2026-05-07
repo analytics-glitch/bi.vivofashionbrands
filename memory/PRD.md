@@ -65,6 +65,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 55)
+- **Monthly Sales Target Tracker** now also embedded on `/locations` page (admin/exec/store-manager friendly view).
+- **Suggested Daily Need column** added to the Monthly Tracker daily breakdown — shows what the store needs to do per day on remaining days to still hit target, **re-weighted by the day-of-week pattern** (Saturdays get a bigger ask than Tuesdays). Each store header also shows a "Need / day" stat (gap_to_target / days_remaining). Colour-coded red/amber/green vs. original budget.
+- **Allocations · Editable Packs**: each row's pack count is now an inline number input — typing recalculates that row's units and sizes immediately. "Reset to suggested" button reverts all overrides. CSV export shows both suggested and allocated columns side-by-side.
+- **Allocations · Style Type filter**: New (free-text style name) vs Replenishment (dropdown of existing styles via `/api/allocations/styles?subcategory=…`). For replenishment, velocity + low-stock score is computed for the specific style only (not subcategory-wide).
+- **Allocation persistence + history**: new `allocation_runs` collection. New endpoints `POST /api/allocations/save`, `GET /api/allocations/runs`, `GET /api/allocations/runs/{id}`. New `AllocationRunsHistory` component below the calculator shows every saved run, expandable per-row to see suggested-vs-allocated detail, with per-row CSV download. Optimistic prepend so newly-saved runs appear instantly.
+
 ### Recent (Feb 2026 — Iter 54)
 - **"Late Transfers" alert badge** on the IBT nav: red animate-pulse pill showing the count of IBT suggestions first surfaced >5 days ago that nobody has marked done yet.
   - New collection `ibt_suggestions_seen` auto-populated by `/ibt-suggestions` and `/ibt-warehouse-to-store` (fire-and-forget tracker so suggestion latency is unaffected).
