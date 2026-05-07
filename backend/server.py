@@ -814,6 +814,132 @@ async def get_daily_trend(
         raise
 
 
+def _gen_kpi_trend_buckets(date_from: str, date_to: str, bucket: str):
+    """Generate (label, df_iso, dt_iso) tuples for the KPI trend chart.
+
+    `bucket` is one of: day, week, month, quarter.
+
+    Each bucket is intersected with the requested window so partial weeks
+    / months / quarters at the edges of the range remain accurate. Daily
+    is the densest granularity; quarterly is coarsest.
+    """
+    try:
+        df = datetime.strptime(date_from, "%Y-%m-%d").date()
+        dt = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except Exception:
+        return []
+    if df > dt:
+        return []
+    out: List[Tuple[str, str, str]] = []
+    if bucket == "day":
+        cur = df
+        while cur <= dt:
+            iso = cur.isoformat()
+            out.append((cur.strftime("%b %d"), iso, iso))
+            cur += timedelta(days=1)
+    elif bucket == "week":
+        cur = df
+        while cur <= dt:
+            week_start = cur - timedelta(days=cur.weekday())  # Mon
+            week_end = week_start + timedelta(days=6)         # Sun
+            seg_start = max(week_start, df)
+            seg_end = min(week_end, dt)
+            label = f"Wk {seg_start.strftime('%b %d')}"
+            out.append((label, seg_start.isoformat(), seg_end.isoformat()))
+            cur = week_end + timedelta(days=1)
+    elif bucket == "month":
+        cur = df.replace(day=1)
+        while cur <= dt:
+            if cur.month == 12:
+                next_m = date(cur.year + 1, 1, 1)
+            else:
+                next_m = date(cur.year, cur.month + 1, 1)
+            month_end = next_m - timedelta(days=1)
+            seg_start = max(cur, df)
+            seg_end = min(month_end, dt)
+            label = seg_start.strftime("%b %Y")
+            out.append((label, seg_start.isoformat(), seg_end.isoformat()))
+            cur = next_m
+    elif bucket == "quarter":
+        q_idx = (df.month - 1) // 3
+        cur = date(df.year, q_idx * 3 + 1, 1)
+        while cur <= dt:
+            q_idx = (cur.month - 1) // 3
+            end_month = q_idx * 3 + 3
+            if end_month == 12:
+                next_q = date(cur.year + 1, 1, 1)
+            else:
+                next_q = date(cur.year, end_month + 1, 1)
+            q_end = next_q - timedelta(days=1)
+            seg_start = max(cur, df)
+            seg_end = min(q_end, dt)
+            label = f"Q{q_idx + 1} {cur.year}"
+            out.append((label, seg_start.isoformat(), seg_end.isoformat()))
+            cur = next_q
+    return out
+
+
+@api_router.get("/analytics/kpi-trend")
+async def get_kpi_trend(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    bucket: str = "day",
+):
+    """Bucketed KPI trend powering the Overview KPI Trend chart.
+
+    Splits the requested window into day / week / month / quarter
+    buckets, then fans out parallel /kpis calls (one per bucket). The
+    upstream /kpis route already aggregates across multiple countries
+    and channels via comma-separated CSV, so the same `country` /
+    `channel` filter flows straight through.
+
+    Each row contains every KPI the chart's dropdown supports
+    (total_sales, net_sales, units_sold, orders, avg_basket_size,
+    discount, returns) so the front-end never has to re-derive any
+    field. Discount and returns are sourced here from /kpis (which has
+    them) — fixing the previous `/daily-trend` based implementation
+    that always rendered 0 for those KPIs.
+    """
+    if bucket not in ("day", "week", "month", "quarter"):
+        bucket = "day"
+    buckets = _gen_kpi_trend_buckets(date_from, date_to, bucket)
+    if not buckets:
+        return []
+    # Hard cap to keep fan-out bounded; 400 buckets covers any sensible
+    # combination (1 yr daily = 366, 7 yr quarterly = 28).
+    if len(buckets) > 400:
+        buckets = buckets[:400]
+
+    tasks = [
+        get_kpis(date_from=df, date_to=dt, country=country, channel=channel)
+        for (_, df, dt) in buckets
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    rows: List[Dict[str, Any]] = []
+    for (label, df, dt), kp in zip(buckets, results):
+        if isinstance(kp, Exception) or not isinstance(kp, dict):
+            kp = {}
+        rows.append({
+            "label": label,
+            "date": df,
+            "bucket_start": df,
+            "bucket_end": dt,
+            "total_sales": kp.get("total_sales") or 0,
+            "net_sales": kp.get("net_sales") or 0,
+            "gross_sales": kp.get("gross_sales") or 0,
+            "units_sold": kp.get("total_units") or 0,
+            "orders": kp.get("total_orders") or 0,
+            "discount": kp.get("total_discounts") or 0,
+            "returns": kp.get("total_returns") or 0,
+            "avg_basket_size": kp.get("avg_basket_size") or 0,
+            "avg_selling_price": kp.get("avg_selling_price") or 0,
+            "return_rate": kp.get("return_rate") or 0,
+        })
+    return rows
+
+
 @api_router.get("/inventory")
 async def get_inventory(
     location: Optional[str] = None,

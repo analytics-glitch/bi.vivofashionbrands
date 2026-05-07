@@ -1,0 +1,37 @@
+{
+  "summary": "Iter-49 verified the new /api/analytics/kpi-trend bucketed endpoint and the KPI Trend chart drill up/down + single-line refactor. All 7 backend pytests PASSED in 11.74s (day/week/month/quarter buckets, non-zero returns/discount/abv regression check, daily-sum vs /kpis tolerance, CSV country sums = single-country sum). All 4 frontend assertions PASSED: chart renders single line (line_groups=1), all 4 bucket buttons (Daily/Weekly/Monthly/Quarterly) are clickable, switching to Returns/Monthly returns axis ticks ['May 2026','0','2K','3K','5K','6K'] (non-zero peak ~5K), Targets-page 'Detailed target breakdown' card no longer has 'Projection vs Target' eyebrow, while 'Gap to Target' KPI tile + channel breakdown + quarterly progress tables remain intact. No console pageerrors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview > KPI Trend chart", "issues": ["Recharts emits ~12 console warnings 'The width(-1) and height(-1) of chart should be greater than 0' on initial mount (likely chart container measured before first paint). Cosmetic — chart renders correctly after measurement settles. Could be silenced by setting an explicit minWidth/minHeight on the parent or rendering inside a useLayoutEffect-guarded ResponsiveContainer."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_49_kpi_trend.py",
+    "/app/test_reports/pytest/iter49_kpi_trend.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py — get_kpi_trend() at line 882 fans out via asyncio.gather over up to 400 buckets calling get_kpis() in parallel; observed 12-month monthly query completes in ~2-3s in tests, well under the 10s SLA. Bound is reasonable.",
+    "server.py — _gen_kpi_trend_buckets() correctly intersects partial weeks/months/quarters at range edges (seg_start = max(period_start, df), seg_end = min(period_end, dt)). Verified via the week-bucket label/intersection test.",
+    "KpiTrendChart.jsx — clean single-line refactor; defaultBucketFor() heuristic (≤45d=day, ≤120d=week, ≤540d=month, else=quarter) is sensible and overridable. Reset link only appears when user has overridden auto-default — good UX.",
+    "Recharts width(-1)/height(-1) warning during initial mount is a known recharts pattern; consider wrapping ResponsiveContainer in a useLayoutEffect or setting minHeight on the parent card to silence.",
+    "AnnualTargetsCard.jsx variant='full' header now contains only the left-side title block (lines 94-102). The removed Projection vs Target right block is no longer in the file — correct."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_49_kpi_trend.py",
+    "/app/test_reports/iteration_49.json"
+  ],
+  "success_rate": {"backend": "100% (7/7 pytests passed)", "frontend": "100% (all chart + targets-page assertions passed)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New endpoint /api/analytics/kpi-trend (server.py L882) is verified working for all 4 buckets. Backend tests at /app/backend/tests/test_iteration_49_kpi_trend.py cover: 3-day Kenya daily returns 3 rows, non-zero returns/discount/abv (regression), daily 1-month count + /kpis tolerance check, week labels 'Wk MMM DD', month labels 'MMM YYYY', quarter labels 'Q# YYYY', CSV country = single-country sum. Frontend KpiTrendChart at /app/frontend/src/components/KpiTrendChart.jsx renders single line, has 4 bucket buttons with data-testid='kpi-trend-bucket-{day|week|month|quarter}', kpi dropdown with data-testid='kpi-trend-select'. AnnualTargetsCard variant='full' top-right 'Projection vs Target' eyebrow has been removed cleanly — verified in DOM. Recharts SVG <text> elements MUST be queried via page.evaluate (not Playwright .all_text_contents) — the locator returns empty for Recharts axis labels.",
+  "rca of the issue": "Backend RCA: previous KpiTrendChart hit /api/analytics/daily-trend which only exposed total_sales/net_sales/units_sold/orders, so Returns/Discount/ABV always rendered as flat-zero. Fix: new /api/analytics/kpi-trend endpoint splits the requested window into day/week/month/quarter slices via _gen_kpi_trend_buckets() and parallel-fans get_kpis() per bucket via asyncio.gather, then maps the rich KPI payload (including total_returns, total_discounts, avg_basket_size) to the response. Front-end KpiTrendChart fully rewritten: single line via dataKey='value' (chartData maps r[kpi]→value), bucket selector defaulting via defaultBucketFor(), country prop drilled from global filter bar (no per-country fan-out). Targets-page regression: AnnualTargetsCard.jsx variant='full' previously had a right-column 'Projection vs Target' eyebrow + percentage block in the header (lines ~92-111 area) which duplicated the OVERALL donut tile shown in the row above. The header has been simplified to only show the left-side annual-target title block."
+}
