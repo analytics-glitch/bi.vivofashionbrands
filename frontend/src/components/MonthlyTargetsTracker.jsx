@@ -156,9 +156,9 @@ export default function MonthlyTargetsTracker({ month }) {
     return () => { cancelled = true; };
   }, [month]);
 
-  if (loading) return <Loading label="Loading monthly targets…" />;
-  if (error) return <div className="card-white p-4 text-rose-600 text-[12px]">{error}</div>;
-  if (!data?.stores?.length) return <div className="card-white p-4 text-muted text-[12px]">No monthly targets configured for {month}.</div>;
+  if (loading) return <div data-testid="monthly-targets-tracker"><Loading label="Loading monthly targets…" /></div>;
+  if (error) return <div className="card-white p-4 text-rose-600 text-[12px]" data-testid="monthly-targets-tracker">{error}</div>;
+  if (!data?.stores?.length) return <div className="card-white p-4 text-muted text-[12px]" data-testid="monthly-targets-tracker">No monthly targets configured for {month}.</div>;
 
   return (
     <div className="space-y-3" data-testid="monthly-targets-tracker">

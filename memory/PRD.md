@@ -65,6 +65,9 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 58)
+- **Regression sweep** (test_iteration_58_regression.py, 27/28 PASS): smoke endpoints, Two-Stage Allocations (calculate / save / save-warehouse / runs), IBT mark-as-done + late-count + completed audit, Auth approval flow (/auth/me + /auth/me/status), Feedback CRUD, Monthly Targets, role gating all green. No critical regressions. One UX polish: `MonthlyTargetsTracker` now exposes `data-testid="monthly-targets-tracker"` even during loading/error/empty states for cold-cache resilience and stable automation.
+
 ### Recent (Feb 2026 — Iter 56)
 - **Allocations · Two-card layout**: split the result section into (a) **Suggested allocation** (read-only — Store/Packs/Units/sizes/Sold/SOH/Score) and (b) **Warehouse Fulfillment Tracker** (editable per-store packs with summary tiles for Suggested total / Allocated by warehouse / Variance, plus Δ packs and Fulfilled % per row). Save lives on the warehouse card and persists both numbers to the audit trail. Optimistic merge fixed so saved runs don't briefly disappear after refresh.
 
