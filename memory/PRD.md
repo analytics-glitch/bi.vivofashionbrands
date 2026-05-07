@@ -56,14 +56,21 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - Warehouse → Store IBT: rows now expandable showing color × size SKU breakdown via reused `IBTSkuBreakdown`
 
 ### Recent (Feb 2026 — Iter 51/52)
-- **Total Sales Summary**: added Download PDF button (jsPDF, A4 landscape paginated). PNG / PDF now render at fixed 1400px desktop width with scale=3 → sharp on mobile + zoom-friendly.
+- **Total Sales Summary**: added Download PDF button (jsPDF, A4 landscape paginated). PNG / PDF now render at fixed 1400px desktop width with scale=3 → sharp on mobile + zoom-friendly. Table also fits-to-content (`tableLayout:auto` + `whitespace-nowrap`) — no wasted column whitespace.
 - **CEO Report Top 10 Best SOR**: filtered out Accessories category + anything containing "Zoya". All 4 column headers now sortable (asc/desc) with ▲/▼ indicator and units_sold tiebreaker.
 - **Feedback page** (`/feedback`): standalone form (any logged-in user can submit). Categories: bug · feature · data · general. Backed by `/api/feedback` (POST + GET /mine).
 - **Admin Feedback Inbox** (`/admin/feedback`): admin-only inbox; mark-resolved toggle; admin notes; status filters (open/resolved/all). Backed by `/api/feedback` (GET admin + PATCH).
-- **IBT Warehouse → Stores**: now excludes `Online`, `Shop Zetu`, `Studio`, `Wholesale` channels as destinations (online ships from warehouse direct to customers, not via IBT).
-- **Page header sizing**: 14 page H1s migrated from fixed `text-[22px] sm:text-[28px]` to `text-[clamp(18px,2.2vw,26px)] line-clamp-2` for fluid laptop-friendly sizing.
-- **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution. Pack ratios: XS=1, S=2, M=3, L=3, 1X=2, 2X=1, F=4, XS/S=2, M/L=2, 1X/2X=1, S/M=2, L/1X=1. Endpoints: `/api/allocations/sizes`, `/stores`, `/calculate`. Online channels excluded.
-- **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback (no Inventory / Re-Order / Customers etc.) per leadership request. Backend (`auth.py _STORE_MANAGER`) + frontend (`permissions.js`) kept in sync.
+- **IBT Warehouse → Stores**: now excludes `Online`, `Shop Zetu`, `Studio`, `Wholesale` channels as destinations.
+- **Page header sizing**: 14 page H1s migrated from fixed `text-[22px] sm:text-[28px]` to `text-[clamp(18px,2.2vw,26px)] line-clamp-2`.
+- **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
+- **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
+
+### Recent (Feb 2026 — Iter 53)
+- **IBT Last-30-days default**: every visit to `/ibt` forces the global filter bar to "Last 30 days" preset on mount.
+- **IBT Mark-as-Done flow**: each suggestion row has a green "Done" pill that opens a modal capturing PO#, transfer date, completed-by name, actual units moved. Submitting POSTs to `/api/ibt/complete` (new module `ibt_completed.py`). Completed (style, to_store) pairs are hidden from the live suggestion table. Available on both store-to-store and warehouse-to-store sections.
+- **Completed Moves Report** (admin-only): renders below IBT suggestions with full audit columns (Style / From / To / Units / Day suggested / Day transferred / Days lapsed / PO# / Completed by). Backed by `/api/ibt/completed`.
+- **Exports page · store_manager gating**: store-manager users see ONLY the Inventory tab (Sales / Store KPIs / Period / Stock / Replenishment / SOR tabs hidden).
+- **Sign-up approval flow**: Google OAuth first sign-in now creates `status="pending"` accounts with default role `store_manager`. Pending users see an "Awaiting admin approval" screen with 30s auto-poll instead of the dashboard. Admin approves/rejects via the new "Pending Approvals" banner on `/admin/users`. Existing accounts back-filled to `status="active"` on backend startup.
   - Row groups: Kenya retail → TOTAL RETAIL KENYA subtotal → Rwanda / Uganda / Online → TOTAL BUSINESS REVENUE grand total
   - Dark-gray header / light-green totals / red-negative-variance / green-positive-YoY
   - Backend rows now include `display_name`, `country`, and `group` (kenya_retail | kenya_online | uganda | rwanda | other)
