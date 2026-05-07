@@ -50,30 +50,40 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
     const sizeKeys = Object.keys(run.pack_breakdown || {});
     const header = [
       "Store",
-      "Suggested Packs", "Suggested Units",
-      "Allocated Packs", "Allocated Units",
+      "Buying Packs", "Buying Units",
+      "Warehouse Packs", "Warehouse Units",
       "Delta Units",
-      ...sizeKeys.map((s) => `${s} units`),
+      ...sizeKeys.flatMap((s) => [`${s} Buying`, `${s} Warehouse`]),
     ];
     const lines = [
       `Style:,"${(run.style_name || "").replace(/"/g, '""')}"`,
+      `Color:,"${run.color || "all"}"`,
       `Type:,${run.allocation_type}`,
       `Subcategory:,"${run.subcategory || ""}"`,
-      `Color:,"${run.color || "all"}"`,
+      `Status:,${run.status || "fulfilled"}`,
       `Units total:,${run.units_total}`,
       `Pack size:,${run.pack_unit_size}`,
       `Saved:,${run.created_at}`,
       `Saved by:,${run.created_by_email}`,
+      `Fulfilled by:,${run.fulfilled_by_email || "—"}`,
+      `Fulfilled at:,${run.fulfilled_at || "—"}`,
       "",
       header.join(","),
     ];
     (run.rows || []).forEach((r) => {
+      const buying_sizes = r.buying_sizes || r.sizes || {};
+      const wh_sizes = r.warehouse_sizes || r.sizes || {};
       lines.push([
         `"${(r.store || "").replace(/"/g, '""')}"`,
-        r.suggested_packs, r.suggested_units,
-        r.allocated_packs, r.allocated_units,
-        (r.allocated_units || 0) - (r.suggested_units || 0),
-        ...sizeKeys.map((s) => (r.sizes?.[s] || 0)),
+        r.buying_packs ?? r.suggested_packs ?? 0,
+        r.buying_units ?? r.suggested_units ?? 0,
+        r.allocated_packs ?? 0,
+        r.warehouse_units ?? r.allocated_units ?? 0,
+        (r.warehouse_units ?? r.allocated_units ?? 0) - (r.buying_units ?? r.suggested_units ?? 0),
+        ...sizeKeys.flatMap((s) => [
+          buying_sizes[s] || 0,
+          wh_sizes[s] || 0,
+        ]),
       ].join(","));
     });
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
@@ -113,12 +123,13 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
               <tr className="bg-[#fde7c5] text-[#5b3a00]">
                 <th className="text-left px-3 py-2 w-6"></th>
                 <th className="text-left px-3 py-2">Style</th>
+                <th className="text-left px-3 py-2">Color</th>
                 <th className="text-left px-3 py-2">Type</th>
                 <th className="text-left px-3 py-2">Subcat</th>
-                <th className="text-left px-3 py-2">Color</th>
-                <th className="text-right px-3 py-2">Suggested</th>
-                <th className="text-right px-3 py-2">Allocated</th>
+                <th className="text-right px-3 py-2">Buying</th>
+                <th className="text-right px-3 py-2">Warehouse</th>
                 <th className="text-right px-3 py-2">Δ</th>
+                <th className="text-left px-3 py-2">Status</th>
                 <th className="text-left px-3 py-2">Saved</th>
                 <th className="text-left px-3 py-2">By</th>
                 <th className="text-right px-3 py-2"></th>
@@ -141,6 +152,13 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
                         {run.style_name}
                       </td>
                       <td className="px-3 py-1.5">
+                        {run.color ? (
+                          <span className="text-[10.5px] font-bold uppercase tracking-wide bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
+                            {run.color}
+                          </span>
+                        ) : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="px-3 py-1.5">
                         <span className={`text-[10.5px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
                           run.allocation_type === "replenishment"
                             ? "bg-blue-100 text-blue-800"
@@ -150,13 +168,21 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
                         </span>
                       </td>
                       <td className="px-3 py-1.5 text-muted">{run.subcategory}</td>
-                      <td className="px-3 py-1.5 text-muted">{run.color || "—"}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtNum(run.suggested_total)}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums font-bold">{fmtNum(run.allocated_total)}</td>
                       <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${
                         run.delta_total > 0 ? "text-amber-700" : run.delta_total < 0 ? "text-rose-700" : "text-muted"
                       }`}>
                         {run.delta_total > 0 ? `+${run.delta_total}` : run.delta_total}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <span className={`text-[10.5px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                          run.status === "fulfilled"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-amber-100 text-amber-900"
+                        }`}>
+                          {run.status === "fulfilled" ? "Fulfilled" : "Pending"}
+                        </span>
                       </td>
                       <td className="px-3 py-1.5 text-muted">
                         {(run.created_at || "").slice(0, 16).replace("T", " ")}
@@ -175,41 +201,59 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
                     </tr>
                     {open && (
                       <tr className="bg-amber-50/30 border-b border-amber-200">
-                        <td colSpan={11} className="px-3 py-3">
+                        <td colSpan={12} className="px-3 py-3">
                           <div className="overflow-x-auto">
                             <table className="w-full text-[11.5px]">
                               <thead>
                                 <tr className="text-muted">
                                   <th className="text-left px-2 py-1">Store</th>
-                                  <th className="text-right px-2 py-1">Suggested packs</th>
-                                  <th className="text-right px-2 py-1">Allocated packs</th>
-                                  <th className="text-right px-2 py-1">Suggested units</th>
-                                  <th className="text-right px-2 py-1">Allocated units</th>
+                                  <th className="text-right px-2 py-1">Buying packs</th>
+                                  <th className="text-right px-2 py-1">Warehouse packs</th>
+                                  <th className="text-right px-2 py-1">Buying units</th>
+                                  <th className="text-right px-2 py-1">Warehouse units</th>
                                   <th className="text-right px-2 py-1">Δ Units</th>
                                   {Object.keys(run.pack_breakdown || {}).map((sz) => (
-                                    <th key={sz} className="text-right px-2 py-1">{sz}</th>
+                                    <th key={sz} className="text-right px-2 py-1" colSpan={2}>{sz}</th>
+                                  ))}
+                                </tr>
+                                <tr className="text-[10.5px] text-muted">
+                                  <th colSpan={6}></th>
+                                  {Object.keys(run.pack_breakdown || {}).map((sz) => (
+                                    <React.Fragment key={sz}>
+                                      <th className="text-right px-2 pb-1">Buying</th>
+                                      <th className="text-right px-2 pb-1 bg-emerald-50/50">Warehouse</th>
+                                    </React.Fragment>
                                   ))}
                                 </tr>
                               </thead>
                               <tbody>
                                 {(run.rows || []).map((r, i) => {
-                                  const delta = (r.allocated_units || 0) - (r.suggested_units || 0);
+                                  const buying_units = r.buying_units ?? r.suggested_units ?? 0;
+                                  const wh_units = r.warehouse_units ?? r.allocated_units ?? 0;
+                                  const buying_sizes = r.buying_sizes || r.sizes || {};
+                                  const wh_sizes = r.warehouse_sizes || r.sizes || {};
+                                  const delta = wh_units - buying_units;
                                   return (
                                     <tr key={i} className="border-b border-border/30">
                                       <td className="px-2 py-1 font-medium">{r.store}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{r.suggested_packs}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{r.buying_packs ?? r.suggested_packs}</td>
                                       <td className="px-2 py-1 text-right tabular-nums font-bold">{r.allocated_packs}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{fmtNum(r.suggested_units)}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums font-bold">{fmtNum(r.allocated_units)}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{fmtNum(buying_units)}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums font-bold">{fmtNum(wh_units)}</td>
                                       <td className={`px-2 py-1 text-right tabular-nums ${
                                         delta > 0 ? "text-amber-700" : delta < 0 ? "text-rose-700" : "text-muted"
                                       }`}>
                                         {delta > 0 ? `+${delta}` : delta}
                                       </td>
                                       {Object.keys(run.pack_breakdown || {}).map((sz) => (
-                                        <td key={sz} className="px-2 py-1 text-right tabular-nums">
-                                          {fmtNum(r.sizes?.[sz] || 0)}
-                                        </td>
+                                        <React.Fragment key={sz}>
+                                          <td className="px-2 py-1 text-right tabular-nums text-muted">
+                                            {fmtNum(buying_sizes[sz] || 0)}
+                                          </td>
+                                          <td className="px-2 py-1 text-right tabular-nums bg-emerald-50/40">
+                                            {fmtNum(wh_sizes[sz] || 0)}
+                                          </td>
+                                        </React.Fragment>
                                       ))}
                                     </tr>
                                   );

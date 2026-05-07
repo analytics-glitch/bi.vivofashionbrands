@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import AllocationRunsHistory from "@/components/AllocationRunsHistory";
+import AllocationPendingQueue from "@/components/AllocationPendingQueue";
 import { Stack, Calculator, Cube, FloppyDisk, ArrowCounterClockwise } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 
@@ -218,8 +219,8 @@ const Allocations = () => {
       // in slow envs.
       setOptimisticRun(saved);
       setHistoryRefresh((n) => n + 1);
-      setSavedToast("Allocation saved · check the Recent Allocations table below");
-      setTimeout(() => setSavedToast(null), 3500);
+      setSavedToast("Sent to warehouse · check the Pending Fulfilment queue below");
+      setTimeout(() => setSavedToast(null), 4000);
     } catch (e) {
       setError(e?.response?.data?.detail || e.message || "Failed to save allocation");
     } finally {
@@ -547,28 +548,26 @@ const Allocations = () => {
           )}
         </div>
 
-        {/* Card 2 — Warehouse Fulfillment Tracker. The warehouse team
-            fills in what they actually shipped per store. Saving here
-            persists the run with both the algo suggestion AND the
-            fulfilled numbers, so the variance is auditable. */}
+        {/* Card 2 — Buying Plan. Buying team edits the per-store
+            pack count, then sends to warehouse. The warehouse then
+            does its own size-level fulfilment in the Pending queue
+            below. */}
         <div className="card-white p-5" data-testid="warehouse-tracker">
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <h2 className="font-extrabold text-[14px] text-[#7c2d12]">
-              Warehouse Fulfillment Tracker
+            <h2 className="font-extrabold text-[14px] text-[#0f3d24]">
+              Step 1 · Buying Plan
             </h2>
-            <span className="text-[10.5px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">
-              warehouse team
+            <span className="text-[10.5px] font-bold uppercase tracking-wide bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded">
+              buying team
             </span>
             <span className="text-[11px] text-muted">
-              Fill in actual packs sent · saving locks the audit trail
+              Adjust packs per store · click "Send to Warehouse" to hand off
             </span>
           </div>
           <p className="text-[12px] text-muted mb-3">
-            By default each row equals the suggestion above. Adjust pack counts
-            for any store where you couldn't fulfil the recommendation
-            (out-of-stock at pick time, partial pack, etc.). The save below
-            captures both the algorithm's suggestion AND your actual fulfilment
-            so the report shows the variance per store.
+            By default each row equals the suggestion above. Edit pack counts
+            for any store you want to adjust, then send to warehouse. The
+            warehouse team will fulfil at the size level in the queue below.
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
@@ -576,9 +575,9 @@ const Allocations = () => {
               <div className="eyebrow">Suggested total</div>
               <div className="font-extrabold text-[16px] num">{fmtNum(result.allocated_units)} units</div>
             </div>
-            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2">
-              <div className="eyebrow text-emerald-800">Allocated by warehouse</div>
-              <div className="font-extrabold text-[16px] num text-emerald-900">{fmtNum(totalAllocatedAfterOverrides)} units</div>
+            <div className="rounded-md border border-blue-300 bg-blue-50 px-3 py-2">
+              <div className="eyebrow text-blue-800">Buying plan total</div>
+              <div className="font-extrabold text-[16px] num text-blue-900">{fmtNum(totalAllocatedAfterOverrides)} units</div>
             </div>
             <div className={`rounded-md border px-3 py-2 ${
               totalAllocatedAfterOverrides === result.allocated_units
@@ -617,11 +616,11 @@ const Allocations = () => {
               type="button"
               onClick={saveRun}
               disabled={savingRun || !styleName.trim()}
-              title={!styleName.trim() ? "Add a style name above before saving" : "Lock in this fulfilment and append to the audit log"}
+              title={!styleName.trim() ? "Add a style name above before saving" : "Send this buying plan to the warehouse for size-level fulfilment"}
               className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-3 py-2 rounded-md disabled:opacity-50"
               data-testid="alloc-save-run"
             >
-              <FloppyDisk size={12} weight="bold" /> {savingRun ? "Saving…" : "Save fulfilment"}
+              <FloppyDisk size={12} weight="bold" /> {savingRun ? "Sending…" : "Send to Warehouse"}
             </button>
           </div>
 
@@ -655,7 +654,7 @@ const Allocations = () => {
                 render: (r) => <span className="num text-muted">{r.suggested_packs}</span>,
               },
               {
-                key: "actual_packs", label: "Actual packs (fill in)", numeric: true, sortable: false,
+                key: "actual_packs", label: "Buying packs (editable)", numeric: true, sortable: false,
                 render: (r) => (
                   <input
                     type="number"
@@ -686,12 +685,12 @@ const Allocations = () => {
                 sortValue: (r) => r.packs_allocated - r.suggested_packs,
               },
               {
-                key: "actual_units", label: "Actual units", numeric: true,
+                key: "actual_units", label: "Buying units", numeric: true,
                 render: (r) => <span className="num font-bold">{fmtNum(r.units_allocated)}</span>,
                 sortValue: (r) => r.units_allocated,
               },
               {
-                key: "fulfil_pct", label: "Fulfilled %", numeric: true,
+                key: "fulfil_pct", label: "Vs suggested", numeric: true,
                 render: (r) => {
                   if (!r.suggested_units) return <span className="text-muted">—</span>;
                   const pct = (r.units_allocated / r.suggested_units) * 100;
@@ -710,6 +709,11 @@ const Allocations = () => {
         </div>
         </>
       )}
+
+      <AllocationPendingQueue
+        refreshKey={historyRefresh}
+        onFulfilled={() => setHistoryRefresh((n) => n + 1)}
+      />
 
       <AllocationRunsHistory refreshKey={historyRefresh} optimisticRun={optimisticRun} />
     </div>

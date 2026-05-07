@@ -381,12 +381,30 @@ async def save_allocation_run(
     body: SaveAllocationRun,
     user: User = Depends(get_current_user),
 ):
-    """Persist a finalised allocation run to `allocation_runs` so we
-    can render a history of past allocations on the page.
+    """Persist a buying-plan allocation run to `allocation_runs`. The
+    new doc starts in status `pending_fulfilment` so the warehouse
+    team can pick it up, fill in size-level actuals, then confirm.
+    Allocated_total is initially equal to suggested_total (warehouse
+    will overwrite each row when they confirm).
     """
     rid = str(_uuid.uuid4())
     suggested_total = sum(int(r.get("suggested_units") or 0) for r in body.rows)
-    allocated_total = sum(int(r.get("allocated_units") or 0) for r in body.rows)
+    # Buying plan = what the buyer asked for. Warehouse hasn't yet
+    # confirmed actuals so we mirror suggested → allocated until they
+    # do. Each row also gets a `warehouse_sizes` dict (initially equal
+    # to the buying-plan sizes) which the warehouse will overwrite at
+    # the size level on PATCH /fulfil.
+    rows_with_wh = []
+    for r in body.rows:
+        copy = dict(r)
+        copy.setdefault("buying_packs", copy.get("allocated_packs"))
+        copy.setdefault("buying_units", copy.get("allocated_units"))
+        copy.setdefault("buying_sizes", dict(copy.get("sizes") or {}))
+        # Warehouse-stage placeholders — overwritten on /fulfil.
+        copy["warehouse_sizes"] = dict(copy.get("buying_sizes") or {})
+        copy["warehouse_units"] = sum(int(v or 0) for v in copy["warehouse_sizes"].values())
+        rows_with_wh.append(copy)
+
     doc = {
         "id": rid,
         "style_name": body.style_name.strip(),
@@ -399,25 +417,114 @@ async def save_allocation_run(
         "velocity_weight": body.velocity_weight,
         "date_from": body.date_from,
         "date_to": body.date_to,
-        "rows": body.rows,
+        "rows": rows_with_wh,
         "suggested_total": suggested_total,
-        "allocated_total": allocated_total,
-        "delta_total": allocated_total - suggested_total,
+        "allocated_total": suggested_total,  # mirrors until fulfilled
+        "delta_total": 0,
+        "status": "pending_fulfilment",
         "created_at": datetime.now(timezone.utc),
         "created_by_user_id": user.user_id,
         "created_by_email": user.email,
         "created_by_name": user.name,
+        "fulfilled_at": None,
+        "fulfilled_by_user_id": None,
+        "fulfilled_by_email": None,
+        "fulfilled_by_name": None,
     }
     await _alloc_runs.insert_one(doc)
     doc.pop("_id", None)
     return doc
 
 
+class FulfilAllocationBody(BaseModel):
+    """Payload sent by the warehouse team when they confirm what was
+    actually shipped per store at the size level. `rows` is a list of
+    {store, sizes:{S:6, M:12, L:10}}. Sizes can include any subset of
+    the original buying-plan sizes (zero is allowed).
+    """
+    rows: List[Dict[str, Any]] = Field(..., min_items=1)
+
+
+@api_router.patch("/allocations/runs/{run_id}/fulfil")
+async def fulfil_allocation_run(
+    run_id: str,
+    body: FulfilAllocationBody,
+    user: User = Depends(get_current_user),
+):
+    """Warehouse-stage save: accepts per-store, per-size actuals and
+    flips the run status to `fulfilled`. Any size whose qty is missing
+    from the payload defaults to 0 (warehouse explicitly couldn't
+    ship that size)."""
+    doc = await _alloc_runs.find_one({"id": run_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Allocation run not found")
+    if doc.get("status") == "fulfilled":
+        raise HTTPException(400, "Run already fulfilled")
+
+    # Index incoming rows by store name for an O(1) merge below.
+    incoming = {}
+    for r in body.rows:
+        store = (r.get("store") or "").strip()
+        if not store:
+            continue
+        sizes = {k: int(v or 0) for k, v in (r.get("sizes") or {}).items()}
+        incoming[store] = sizes
+
+    new_rows = []
+    allocated_total = 0
+    for r in (doc.get("rows") or []):
+        store = r.get("store")
+        wh_sizes = incoming.get(store, dict(r.get("warehouse_sizes") or {}))
+        wh_units = sum(int(v or 0) for v in wh_sizes.values())
+        merged = dict(r)
+        merged["warehouse_sizes"] = wh_sizes
+        merged["warehouse_units"] = wh_units
+        # Allocated stays as the warehouse-confirmed actual.
+        merged["allocated_units"] = wh_units
+        # `allocated_packs` is informational once warehouse breaks the
+        # strict pack ratio, so we approximate by floor-dividing
+        # warehouse_units by pack_unit_size.
+        merged["allocated_packs"] = (
+            wh_units // doc.get("pack_unit_size", 1)
+            if doc.get("pack_unit_size") else 0
+        )
+        merged["sizes"] = wh_sizes  # legacy field kept in sync
+        merged["delta_units"] = wh_units - int(merged.get("suggested_units") or 0)
+        new_rows.append(merged)
+        allocated_total += wh_units
+
+    suggested_total = doc.get("suggested_total") or 0
+    upd = {
+        "rows": new_rows,
+        "allocated_total": allocated_total,
+        "delta_total": allocated_total - suggested_total,
+        "status": "fulfilled",
+        "fulfilled_at": datetime.now(timezone.utc),
+        "fulfilled_by_user_id": user.user_id,
+        "fulfilled_by_email": user.email,
+        "fulfilled_by_name": user.name,
+    }
+    result = await _alloc_runs.find_one_and_update(
+        {"id": run_id},
+        {"$set": upd},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    return result
+
+
 @api_router.get("/allocations/runs")
-async def list_allocation_runs(_: User = Depends(get_current_user)):
-    """Return the latest 200 saved allocation runs so the front-end
-    can show a 'Recent allocations' table."""
-    cursor = _alloc_runs.find({}, {"_id": 0}).sort("created_at", -1).limit(200)
+async def list_allocation_runs(
+    status: Optional[str] = None,
+    _: User = Depends(get_current_user),
+):
+    """Return the latest 200 saved allocation runs. Optional `status`
+    filter for `pending_fulfilment` / `fulfilled` so the warehouse
+    inbox can pull just the open queue."""
+    q = {}
+    if status in ("pending_fulfilment", "fulfilled"):
+        q["status"] = status
+    cursor = _alloc_runs.find(q, {"_id": 0}).sort("created_at", -1).limit(200)
     return [doc async for doc in cursor]
 
 
