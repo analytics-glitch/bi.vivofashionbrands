@@ -11,7 +11,7 @@ import { Truck, CaretDown, CaretRight, FloppyDisk, ArrowCounterClockwise } from 
  * disappears from this queue (it'll re-appear in the Recent
  * Allocations table further down the page).
  */
-const AllocationPendingQueue = ({ refreshKey, onFulfilled }) => {
+const AllocationPendingQueue = ({ refreshKey, onFulfilled, optimisticRun }) => {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -20,11 +20,30 @@ const AllocationPendingQueue = ({ refreshKey, onFulfilled }) => {
   const [editsByRun, setEditsByRun] = useState({});
   const [savingId, setSavingId] = useState(null);
 
+  // Optimistic prepend: parent passes the just-saved doc so the row
+  // appears instantly without waiting for the GET round-trip.
+  useEffect(() => {
+    if (!optimisticRun || optimisticRun.status !== "pending_fulfilment") return;
+    setRuns((prev) => {
+      if (prev.some((r) => r.id === optimisticRun.id)) return prev;
+      return [optimisticRun, ...prev];
+    });
+  }, [optimisticRun]);
+
   const load = () => {
     setLoading(true);
     setError(null);
     api.get("/allocations/runs", { params: { status: "pending_fulfilment" }, timeout: 30000 })
-      .then((r) => setRuns(r.data || []))
+      .then((r) => {
+        const fetched = r.data || [];
+        // Merge — keep optimistic if not yet returned by GET.
+        if (optimisticRun && optimisticRun.status === "pending_fulfilment"
+            && !fetched.some((x) => x.id === optimisticRun.id)) {
+          setRuns([optimisticRun, ...fetched]);
+        } else {
+          setRuns(fetched);
+        }
+      })
       .catch((e) => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
   };
