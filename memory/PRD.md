@@ -43,6 +43,18 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
   - Period selector (Daily / Weekly / Monthly / Quarterly) with auto-default heuristic by range length, manual override + reset
   - Returns / Discount / ABV no longer render as flat-zero (root cause: previous chart hit `/daily-trend` which lacked those fields)
 - Targets page: removed duplicate "Projection vs Target" header pill from the Detailed breakdown card (`AnnualTargetsCard variant='full'`) — already shown by the Overall donut tile above
+
+### Recent (Feb 2026 — Iter 50)
+- Total Sales Summary (Targets page) restyled to match customer's daily PDF format:
+  - Row groups: Kenya retail → TOTAL RETAIL KENYA subtotal → Rwanda / Uganda / Online → TOTAL BUSINESS REVENUE grand total
+  - Dark-gray header / light-green totals / red-negative-variance / green-positive-YoY
+  - Backend rows now include `display_name`, `country`, and `group` (kenya_retail | kenya_online | uganda | rwanda | other)
+  - Like-for-like comparison windows for Var vs Mar / Var vs Apr 25 columns
+  - **Download PNG** button via html2canvas — perfect for daily WhatsApp/email blasts
+  - **CSV** export retained for machine-readable use
+- IBT page filters: added Store FROM, Store TO, Sub-Cats dropdowns + Clear button (data-testids `ibt-from-store-filter`, `ibt-to-store-filter`, `ibt-subcat-filter`, `ibt-clear-filters`)
+- IBT dedupe — **`/api/analytics/ibt-suggestions` now guarantees each (style, to_store) destination has at most ONE source store**, with FROM-capacity tracking so two destinations can't double-claim the same units (prevents overstock at the destination)
+- Warehouse → Store IBT: rows are now expandable, showing color × size SKU breakdown (reuses `IBTSkuBreakdown` with `from_store="Warehouse Finished Goods"`) — `/api/analytics/ibt-sku-breakdown` extended to detect warehouse FROM and aggregate stock across all warehouse locations
 - Stock aging (weeks-on-hand) + phantom stock anomaly detection
 - Mobile card-views for all wide tables (`SortableTable.jsx`)
 - Notifications bell (stockouts, records, anomalies)
