@@ -1,0 +1,26 @@
+{
+  "summary": "Targeted retest of iter-51 follow-up fix on CEO Report > Top 10 Best SOR sortable column headers. Verified fix end-to-end with admin login on production preview URL. Result: PASSED. Active column visibly shows ▲/▼ indicator (initial SOR ▼ → after Units click UNITS ▼ → after 2nd Units click UNITS ▲ → after Style click STYLE ▲). Rows visibly reorder on 2nd Units click (desc→asc) — top-3 changed from [Vivo Takali Tunic Top(2), Vivo Samira Wide Kimono(1), Sakari Cap Sleeve Maxi Dress(1)] to [Vivo Samira Wide Kimono(1), Sakari Cap Sleeve Maxi Dress(1), V Neck Cap Sleeve Maxi Dress(1)]. Style click resorts alphabetically — top-3 = [Sakari, V Neck, Vivo Iyana]. Accessories & Zoya exclusion still applied — all 10 rendered rows are non-Zoya/non-Accessory dresses/tops. One minor edge case observed: first Units click (SOR-desc → Units-desc) leaves top-3 identical because 9 of the 10 best-SOR rows tie at units_sold=1, and the units_sold-desc tiebreaker had already placed the units=2 row at top under SOR-desc; arrow correctly migrates from SOR to Units header proving handler+state are wired. Not a bug — pure data-tie artifact.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview KPI Trend chart", "issues": ["Pre-existing recharts width(-1)/height(-1) console warnings on initial mount — cosmetic, already flagged in iter-49/iter-51."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "CEOReport.jsx lines 582-609 — all four <th> elements correctly bind onClick={() => toggleBestSort(key)} with data-testid='best-sor-sort-{style|units|stock|sor}' and inline arrow indicator '▲'/'▼' rendered conditionally on bestSortKey match. Clean, idiomatic.",
+    "CEOReport.jsx lines 210-231 — bestSorSorted useMemo with units_sold-desc tiebreaker is correct, but on a dataset where 9/10 top-SOR rows tie at units=1, switching primary from sor_percent-desc to units_sold-desc still yields the same top-1 (the units=2 row) and identical tail order. Consider adding stock_sold or style_name as a secondary tiebreaker so first click on a tied column produces a more obviously different order. Low priority — works for the user once they click twice or pick a different column.",
+    "Accessibility nit (non-blocking): th elements are clickable divs without role='button' or aria-sort. Screen-reader users won't hear sort state. Consider role='columnheader' aria-sort='ascending|descending|none'."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% — sort wiring + arrow indicator + Accessories/Zoya filter all verified"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "CEO Report Best SOR sort feature is now fully working. Selectors: data-testid='ceo-best-sor-table' for table, data-testid='best-sor-sort-{style|units|stock|sor}' for column headers. Arrow indicator is plain text ▲/▼ inside header text — read via innerText. To reproduce: login admin → /ceo-report → scroll to 'Top 10 Best SOR' card → click headers; tbody re-renders from bestSorSorted useMemo (CEOReport.jsx line 613). Note that on heavy ties (e.g. units=1 across 9 rows), first click switching from SOR to Units keeps top-3 identical due to units-desc tiebreaker; click Style or click Units a second time to see clear reorder.",
+  "rca of the issue": "Iter-51 reported clicks registering but no row reorder + no arrow indicator. Root cause was confirmed in this retest to be already fixed by the main agent's follow-up: (1) toggleBestSort is properly wired to <th onClick> for all four columns, (2) tbody.map iterates over bestSorSorted (not raw bestSor), (3) inline conditional renders ▲ for asc / ▼ for desc next to the active column label, (4) units_sold-desc tiebreaker provides stable ordering when many rows share sor_percent=100. Verified visually + programmatically — top-3 row text content changes on Units 2nd click and on Style click; arrows correctly migrate between columns. Closed."
+}

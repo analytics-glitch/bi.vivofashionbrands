@@ -213,10 +213,20 @@ const CEOReport = () => {
     return [...bestSor].sort((a, b) => {
       const av = a[key];
       const bv = b[key];
+      if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
-      if (typeof av === "string") return av.localeCompare(bv) * dir;
-      return ((Number(av) || 0) - (Number(bv) || 0)) * dir;
+      let primary;
+      if (typeof av === "string") {
+        primary = av.localeCompare(bv) * dir;
+      } else {
+        primary = ((Number(av) || 0) - (Number(bv) || 0)) * dir;
+      }
+      if (primary !== 0) return primary;
+      // Tiebreaker: top SORs are often 100% across many styles, so
+      // without a fallback the visible row order looks frozen. Use
+      // units_sold desc as a stable secondary key.
+      return (b.units_sold || 0) - (a.units_sold || 0);
     });
   }, [bestSor, bestSortKey, bestSortDir]);
   const toggleBestSort = (key) => {
