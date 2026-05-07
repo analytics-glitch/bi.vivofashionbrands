@@ -30,11 +30,21 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
     let cancelled = false;
     setLoading(true);
     api.get("/allocations/runs", { timeout: 30000 })
-      .then((r) => { if (!cancelled) setRuns(r.data || []); })
+      .then((r) => {
+        if (cancelled) return;
+        const fetched = r.data || [];
+        // Merge — keep the optimistic run if the fetched list hasn't
+        // caught up yet so it doesn't briefly disappear.
+        if (optimisticRun && !fetched.some((x) => x.id === optimisticRun.id)) {
+          setRuns([optimisticRun, ...fetched]);
+        } else {
+          setRuns(fetched);
+        }
+      })
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const downloadRun = (run) => {
     const sizeKeys = Object.keys(run.pack_breakdown || {});

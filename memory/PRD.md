@@ -65,6 +65,9 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 56)
+- **Allocations · Two-card layout**: split the result section into (a) **Suggested allocation** (read-only — Store/Packs/Units/sizes/Sold/SOH/Score) and (b) **Warehouse Fulfillment Tracker** (editable per-store packs with summary tiles for Suggested total / Allocated by warehouse / Variance, plus Δ packs and Fulfilled % per row). Save lives on the warehouse card and persists both numbers to the audit trail. Optimistic merge fixed so saved runs don't briefly disappear after refresh.
+
 ### Recent (Feb 2026 — Iter 55)
 - **Monthly Sales Target Tracker** now also embedded on `/locations` page (admin/exec/store-manager friendly view).
 - **Suggested Daily Need column** added to the Monthly Tracker daily breakdown — shows what the store needs to do per day on remaining days to still hit target, **re-weighted by the day-of-week pattern** (Saturdays get a bigger ask than Tuesdays). Each store header also shows a "Need / day" stat (gap_to_target / days_remaining). Colour-coded red/amber/green vs. original budget.
