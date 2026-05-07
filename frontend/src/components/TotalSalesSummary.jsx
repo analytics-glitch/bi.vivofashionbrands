@@ -103,7 +103,7 @@ function withDerived(t) {
   return { ...t, pct_off_target, mom_variance_pct: mom, yoy_variance_pct: yoy };
 }
 
-const CELL_PAD = "py-1.5 px-2";
+const CELL_PAD = "py-1.5 px-2 whitespace-nowrap";
 
 function StoreRow({ r, curr, prevM, prevY, testId }) {
   const off = r.pct_of_target_projected != null ? r.pct_of_target_projected - 100 : null;
@@ -419,8 +419,11 @@ export default function TotalSalesSummary({ month }) {
         </div>
       </div>
 
-      {/* Wrapped in a div so html2canvas can snapshot it cleanly. */}
-      <div ref={tableRef} data-snapshot-target="true" className="overflow-x-auto bg-white p-4 rounded-lg border border-gray-200">
+      {/* Wrapped in a div so html2canvas can snapshot it cleanly.
+          `inline-block` + `w-fit` makes the snapshot block hug the
+          table — no wasted whitespace beside or below it. */}
+      <div className="overflow-x-auto">
+        <div ref={tableRef} data-snapshot-target="true" className="inline-block w-fit min-w-full bg-white p-4 rounded-lg border border-gray-200">
         <div className="mb-3">
           <div className="text-[15px] font-extrabold text-[#0f3d24] uppercase tracking-tight">
             Sales Summary as at {currLong}
@@ -429,7 +432,11 @@ export default function TotalSalesSummary({ month }) {
             Day {data.days_complete} of {data.days_in_month} · Variance columns use a like-for-like {data.days_complete}-day window
           </div>
         </div>
-        <table className="w-full text-[11.5px] border-collapse" data-testid="total-sales-summary-table">
+        <table
+          className="text-[11.5px] border-collapse"
+          style={{ width: "auto", tableLayout: "auto" }}
+          data-testid="total-sales-summary-table"
+        >
           <thead>
             <tr style={{ background: C_HEADER_BG, color: C_HEADER_FG }} className="text-[10.5px] uppercase tracking-tight">
               <th className={`${CELL_PAD} text-left font-bold border-r border-gray-700`}>Store</th>
@@ -469,6 +476,7 @@ export default function TotalSalesSummary({ month }) {
         </table>
         <div className="mt-2 text-[9.5px] text-gray-500 italic">
           Generated from the Vivo BI dashboard · {currLong} · Day {data.days_complete}/{data.days_in_month}
+        </div>
         </div>
       </div>
     </div>
