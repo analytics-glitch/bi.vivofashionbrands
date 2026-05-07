@@ -4,6 +4,7 @@ import { Loading, ErrorBox } from "@/components/common";
 import AnnualTargetsCard from "@/components/AnnualTargetsCard";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import TotalSalesSummary from "@/components/TotalSalesSummary";
+import CustomProjectionCard from "@/components/CustomProjectionCard";
 import { Target, TrendUp, CalendarBlank } from "@phosphor-icons/react";
 
 /**
@@ -200,18 +201,6 @@ function TargetTile({
             isOverall ? "text-white" : onPace ? "text-[#00c853]" : projectedPct >= 70 ? "text-[#d97706]" : "text-[#dc2626]"
           }`} data-testid={`${testId}-projected`}>
             {fmtKESCompact(projected)}
-          </span>
-        </div>
-        {/* On / off target delta (always shown — clearer than the bare projection %). */}
-        <div className="flex items-center justify-between text-[11px]">
-          <span className={isOverall ? "text-white/65" : "text-[#6b7280]"}>vs Target</span>
-          <span
-            className={`font-bold tabular-nums ${
-              isOverall ? "text-white" : deltaPp >= 0 ? "text-[#00c853]" : deltaPp >= -15 ? "text-[#d97706]" : "text-[#dc2626]"
-            }`}
-            data-testid={`${testId}-delta-pp`}
-          >
-            {deltaPp >= 0 ? "+" : ""}{deltaPp.toFixed(1)}pp {deltaPp >= 0 ? "ahead" : "behind"}
           </span>
         </div>
         {paceDeltaPct != null && (
@@ -519,6 +508,9 @@ export default function TargetsTracker() {
 
       {/* Total Sales Summary — current month per-store rollup. */}
       <TotalSalesSummary month={currentMonthIso} />
+
+      {/* Custom-range projection — store teams can pick any window to forecast. */}
+      <CustomProjectionCard />
 
       {/* Monthly daily-budget tracker per store. */}
       <MonthlyTargetsTracker month={currentMonthIso} />

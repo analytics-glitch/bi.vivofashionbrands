@@ -64,13 +64,13 @@ const KpiTrendChart = ({ dateFrom, dateTo, countries, dataVersion }) => {
   const chartData = useMemo(() => {
     const dateSet = new Set();
     for (const c of targetCountries) {
-      for (const d of (trends[c] || [])) dateSet.add(d.date);
+      for (const d of (trends[c] || [])) dateSet.add(d.day || d.date);
     }
     const dates = Array.from(dateSet).sort();
     return dates.map((date) => {
       const row = { date };
       for (const c of targetCountries) {
-        const r = (trends[c] || []).find((x) => x.date === date);
+        const r = (trends[c] || []).find((x) => (x.day || x.date) === date);
         row[c] = r ? cfg.getter(r) : 0;
       }
       return row;

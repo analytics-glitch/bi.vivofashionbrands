@@ -19,7 +19,7 @@ import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
-import SalesProjection from "@/components/SalesProjection";
+// SalesProjection moved to /targets (Targets Tracker page).
 import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
@@ -1166,13 +1166,6 @@ const Overview = () => {
               />
               <WinsThisWeekCard />
               {!isOnlineOnly && <StoreOfTheWeek />}
-              <SalesProjection
-                dateFrom={dateFrom}
-                dateTo={dateTo}
-                country={countries.length === 1 ? countries[0] : undefined}
-                channel={channels.length ? channels.join(",") : undefined}
-                dataVersion={dataVersion}
-              />
               <KpiTrendChart
                 dateFrom={dateFrom}
                 dateTo={dateTo}
