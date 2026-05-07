@@ -35,6 +35,14 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - SOR Report: "Where did it sell?" Location pane is now sortable on every column (Location / Units 6M / SOH / SOR)
 - Inventory page: products-search filter now correctly cascades to sales-side (Stock-to-Sales by Cat & Subcat) — added `/top-skus` fetch + `salesByVisibleSubcat/Category` override; `/api/top-skus` limit cap raised from 200 → 10000 to support the full catalog rollup
 - Removed broken `/products` upstream call from `analytics_sor_all_styles` (upstream returns 404); modal lifetime ASP from `/top-skus` is now the canonical Original Price source
+
+### Recent (Feb 2026 — Iter 49)
+- New endpoint `/api/analytics/kpi-trend` — bucketed (day/week/month/quarter) KPI trend; fans out parallel `/kpis` per bucket via asyncio.gather; returns full payload (total_sales, net_sales, units_sold, orders, ABV, discount, returns, return_rate)
+- KPI Trend chart on Overview rewritten:
+  - Single line (totals) — country comes from global filter bar (no per-country fan-out)
+  - Period selector (Daily / Weekly / Monthly / Quarterly) with auto-default heuristic by range length, manual override + reset
+  - Returns / Discount / ABV no longer render as flat-zero (root cause: previous chart hit `/daily-trend` which lacked those fields)
+- Targets page: removed duplicate "Projection vs Target" header pill from the Detailed breakdown card (`AnnualTargetsCard variant='full'`) — already shown by the Overall donut tile above
 - Stock aging (weeks-on-hand) + phantom stock anomaly detection
 - Mobile card-views for all wide tables (`SortableTable.jsx`)
 - Notifications bell (stockouts, records, anomalies)
