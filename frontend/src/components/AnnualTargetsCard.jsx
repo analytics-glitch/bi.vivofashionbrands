@@ -99,15 +99,6 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
             Year {completion_pct.toFixed(1)}% complete · day {days_elapsed} of {days_total} · as of {as_of}
           </div>
         </div>
-        <div className="text-right">
-          <div className="eyebrow">Projection vs Target</div>
-          <div className={`font-extrabold text-[26px] num mt-0.5 ${status(total.pct_of_target_projected)}`}>
-            {total.pct_of_target_projected.toFixed(1)}%
-          </div>
-          <div className={`text-[12px] font-bold ${total.variance_projected >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-            {total.variance_projected >= 0 ? "+" : ""}{fmtKES(total.variance_projected)} vs target
-          </div>
-        </div>
       </div>
 
       {/* Top-level KPIs */}
