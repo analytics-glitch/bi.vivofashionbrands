@@ -484,90 +484,36 @@ const Allocations = () => {
       </div>
 
       {result && result.rows && (
+        <>
+        {/* Card 1 — Suggested allocation (read-only). The
+            algorithm's recommendation. Shows score, sold, SOH so the
+            user can see WHY each store gets what they get. */}
         <div className="card-white p-5" data-testid="allocation-result">
           <div className="flex flex-wrap items-center gap-3 mb-3">
             <h2 className="font-extrabold text-[14px] text-[#0f3d24]">
-              {styleName ? <>Allocation for <span className="text-brand">{styleName}</span></> : "Suggested allocation"}
+              {styleName ? <>Suggested allocation for <span className="text-brand">{styleName}</span></> : "Suggested allocation"}
               {" · "}
-              {totalAllocatedAfterOverrides}/{result.requested_units} units
+              {result.allocated_units}/{result.requested_units} units
             </h2>
             <span className="text-[11px] text-muted">
               {result.available_packs} packs available · pack = {result.pack_unit_size} units
-              {overriddenCount > 0 && (
-                <> · <b className="text-amber-700">{overriddenCount} stores manually overridden</b></>
-              )}
             </span>
-            <div className="ml-auto flex items-center gap-2">
-              {overriddenCount > 0 && (
-                <button
-                  type="button"
-                  onClick={resetOverrides}
-                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-amber-700 border border-amber-300 hover:bg-amber-50 px-2.5 py-1.5 rounded-md"
-                  data-testid="alloc-reset-overrides"
-                >
-                  <ArrowCounterClockwise size={12} weight="bold" /> Reset to suggested
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={saveRun}
-                disabled={savingRun || !styleName.trim()}
-                title={!styleName.trim() ? "Add a style name above before saving" : "Save this allocation to the report log"}
-                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
-                data-testid="alloc-save-run"
-              >
-                <FloppyDisk size={12} weight="bold" /> {savingRun ? "Saving…" : "Save allocation"}
-              </button>
-            </div>
           </div>
-          {savedToast && (
-            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800 mb-3">
-              {savedToast}
-            </div>
-          )}
-          {effectiveRows.length === 0 ? (
+          {result.rows.length === 0 ? (
             <Empty label="No stores to allocate to with the current filters." />
           ) : (
             <SortableTable
-              testId="allocation-table"
+              testId="allocation-suggestion-table"
               initialSort={{ key: "units_allocated", dir: "desc" }}
-              rows={effectiveRows}
+              rows={result.rows}
               columns={[
                 {
                   key: "store", label: "Store", align: "left", mobilePrimary: true,
-                  render: (r) => (
-                    <span className="font-medium">
-                      {r.store}
-                      {r.is_overridden && (
-                        <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1 py-0.5 rounded">
-                          edited
-                        </span>
-                      )}
-                    </span>
-                  ),
+                  render: (r) => <span className="font-medium">{r.store}</span>,
                 },
                 {
-                  key: "suggested_packs", label: "Suggested", numeric: true,
-                  render: (r) => <span className="num text-muted">{r.suggested_packs} pk</span>,
-                  csv: (r) => r.suggested_packs,
-                },
-                {
-                  key: "packs_allocated", label: "Packs (editable)", numeric: true, sortable: false,
-                  render: (r) => (
-                    <input
-                      type="number"
-                      min={0}
-                      value={packOverrides[r.store] ?? r.packs_allocated}
-                      onChange={(e) => setPackOverride(r.store, e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      className={`w-16 px-1.5 py-0.5 text-right text-[12px] tabular-nums border rounded font-bold ${
-                        r.is_overridden
-                          ? "bg-amber-50 border-amber-400 text-amber-900"
-                          : "bg-white border-border text-emerald-700"
-                      }`}
-                      data-testid={`alloc-packs-input-${r.store}`}
-                    />
-                  ),
+                  key: "packs_allocated", label: "Packs", numeric: true,
+                  render: (r) => <span className="pill-green font-bold">{r.packs_allocated}</span>,
                   csv: (r) => r.packs_allocated,
                 },
                 {
@@ -600,6 +546,169 @@ const Allocations = () => {
             />
           )}
         </div>
+
+        {/* Card 2 — Warehouse Fulfillment Tracker. The warehouse team
+            fills in what they actually shipped per store. Saving here
+            persists the run with both the algo suggestion AND the
+            fulfilled numbers, so the variance is auditable. */}
+        <div className="card-white p-5" data-testid="warehouse-tracker">
+          <div className="flex flex-wrap items-center gap-3 mb-3">
+            <h2 className="font-extrabold text-[14px] text-[#7c2d12]">
+              Warehouse Fulfillment Tracker
+            </h2>
+            <span className="text-[10.5px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">
+              warehouse team
+            </span>
+            <span className="text-[11px] text-muted">
+              Fill in actual packs sent · saving locks the audit trail
+            </span>
+          </div>
+          <p className="text-[12px] text-muted mb-3">
+            By default each row equals the suggestion above. Adjust pack counts
+            for any store where you couldn't fulfil the recommendation
+            (out-of-stock at pick time, partial pack, etc.). The save below
+            captures both the algorithm's suggestion AND your actual fulfilment
+            so the report shows the variance per store.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+            <div className="rounded-md border border-border bg-panel px-3 py-2">
+              <div className="eyebrow">Suggested total</div>
+              <div className="font-extrabold text-[16px] num">{fmtNum(result.allocated_units)} units</div>
+            </div>
+            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2">
+              <div className="eyebrow text-emerald-800">Allocated by warehouse</div>
+              <div className="font-extrabold text-[16px] num text-emerald-900">{fmtNum(totalAllocatedAfterOverrides)} units</div>
+            </div>
+            <div className={`rounded-md border px-3 py-2 ${
+              totalAllocatedAfterOverrides === result.allocated_units
+                ? "border-emerald-300 bg-emerald-50"
+                : "border-amber-300 bg-amber-50"
+            }`}>
+              <div className="eyebrow">Variance</div>
+              <div className={`font-extrabold text-[16px] num ${
+                totalAllocatedAfterOverrides > result.allocated_units
+                  ? "text-amber-700" : totalAllocatedAfterOverrides < result.allocated_units
+                  ? "text-rose-700" : "text-emerald-700"
+              }`}>
+                {totalAllocatedAfterOverrides - result.allocated_units > 0 ? "+" : ""}
+                {totalAllocatedAfterOverrides - result.allocated_units} units
+                {overriddenCount > 0 && (
+                  <span className="ml-2 text-[11px] font-semibold">
+                    · {overriddenCount} store{overriddenCount === 1 ? "" : "s"} edited
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {overriddenCount > 0 && (
+              <button
+                type="button"
+                onClick={resetOverrides}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-amber-700 border border-amber-300 hover:bg-amber-50 px-2.5 py-1.5 rounded-md"
+                data-testid="alloc-reset-overrides"
+              >
+                <ArrowCounterClockwise size={12} weight="bold" /> Reset to suggested
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={saveRun}
+              disabled={savingRun || !styleName.trim()}
+              title={!styleName.trim() ? "Add a style name above before saving" : "Lock in this fulfilment and append to the audit log"}
+              className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-3 py-2 rounded-md disabled:opacity-50"
+              data-testid="alloc-save-run"
+            >
+              <FloppyDisk size={12} weight="bold" /> {savingRun ? "Saving…" : "Save fulfilment"}
+            </button>
+          </div>
+
+          {savedToast && (
+            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800 mb-3">
+              {savedToast}
+            </div>
+          )}
+          {error && <ErrorBox message={error} />}
+
+          <SortableTable
+            testId="warehouse-tracker-table"
+            initialSort={{ key: "suggested_packs", dir: "desc" }}
+            rows={effectiveRows}
+            columns={[
+              {
+                key: "store", label: "Store", align: "left", mobilePrimary: true,
+                render: (r) => (
+                  <span className="font-medium">
+                    {r.store}
+                    {r.is_overridden && (
+                      <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1 py-0.5 rounded">
+                        edited
+                      </span>
+                    )}
+                  </span>
+                ),
+              },
+              {
+                key: "suggested_packs", label: "Suggested packs", numeric: true,
+                render: (r) => <span className="num text-muted">{r.suggested_packs}</span>,
+              },
+              {
+                key: "actual_packs", label: "Actual packs (fill in)", numeric: true, sortable: false,
+                render: (r) => (
+                  <input
+                    type="number"
+                    min={0}
+                    value={packOverrides[r.store] ?? r.packs_allocated}
+                    onChange={(e) => setPackOverride(r.store, e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    className={`w-16 px-1.5 py-0.5 text-right text-[12px] tabular-nums border rounded font-bold ${
+                      r.is_overridden
+                        ? "bg-amber-50 border-amber-400 text-amber-900"
+                        : "bg-white border-border text-emerald-700"
+                    }`}
+                    data-testid={`alloc-packs-input-${r.store}`}
+                  />
+                ),
+              },
+              {
+                key: "delta_packs", label: "Δ packs", numeric: true,
+                render: (r) => {
+                  const d = r.packs_allocated - r.suggested_packs;
+                  if (d === 0) return <span className="text-muted">—</span>;
+                  return (
+                    <span className={`num font-semibold ${d > 0 ? "text-amber-700" : "text-rose-700"}`}>
+                      {d > 0 ? `+${d}` : d}
+                    </span>
+                  );
+                },
+                sortValue: (r) => r.packs_allocated - r.suggested_packs,
+              },
+              {
+                key: "actual_units", label: "Actual units", numeric: true,
+                render: (r) => <span className="num font-bold">{fmtNum(r.units_allocated)}</span>,
+                sortValue: (r) => r.units_allocated,
+              },
+              {
+                key: "fulfil_pct", label: "Fulfilled %", numeric: true,
+                render: (r) => {
+                  if (!r.suggested_units) return <span className="text-muted">—</span>;
+                  const pct = (r.units_allocated / r.suggested_units) * 100;
+                  const cls = pct >= 100 ? "pill-green" : pct >= 80 ? "pill-amber" : "pill-red";
+                  return <span className={cls}>{pct.toFixed(0)}%</span>;
+                },
+                sortValue: (r) => r.suggested_units ? r.units_allocated / r.suggested_units : 0,
+              },
+              ...Object.keys(result.pack_breakdown).map((sz) => ({
+                key: `size_${sz}`, label: sz, numeric: true,
+                render: (r) => fmtNum(r.sizes[sz] || 0),
+                sortValue: (r) => r.sizes[sz] || 0,
+              })),
+            ]}
+          />
+        </div>
+        </>
       )}
 
       <AllocationRunsHistory refreshKey={historyRefresh} optimisticRun={optimisticRun} />

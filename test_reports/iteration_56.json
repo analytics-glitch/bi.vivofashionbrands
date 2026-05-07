@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 56 — frontend-only validation of the new two-card Allocations layout (Suggested allocation read-only + Warehouse Fulfillment Tracker editable). Logged in as admin, /allocations: picked subcategory 'Maxi Dresses', filled style name 'TEST_UI_STYLE_iter56', clicked Calculate. Verified DOM order: data-testid='allocation-result' renders FIRST and data-testid='warehouse-tracker' renders AFTER it (compareDocumentPosition confirmed). Suggested allocation table (allocation-suggestion-table) is now READ-ONLY: 0 input elements found, 0 'edited' badges; columns are Store/Packs/Units/S/M/L/Sold (window)/Current SOH/Blend score — matches spec. Warehouse Fulfillment Tracker has 3 summary tiles (Suggested total / Allocated by warehouse / Variance); editing alloc-packs-input-Vivo Eldoret from 3 → 5 instantly updated tiles to {Suggested total: 400 units, Allocated by warehouse: 416 units, Variance: +16 units · 1 store edited}, the row's Δ packs/Actual units/Fulfilled % cells, and showed an 'edited' amber badge next to the store name. Warehouse table columns confirmed: Store/Suggested packs/Actual packs (fill in)/Δ packs/Actual units/Fulfilled %/S/M/L. 29 per-store inputs (alloc-packs-input-<store>) present. 'Reset to suggested' button (alloc-reset-overrides) appeared after edit and clicking it removed all 'edited' badges and reverted the input value (5 → 3). 'Save fulfilment' button (alloc-save-run) clicked successfully — verified via direct mongo lookup that 1 allocation_runs document was persisted with style_name=TEST_UI_STYLE_iter56 (deleted by cleanup). Toast was not visible at the 6-second post-click check because the toast auto-dismisses at 3.5s (by design — iter-55 timing). History rows queried via [data-testid^='alloc-history-row-'] returned 0 in the same window — the run IS in the DB so this is the same post-save UI refresh latency flagged in iter-55. Backend endpoints unchanged from iter-55, not retested.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Allocations · Recent Allocations refresh after Save fulfilment", "issue": "Same flake as iter-55 — saved row not visible in allocation-history within ~6s of clicking Save (mongo confirms the run DID persist). AllocationRunsHistory uses optimisticRun + refreshKey but the GET round-trip can be slow on preview env. Recommend: keep the optimistic prepend (already in place per code review), and surface a 'refreshing…' indicator or extend the optimistic state TTL until refetch completes.", "affected_selectors": ["[data-testid=allocation-history]", "[data-testid^=alloc-history-row-]"]}
+    ],
+    "design_issues": [
+      {"screen": "Pre-existing", "issues": ["recharts width(-1)/height(-1) console warnings on Overview KPI cards mount (already noted iter-49→55, harmless)."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(Optional, carry-over from iter-55) Make AllocationRunsHistory show a 'refreshing…' state during the post-save GET so the just-saved row isn't briefly absent. The optimisticRun prop already passes through saveRun → AllocationRunsHistory; verify the child actually merges optimisticRun ahead of the fetched list."
+  ],
+  "critical_code_review_comments": [
+    "Allocations.jsx:486-712 — clean two-card split. allocation-result card (read-only) renders only render-functions on packs_allocated/units_allocated; warehouse-tracker card has the editable input bound to packOverrides. DOM order verified.",
+    "Allocations.jsx:574-603 — three summary tiles correctly read totalAllocatedAfterOverrides vs result.allocated_units; variance label color flips red/amber/emerald based on sign. Good UX.",
+    "Allocations.jsx:660-672 — actual-packs input has onClick stopPropagation (prevents header sort interference) and uses styled state when overridden.",
+    "Allocations.jsx:606-615 — Reset button only renders when overriddenCount>0; click clears overrides via setPackOverrides({}). Verified end-to-end.",
+    "Allocations.jsx:185-228 — saveRun POSTs both suggested_packs/units AND allocated_packs/units per row, matching SaveAllocationRun pydantic schema. setOptimisticRun(saved) + setHistoryRefresh(n+1) both fire. Toast is 3.5s — short but acceptable.",
+    "Note: Suggested allocation card no longer has an Export CSV button next to its title — the Export CSV button is still rendered up top alongside Calculate (line 473-482), which is fine but a user might expect it on the read-only card too. Optional UX nit.",
+    "AllocationRunsHistory: testing agent could not see the new row appear within 6s post-save despite mongo confirming persistence; same flake as iter-55. Re-verify the optimisticRun prop is actually being prepended in the child component."
+  ],
+  "updated_files": [],
+  "success_rate": {"frontend": "100% on the spec — two-card layout, read-only suggestion table, editable warehouse tracker w/ 3 tiles, per-store inputs, delta/actual/fulfilled % computed live, edited badge, reset button, save persists to mongo, optimistic state wired. Only the post-save history-row visibility timing remained flaky (carry-over)."},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "1 allocation_runs doc inserted via UI (style_name=TEST_UI_STYLE_iter56) and DELETED by post-test mongo cleanup (delete_many returned 1).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Two-card layout is now the contract: allocation-result (read-only, 0 inputs) + warehouse-tracker (3 tiles + editable per-store inputs + Save fulfilment button). Pack input testid pattern: alloc-packs-input-<store name verbatim incl. spaces>. After Save, give 5-8s for AllocationRunsHistory to refresh (or rely on optimisticRun prop). Toast is 3.5s — assert quickly or via optimisticRun. Subcategory dropdown defaults to first option (e.g. Active Wear); MUST select 'Maxi Dresses' before Calculate to match the spec. Allocation type defaults to 'new' which uses free-text alloc-style-input. Backend endpoints are unchanged since iter-55 (POST /api/allocations/save returns id+suggested_total/allocated_total/delta_total without _id; GET /api/allocations/runs newest-first).",
+  "rca of the issue": "n/a — feature add, all spec acceptance criteria pass."
+}
