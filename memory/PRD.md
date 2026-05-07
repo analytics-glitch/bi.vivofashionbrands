@@ -65,6 +65,12 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 54)
+- **"Late Transfers" alert badge** on the IBT nav: red animate-pulse pill showing the count of IBT suggestions first surfaced >5 days ago that nobody has marked done yet.
+  - New collection `ibt_suggestions_seen` auto-populated by `/ibt-suggestions` and `/ibt-warehouse-to-store` (fire-and-forget tracker so suggestion latency is unaffected).
+  - New endpoint `GET /api/ibt/late-count` subtracts completed pairs from old seen pairs.
+  - Sidebar polls every 5 min on both desktop + mobile nav variants.
+
 ### Recent (Feb 2026 — Iter 53)
 - **IBT Last-30-days default**: every visit to `/ibt` forces the global filter bar to "Last 30 days" preset on mount.
 - **IBT Mark-as-Done flow**: each suggestion row has a green "Done" pill that opens a modal capturing PO#, transfer date, completed-by name, actual units moved. Submitting POSTs to `/api/ibt/complete` (new module `ibt_completed.py`). Completed (style, to_store) pairs are hidden from the live suggestion table. Available on both store-to-store and warehouse-to-store sections.
