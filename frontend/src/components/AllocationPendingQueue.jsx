@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, Empty, ErrorBox, SectionTitle } from "@/components/common";
 import { Truck, CaretDown, CaretRight, FloppyDisk, ArrowCounterClockwise } from "@phosphor-icons/react";
@@ -19,6 +19,10 @@ const AllocationPendingQueue = ({ refreshKey, onFulfilled, optimisticRun }) => {
   // editsByRun = { runId: { storeName: { sizeKey: actualUnits } } }
   const [editsByRun, setEditsByRun] = useState({});
   const [savingId, setSavingId] = useState(null);
+  // Synchronous guard — set BEFORE the async PATCH so a double-click
+  // (which can fire two events in the ~16ms before React paints the
+  // disabled prop) can't slip through and produce a duplicate request.
+  const inflightRef = useRef(new Set());
 
   // Optimistic prepend: parent passes the just-saved doc so the row
   // appears instantly without waiting for the GET round-trip.
@@ -99,6 +103,10 @@ const AllocationPendingQueue = ({ refreshKey, onFulfilled, optimisticRun }) => {
   };
 
   const confirmFulfil = async (run) => {
+    // Synchronous in-flight guard: rejects the second click if the
+    // first PATCH for this run hasn't resolved yet.
+    if (inflightRef.current.has(run.id)) return;
+    inflightRef.current.add(run.id);
     const payload = buildFulfilPayload(run);
     setSavingId(run.id);
     try {
@@ -109,8 +117,20 @@ const AllocationPendingQueue = ({ refreshKey, onFulfilled, optimisticRun }) => {
       resetEdits(run.id);
       onFulfilled?.();
     } catch (e) {
-      alert(e?.response?.data?.detail || e.message || "Failed to confirm");
+      const detail = e?.response?.data?.detail || e.message || "Failed to confirm";
+      // "Run already fulfilled" means the desired state is already
+      // achieved on the server (almost always a duplicate click from a
+      // prior session / tab). Treat as a benign no-op: drop the row
+      // from the pending queue and refresh history, no scary alert.
+      if (e?.response?.status === 400 && /already fulfilled/i.test(detail)) {
+        setRuns((prev) => prev.filter((x) => x.id !== run.id));
+        resetEdits(run.id);
+        onFulfilled?.();
+      } else {
+        alert(detail);
+      }
     } finally {
+      inflightRef.current.delete(run.id);
       setSavingId(null);
     }
   };
