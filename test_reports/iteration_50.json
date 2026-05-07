@@ -1,0 +1,40 @@
+{
+  "summary": "Iter-50 verified Vivo BI dashboard PDF-style Total Sales Summary, IBT filter dropdowns, IBT dedupe, and Warehouse→Store SKU breakdown. Backend: 5/5 pytests PASSED in ~6s — total-sales-summary returns rows with display_name/country/group (kenya_retail/online/uganda/rwanda/other), grouping distribution sane (≥2 kenya_retail rows), variance fields present; ibt-suggestions has zero (style_name,to_store) duplicates; ibt-sku-breakdown with from_store='Warehouse Finished Goods' returns from_total>0 and color/size dimensioned SKU rows. Frontend: Targets page shows TOTAL RETAIL KENYA subtotal + TOTAL BUSINESS REVENUE grand-total rows on light-green background (rgb(209,250,229)), all PDF-style headers present (MTD, Projection, Target, Var, % On/Off Target), 23 red negative-variance cells rendered, PNG button (data-testid=sales-summary-download-png) triggers download (filename=sales-summary_2026-05-01.png) without html2canvas error, CSV button also present. IBT page has all 3 new filter dropdowns (ibt-from-store-filter / ibt-to-store-filter / ibt-subcat-filter), All-brands dropdown still intact, ibt-clear-filters appears only when a filter is active and resets cleanly when clicked.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "IBT page > sortable table mobile sort dropdown", "issues": ["Pre-existing React hydration console warning: '<span> cannot be a child of <option>' coming from SortableTable mobile sort selector. Cosmetic — does not affect functionality. Already present before iter-50 changes."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_50_sales_summary_ibt.py",
+    "/app/test_reports/pytest/iter50.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "monthly_targets.py — _classify_store_group() correctly prioritises 'online'/'studio' before country match; 'wholesale'/'warehouse'/'hq outlet' map to 'other'. Country fallback (Kenya/Uganda/Rwanda) is sound; name-based fallback covers missing-country rows.",
+    "monthly_targets.py — like-for-like windows compute cmp_end_prev/cmp_end_prev_y via min(days_complete, days_in_prev) which correctly handles Feb 28/29 edge and short-month wrap. Variance uses prior_window not prior_full — matches PDF semantics.",
+    "server.py — ibt_suggestions() greedy FROM-capacity tracking guarantees each (style, to_store) appears at most once: confirmed by Counter() showing zero duplicates over 200-row sample.",
+    "server.py — ibt_sku_breakdown() warehouse-detection branch (is_warehouse_location aggregation across all warehouse rows) returns from_total>0 and per-color/size SKU rows for a real warehouse→store style — verified end-to-end.",
+    "TotalSalesSummary.jsx — light-green totals (rgb(209,250,229)) and red-negative styling rendered correctly; html2canvas PNG export resolves and triggers a real browser download (sales-summary_2026-05-01.png).",
+    "WarehouseToStoreIBT.jsx — does not expose a data-testid on the row trigger (data-testid^='warehouse-row-' returns 0 hits). Functionality works (6 button[aria-expanded] elements present and chevrons render) but adding data-testid='warehouse-row-{idx}' on each expandable trigger would harden future automated tests. Non-blocking — feature works.",
+    "IBT.jsx — TO filter restricts to stores currently appearing in the suggestion list (only 'Vivo Junction' in test window because dataset has a single store-to-store move). Behaviour is correct; the lone suggestion remained visible after applying TO=Vivo Junction (rows 18→18) — consistent because 'tbody tr' count includes Warehouse→Store table rows that are not affected by the store-to-store filter."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_50_sales_summary_ibt.py",
+    "/app/test_reports/iteration_50.json",
+    "/app/test_reports/pytest/iter50.xml"
+  ],
+  "success_rate": {"backend": "100% (5/5 pytests passed)", "frontend": "100% (Sales Summary + IBT filters + PNG download all verified)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "none — used existing April/May 2026 data",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_iteration_50_sales_summary_ibt.py cover: (a) total-sales-summary group/display_name/country fields with valid group values from {kenya_retail, kenya_online, uganda, rwanda, other}; (b) IBT suggestions Counter-based dedupe assertion on (style_name, to_store); (c) warehouse from_store='Warehouse Finished Goods' SKU breakdown via ibt-sku-breakdown — uses ibt-warehouse-to-store (singular, not plural) to discover a real (style, to_store) pair first. Frontend selectors that exist: sales-summary-download-csv, sales-summary-download-png, ibt-from-store-filter, ibt-to-store-filter, ibt-subcat-filter, ibt-clear-filters (clear-filters only renders when at least one filter is active). WarehouseToStoreIBT row triggers do NOT have a data-testid — use button[aria-expanded] selector instead, or ask main agent to add data-testid='warehouse-row-{rowKey}'. IBT TO filter validates only 1 store-to-store suggestion exists in current data window; row-count reduction is hard to demo unless seed data adds more moves.",
+  "rca of the issue": "N/A — feature additions, no bugs found. The PNG download via html2canvas resolves cleanly (no canvas-tainted errors), the IBT dedupe correctly enforces the 'a store should not get the same item from multiple stores' rule (zero duplicate (style_name,to_store) keys over 200-row sample), and the warehouse FROM detection in ibt-sku-breakdown aggregates all warehouse rows so from_total>0 for real warehouse→store moves."
+}

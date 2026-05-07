@@ -22,6 +22,9 @@ const IBT = () => {
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
+  const [fromStoreFilter, setFromStoreFilter] = useState("");
+  const [toStoreFilter, setToStoreFilter] = useState("");
+  const [subcatFilter, setSubcatFilter] = useState("");
   const [showResolved, setShowResolved] = useState(false);
   const { stateByKey, setState } = useRecommendationState("ibt");
 
@@ -50,11 +53,26 @@ const IBT = () => {
     () => Array.from(new Set(rows.map((r) => r.brand).filter(Boolean))).sort(),
     [rows]
   );
+  const fromStores = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.from_store).filter(Boolean))).sort(),
+    [rows]
+  );
+  const toStores = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.to_store).filter(Boolean))).sort(),
+    [rows]
+  );
+  const subcats = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.subcategory).filter(Boolean))).sort(),
+    [rows]
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (brandFilter && r.brand !== brandFilter) return false;
+      if (fromStoreFilter && r.from_store !== fromStoreFilter) return false;
+      if (toStoreFilter && r.to_store !== toStoreFilter) return false;
+      if (subcatFilter && r.subcategory !== subcatFilter) return false;
       if (!q) return true;
       return (
         (r.style_name || "").toLowerCase().includes(q) ||
@@ -62,7 +80,7 @@ const IBT = () => {
         (r.to_store || "").toLowerCase().includes(q)
       );
     });
-  }, [rows, search, brandFilter]);
+  }, [rows, search, brandFilter, fromStoreFilter, toStoreFilter, subcatFilter]);
 
   // Hide resolved moves unless the user explicitly asks to see them.
   const visible = useMemo(() => {
@@ -143,6 +161,52 @@ const IBT = () => {
               <option value="">All brands</option>
               {brands.map((b) => <option key={b}>{b}</option>)}
             </select>
+            <select
+              className="input-pill"
+              value={fromStoreFilter}
+              onChange={(e) => setFromStoreFilter(e.target.value)}
+              data-testid="ibt-from-store-filter"
+              title="Show only moves leaving this store"
+            >
+              <option value="">All FROM stores</option>
+              {fromStores.map((s) => <option key={s}>{s}</option>)}
+            </select>
+            <select
+              className="input-pill"
+              value={toStoreFilter}
+              onChange={(e) => setToStoreFilter(e.target.value)}
+              data-testid="ibt-to-store-filter"
+              title="Show only moves arriving at this store"
+            >
+              <option value="">All TO stores</option>
+              {toStores.map((s) => <option key={s}>{s}</option>)}
+            </select>
+            <select
+              className="input-pill"
+              value={subcatFilter}
+              onChange={(e) => setSubcatFilter(e.target.value)}
+              data-testid="ibt-subcat-filter"
+              title="Show only moves for this subcategory"
+            >
+              <option value="">All subcategories</option>
+              {subcats.map((s) => <option key={s}>{s}</option>)}
+            </select>
+            {(brandFilter || fromStoreFilter || toStoreFilter || subcatFilter || search) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBrandFilter("");
+                  setFromStoreFilter("");
+                  setToStoreFilter("");
+                  setSubcatFilter("");
+                  setSearch("");
+                }}
+                data-testid="ibt-clear-filters"
+                className="text-[11px] text-muted underline hover:text-brand"
+              >
+                clear
+              </button>
+            )}
             <button
               type="button"
               onClick={async () => {

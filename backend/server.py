@@ -2314,7 +2314,42 @@ async def analytics_ibt_suggestions(
                 })
 
     suggestions.sort(key=lambda x: x["estimated_uplift"], reverse=True)
-    return suggestions[: int(limit)]
+
+    # Dedupe — each (style, to_store) destination must have exactly ONE
+    # source store, otherwise picker teams pull the same item from
+    # multiple shops and create overstock at the destination. Greedy
+    # assignment: walk the suggestions in uplift order, assigning each
+    # destination to the first source that still has surplus capacity
+    # for that style. Subsequent rows for the same destination are
+    # dropped, and the chosen source's remaining capacity is debited
+    # so two destinations don't double-claim the same units.
+    from_remaining: Dict[Tuple[str, str], int] = {}
+    for s in suggestions:
+        fk = (s["style_name"], s["from_store"])
+        # Initial capacity = stock at FROM minus a 2-unit safety floor.
+        from_remaining.setdefault(fk, max(0, int(s["from_available"]) - 2))
+
+    deduped: List[Dict[str, Any]] = []
+    chosen_to: set = set()
+    for s in suggestions:
+        dest_key = (s["style_name"], s["to_store"])
+        if dest_key in chosen_to:
+            continue  # destination already has a source assigned
+        fk = (s["style_name"], s["from_store"])
+        avail = from_remaining.get(fk, 0)
+        if avail < min_move:
+            continue
+        movable = min(int(s["units_to_move"]), avail)
+        if movable < min_move:
+            continue
+        avg_price = s["avg_price"] or 0
+        uplift = round(movable * avg_price)
+        deduped.append({**s, "units_to_move": movable, "estimated_uplift": uplift})
+        from_remaining[fk] = avail - movable
+        chosen_to.add(dest_key)
+
+    deduped.sort(key=lambda x: x["estimated_uplift"], reverse=True)
+    return deduped[: int(limit)]
 
 
 @api_router.get("/analytics/ibt-warehouse-to-store")
@@ -2470,14 +2505,30 @@ async def analytics_ibt_sku_breakdown(
     fill SKUs that are out-of-stock at TO first, in descending FROM-stock
     order, capped by the parent recommendation's `units_to_move` (when
     provided) and a 1-unit safety buffer at FROM.
+
+    Works for warehouse → store IBTs too — pass the warehouse name as
+    `from_store` (e.g. "Warehouse Finished Goods") and the helper will
+    aggregate across every warehouse location matching the warehouse-key
+    list, since upstream sometimes splits warehouse stock across more
+    than one location row.
     """
     # Pull SKU-level inventory for both stores in parallel. We use the
     # singular `location` path (not the fan-out) so each call is a single
-    # cached upstream hit.
-    from_rows, to_rows = await asyncio.gather(
-        fetch_all_inventory(location=from_store),
-        fetch_all_inventory(location=to_store),
-    )
+    # cached upstream hit. For warehouse FROM, fetch the full inventory
+    # and post-filter to all warehouse locations so we capture stock that
+    # might be spread across multiple warehouse rows.
+    from_is_warehouse = is_warehouse_location(from_store)
+    if from_is_warehouse:
+        all_inv, to_rows = await asyncio.gather(
+            fetch_all_inventory(),
+            fetch_all_inventory(location=to_store),
+        )
+        from_rows = [r for r in (all_inv or []) if is_warehouse_location(r.get("location_name"))]
+    else:
+        from_rows, to_rows = await asyncio.gather(
+            fetch_all_inventory(location=from_store),
+            fetch_all_inventory(location=to_store),
+        )
 
     def _is_match(r: Dict[str, Any]) -> bool:
         return (r.get("style_name") or "").strip() == style_name.strip()

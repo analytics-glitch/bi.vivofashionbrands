@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import IBTSkuBreakdown from "@/components/IBTSkuBreakdown";
 import { Warehouse, MagnifyingGlass } from "@phosphor-icons/react";
 
 /**
@@ -104,6 +105,17 @@ const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [] }) => {
               pageSize={50}
               mobileCards
               initialSort={{ key: "missed_sales_risk", dir: "desc" }}
+              rowKey={(r) => `${r.style_name}||${r.to_store}`}
+              renderExpanded={(r) => (
+                <IBTSkuBreakdown
+                  row={{
+                    style_name: r.style_name,
+                    from_store: "Warehouse Finished Goods",
+                    to_store: r.to_store,
+                    units_to_move: r.suggested_qty,
+                  }}
+                />
+              )}
               columns={[
                 {
                   key: "style_name", label: "Style", align: "left", mobilePrimary: true,

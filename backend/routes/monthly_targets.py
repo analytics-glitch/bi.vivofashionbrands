@@ -254,6 +254,59 @@ async def analytics_monthly_targets(
 
 # ─── /api/analytics/total-sales-summary ──────────────────────────────
 
+
+def _display_store_name(channel: str) -> str:
+    """Strip common prefixes ("Vivo ") and uppercase for the PDF-style
+    summary view. Idempotent — safe to call on already-clean names.
+    """
+    if not channel:
+        return channel
+    n = channel.strip()
+    for prefix in ("Vivo - ", "Vivo ", "VIVO "):
+        if n.lower().startswith(prefix.lower()):
+            n = n[len(prefix):]
+            break
+    return n.upper()
+
+
+def _classify_store_group(channel: str, country: str) -> str:
+    """Classify a store into one of the PDF summary groups so the
+    front-end can render TOTAL RETAIL KENYA / TOTAL BUSINESS REVENUE
+    subtotals correctly.
+
+    Returns one of:
+      - "kenya_retail"   - Kenya physical retail stores
+      - "kenya_online"   - Kenya online channels
+      - "uganda"         - Uganda retail (any channel)
+      - "rwanda"         - Rwanda retail (any channel)
+      - "other"          - HQ outlet, fabric printing, studio, etc.
+    """
+    nm = (channel or "").lower()
+    co = (country or "").lower()
+
+    # Online-first detection — covers "Vivo Online", "Online Shop Zetu",
+    # "Online Safari", "Studio" (digital flagship treated as online).
+    if "online" in nm or nm.startswith("studio") or " studio" in nm:
+        return "kenya_online"
+
+    # Non-retail catch-alls — HQ outlet, fabric printing, wholesale.
+    if any(k in nm for k in ("hq outlet", "fabric printing", "wholesale", "warehouse")):
+        return "other"
+
+    if co == "rwanda":
+        return "rwanda"
+    if co == "uganda":
+        return "uganda"
+    if co == "kenya":
+        return "kenya_retail"
+    # Fallback name match if /sales-summary didn't return country.
+    if "rwanda" in nm or "kigali" in nm:
+        return "rwanda"
+    if "uganda" in nm or "kampala" in nm or "oasis" in nm or "acacia" in nm:
+        return "uganda"
+    return "kenya_retail"
+
+
 @api_router.get("/analytics/total-sales-summary")
 async def analytics_total_sales_summary(
     month: str = Query(..., description="YYYY-MM-01"),
@@ -330,6 +383,16 @@ async def analytics_total_sales_summary(
     prev_y_window_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
                            for r in (ss_prev_y_window or []) if r.get("channel")}
 
+    # Map channel → country (from upstream /sales-summary so we don't
+    # need an extra /locations round-trip). Country is the strongest
+    # signal for grouping rows into Kenya retail / Rwanda / Uganda /
+    # Online for the PDF-style summary view.
+    country_by_ch: Dict[str, str] = {}
+    for r in (ss_curr_mtd or []):
+        ch = r.get("channel")
+        if ch and r.get("country"):
+            country_by_ch[ch] = r.get("country")
+
     all_channels = set(target_by_ch.keys()) | set(mtd_by_ch.keys()) | set(prev_full_by_ch.keys())
     rows: List[Dict[str, Any]] = []
     for ch in all_channels:
@@ -347,8 +410,13 @@ async def analytics_total_sales_summary(
         mom_variance = ((mtd - prev_window) / prev_window * 100) if prev_window > 0 else None
         yoy_variance = ((mtd - prev_y_window) / prev_y_window * 100) if prev_y_window > 0 else None
         pct_proj = (projected / target * 100) if target else None
+        country = country_by_ch.get(ch, "")
+        group = _classify_store_group(ch, country)
         rows.append({
             "channel": ch,
+            "display_name": _display_store_name(ch),
+            "country": country,
+            "group": group,
             "sales_target": target,
             "mtd_actual": round(mtd, 2),
             "projected_landing": round(projected, 2),
