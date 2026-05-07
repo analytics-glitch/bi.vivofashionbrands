@@ -59,6 +59,10 @@ class User(BaseModel):
     picture: Optional[str] = None
     role: str = "viewer"  # admin | exec | analyst | store_manager | viewer
     active: bool = True
+    # New users from Google self-sign-up land in "pending" until an
+    # admin approves. Existing accounts default to "active" so they
+    # don't get locked out by this migration.
+    status: str = "active"  # pending | active | rejected
     auth_method: Optional[str] = None  # "google" | "password"
     created_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
@@ -90,6 +94,7 @@ class CreateUserBody(BaseModel):
 class UpdateUserBody(BaseModel):
     role: Optional[str] = None
     active: Optional[bool] = None
+    status: Optional[str] = None  # active | pending | rejected (admin only)
 
 
 # ---------- Page-level access control ----------
@@ -157,6 +162,13 @@ async def get_current_user(request: Request) -> User:
     user = await _fetch_session_token_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="Session expired")
+    # Pending users keep a valid session so they can poll for approval,
+    # but they get a 403 with a specific error code on every protected
+    # call so the frontend can show the awaiting-approval screen.
+    if getattr(user, "status", "active") == "pending":
+        raise HTTPException(status_code=403, detail="account_pending_approval")
+    if getattr(user, "status", "active") == "rejected":
+        raise HTTPException(status_code=403, detail="account_rejected")
     return user
 
 
@@ -198,6 +210,15 @@ async def seed_admin():
 
     seed_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@vivofashiongroup.com").strip().lower()
     seed_pwd = os.environ.get("SEED_ADMIN_PASSWORD", "VivoAdmin!2026")
+
+    # Migration: backfill `status="active"` on every existing user that
+    # hasn't been touched yet. Without this, the new pending-approval
+    # check would lock everyone out of the system on first deploy.
+    await db.users.update_many(
+        {"status": {"$exists": False}},
+        {"$set": {"status": "active"}},
+    )
+
     existing = await db.users.find_one({"email": seed_email}, {"_id": 0})
     if existing:
         return
@@ -379,13 +400,16 @@ async def google_callback(body: GoogleCallbackBody, response: Response):
     user_doc = await db.users.find_one({"email": email})
     now = datetime.now(timezone.utc)
     if not user_doc:
+        # First-time Google sign-in: provision as a "pending" store_manager.
+        # Admin must approve before the user can access protected pages.
         user_doc = {
             "user_id": f"user_{uuid.uuid4().hex[:12]}",
             "email": email,
             "name": data.get("name"),
             "picture": data.get("picture"),
-            "role": "viewer",
+            "role": "store_manager",
             "active": True,
+            "status": "pending",
             "auth_method": "google",
             "created_at": now,
             "last_login_at": now,
@@ -430,6 +454,35 @@ async def me(user: User = Depends(get_current_user)):
     payload = user.model_dump()
     payload["allowed_pages"] = pages_for(user)
     return payload
+
+
+@auth_router.get("/me/status")
+async def my_status(request: Request):
+    """Returns the current user's status (active / pending / rejected)
+    even when pending — the frontend uses this to render the
+    awaiting-approval screen and poll for changes."""
+    token = request.cookies.get("session_token")
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sess = await db.user_sessions.find_one({"session_token": token})
+    if not sess:
+        raise HTTPException(status_code=401, detail="Session expired")
+    user_doc = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+    if not user_doc or not user_doc.get("active", True):
+        raise HTTPException(status_code=401, detail="Session expired")
+    return {
+        "user_id": user_doc.get("user_id"),
+        "email": user_doc.get("email"),
+        "name": user_doc.get("name"),
+        "picture": user_doc.get("picture"),
+        "role": user_doc.get("role"),
+        "status": user_doc.get("status", "active"),
+        "created_at": user_doc.get("created_at"),
+    }
 
 
 @auth_router.get("/activity-streak")
@@ -549,6 +602,10 @@ async def update_user(user_id: str, body: UpdateUserBody, actor: User = Depends(
         upd["role"] = body.role
     if body.active is not None:
         upd["active"] = bool(body.active)
+    if body.status is not None:
+        if body.status not in ("active", "pending", "rejected"):
+            raise HTTPException(status_code=400, detail="status must be active|pending|rejected")
+        upd["status"] = body.status
     if not upd:
         return {"ok": True}
     if user_id == actor.user_id and body.role and body.role != "admin":

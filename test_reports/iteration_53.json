@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 53 — full backend + frontend validation of (1) IBT Last-30d forced preset, (2) IBT Mark-as-Done + Completed Moves Report, (3) Exports store_manager gating, (4) Pending-user approval flow. Backend: 15/15 pytest cases passed (test_iteration_53_ibt_complete_pending.py). Frontend: admin login OK, /ibt header + 'Last 30 days' pill + 66 'Done' buttons rendered, modal opened with date defaulting to today (2026-05-07) and units pre-filled to suggested qty (7), submit closed modal, Completed Moves Report rendered with correct columns [Style, From, ↦, To, Units, Day suggested, Day transferred, Days lapsed, PO #, Completed by] and 5 rows. Exports admin H1 = 'Exports (Sales, Inventory)' with all 7 tab buttons (Sales/Inventory/Store KPIs/Period Performance/Stock Rebalancing/Daily Replenishment/SOR Report). Exports.jsx code review confirms store_manager branch hides 6 tabs and changes H1 to 'Exports (Inventory)'. Regression: /targets, /ceo-report, /allocations, /feedback all loaded clean. Pending-approvals card not rendered when 0 pending users (correct behaviour).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview KPI trend (pre-existing)", "issues": ["recharts width(-1)/height(-1) console warnings on initial mount — already flagged in iter-49/51/52, cosmetic only."]},
+      {"screen": "DOM hydration (pre-existing)", "issues": ["React hydration warning '<span> cannot be a child of <option>' surfaces inside a select component (likely the brand/POS dropdown). Non-blocking but noisy in console — main agent may clean up at leisure."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_53_ibt_complete_pending.py",
+    "/app/test_reports/pytest/iter53.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ibt_completed.py — clean, validates units & date order, uses uuid id, strips _id. Good.",
+    "auth.py — get_current_user raises 403 with detail='account_pending_approval'/'account_rejected'; /me/status bypasses status gate to support polling — correct. Migration backfilling status='active' is idempotent and runs in seed_admin().",
+    "auth.py:611 — guard 'Cannot demote yourself' uses `body.role and body.role != 'admin'`, will fail correctly when admin tries to change own role to non-admin. ✓",
+    "Exports.jsx 670-766 — clean role gating; Inventory tab is the only one outside the !isStoreManager guard, so store_manager sees exactly one tab and the H1 mirrors the role.",
+    "IBT.jsx 42-48 — useEffect(forcedRangeRef) ensures setPreset('last_30d') runs once on mount even if user previously had a different preset. Pattern correct.",
+    "IBT.jsx 101 — completedKeys filter uses 'style||to_store' which matches backend keys endpoint. Good. Note: hides any later suggestion for the same style+to_store within 30d, which is the intended behaviour per ibt_completed.py:154.",
+    "IBTMarkAsDoneModal.jsx — date max={today} prevents future transfer dates, good. Suggested-units max also enforced client-side, mirrored by the 400 server validation."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_53_ibt_complete_pending.py"],
+  "success_rate": {"backend": "100% (15/15 pytest)", "frontend": "100% — all spec items verified for admin role; store_manager tab gating verified via code review (no live store_manager test user available)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (password login). Pending user simulated via direct mongo insert in /app/backend/tests/test_iteration_53_ibt_complete_pending.py fixture (TEST_pending_*@vivofashiongroup.com), cleaned up in fixture teardown.",
+  "seed_data_creation": "Test fixture creates and tears down a TEST_pending_*@vivofashiongroup.com user + session_token in mongo for the pending-flow tests. UI test created 1 completed move via the modal — cleaned up post-test (PO TEST-PO-UI-001 + 4 other TEST_/PO-TEST rows).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend mongo at mongodb://localhost:27017 / DB 'test_database'. Pending-user simulation pattern: direct insert into db.users with status='pending' + insert into db.user_sessions with the desired session_token, then call /api/auth/me with Bearer <token> to confirm the 403/'account_pending_approval' branch. /api/auth/me/status purposely bypasses the pending gate so the AwaitingApproval screen can poll. The Pending Approvals banner on /admin/users only renders when ≥1 pending user exists — to verify in UI, insert a pending user via the python snippet from this iteration's test file before navigating. ibt_completed_moves collection tracks every Done click; data-testid='ibt-completed-report' card is admin-only.",
+  "rca of the issue": "n/a — feature additions, no bugs found. All 15 backend cases pass and all 11 frontend acceptance criteria observed working as specified."
+}

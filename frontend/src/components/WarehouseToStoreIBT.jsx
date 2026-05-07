@@ -3,7 +3,7 @@ import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import IBTSkuBreakdown from "@/components/IBTSkuBreakdown";
-import { Warehouse, MagnifyingGlass } from "@phosphor-icons/react";
+import { Warehouse, MagnifyingGlass, CheckCircle } from "@phosphor-icons/react";
 
 /**
  * Warehouse → Store replenishment suggestions.
@@ -19,7 +19,7 @@ import { Warehouse, MagnifyingGlass } from "@phosphor-icons/react";
  * separately from floor-to-floor moves (different ops team, different
  * dock door).
  */
-const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [] }) => {
+const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [], onMarkDone, completedKeys = new Set() }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -43,13 +43,17 @@ const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [] }) => {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) =>
-      (r.style_name || "").toLowerCase().includes(q) ||
-      (r.to_store || "").toLowerCase().includes(q) ||
-      (r.brand || "").toLowerCase().includes(q)
-    );
-  }, [rows, search]);
+    return rows.filter((r) => {
+      // Hide rows already actioned via Mark-as-Done.
+      if (completedKeys.has(`${r.style_name}||${r.to_store}`)) return false;
+      if (!q) return true;
+      return (
+        (r.style_name || "").toLowerCase().includes(q) ||
+        (r.to_store || "").toLowerCase().includes(q) ||
+        (r.brand || "").toLowerCase().includes(q)
+      );
+    });
+  }, [rows, search, completedKeys]);
 
   const totals = useMemo(() => {
     const units = filtered.reduce((s, r) => s + (r.suggested_qty || 0), 0);
@@ -163,7 +167,29 @@ const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [] }) => {
                   render: (r) => <span className="num text-muted">{r.missed_sales_risk.toFixed(2)}</span>,
                   csv: (r) => r.missed_sales_risk,
                 },
-              ]}
+                onMarkDone && {
+                  key: "__mark_done", label: "", sortable: false, align: "left",
+                  render: (r) => (
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => onMarkDone({
+                          ...r,
+                          from_store: "Warehouse Finished Goods",
+                          units_to_move: r.suggested_qty,
+                          flow: "warehouse_to_store",
+                        })}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 px-2 py-0.5 rounded-full"
+                        title="Mark this transfer as completed — log PO# and date"
+                        data-testid={`wh-ibt-mark-done-${(r.style_name || "").slice(0,15)}`}
+                      >
+                        <CheckCircle size={11} weight="fill" /> Done
+                      </button>
+                    </span>
+                  ),
+                  csv: () => "",
+                },
+              ].filter(Boolean)}
               rows={filtered}
             />
           )}

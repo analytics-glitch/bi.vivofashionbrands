@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useAuth } from "@/lib/auth";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -8,14 +9,18 @@ import RecommendationActionPill from "@/components/RecommendationActionPill";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import IBTSkuBreakdown from "@/components/IBTSkuBreakdown";
 import WarehouseToStoreIBT from "@/components/WarehouseToStoreIBT";
+import IBTCompletedMoves from "@/components/IBTCompletedMoves";
+import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useRecommendationState } from "@/lib/useRecommendationState";
-import { ArrowRight, Truck, Coins, Package, MagnifyingGlass, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { ArrowRight, Truck, Coins, Package, MagnifyingGlass, CaretDown, CaretRight, CheckCircle } from "@phosphor-icons/react";
 
 const ibtKey = (r) => `${r.style_name}||${r.from_store}||${r.to_store}`;
 
 const IBT = () => {
-  const { applied, touchLastUpdated } = useFilters();
+  const { applied, touchLastUpdated, setPreset } = useFilters();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const { dateFrom, dateTo, countries, dataVersion } = applied;
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,7 +31,30 @@ const IBT = () => {
   const [toStoreFilter, setToStoreFilter] = useState("");
   const [subcatFilter, setSubcatFilter] = useState("");
   const [showResolved, setShowResolved] = useState(false);
+  const [completedKeys, setCompletedKeys] = useState(new Set());
+  const [completedRefresh, setCompletedRefresh] = useState(0);
+  const [doneModalRow, setDoneModalRow] = useState(null);
   const { stateByKey, setState } = useRecommendationState("ibt");
+
+  // ALWAYS force "Last 30 days" on this page — leadership directive so
+  // store managers don't see stale narrow date windows. Runs once on
+  // mount, then subsequent filter-bar changes are respected.
+  const forcedRangeRef = useRef(false);
+  useEffect(() => {
+    if (forcedRangeRef.current) return;
+    forcedRangeRef.current = true;
+    setPreset("last_30d");
+  }, [setPreset]);
+
+  // Load the keys of already-completed (style, to_store) suggestions
+  // so we can hide them from the live table.
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/ibt/completed/keys")
+      .then((r) => { if (!cancelled) setCompletedKeys(new Set(r.data?.keys || [])); })
+      .catch(() => { if (!cancelled) setCompletedKeys(new Set()); });
+    return () => { cancelled = true; };
+  }, [completedRefresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +97,8 @@ const IBT = () => {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
+      // Hide rows we've already actioned via Mark-as-Done.
+      if (completedKeys.has(`${r.style_name}||${r.to_store}`)) return false;
       if (brandFilter && r.brand !== brandFilter) return false;
       if (fromStoreFilter && r.from_store !== fromStoreFilter) return false;
       if (toStoreFilter && r.to_store !== toStoreFilter) return false;
@@ -80,7 +110,7 @@ const IBT = () => {
         (r.to_store || "").toLowerCase().includes(q)
       );
     });
-  }, [rows, search, brandFilter, fromStoreFilter, toStoreFilter, subcatFilter]);
+  }, [rows, search, brandFilter, fromStoreFilter, toStoreFilter, subcatFilter, completedKeys]);
 
   // Hide resolved moves unless the user explicitly asks to see them.
   const visible = useMemo(() => {
@@ -395,13 +425,22 @@ const IBT = () => {
                     render: (r) => {
                       const k = ibtKey(r);
                       return (
-                        <span onClick={(e) => e.stopPropagation()}>
+                        <span onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5">
                           <RecommendationActionPill
                             itemKey={k}
                             state={stateByKey.get(k)}
                             onChange={(status, opts) => setState(k, status, opts)}
                             label="transfer"
                           />
+                          <button
+                            type="button"
+                            onClick={() => setDoneModalRow(r)}
+                            className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 px-2 py-0.5 rounded-full"
+                            data-testid={`ibt-mark-done-${(r.style_name || "").slice(0,20)}`}
+                            title="Mark this transfer as completed — log PO# and date"
+                          >
+                            <CheckCircle size={11} weight="fill" /> Done
+                          </button>
                         </span>
                       );
                     },
@@ -422,11 +461,34 @@ const IBT = () => {
               store is selling strongly but running low. Qty is bounded by the
               smaller of: <i>from-store buffer (2 units)</i> and
               <i> to-store 2-week cover target</i>. Warehouses are always
-              excluded.
+              excluded. Once you click <b className="text-emerald-700">Done</b> on
+              a row it gets logged to the Completed Moves table below and
+              hidden from the live list.
             </div>
           </div>
 
-          <WarehouseToStoreIBT dateFrom={dateFrom} dateTo={dateTo} countries={countries} />
+          <WarehouseToStoreIBT
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            countries={countries}
+            onMarkDone={(r) => setDoneModalRow({ ...r, flow: "warehouse_to_store" })}
+            completedKeys={completedKeys}
+          />
+
+          {isAdmin && (
+            <IBTCompletedMoves refreshKey={completedRefresh} />
+          )}
+
+          {doneModalRow && (
+            <IBTMarkAsDoneModal
+              row={doneModalRow}
+              onClose={() => setDoneModalRow(null)}
+              onSubmitted={() => {
+                setDoneModalRow(null);
+                setCompletedRefresh((n) => n + 1);
+              }}
+            />
+          )}
         </>
       )}
     </div>

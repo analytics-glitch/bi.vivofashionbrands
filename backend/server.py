@@ -7176,6 +7176,10 @@ app.include_router(ask_router)
 from feedback import router as feedback_router  # noqa: E402
 app.include_router(feedback_router)
 
+# IBT completed-moves router — track which suggestions have been actioned.
+from ibt_completed import router as ibt_completed_router  # noqa: E402
+app.include_router(ibt_completed_router)
+
 
 @app.get("/api/health")
 async def health():

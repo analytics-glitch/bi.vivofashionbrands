@@ -83,9 +83,22 @@ export const AuthProvider = ({ children }) => {
     try {
       const r = await api.get("/auth/me");
       setUser(r.data);
-    } catch {
-      setUser(false);
-      setStoredToken(null);
+    } catch (err) {
+      // Pending-approval users get a 403 on /me but their session is
+      // still valid — fetch a status-only payload so we can render the
+      // awaiting-approval screen instead of bouncing them to /login.
+      if (err?.response?.status === 403 && err?.response?.data?.detail?.startsWith?.("account_")) {
+        try {
+          const s = await api.get("/auth/me/status");
+          setUser({ ...s.data, _restricted: true, _restrictionReason: err.response.data.detail });
+        } catch {
+          setUser(false);
+          setStoredToken(null);
+        }
+      } else {
+        setUser(false);
+        setStoredToken(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -111,8 +124,16 @@ export const AuthProvider = ({ children }) => {
   const completeGoogleLogin = useCallback(async (session_id) => {
     const r = await api.post("/auth/google/callback", { session_id });
     setStoredToken(r.data.token);
-    setUser(r.data.user);
-    return r.data.user;
+    // Newly-provisioned Google users come back with status="pending".
+    // Mark them restricted so the app shell renders the awaiting-
+    // approval screen instead of the dashboard.
+    const incoming = r.data.user;
+    if (incoming?.status === "pending" || incoming?.status === "rejected") {
+      setUser({ ...incoming, _restricted: true, _restrictionReason: `account_${incoming.status}_approval` });
+    } else {
+      setUser(incoming);
+    }
+    return incoming;
   }, []);
 
   const logout = useCallback(async () => {

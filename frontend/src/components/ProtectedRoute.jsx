@@ -2,12 +2,14 @@ import React from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { canAccessPage, homePageFor } from "@/lib/permissions";
+import AwaitingApproval from "@/pages/AwaitingApproval";
 
 /**
- * Gate that wraps every authenticated route. Three layers:
+ * Gate that wraps every authenticated route. Four layers:
  *   1. Session check — bounce to /login if no user.
- *   2. `adminOnly` legacy flag — admin-only routes.
- *   3. `pageId` — role-based page access via `lib/permissions.js`. When the
+ *   2. Pending/rejected status — render AwaitingApproval screen.
+ *   3. `adminOnly` legacy flag — admin-only routes.
+ *   4. `pageId` — role-based page access via `lib/permissions.js`. When the
  *      current user can't access the page, we redirect to their home page
  *      (the first page their role CAN access) so they never land on a
  *      flashing 403 dead-end.
@@ -25,6 +27,12 @@ export const ProtectedRoute = ({ children, adminOnly = false, pageId }) => {
   }
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  // Pending / rejected accounts get the awaiting-approval screen on
+  // every protected route. Logout button + 30 s status poll lives in
+  // that component.
+  if (user._restricted) {
+    return <AwaitingApproval />;
   }
   if (adminOnly && user.role !== "admin") {
     return <Navigate to={homePageFor(user)} replace />;

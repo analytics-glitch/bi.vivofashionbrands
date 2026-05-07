@@ -59,6 +59,17 @@ const Users = () => {
     } catch (e) { alert(e?.response?.data?.detail || e.message); }
   };
 
+  const setStatus = async (u, status) => {
+    try {
+      await api.patch(`/admin/users/${u.user_id}`, { status });
+      load();
+    } catch (e) { alert(e?.response?.data?.detail || e.message); }
+  };
+
+  // Pending users — newest first. Surfaces as a banner above the
+  // standard users table so the admin can approve/reject in one click.
+  const pendingUsers = users.filter((u) => (u.status || "active") === "pending");
+
   return (
     <div className="space-y-6" data-testid="users-page">
       <div className="flex items-start justify-between gap-4">
@@ -102,6 +113,60 @@ const Users = () => {
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
+
+      {!loading && !error && pendingUsers.length > 0 && (
+        <div className="card-white p-4 border-l-4 border-l-amber-400 bg-amber-50/50" data-testid="pending-approvals-card">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10.5px] font-bold uppercase tracking-wide bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">
+              {pendingUsers.length} pending
+            </span>
+            <h3 className="font-extrabold text-[14px] text-[#7c2d12]">New sign-ups awaiting approval</h3>
+          </div>
+          <p className="text-[12px] text-muted mb-3">
+            These users signed in via Google for the first time. Default role is <b>store manager</b> — adjust below before approving if needed.
+          </p>
+          <ul className="space-y-2">
+            {pendingUsers.map((u) => (
+              <li
+                key={u.user_id}
+                className="flex flex-col sm:flex-row sm:items-center gap-2 bg-white rounded-md border border-amber-200 px-3 py-2"
+                data-testid={`pending-user-${u.email}`}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-[12.5px] truncate">{u.name || u.email}</div>
+                  <div className="text-[11px] text-muted truncate">{u.email}</div>
+                </div>
+                <select
+                  className="px-2 py-1 rounded-md border border-border text-[11.5px]"
+                  value={u.role}
+                  onChange={(e) => updateRole(u, e.target.value)}
+                  data-testid={`pending-role-${u.email}`}
+                >
+                  <option value="viewer">Viewer</option>
+                  <option value="store_manager">Store Manager</option>
+                  <option value="analyst">Analyst</option>
+                  <option value="exec">Exec</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <button
+                  onClick={() => setStatus(u, "active")}
+                  className="text-[11.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 px-2.5 py-1 rounded-md"
+                  data-testid={`pending-approve-${u.email}`}
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => setStatus(u, "rejected")}
+                  className="text-[11.5px] font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 px-2.5 py-1 rounded-md"
+                  data-testid={`pending-reject-${u.email}`}
+                >
+                  Reject
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {!loading && !error && (
         <div className="card-white p-5" data-testid="users-table-wrap">

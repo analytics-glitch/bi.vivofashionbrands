@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
+import { useAuth } from "@/lib/auth";
 import { api, fmtNum, fmtKES, fmtDate, COUNTRY_FLAGS } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
@@ -665,26 +666,32 @@ const SalesExport = () => {
 
 // Parent wrapper with Sales / Inventory tab switcher.
 const Exports = () => {
-  const [tab, setTab] = useState("sales");
+  const { user } = useAuth();
+  const isStoreManager = user?.role === "store_manager";
+  // Store managers can only see the Inventory tab — leadership rule
+  // so they don't get sales-side data outside their permission scope.
+  const [tab, setTab] = useState(isStoreManager ? "inventory" : "sales");
   return (
     <div className="space-y-5" data-testid="exports-page">
       <div>
         <div className="eyebrow">Dashboard · Exports</div>
         <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
-          Exports (Sales, Inventory)
+          {isStoreManager ? "Exports (Inventory)" : "Exports (Sales, Inventory)"}
         </h1>
       </div>
       <div className="inline-flex flex-wrap rounded-xl bg-panel p-1 border border-border" data-testid="exports-tabs">
-        <button
-          type="button"
-          onClick={() => setTab("sales")}
-          data-testid="exports-tab-sales"
-          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
-            tab === "sales" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
-          }`}
-        >
-          Sales
-        </button>
+        {!isStoreManager && (
+          <button
+            type="button"
+            onClick={() => setTab("sales")}
+            data-testid="exports-tab-sales"
+            className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
+              tab === "sales" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
+            }`}
+          >
+            Sales
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setTab("inventory")}
@@ -695,6 +702,8 @@ const Exports = () => {
         >
           Inventory
         </button>
+        {!isStoreManager && (
+        <>
         <button
           type="button"
           onClick={() => setTab("kpis")}
@@ -745,14 +754,16 @@ const Exports = () => {
         >
           SOR Report
         </button>
+        </>
+        )}
       </div>
-      {tab === "sales" && <SalesExport />}
+      {!isStoreManager && tab === "sales" && <SalesExport />}
       {tab === "inventory" && <InventoryExport />}
-      {tab === "kpis" && <StoreKpisExport />}
-      {tab === "period" && <PeriodPerformanceExport />}
-      {tab === "stock" && <StockRebalancingExport />}
-      {tab === "replen" && <ReplenishmentReport />}
-      {tab === "sor" && <SORReportExport />}
+      {!isStoreManager && tab === "kpis" && <StoreKpisExport />}
+      {!isStoreManager && tab === "period" && <PeriodPerformanceExport />}
+      {!isStoreManager && tab === "stock" && <StockRebalancingExport />}
+      {!isStoreManager && tab === "replen" && <ReplenishmentReport />}
+      {!isStoreManager && tab === "sor" && <SORReportExport />}
     </div>
   );
 };
