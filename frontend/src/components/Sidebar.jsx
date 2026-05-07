@@ -26,6 +26,7 @@ import {
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 
@@ -152,6 +153,23 @@ const TopNav = () => {
     const id = setInterval(() => setTick((t) => t + 1), 30000);
     return () => clearInterval(id);
   }, []);
+
+  // "Late transfers" badge — count of IBT suggestions first surfaced
+  // >5 days ago that nobody has marked done yet. Polled every 5 min so
+  // the number stays fresh without spamming the backend.
+  const [lateCount, setLateCount] = React.useState(0);
+  React.useEffect(() => {
+    if (!user || !canAccessPage(user, "ibt")) return;
+    let cancelled = false;
+    const fetch = () => {
+      api.get("/ibt/late-count")
+        .then((r) => { if (!cancelled) setLateCount(r.data?.count || 0); })
+        .catch(() => { /* non-critical */ });
+    };
+    fetch();
+    const id = setInterval(fetch, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [user]);
   return (
     <nav
       className="relative px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print bg-[#fed7aa] border-b border-border"
@@ -207,6 +225,15 @@ const TopNav = () => {
               <>
                 <t.icon size={13} weight={isActive ? "fill" : "regular"} />
                 <span>{t.label}</span>
+                {t.id === "ibt" && lateCount > 0 && (
+                  <span
+                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
+                    title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
+                    data-testid="ibt-late-badge"
+                  >
+                    {lateCount > 99 ? "99+" : lateCount}
+                  </span>
+                )}
               </>
             )}
           </NavLink>
@@ -268,6 +295,14 @@ const TopNav = () => {
                 <>
                   <t.icon size={17} weight={isActive ? "fill" : "regular"} />
                   <span>{t.label}</span>
+                  {t.id === "ibt" && lateCount > 0 && (
+                    <span
+                      className="ml-auto inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 rounded-full bg-rose-600 text-white text-[11px] font-bold leading-none"
+                      data-testid="ibt-late-badge-mobile"
+                    >
+                      {lateCount > 99 ? "99+" : lateCount}
+                    </span>
+                  )}
                 </>
               )}
             </NavLink>

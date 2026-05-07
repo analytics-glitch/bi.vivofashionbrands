@@ -2349,7 +2349,17 @@ async def analytics_ibt_suggestions(
         chosen_to.add(dest_key)
 
     deduped.sort(key=lambda x: x["estimated_uplift"], reverse=True)
-    return deduped[: int(limit)]
+    final = deduped[: int(limit)]
+    # Persist first-seen timestamp for each surfaced suggestion so the
+    # /api/ibt/late-count endpoint can flag stuck transfers (>5 days
+    # without action). Fire-and-forget — tracking failure must NEVER
+    # block the suggestions response.
+    try:
+        from ibt_completed import track_suggestions_batch
+        await track_suggestions_batch(final)
+    except Exception:
+        pass
+    return final
 
 
 @api_router.get("/analytics/ibt-warehouse-to-store")
@@ -2494,7 +2504,22 @@ async def analytics_ibt_warehouse_to_store(
             "missed_sales_risk": shortfall_risk,
         })
     suggestions.sort(key=lambda r: r["missed_sales_risk"], reverse=True)
-    return suggestions[: int(limit)]
+    final_wh = suggestions[: int(limit)]
+    # Track first-seen for warehouse → store too (from_store is always
+    # the central warehouse so we tag it explicitly).
+    try:
+        from ibt_completed import track_suggestions_batch
+        await track_suggestions_batch([
+            {
+                "style_name": s["style_name"],
+                "from_store": "Warehouse Finished Goods",
+                "to_store": s["to_store"],
+            }
+            for s in final_wh
+        ])
+    except Exception:
+        pass
+    return final_wh
 
 
 @api_router.get("/analytics/ibt-sku-breakdown")

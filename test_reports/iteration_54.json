@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 54 — full backend + frontend validation of the IBT 'Late transfers' alert badge feature. Backend: 6/6 pytest cases passed (test_iteration_54_ibt_late_count.py): /analytics/ibt-suggestions and /analytics/ibt-warehouse-to-store both populate ibt_suggestions_seen (verified by counting before/after — for warehouse the from_store='Warehouse Finished Goods' rows grew); /api/ibt/late-count returns {count, threshold_days=5, items[]<=50}; backdating 3 rows to first_seen=now-7d → count >=3 and the 3 keys appear in items; POST /api/ibt/complete on one backdated pair drops count by exactly 1; unauthenticated request returns 401/403. Frontend (admin login on preview URL): TopNav polls /ibt/late-count and renders desktop badge data-testid='ibt-late-badge' showing '6' with class animate-pulse + bg-rose-600 and title='6 transfers suggested >5 days ago and not yet marked done'; mobile hamburger reveals data-testid='ibt-late-badge-mobile' with same count '6'. IBT page regression — H1='Inter-Branch Transfer Recommendations', filter dropdowns (brands/from/to/subcategory) work, 160 Done badges/buttons rendered across both Store→Store and Warehouse→Store tables, Completed Moves Report card (admin-only) renders below with all expected columns. Test data cleanup: all TEST_LATE_* rows in ibt_suggestions_seen and ibt_completed_moves deleted post-run.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Pre-existing", "issues": ["recharts width(-1)/height(-1) console warnings on initial mount of Overview KPI cards (already flagged in iter-49/51/52/53, cosmetic)."]},
+      {"screen": "Pre-existing", "issues": ["React hydration error: <span> cannot be a child of <option> emitted by SortableTable.jsx line 378 — the data-ve-dynamic instrumentation wraps option text in a <span>. Non-blocking, noisy in console; main agent may strip the span wrapper from option labels."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_54_ibt_late_count.py",
+    "/app/test_reports/pytest/iter54.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ibt_completed.py:170-210 — track_suggestion_seen uses $setOnInsert for first_seen + $set for last_seen, idempotent and race-safe via mongo upsert. Good.",
+    "ibt_completed.py:213-246 — /late-count subtracts completed (style||to_store) pairs from old seen rows via in-memory set; correct. Items capped at 50 — good for badge payload size.",
+    "server.py:2353-2361 + 2508-2520 — track_suggestions_batch is wrapped in try/except so tracker failure cannot break the suggestions response. Fire-and-forget pattern correct.",
+    "Sidebar.jsx:160-172 — useEffect polls /ibt/late-count every 5 min and gates on canAccessPage(user,'ibt'); cleanup via cancelled flag + clearInterval prevents stale state writes. Good.",
+    "Sidebar.jsx:228-236 + 298-305 — both desktop and mobile badges gated on `lateCount > 0 &&` so they correctly do NOT render when count=0 (verified via code review; live env always had count=6 during test run).",
+    "Sidebar.jsx:230 — animate-pulse + bg-rose-600 + min-w-[18px] gives a stable visual; 99+ cap prevents layout overflow. Good.",
+    "Note (no action): the 5-min polling interval means the badge can lag behind reality by ≤5 min — fine for an alert UX but worth flagging if PM wants real-time."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_54_ibt_late_count.py"],
+  "success_rate": {"backend": "100% (6/6 pytest)", "frontend": "100% — all 8 spec items verified (badge render desktop+mobile, count value, title text, animate-pulse, bg-rose-600, mobile-menu badge, no-render-when-zero verified via code path, IBT regression intact)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (password login).",
+  "seed_data_creation": "Backend pytest inserted 3 TEST_LATE_* rows into ibt_suggestions_seen (first_seen = now-7d) and 1 TEST_LATE_PO_0 row into ibt_completed_moves; all cleaned up via fixture teardown. UI test reused 3 separate TEST_LATE_UI_* rows directly inserted via motor (3 backdated styles); also cleaned up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Late-transfers feature is fully wired. To re-test from scratch: insert backdated rows in ibt_suggestions_seen via motor (first_seen <= now-5d), ensure no matching (style,to_store) row exists in ibt_completed_moves, then call GET /api/ibt/late-count with admin token → count should reflect inserted rows. UI badge polls every 5 min so a hard refresh of the page is the fastest way to see updates. Both data-testid='ibt-late-badge' (desktop, inline next to nav-ibt) and data-testid='ibt-late-badge-mobile' (inside mobile-menu drawer) are present. The badge gracefully gates on lateCount>0 — count=0 ⇒ DOM does not render either badge. Ensure cleanup of any TEST_LATE_* / TEST_LATE_UI_* rows after tests.",
+  "rca of the issue": "n/a — feature add. All acceptance criteria met."
+}

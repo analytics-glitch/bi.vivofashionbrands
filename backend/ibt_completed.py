@@ -40,6 +40,11 @@ from auth import User, get_current_user, require_admin
 _client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 _db = _client[os.environ["DB_NAME"]]
 _coll = _db.ibt_completed_moves
+# Tracks first-seen timestamp for each (style, from_store, to_store)
+# suggestion so we can compute "Late transfers" — moves that the
+# system has been suggesting for more than N days but nobody has marked
+# done yet.
+_seen_coll = _db.ibt_suggestions_seen
 
 
 class CompleteMoveBody(BaseModel):
@@ -160,3 +165,82 @@ async def list_completed_keys(user: User = Depends(get_current_user)):
     async for doc in cursor:
         keys.append(f"{doc.get('style_name')}||{doc.get('to_store')}")
     return {"keys": keys}
+
+
+# ── First-seen tracking + late-count ────────────────────────────────
+async def track_suggestion_seen(style_name: str, from_store: str, to_store: str):
+    """Record (or no-op) the first time we surfaced this exact transfer
+    suggestion. Called by /ibt-suggestions + /ibt-warehouse-to-store
+    after dedupe so the seen collection captures the canonical signal.
+    """
+    if not (style_name and from_store and to_store):
+        return
+    now = datetime.now(timezone.utc)
+    key = f"{style_name}||{from_store}||{to_store}"
+    await _seen_coll.update_one(
+        {"_id": key},
+        {
+            "$setOnInsert": {
+                "_id": key,
+                "style_name": style_name,
+                "from_store": from_store,
+                "to_store": to_store,
+                "first_seen": now,
+            },
+            "$set": {"last_seen": now},
+        },
+        upsert=True,
+    )
+
+
+async def track_suggestions_batch(suggestions):
+    """Bulk-friendly tracker — fire-and-forget batch upsert."""
+    import asyncio as _asyncio
+    if not suggestions:
+        return
+    tasks = []
+    for s in suggestions:
+        st = s.get("style_name") if isinstance(s, dict) else None
+        fs = s.get("from_store") if isinstance(s, dict) else None
+        ts = s.get("to_store") if isinstance(s, dict) else None
+        if not (st and fs and ts):
+            continue
+        tasks.append(track_suggestion_seen(st, fs, ts))
+    if tasks:
+        await _asyncio.gather(*tasks, return_exceptions=True)
+
+
+@router.get("/late-count")
+async def late_transfer_count(days: int = 5, user: User = Depends(get_current_user)):
+    """Count of suggestions first seen >`days` days ago that still
+    haven't been marked done. Powers the red badge on the IBT nav
+    item — surfaces stuck transfers that nobody has actioned.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=int(max(1, days)))
+
+    # All "old" seen keys.
+    seen_keys = []
+    cursor = _seen_coll.find(
+        {"first_seen": {"$lte": cutoff}},
+        {"_id": 1, "style_name": 1, "to_store": 1, "first_seen": 1},
+    )
+    async for d in cursor:
+        seen_keys.append({
+            "style_to_key": f"{d.get('style_name')}||{d.get('to_store')}",
+            "first_seen": d.get("first_seen"),
+            "style_name": d.get("style_name"),
+            "to_store": d.get("to_store"),
+        })
+
+    # Subtract the ones already marked done (any time).
+    completed_pairs = set()
+    async for d in _coll.find({}, {"_id": 0, "style_name": 1, "to_store": 1}):
+        completed_pairs.add(f"{d.get('style_name')}||{d.get('to_store')}")
+
+    late = [s for s in seen_keys if s["style_to_key"] not in completed_pairs]
+    return {
+        "count": len(late),
+        "threshold_days": int(days),
+        "items": late[:50],  # cap payload — only the worst 50 surface
+    }
