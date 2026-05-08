@@ -945,9 +945,13 @@ import re as _re
 
 
 @api.get("/dashboard/call-list")
-async def call_list(_: User = Depends(get_current_user)):
+async def call_list(with_nba: bool = False, _: User = Depends(get_current_user)):
     """Daily action queue for an associate. Combines anniversaries, at-risk,
-    silent VIPs and churned win-backs."""
+    silent VIPs and churned win-backs.
+    
+    If with_nba=true, attaches cached AI urgency/action to each row (no fresh
+    LLM calls — only reads nba_cache) and re-sorts each bucket by urgency rank.
+    """
     today_md = now_utc().strftime("%m-%d")
     today_iso = now_utc().date().isoformat()
 
@@ -974,13 +978,104 @@ async def call_list(_: User = Depends(get_current_user)):
         {"rfm_tier": "churned"}, {"_id": 0},
     ).sort("total_sales", -1).limit(6).to_list(6)
 
+    buckets = {"anniversaries": anniversaries, "at_risk": at_risk, "vip_silent": vip_silent, "churned": churned}
+
+    if with_nba:
+        URGENCY_RANK = {"high": 0, "medium": 1, "low": 2}
+        for name, rows in buckets.items():
+            for row in rows:
+                cache = await db.nba_cache.find_one({"customer_id": row["customer_id"]}, {"_id": 0})
+                if cache and cache.get("result"):
+                    r = cache["result"]
+                    row["nba_action"] = r.get("action")
+                    row["nba_urgency"] = r.get("urgency")
+                    row["nba_why"] = r.get("why")
+            rows.sort(key=lambda c: URGENCY_RANK.get(c.get("nba_urgency"), 3))
+
     return {
         "date": today_iso,
-        "anniversaries": anniversaries,
-        "at_risk": at_risk,
-        "vip_silent": vip_silent,
-        "churned": churned,
+        "anniversaries": buckets["anniversaries"],
+        "at_risk": buckets["at_risk"],
+        "vip_silent": buckets["vip_silent"],
+        "churned": buckets["churned"],
+        "ai_enriched": with_nba,
     }
+
+
+@api.post("/dashboard/call-list/precompute-nba")
+async def precompute_call_list_nba(_: User = Depends(require_manager)):
+    """Eagerly compute NBA for every customer surfaced on today's call list,
+    so /call-list?with_nba=true is fast for associates. Use this in an
+    overnight job."""
+    cl = await call_list(with_nba=False)
+    seen = set()
+    customers = []
+    for key in ("anniversaries", "at_risk", "vip_silent", "churned"):
+        for c in cl.get(key, []):
+            cid = c.get("customer_id")
+            if cid and cid not in seen:
+                seen.add(cid)
+                customers.append(cid)
+    n = 0
+    for cid in customers:
+        existing = await db.nba_cache.find_one({"customer_id": cid}, {"_id": 0})
+        if existing:
+            try:
+                ts = datetime.fromisoformat(existing["computed_at"])
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if (now_utc() - ts).total_seconds() < 6 * 3600:
+                    continue
+            except Exception:
+                pass
+        try:
+            await customer_nba(cid, user=type("U", (), {"user_id": "system", "name": "system"})())  # type: ignore[arg-type]
+            n += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Precompute NBA failed for %s: %s", cid, exc)
+    return {"computed": n, "of_customers": len(customers)}
+
+
+# ---- Facebook Graph API sync ---- #
+
+@api.get("/social/facebook/status")
+async def facebook_status(_: User = Depends(require_manager)):
+    """Tells the manager what's wired and what's still needed."""
+    return {
+        "app_id_configured": bool(os.environ.get("FACEBOOK_APP_ID")),
+        "app_secret_configured": bool(os.environ.get("FACEBOOK_APP_SECRET")),
+        "client_token_configured": bool(os.environ.get("FACEBOOK_CLIENT_TOKEN")),
+        "page_id_configured": bool(os.environ.get("FACEBOOK_PAGE_ID")),
+        "page_access_token_configured": bool(os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")),
+        "ready_to_sync": bool(os.environ.get("FACEBOOK_PAGE_ID") and os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")),
+        "missing": [
+            *([] if os.environ.get("FACEBOOK_PAGE_ID") else ["FACEBOOK_PAGE_ID"]),
+            *([] if os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN") else ["FACEBOOK_PAGE_ACCESS_TOKEN (long-lived Page Access Token from Graph API Explorer)"]),
+        ],
+        "instructions_url": "https://developers.facebook.com/tools/explorer/",
+    }
+
+
+@api.post("/social/facebook/sync")
+async def facebook_sync(request: Request, payload: Optional[Dict[str, str]] = Body(default=None), user: User = Depends(require_manager)):
+    """Pull Vivo Page content from Facebook into our social_posts + social_feedback
+    collections. Body can override env: {page_id, page_access_token}."""
+    payload = payload or {}
+    page_id = payload.get("page_id") or os.environ.get("FACEBOOK_PAGE_ID", "")
+    page_token = payload.get("page_access_token") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+    if not page_id or not page_token:
+        raise HTTPException(status_code=400, detail="page_id + page_access_token required (env or body)")
+    from facebook_sync import sync_facebook_page  # noqa: WPS433
+    result = await sync_facebook_page(db, page_id, page_token)
+    await _audit(user, "facebook.sync", "page", page_id, request)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Mount router + middleware                                                   #
+# --------------------------------------------------------------------------- #
+
+app.include_router(api)
 
 
 @api.get("/dashboard/attribution")

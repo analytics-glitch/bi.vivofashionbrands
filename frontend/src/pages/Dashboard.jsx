@@ -36,7 +36,7 @@ export default function Dashboard() {
       try {
         const [meRes, clRes] = await Promise.all([
           api.get("/dashboard/me"),
-          api.get("/dashboard/call-list"),
+          api.get("/dashboard/call-list", { params: { with_nba: true } }),
         ]);
         setMe(meRes.data);
         setCallList(clRes.data);
@@ -106,10 +106,23 @@ export default function Dashboard() {
                       <li key={c.customer_id}>
                         <Link to={`/customers/${c.customer_id}`} className="flex items-center justify-between gap-3 py-3 group" data-testid={`call-list-item-${c.customer_id}`}>
                           <div className="flex-1 min-w-0">
-                            <div className="font-medium truncate group-hover:text-[var(--vivo-navy)]">{c.customer_name || "Unknown"}</div>
+                            <div className="font-medium truncate group-hover:text-[var(--vivo-navy)] flex items-center gap-2 flex-wrap">
+                              {c.customer_name || "Unknown"}
+                              {c.nba_urgency && (
+                                <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-bold ${
+                                  c.nba_urgency === "high" ? "bg-red-100 text-red-700" :
+                                  c.nba_urgency === "medium" ? "bg-amber-100 text-amber-800" :
+                                  "bg-zinc-100 text-zinc-600"
+                                }`} data-testid={`nba-urgency-${c.customer_id}`}>AI · {c.nba_urgency}</span>
+                              )}
+                            </div>
                             <div className="text-xs text-[var(--vivo-muted)] mt-1 flex flex-wrap items-center gap-2">
                               <RfmBadge tier={c.rfm_tier} />
-                              <span>{c.total_orders || 0} orders · last {formatDate(c.last_purchase_date)}</span>
+                              {c.nba_action ? (
+                                <span className="text-[var(--vivo-navy)]">→ {c.nba_action}</span>
+                              ) : (
+                                <span>{c.total_orders || 0} orders · last {formatDate(c.last_purchase_date)}</span>
+                              )}
                             </div>
                           </div>
                           <div className="text-right shrink-0">
