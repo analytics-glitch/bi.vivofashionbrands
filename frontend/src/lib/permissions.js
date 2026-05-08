@@ -15,7 +15,7 @@ const VIEWER = ["overview", "locations", "footfall", "customers", "customer-deta
 const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"];
 const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"];
 const EXEC = [...ANALYST, "ceo-report", "targets", "exports"];
-const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback"];
+const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
 
 export const ROLE_PAGES = {
   viewer: VIEWER,
@@ -67,6 +67,7 @@ export const homePageFor = (user) => {
     "feedback": "/feedback",
     "allocations": "/allocations",
     "replenishments": "/replenishments",
+    "admin-store-clusters": "/admin/store-clusters",
     "admin-users": "/admin/users",
     "admin-activity-logs": "/admin/activity-logs",
     "admin-feedback": "/admin/feedback",

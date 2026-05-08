@@ -149,6 +149,9 @@ export default function IBTFlatTable({
           suggested_qty: units,
           days_lapsed: s.days_lapsed,
           first_seen_at: s.first_seen_at,
+          from_cluster_id: s.from_cluster_id,
+          to_cluster_id: s.to_cluster_id,
+          cluster_match: s.cluster_match,
           parent: s,
         });
         continue;
@@ -173,6 +176,10 @@ export default function IBTFlatTable({
           // picker can see how long this transfer has been overdue.
           days_lapsed: s.days_lapsed,
           first_seen_at: s.first_seen_at,
+          // Phase-1 cluster ids for the slate pill next to each store.
+          from_cluster_id: s.from_cluster_id,
+          to_cluster_id: s.to_cluster_id,
+          cluster_match: s.cluster_match,
           parent: s,
         });
       }
@@ -326,9 +333,43 @@ export default function IBTFlatTable({
                   </div>
                   <div className="text-[10.5px] text-muted mt-0.5">{r.brand} · {r.subcategory}</div>
                 </td>
-                <td className="px-3 py-3 whitespace-nowrap font-medium">{r.from_store}</td>
+                <td className="px-3 py-3 whitespace-nowrap font-medium">
+                  <span className="inline-flex items-center gap-1.5">
+                    {r.from_store}
+                    {r.from_cluster_id && (
+                      <span
+                        className={`text-[9.5px] font-bold tracking-wide px-1.5 py-0.5 rounded ${
+                          r.cluster_match
+                            ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                            : "bg-slate-100 text-slate-700 border border-slate-300"
+                        }`}
+                        title={`Peer cluster ${r.from_cluster_id} — ${r.cluster_match ? "same as destination" : "different from destination"}`}
+                        data-testid={`ibt-from-cluster-${idx}`}
+                      >
+                        {r.from_cluster_id}
+                      </span>
+                    )}
+                  </span>
+                </td>
                 <td className="px-2 py-3 text-brand"><ArrowRight size={14} weight="bold" /></td>
-                <td className="px-3 py-3 whitespace-nowrap font-semibold text-brand">{r.to_store}</td>
+                <td className="px-3 py-3 whitespace-nowrap font-semibold text-brand">
+                  <span className="inline-flex items-center gap-1.5">
+                    {r.to_store}
+                    {r.to_cluster_id && (
+                      <span
+                        className={`text-[9.5px] font-bold tracking-wide px-1.5 py-0.5 rounded ${
+                          r.cluster_match
+                            ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                            : "bg-slate-100 text-slate-700 border border-slate-300"
+                        }`}
+                        title={`Peer cluster ${r.to_cluster_id} — ${r.cluster_match ? "same as source" : "different from source"}`}
+                        data-testid={`ibt-to-cluster-${idx}`}
+                      >
+                        {r.to_cluster_id}
+                      </span>
+                    )}
+                  </span>
+                </td>
                 <td className="px-3 py-3 whitespace-nowrap">{r.color || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{r.size || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.sku || "—"}</td>

@@ -124,6 +124,13 @@ const UserMenu = () => {
               >
                 <ChatCircleDots size={13} /> Feedback Inbox
               </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/store-clusters"); }}
+                data-testid="menu-store-clusters"
+              >
+                <Stack size={13} /> Store Clusters
+              </button>
               <div className="h-px bg-border my-1" />
             </>
           )}

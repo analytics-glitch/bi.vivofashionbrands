@@ -65,6 +65,31 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 63)
+**Phase 1 of the Peer-Cluster design (per `/app/memory/IBT_PEER_CLUSTERING_DESIGN.md`)**: surface only — IBT recommendations now display each store's peer-cluster id (`A1`, `B2`, `C1`, etc.) but the IBT math still uses the chain-wide average. Phase 2 will flip the engine to use cluster medians once the clusters look right to merchandising.
+
+**What shipped**:
+- `/app/backend/jobs/cluster_stores.py` — explainable hand-rolled k-means in numpy (no sklearn; ~25 LOC of math) that:
+  1. Aggregates 6 behavioural features per store over a 90-day window (ASP, avg basket units, % tops/bottoms/accessories, size centre-of-gravity).
+  2. Tier-classifies stores into A (top 20% revenue) / B (mid 60%) / C (bottom 20%).
+  3. Runs k-means within each tier with `k = max(1, min(5, n_stores // 6))`.
+  4. Largest cluster in each tier is `<tier>1`, second `<tier>2`, etc.
+  5. Persists to `store_clusters._id == 'current'` with computed centroid + plain-English explainer per cluster.
+- `POST /api/admin/store-clusters/recluster` (admin-only) — defaults to fast 90-day window for tier; `?use_year=true` opts into the slower 365-day pull with a 40s timeout fallback to 90-day.
+- `GET /api/admin/store-clusters` — returns the latest run.
+- `analytics_ibt_suggestions` and `analytics_ibt_warehouse_to_store` now enrich every row with `from_cluster_id`, `to_cluster_id`, `cluster_match`. Failure is non-fatal.
+- New page `/admin/store-clusters` — cluster grid (one card per cluster with centroid + members) + per-store features table.
+- IBT flat tables: small slate-coloured cluster pill next to each store name. Emerald-coloured + border when `cluster_match=true` (true peer pair); slate when cross-cluster.
+
+**First production run results (30 stores)**:
+- **A1** anchors (6 stores): Junction, Mama Ngina, Moi Ave, Sarit, Village Market, Yaya — ASP 4,484 · basket 2.1u · skews M/L · 80% tops.
+- **B1** mid-9 stores: Capital Centre, City Mall, Eldoret, Garden City, Kisumu, MSA Digo, Nakuru, Signature Mall, TRM — ASP 4,426 · basket 2.0u.
+- **B2** mid-7 stores: Oasis Mall, Acacia, Hub, Imaara, Kigali Heights, T-Mall, Two Rivers — ASP 4,629 · basket 2.2u.
+- **B3** small (2 stores): Galleria, Runda — ASP 4,402.
+- **C1** lower-tier (6 stores): Greenspan, Kileleshwa, Meru, Safari Sarit, Zoya Sarit, POS - 67096608987 — ASP 3,381 · basket 2.5u (notably different basket pattern).
+
+**Insight surfaced**: on first sight, ~15 of the current IBT suggestions are C1→A1 transfers (cross-tier). Phase 2 with cluster-aware comparison will likely flag many of these as false positives — a Meru store isn't underperforming compared to Junction; it's underperforming compared to the chain when the chain average is dominated by anchors. Exactly the bug the design was meant to fix.
+
 ### Recent (Feb 2026 — Iter 62)
 **Daily Replenishment workflow — moved to its own page + 7 new features**:
 - **New page `/replenishments`** (sidebar between Allocations and Pricing). Removed "Daily Replenishment" tab from /exports. Role access added to both frontend `permissions.js` and backend `auth.py` (admin/exec/analyst/store_manager/owner).

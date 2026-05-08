@@ -112,7 +112,7 @@ _VIEWER = ["overview", "locations", "footfall", "customers", "customer-details",
 _STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"]
 _ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"]
 _EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
-_ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback"]
+_ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"]
 ROLE_PAGES = {
     "viewer": _VIEWER,
     "store_manager": _STORE_MANAGER,

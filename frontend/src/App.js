@@ -30,6 +30,7 @@ const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
 const Allocations = React.lazy(() => import("@/pages/Allocations"));
 const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
+const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
 
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
@@ -109,6 +110,7 @@ function App() {
               <Route path="/admin/users" element={<ProtectedShell adminOnly pageId="admin-users"><Users /></ProtectedShell>} />
               <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
               <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />
+              <Route path="/admin/store-clusters" element={<ProtectedShell adminOnly pageId="admin-store-clusters"><StoreClusters /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </FiltersProvider>

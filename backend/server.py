@@ -2397,6 +2397,23 @@ async def analytics_ibt_suggestions(
                 s["days_lapsed"] = 0
     except Exception:
         pass
+    # Phase 1 cluster enrichment — annotate each row with the FROM and TO
+    # store's peer-cluster id (e.g. "A2"). Surface-only — IBT logic still
+    # uses the chain-wide average. Failure is non-fatal.
+    try:
+        from jobs.cluster_stores import get_current_clusters
+        cluster_doc = await get_current_clusters(db)
+        bs = cluster_doc.get("by_store") or {}
+        for s in final:
+            f = bs.get(s.get("from_store")) or {}
+            t = bs.get(s.get("to_store")) or {}
+            s["from_cluster_id"] = f.get("cluster_id")
+            s["to_cluster_id"] = t.get("cluster_id")
+            s["cluster_match"] = bool(
+                f.get("cluster_id") and f.get("cluster_id") == t.get("cluster_id")
+            )
+    except Exception:
+        pass
     return final
 
 
@@ -2567,6 +2584,19 @@ async def analytics_ibt_warehouse_to_store(
             else:
                 s["first_seen_at"] = None
                 s["days_lapsed"] = 0
+    except Exception:
+        pass
+    # Phase 1 cluster enrichment — to_cluster_id only (FROM is always the
+    # warehouse which doesn't carry a cluster).
+    try:
+        from jobs.cluster_stores import get_current_clusters
+        cluster_doc = await get_current_clusters(db)
+        bs = cluster_doc.get("by_store") or {}
+        for s in final_wh:
+            t = bs.get(s.get("to_store")) or {}
+            s["to_cluster_id"] = t.get("cluster_id")
+            s["from_cluster_id"] = None
+            s["cluster_match"] = False
     except Exception:
         pass
     return final_wh
@@ -6727,6 +6757,56 @@ async def set_replenishment_config(
         upsert=True,
     )
     return {"ok": True, "owners": cleaned}
+
+
+# ───── Store peer-clustering (Phase 1 — surface only, no IBT logic change) ─────
+@admin_router.get("/store-clusters")
+async def admin_get_store_clusters(_: User = Depends(require_admin)):
+    """Return the latest persisted cluster run with per-store cluster_id +
+    centroid descriptions. Cheap — one indexed find."""
+    from jobs.cluster_stores import get_current_clusters
+    return await get_current_clusters(db)
+
+
+@admin_router.post("/store-clusters/recluster")
+async def admin_recluster_stores(
+    use_year: bool = False,
+    _: User = Depends(require_admin),
+):
+    """Trigger a fresh cluster run.
+
+    Phase 1 default: pull 90 days of orders (already in upstream cache,
+    near-instant) and use that same window for both behavioural features
+    AND tier ranking. This is a deliberate simplification — the design
+    spec calls for 12-month tier ranking, but Phase 1 is surface-only
+    (no IBT logic change yet) and 90-day revenue is a reasonable tier
+    proxy for visualisation.
+
+    Pass `?use_year=true` to additionally pull 365 days for tier
+    ranking (slower; falls back to 90-day if the upstream times out).
+    """
+    from jobs.cluster_stores import run_clustering
+    today = date.today()
+    df_90 = (today - timedelta(days=90)).isoformat()
+    dt = today.isoformat()
+    orders_90d = await _orders_for_window(df_90, dt, country=None)
+    orders_for_tier = orders_90d
+    tier_window = "90d"
+    if use_year:
+        df_365 = (today - timedelta(days=365)).isoformat()
+        try:
+            orders_for_tier = await asyncio.wait_for(
+                _orders_for_window(df_365, dt, country=None),
+                timeout=40.0,
+            )
+            tier_window = "365d"
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning("[cluster_stores] 12-month pull failed (%s) — using 90-day for tier", e)
+            orders_for_tier = orders_90d
+            tier_window = "90d_fallback"
+    result = await run_clustering(orders_90d, orders_for_tier, db=db, persist=True)
+    result["tier_window"] = tier_window
+    return result
 
 
 @admin_router.post("/refresh-bins")
