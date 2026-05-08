@@ -65,6 +65,14 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 66)
+- **Friendlier "upstream slow" UX on Overview**:
+  - Banner copy rewritten: *"KPIs are temporarily slow to load. Auto-refreshing in the background — you don't need to do anything."* — replaces the old jargon (`Upstream /kpis circuit-breaker OPEN — failing fast, served from stale`).
+  - Tech detail preserved on hover (`title` attribute) for support staff.
+  - Small animated spinner icon next to the message instead of the scary `⚠️` emoji.
+  - **Hard-error auto-retry**: when the `/kpis` fetch outright fails (5xx with no stale fallback), the new poll in `useKpis.js` retries every 20 s in the background until it succeeds. Previously the user had to manually reload.
+  - Stale banner unchanged — already had the friendly copy + 30 s upstream-recovery poll.
+
 ### Recent (Feb 2026 — Iter 65)
 - **Stock-to-Sales · by Subcategory duplicated to Locations page**: extracted the inline block from `Products.jsx` into a reusable `StockToSalesBySubcategory` component (self-fetches `/analytics/stock-to-sales-by-subcat`, honours global filters, internal Flat/Grouped toggle). Dropped onto `Locations.jsx` below the Monthly Sales Target Tracker so location-focused users can see merchandise-mix imbalance without leaving the Locations view. The Products page still has the original block (single source of truth retained on /products).
 

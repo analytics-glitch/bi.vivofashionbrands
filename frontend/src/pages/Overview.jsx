@@ -309,7 +309,18 @@ const Overview = () => {
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
-  const degraded = kpisError ? `Upstream KPIs unavailable (${kpisError}). Other sections still rendered below.` : null;
+  // Two upstream-degraded states to surface to users:
+  //   1. Hard error (kpisError set): the /kpis call failed and no
+  //      cached value was returned. We auto-retry in the background.
+  //   2. Soft stale (kpis.stale === true): backend served a cached
+  //      value because upstream is slow; auto-refresh polls upstream.
+  // In both cases we now use the same friendly copy — the technical
+  // text ("circuit-breaker OPEN", "/kpis", etc.) is hidden from end
+  // users and surfaced only via the title attribute for support staff.
+  const degradedMessage = kpisError
+    ? "KPIs are temporarily slow to load. Auto-refreshing in the background — you don't need to do anything."
+    : null;
+  const degradedTitle = kpisError ? `Tech detail (for support): ${kpisError}` : "";
 
   const kpis = useMemo(() => {
     if (!rawKpis) return null;
@@ -637,20 +648,29 @@ const Overview = () => {
 
       {(loading || kpisLoading) && <Loading label="Aggregating group KPIs…" />}
       {error && <ErrorBox message={error} />}
-      {degraded && (
+      {degradedMessage && (
         <div
-          className="rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900"
+          className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2"
           data-testid="degraded-banner"
+          title={degradedTitle}
         >
-          ⚠️ {degraded}
+          <svg className="animate-spin h-3.5 w-3.5 text-amber-700" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
+          </svg>
+          <span>{degradedMessage}</span>
         </div>
       )}
-      {kpis?.stale && (
+      {!degradedMessage && kpis?.stale && (
         <div
-          className="rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900"
+          className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2"
           data-testid="stale-banner"
         >
-          ⚠️ Upstream KPI service is slow right now — showing last known values from {Math.round((kpis.stale_age_sec || 0) / 60) || "&lt;1"} min ago. Auto-refreshes when upstream recovers.
+          <svg className="animate-spin h-3.5 w-3.5 text-amber-700" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
+          </svg>
+          <span>
+            Upstream KPI service is slow right now — showing values from {Math.max(1, Math.round((kpis.stale_age_sec || 0) / 60))} min ago. Auto-refreshes when upstream recovers.
+          </span>
         </div>
       )}
 

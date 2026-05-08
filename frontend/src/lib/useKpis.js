@@ -147,6 +147,39 @@ export function useKpis({ compare = false } = {}) {
     compare,
   ]);
 
+  // Auto-retry when the fetch outright FAILED (hard 5xx — distinct from
+  // the `stale=true` soft-fallback below). Without this the user has to
+  // reload to recover when the upstream circuit-breaker opens. We re-try
+  // every 20 s until it succeeds, then stop.
+  useEffect(() => {
+    if (!error || loading) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        invalidateKpis();
+        const params = buildKpiParams(applied);
+        const calls = [fetchKpis(params)];
+        if (compare) {
+          const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo);
+          calls.push(prev ? fetchKpis({ ...params, ...prev }) : Promise.resolve(null));
+        }
+        const [curr, prev] = await Promise.all(calls);
+        if (cancelled || !curr) return;
+        setKpis(curr);
+        setPrevKpis(prev || null);
+        setError(null);  // banner clears on next render
+      } catch {
+        // Still down — silent retry on next tick.
+      }
+    };
+    const id = setInterval(tick, 20_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, loading, applied.dateFrom, applied.dateTo,
+      JSON.stringify(applied.countries), JSON.stringify(applied.channels),
+      applied.compareMode, compare]);
+
   // Auto-recovery poll — when the backend is currently serving stale
   // values (`stale === true` flag on the /kpis payload), we silently
   // re-fetch every 30 s in the background. The fresh fetch invalidates
