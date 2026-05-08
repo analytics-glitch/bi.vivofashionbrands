@@ -290,6 +290,108 @@ def make_router(get_current_user, require_manager, db, audit_fn, bi_get):
         )
         return result
 
+    @router.get("/cohorts/customers")
+    async def cohort_customers(
+        cohort: str,
+        bucket: Optional[str] = None,
+        limit: int = 200,
+        _: Any = Depends(require_manager),
+    ):
+        """List the actual customers behind a cohort cell.
+
+        `cohort` — YYYY-MM of acquisition month.
+        `bucket` (optional) — filter to one retention slice:
+          - active_180d   → last_purchase within 180d of today
+          - retained_m1 / m3 / m6 / m12 → last_purchase >= cohort + N months
+          - vip / loyal / promising / at_risk / churned / new → RFM tier filter
+        """
+        rows = await db.customer_cache.find(
+            {"first_purchase_date": {"$regex": f"^{re.escape(cohort)}-"}},
+            {"_id": 0},
+        ).to_list(10000)
+
+        now_dt = now_utc()
+        cohort_dt = _parse_date(cohort + "-01") or now_dt
+
+        filtered: List[Dict[str, Any]] = []
+        for r in rows:
+            last = _parse_date(r.get("last_purchase_date"))
+            tier = r.get("rfm_tier") or "new"
+            if bucket:
+                if bucket == "active_180d":
+                    if not last or (now_dt - last).days > 180:
+                        continue
+                elif bucket.startswith("retained_m"):
+                    n = int(bucket.split("_m", 1)[1])
+                    if not last or (last - cohort_dt).days < n * 30:
+                        continue
+                elif bucket in {"vip", "loyal", "promising", "at_risk", "churned", "new"}:
+                    if tier != bucket:
+                        continue
+            filtered.append({
+                "customer_id": r.get("customer_id"),
+                "customer_name": r.get("customer_name"),
+                "city": r.get("city"),
+                "rfm_tier": tier,
+                "total_sales": float(r.get("total_sales") or 0),
+                "total_orders": int(r.get("total_orders") or 0),
+                "last_purchase_date": r.get("last_purchase_date"),
+                "avg_basket": float(r.get("avg_basket") or 0),
+            })
+        filtered.sort(key=lambda c: -c["total_sales"])
+        return {
+            "cohort": cohort,
+            "bucket": bucket,
+            "count": len(filtered),
+            "customers": filtered[:limit],
+        }
+
+    @router.post("/cohorts/bulk-task")
+    async def cohort_bulk_task(payload: Dict[str, Any] = Body(...), user: Any = Depends(require_manager)):
+        """Create one follow-up task per customer in a cohort+bucket slice.
+
+        Body: {cohort, bucket?, title, notes?, due_date?, assignee_user_id?}
+        """
+        cohort = payload.get("cohort")
+        if not cohort:
+            raise HTTPException(status_code=400, detail="cohort required")
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title required")
+
+        resp = await cohort_customers(cohort, payload.get("bucket"), limit=500)  # type: ignore[arg-type]
+        customers = resp["customers"]
+
+        assignee_id = payload.get("assignee_user_id") or user.user_id
+        assignee_name = payload.get("assignee_name") or user.name
+        due = payload.get("due_date")
+        notes_base = payload.get("notes") or f"Bulk task for {cohort} cohort" + (f" · bucket={payload.get('bucket')}" if payload.get("bucket") else "")
+
+        created = 0
+        for c in customers:
+            doc = {
+                "task_id": _new_id(),
+                "customer_id": c["customer_id"],
+                "customer_name": c.get("customer_name"),
+                "assignee_user_id": assignee_id,
+                "assignee_name": assignee_name,
+                "title": title,
+                "due_date": due,
+                "notes": notes_base,
+                "completed": False,
+                "completed_at": None,
+                "created_at": iso(now_utc()),
+                "auto_generated": True,
+                "auto_theme": "cohort_bulk",
+                "cohort": cohort,
+                "cohort_bucket": payload.get("bucket"),
+            }
+            await db.customer_tasks.insert_one(dict(doc))
+            created += 1
+
+        await audit_fn(user, "cohort.bulk_task", "cohort", cohort, None)
+        return {"created": created, "cohort": cohort, "bucket": payload.get("bucket"), "title": title}
+
     # --------------------------------------------------------------------- #
     # 2. LTV forecast                                                       #
     # --------------------------------------------------------------------- #

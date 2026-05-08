@@ -1,0 +1,54 @@
+{
+  "summary": "Iter9 — verified 3 features end-to-end: (1) Dashboard walk-ins removal, (2) Cohort drill-down drawer + bulk-task dialog, (3) Social platforms card with Instagram/X/TikTok/Snapchat connect/disconnect flow. Backend 12/12 pytest green; frontend Playwright run for all required selectors green; round-tripped a real connect/disconnect against the live API.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "InsightsTabs cohorts tab", "issues": ["Recharts emits 'width(-1) height(-1)' warnings on first paint before tab becomes visible (tier-flow-chart inside hidden tab). Cosmetic only — chart renders correctly once Cohorts tab is visible."]},
+      {"screen": "Bulk-task dialog & Platform connect dialog", "issues": ["DialogContent missing aria-describedby — a11y warning surfaced in console. Add a DialogDescription to silence (low priority)."]}
+    ]
+  },
+  "verified_acceptance_criteria": [
+    "Dashboard: data-testid='walkins-card' is NOT in the DOM. Regression: call-list + follow-ups (tasks-empty/tasks-list) still render. PASS.",
+    "Cohorts: 9 cohort-row-{YYYY-MM} rows render; cohort-open-{cohort} and cohort-cell-{cohort}-m1|m3|m6|m12 are buttons; clicking either opens the slide-in drawer (cohort-drill). PASS.",
+    "Drill drawer: drill-close, drill-filter-vip|loyal|at_risk|churned|all and drill-customers all present and clickable. PASS.",
+    "Bulk-task: drill-bulk-task opens dialog with bulk-task-title + bulk-task-due + bulk-task-submit. Submit fired POST /api/insights/cohorts/bulk-task and the sonner toast read 'Created 1 follow-up'. PASS.",
+    "Social tab: data-testid='social-platforms-card' renders below FacebookConnectCard with H3 'Connect Instagram, X, TikTok, Snapchat' and a 4-tile grid (social-platforms-grid) — instagram/x/tiktok/snapchat each with a Connect button (platform-connect-{platform}). PASS.",
+    "Connect dialog: clicking platform-connect-instagram opens dialog with platform-token-input + platform-handle-input + platform-connect-submit. Submitting persists the token (POST /api/social/platforms/instagram/connect 200), the tile flips to 'Connected' badge and shows platform-disconnect-instagram trash button. Disconnect (DELETE) restores Connect button. PASS.",
+    "Backend GET /api/insights/cohorts/customers — default returns {cohort,count,customers[]}; ?bucket=vip filters all rows to rfm_tier=='vip'; ?bucket=retained_m6 returns 200 for 2023-01. PASS.",
+    "Backend POST /api/insights/cohorts/bulk-task — manager 200 with {created,cohort,bucket,title}; associate 403; missing title 422. PASS.",
+    "Backend GET /api/social/platforms/status — manager returns 4 platforms with platform/label/scopes/docs_url/token_hint/connected fields; associate 403. PASS.",
+    "Backend POST /api/social/platforms/{p}/connect — unknown platform 404; missing access_token 422; valid token persists & GET status reflects connected=true. PASS.",
+    "Backend POST /api/social/platforms/{p}/sync — 200 with status='pending_implementation' has_token=true when connected; 400 when not connected. PASS.",
+    "Backend DELETE /api/social/platforms/{p} — disconnects, status flips back to connected=false. PASS."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iter9.py",
+    "/app/test_reports/pytest/iter9_results.xml"
+  ],
+  "action_items": [
+    "(Optional, low priority) Add a DialogDescription to bulk-task and platform-connect dialogs to silence aria-describedby a11y warning.",
+    "(Optional, cosmetic) Suppress Recharts width/height warning by guarding the BarChart render until the Cohorts tab is in the DOM, or use ResponsiveContainer minWidth/minHeight."
+  ],
+  "critical_code_review_comments": [
+    "InsightsTabs.jsx is now ~558 lines — still readable but approaching the 700-line guideline. Consider extracting CohortsTab and OperationsTab into separate files in the next refactor.",
+    "ManagerDashboard.jsx contains SocialPlatformsCard + PLATFORM_STYLE map + connect/disconnect logic inline; works fine but a small SocialPlatforms.jsx module would improve testability.",
+    "openDrill() in CohortsTab triggers an extra GET /cohorts/customers each time the user changes a filter — correct but no caching. For very large cohorts (e.g. 2025-05 vip) consider memoizing or showing a spinner overlay instead of full loading state to avoid flicker.",
+    "runBulkTask() does not optimistic-update or close the drawer after success. UX nicety: refresh /dashboard/me task counters or close drawer to confirm the action.",
+    "Social platform Disconnect button has no confirmation dialog — accidental click immediately deletes the token. Recommend a small confirm() or AlertDialog wrapper."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter9.py (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100%"},
+  "test_credentials": "Manager session: test_session_vivo_mgr_1778250692444; Associate session: test_session_vivo_assoc_1778250692444 (set via session_token cookie or Authorization: Bearer).",
+  "seed_data_creation": "Created TEST_iter9 follow-up tasks (1 row) via the bulk-task endpoint for cohort 2025-05 VIP slice, and TEST_token_iter9 social token for tiktok (cleaned up via disconnect). Instagram TEST connect was also cleaned up after verification.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter9 verified the 3 review-request features (walk-ins removal, cohort drill-down + bulk-task, social platforms card with 4 tiles + connect/disconnect flow). All backend endpoints pass; all required data-testids render. Recharts width/height warnings and DialogDescription a11y warnings are pre-existing cosmetic and not blocking.",
+  "rca of the issue": "N/A — no issues found."
+}

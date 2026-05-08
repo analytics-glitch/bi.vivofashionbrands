@@ -3,11 +3,14 @@ import { api, formatKES, formatNumber, formatDate } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
 } from "recharts";
-import { Trophy, Repeat, Cake, Sparkles, ClipboardList, Flame } from "lucide-react";
+import { Trophy, Repeat, Cake, Sparkles, ClipboardList, Flame, X } from "lucide-react";
 import { RfmBadge } from "@/components/RfmBadge";
 import { Link } from "react-router-dom";
 
@@ -23,6 +26,10 @@ export function CohortsTab() {
   const [byChannel, setByChannel] = useState(null);
   const [triangle, setTriangle] = useState(null);
   const [triBusy, setTriBusy] = useState(false);
+  const [drill, setDrill] = useState(null); // { cohort, bucket, customers, count, loading }
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkTitle, setBulkTitle] = useState("");
+  const [bulkDue, setBulkDue] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -51,6 +58,40 @@ export function CohortsTab() {
       toast.error(e?.response?.data?.detail || "Could not compute");
     } finally {
       setTriBusy(false);
+    }
+  };
+
+  const openDrill = async (cohort, bucket = null, bucketLabel = null) => {
+    setDrill({ cohort, bucket, bucketLabel, customers: [], count: 0, loading: true });
+    try {
+      const params = { cohort };
+      if (bucket) params.bucket = bucket;
+      const r = await api.get("/insights/cohorts/customers", { params });
+      setDrill({ cohort, bucket, bucketLabel, customers: r.data.customers, count: r.data.count, loading: false });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Drill-down failed");
+      setDrill(null);
+    }
+  };
+
+  const runBulkTask = async () => {
+    if (!drill || !bulkTitle.trim()) {
+      toast.error("Title required");
+      return;
+    }
+    try {
+      const r = await api.post("/insights/cohorts/bulk-task", {
+        cohort: drill.cohort,
+        bucket: drill.bucket,
+        title: bulkTitle.trim(),
+        due_date: bulkDue || null,
+      });
+      toast.success(`Created ${r.data.created} follow-up${r.data.created === 1 ? "" : "s"}`);
+      setBulkOpen(false);
+      setBulkTitle("");
+      setBulkDue("");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Bulk create failed");
     }
   };
 
@@ -101,17 +142,22 @@ export function CohortsTab() {
               </thead>
               <tbody>
                 {(retention.cohorts || []).map((c) => (
-                  <tr key={c.cohort} className="border-t border-[var(--vivo-border)]">
-                    <td className="py-2 pr-4 font-medium">{c.cohort}</td>
+                  <tr key={c.cohort} className="border-t border-[var(--vivo-border)] hover:bg-[var(--vivo-bg)] transition-colors" data-testid={`cohort-row-${c.cohort}`}>
+                    <td className="py-2 pr-4 font-medium">
+                      <button onClick={() => openDrill(c.cohort, null, "all customers")} className="hover:text-[var(--vivo-navy)] hover:underline" data-testid={`cohort-open-${c.cohort}`}>{c.cohort}</button>
+                    </td>
                     <td className="font-mono-num text-[var(--vivo-muted)]">{c.size}</td>
                     {["m1", "m3", "m6", "m12"].map((k) => (
                       <td key={k} className="text-center px-1">
-                        <span
-                          className="inline-block min-w-[44px] py-1 px-2 rounded-sm text-xs font-mono-num"
+                        <button
+                          onClick={() => openDrill(c.cohort, `retained_${k}`, `retained at ${k.toUpperCase()}`)}
+                          className="inline-block min-w-[44px] py-1 px-2 rounded-sm text-xs font-mono-num hover:ring-2 hover:ring-[var(--vivo-gold)] transition-shadow"
                           style={{ backgroundColor: RETENTION_GRAD(c.retention[k]), color: c.retention[k] > 50 ? "#fff" : "var(--vivo-text)" }}
+                          data-testid={`cohort-cell-${c.cohort}-${k}`}
+                          title={`Drill down into M${k.slice(1)} retained`}
                         >
                           {c.retention[k].toFixed(0)}%
-                        </span>
+                        </button>
                       </td>
                     ))}
                     <td className="text-right font-mono-num">{formatKES(c.avg_ltv_kes)}</td>
@@ -202,6 +248,101 @@ export function CohortsTab() {
           </div>
         </Card>
       )}
+
+      {/* Drill-down drawer */}
+      {drill && (
+        <div className="fixed inset-0 z-50 flex" data-testid="cohort-drill">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setDrill(null)} />
+          <div className="relative ml-auto w-full max-w-2xl bg-white h-full overflow-y-auto shadow-2xl">
+            <div className="sticky top-0 bg-white border-b border-[var(--vivo-border)] px-6 py-4 flex items-start justify-between">
+              <div>
+                <div className="eyebrow">Cohort · {drill.cohort}</div>
+                <h3 className="font-display text-2xl mt-1">{drill.count} customers</h3>
+                <p className="text-sm text-[var(--vivo-muted)] mt-0.5">{drill.bucketLabel || "All customers in this cohort"}</p>
+              </div>
+              <button onClick={() => setDrill(null)} className="p-2 hover:bg-[var(--vivo-bg)] rounded-sm" data-testid="drill-close">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-4 flex gap-2 flex-wrap border-b border-[var(--vivo-border)]">
+              <Button
+                onClick={() => setBulkOpen(true)}
+                className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white h-10"
+                disabled={drill.loading || drill.count === 0}
+                data-testid="drill-bulk-task"
+              >
+                <ClipboardList className="mr-2 h-4 w-4" /> Create follow-up for all
+              </Button>
+              {["vip", "loyal", "at_risk", "churned"].map((b) => (
+                <Button
+                  key={b}
+                  variant="outline"
+                  className="rounded-sm h-10"
+                  onClick={() => openDrill(drill.cohort, b, `tier: ${b}`)}
+                  data-testid={`drill-filter-${b}`}
+                >
+                  {b}
+                </Button>
+              ))}
+              <Button variant="outline" className="rounded-sm h-10" onClick={() => openDrill(drill.cohort, null, "all customers")} data-testid="drill-filter-all">
+                All
+              </Button>
+            </div>
+            {drill.loading ? (
+              <div className="p-6 text-sm text-[var(--vivo-muted)]">Loading…</div>
+            ) : drill.customers.length === 0 ? (
+              <div className="p-6 text-sm text-[var(--vivo-muted)]">No customers match this slice.</div>
+            ) : (
+              <ul className="divide-y divide-[var(--vivo-border)]" data-testid="drill-customers">
+                {drill.customers.map((c) => (
+                  <li key={c.customer_id} className="px-6 py-3 flex items-center justify-between gap-3 hover:bg-[var(--vivo-bg)]">
+                    <Link to={`/customers/${c.customer_id}`} className="flex-1 min-w-0" onClick={() => setDrill(null)}>
+                      <div className="font-medium truncate flex items-center gap-2">{c.customer_name || c.customer_id} <RfmBadge tier={c.rfm_tier} /></div>
+                      <div className="text-xs text-[var(--vivo-muted)] mt-0.5">{c.city || "—"} · {c.total_orders} orders · last {formatDate(c.last_purchase_date)}</div>
+                    </Link>
+                    <div className="font-mono-num text-sm shrink-0">{formatKES(c.total_sales)}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Bulk task dialog */}
+      <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display">Create follow-up for {drill?.count || 0} customer{drill?.count === 1 ? "" : "s"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Task title</Label>
+              <Input
+                value={bulkTitle}
+                onChange={(e) => setBulkTitle(e.target.value)}
+                placeholder={`Win-back call — ${drill?.cohort} cohort`}
+                className="h-12 mt-1 rounded-sm"
+                data-testid="bulk-task-title"
+              />
+            </div>
+            <div>
+              <Label>Due date (optional)</Label>
+              <Input type="date" value={bulkDue} onChange={(e) => setBulkDue(e.target.value)} className="h-12 mt-1 rounded-sm" data-testid="bulk-task-due" />
+            </div>
+            <p className="text-xs text-[var(--vivo-muted)]">
+              One task per customer will be created and assigned to you. Scope: cohort <strong>{drill?.cohort}</strong>
+              {drill?.bucketLabel ? <> · <strong>{drill.bucketLabel}</strong></> : null}.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBulkOpen(false)}>Cancel</Button>
+            <Button onClick={runBulkTask} className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white" data-testid="bulk-task-submit">
+              Create {drill?.count || 0} task{drill?.count === 1 ? "" : "s"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

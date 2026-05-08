@@ -4,7 +4,9 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Facebook, Link as LinkIcon, RefreshCw, Trash2, ExternalLink } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Sparkles, Facebook, Link as LinkIcon, RefreshCw, Trash2, ExternalLink, Instagram, Twitter, Music2, Ghost } from "lucide-react";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
 import { CohortsTab, OperationsTab } from "./InsightsTabs";
@@ -407,6 +409,7 @@ function SocialTab({ period }) {
   return (
     <div className="space-y-6">
       <FacebookConnectCard />
+      <SocialPlatformsCard />
 
       {/* Quality auto-tasks strip */}
       <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[var(--vivo-gold)]" data-testid="quality-strip">
@@ -735,3 +738,177 @@ function FacebookConnectCard() {
     </Card>
   );
 }
+
+const PLATFORM_STYLE = {
+  instagram: { Icon: Instagram, color: "#E1306C", brand: "Instagram" },
+  x: { Icon: Twitter, color: "#0F172A", brand: "X (Twitter)" },
+  tiktok: { Icon: Music2, color: "#010101", brand: "TikTok" },
+  snapchat: { Icon: Ghost, color: "#FFFC00", brand: "Snapchat", textColor: "#0F172A" },
+};
+
+function SocialPlatformsCard() {
+  const [platforms, setPlatforms] = React.useState([]);
+  const [active, setActive] = React.useState(null); // { platform, label, token_hint, docs_url }
+  const [token, setToken] = React.useState("");
+  const [handle, setHandle] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  const refresh = async () => {
+    try {
+      const r = await api.get("/social/platforms/status");
+      setPlatforms(r.data || []);
+    } catch { /* manager-only */ }
+  };
+
+  React.useEffect(() => { refresh(); }, []);
+
+  const connect = async () => {
+    if (!active || !token.trim()) {
+      toast.error("Paste a token first");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/social/platforms/${active.platform}/connect`, {
+        access_token: token.trim(),
+        handle: handle.trim(),
+      });
+      toast.success(`${active.label} connected`);
+      setActive(null);
+      setToken("");
+      setHandle("");
+      await refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Connect failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async (platform, label) => {
+    if (!confirm(`Disconnect ${label}? Stored token will be removed.`)) return;
+    try {
+      await api.delete(`/social/platforms/${platform}`);
+      toast.success(`${label} disconnected`);
+      await refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Disconnect failed");
+    }
+  };
+
+  return (
+    <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[var(--vivo-gold)]" data-testid="social-platforms-card">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="eyebrow">More channels</div>
+          <h3 className="font-display text-xl mt-1">Connect Instagram, X, TikTok, Snapchat</h3>
+          <p className="text-sm text-[var(--vivo-muted)] mt-1 max-w-xl">
+            Store your platform tokens now — sync mappers ship next release.
+            Tokens are kept server-side and never rendered back to the UI.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-5" data-testid="social-platforms-grid">
+        {platforms.map((p) => {
+          const meta = PLATFORM_STYLE[p.platform] || { Icon: LinkIcon, color: "var(--vivo-navy)", brand: p.label };
+          const Icon = meta.Icon;
+          return (
+            <div key={p.platform} className="border border-[var(--vivo-border)] bg-white rounded-sm p-4 flex flex-col gap-3" data-testid={`platform-tile-${p.platform}`}>
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-sm flex items-center justify-center shrink-0" style={{ backgroundColor: meta.color, color: meta.textColor || "#fff" }}>
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="font-medium text-sm truncate">{p.label}</div>
+                {p.connected && <Badge variant="secondary" className="rounded-sm ml-auto">Connected</Badge>}
+              </div>
+              {p.connected ? (
+                <div className="text-xs text-[var(--vivo-muted)]">
+                  {p.handle ? <div className="truncate">@{p.handle.replace(/^@/, "")}</div> : null}
+                  <div>Connected {formatDate(p.connected_at)} by {p.connected_by}</div>
+                </div>
+              ) : (
+                <div className="text-xs text-[var(--vivo-muted)] line-clamp-3">{p.token_hint}</div>
+              )}
+              <div className="flex gap-2 mt-auto">
+                <Button
+                  onClick={() => {
+                    setActive(p);
+                    setToken("");
+                    setHandle(p.handle || "");
+                  }}
+                  variant="outline"
+                  className="rounded-sm h-9 flex-1"
+                  data-testid={`platform-connect-${p.platform}`}
+                >
+                  <LinkIcon className="mr-1.5 h-3.5 w-3.5" /> {p.connected ? "Re-connect" : "Connect"}
+                </Button>
+                {p.connected && (
+                  <button
+                    onClick={() => disconnect(p.platform, p.label)}
+                    className="text-[var(--vivo-muted)] hover:text-red-600 p-2"
+                    data-testid={`platform-disconnect-${p.platform}`}
+                    aria-label="Disconnect"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Dialog open={!!active} onOpenChange={(v) => { if (!v) { setActive(null); setToken(""); setHandle(""); } }}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display">Connect {active?.label}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-xs text-[var(--vivo-muted)]">{active?.token_hint}</div>
+            <div>
+              <a href={active?.docs_url} target="_blank" rel="noreferrer" className="text-[var(--vivo-navy)] text-sm hover:underline inline-flex items-center gap-1">
+                Docs <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+            <div>
+              <label className="text-xs text-[var(--vivo-muted)]">Access token</label>
+              <Input
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="Paste long-lived access token"
+                className="h-11 mt-1 rounded-sm font-mono text-xs"
+                data-testid="platform-token-input"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--vivo-muted)]">Handle (optional)</label>
+              <Input
+                value={handle}
+                onChange={(e) => setHandle(e.target.value)}
+                placeholder="@vivofashion"
+                className="h-11 mt-1 rounded-sm"
+                data-testid="platform-handle-input"
+              />
+            </div>
+            <p className="text-xs text-[var(--vivo-muted)]">
+              Scopes: <code className="text-[10px] bg-zinc-100 px-1 rounded">{active?.scopes}</code>
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setActive(null)}>Cancel</Button>
+            <Button
+              onClick={connect}
+              disabled={busy || !token.trim()}
+              className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white"
+              data-testid="platform-connect-submit"
+            >
+              {busy ? "Saving…" : "Save token"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+

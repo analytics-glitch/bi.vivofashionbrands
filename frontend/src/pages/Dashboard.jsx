@@ -3,11 +3,9 @@ import { api, formatDate, formatKES, formatNumber } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, CheckCircle2, Search, Calendar, AlertTriangle, Sparkles, Cake, UserPlus, CheckCheck } from "lucide-react";
+import { ArrowRight, CheckCircle2, Search, Calendar, AlertTriangle, Sparkles, Cake } from "lucide-react";
 import { RfmBadge } from "@/components/RfmBadge";
-import { toast } from "sonner";
 
 function KPI({ label, value, sub, testid }) {
   return (
@@ -87,8 +85,6 @@ export default function Dashboard() {
         <KPI label="Open follow-ups" value={loading ? "—" : formatNumber(me?.open_tasks || 0)} sub={me?.overdue_tasks ? `${me.overdue_tasks} overdue` : "All on track"} testid="kpi-tasks" />
         <KPI label="Recent notes" value={loading ? "—" : formatNumber(me?.recent_notes?.length || 0)} testid="kpi-notes" />
       </div>
-
-      <WalkInsCard />
 
       {/* Daily call list */}
       <div className="mt-10">
@@ -206,104 +202,3 @@ export default function Dashboard() {
   );
 }
 
-
-function WalkInsCard() {
-  const [list, setList] = useState([]);
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-
-  const reload = async () => {
-    try {
-      const r = await api.get("/insights/walkins");
-      setList(r.data || []);
-    } catch { /* ignore */ }
-  };
-  useEffect(() => { reload(); }, []);
-
-  const search = async (val) => {
-    setQ(val);
-    if (val.length < 2) { setResults([]); return; }
-    setSearching(true);
-    try {
-      const r = await api.get("/bi/customer-search", { params: { q: val } });
-      setResults((r.data || []).slice(0, 5));
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const checkin = async (c) => {
-    try {
-      await api.post("/insights/walkins", { customer_id: c.customer_id, customer_name: c.customer_name });
-      toast.success(`${c.customer_name} checked in`);
-      setQ(""); setResults([]);
-      reload();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Check-in failed");
-    }
-  };
-
-  const serve = async (id) => {
-    await api.post(`/insights/walkins/${id}/serve`);
-    toast.success("Marked served");
-    reload();
-  };
-
-  return (
-    <Card className="vivo-card mt-8 p-6 rounded-xl border-l-4 border-l-[var(--vivo-orange,#ED7C2A)]" data-testid="walkins-card">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <div className="eyebrow flex items-center gap-2"><UserPlus className="h-3.5 w-3.5" /> Live floor</div>
-          <h2 className="font-display text-2xl mt-1">Walk-ins · today</h2>
-          <p className="text-sm text-[var(--vivo-muted)] mt-1">Check a customer in when they walk through the door — surfaces tier, history and AI script instantly.</p>
-        </div>
-        <div className="relative w-full md:w-80">
-          <Input
-            value={q}
-            onChange={(e) => search(e.target.value)}
-            placeholder="Type a name or phone…"
-            className="h-11 rounded-sm"
-            data-testid="walkin-search"
-          />
-          {results.length > 0 && (
-            <div className="absolute z-20 mt-1 w-full bg-white border border-[var(--vivo-border)] rounded-sm shadow-lg max-h-64 overflow-y-auto">
-              {results.map((c) => (
-                <button
-                  key={c.customer_id}
-                  onClick={() => checkin(c)}
-                  className="w-full text-left px-3 py-2 hover:bg-[var(--vivo-bg)] flex items-center justify-between gap-2"
-                  data-testid={`walkin-pick-${c.customer_id}`}
-                >
-                  <span className="truncate flex items-center gap-2"><RfmBadge tier={c.rfm_tier} /> {c.customer_name}</span>
-                  <span className="text-xs text-[var(--vivo-muted)]">{c.phone || c.email || ""}</span>
-                </button>
-              ))}
-              {searching && <div className="p-2 text-xs text-[var(--vivo-muted)]">Searching…</div>}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="vivo-divider mt-4 mb-4" />
-      {list.length === 0 ? (
-        <div className="text-sm text-[var(--vivo-muted)]">No walk-ins logged yet today.</div>
-      ) : (
-        <ul className="divide-y divide-[var(--vivo-border)]" data-testid="walkins-list">
-          {list.map((w) => (
-            <li key={w.checkin_id} className="py-3 flex items-center justify-between gap-3">
-              <Link to={`/customers/${w.customer_id}`} className="flex-1 min-w-0 hover:text-[var(--vivo-navy)]">
-                <div className="font-medium truncate">{w.customer_name || w.customer_id}</div>
-                <div className="text-xs text-[var(--vivo-muted)]">checked in {new Date(w.checked_in_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} by {w.associate_name}{w.served ? ` · served by ${w.served_by}` : ""}</div>
-              </Link>
-              {w.served ? (
-                <span className="text-xs uppercase tracking-wider text-emerald-700 flex items-center gap-1"><CheckCheck className="h-3.5 w-3.5" /> Served</span>
-              ) : (
-                <Button onClick={() => serve(w.checkin_id)} variant="outline" size="sm" className="rounded-sm" data-testid={`walkin-serve-${w.checkin_id}`}>Mark served</Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}

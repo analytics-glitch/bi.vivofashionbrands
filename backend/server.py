@@ -1168,6 +1168,107 @@ async def facebook_remove_page(page_id: str, request: Request, user: User = Depe
     return {"deleted": res.deleted_count}
 
 
+# ---- Generic social platforms (Instagram, X, TikTok, Snapchat) ---- #
+
+_PLATFORM_META = {
+    "instagram": {
+        "label": "Instagram",
+        "scopes": "instagram_basic, instagram_manage_comments, instagram_manage_insights",
+        "docs_url": "https://developers.facebook.com/docs/instagram-api/getting-started",
+        "token_hint": "Instagram Graph API uses a Facebook Page-linked Business Account. Get a long-lived User Access Token via Graph API Explorer.",
+    },
+    "x": {
+        "label": "X (Twitter)",
+        "scopes": "tweet.read, users.read, offline.access",
+        "docs_url": "https://developer.twitter.com/en/docs/authentication/oauth-2-0",
+        "token_hint": "Create an X Developer app at developer.x.com and paste the OAuth 2.0 Bearer Token here.",
+    },
+    "tiktok": {
+        "label": "TikTok",
+        "scopes": "user.info.basic, video.list, comment.list",
+        "docs_url": "https://developers.tiktok.com/doc/login-kit-web",
+        "token_hint": "Register an app at developers.tiktok.com (TikTok for Business), then paste the long-lived access_token.",
+    },
+    "snapchat": {
+        "label": "Snapchat",
+        "scopes": "snapchat-marketing-api",
+        "docs_url": "https://marketingapi.snapchat.com/docs/",
+        "token_hint": "Requires Snapchat for Business access. Paste an OAuth access token from kit.snapchat.com.",
+    },
+}
+
+
+@api.get("/social/platforms/status")
+async def social_platforms_status(_: User = Depends(require_manager)):
+    """Return connection state for every supported third-party social platform."""
+    out = []
+    for key, meta in _PLATFORM_META.items():
+        stored = await db.social_platform_tokens.find_one({"platform": key}, {"_id": 0, "access_token": 0})
+        out.append({
+            "platform": key,
+            "label": meta["label"],
+            "scopes": meta["scopes"],
+            "docs_url": meta["docs_url"],
+            "token_hint": meta["token_hint"],
+            "connected": bool(stored),
+            "handle": (stored or {}).get("handle"),
+            "connected_at": (stored or {}).get("connected_at"),
+            "connected_by": (stored or {}).get("connected_by"),
+        })
+    return out
+
+
+@api.post("/social/platforms/{platform}/connect")
+async def social_platform_connect(platform: str, payload: Dict[str, str] = Body(...), request: Request = None, user: User = Depends(require_manager)):
+    """Store access token + handle for a social platform. Used downstream by
+    the sync workers we add per-platform (stubs for now — v1 stores tokens)."""
+    if platform not in _PLATFORM_META:
+        raise HTTPException(status_code=404, detail="Unknown platform")
+    token = (payload or {}).get("access_token", "").strip()
+    handle = (payload or {}).get("handle", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="access_token required")
+    doc = {
+        "platform": platform,
+        "access_token": token,
+        "handle": handle or None,
+        "connected_by": user.name,
+        "connected_by_user_id": user.user_id,
+        "connected_at": iso(now_utc()),
+    }
+    await db.social_platform_tokens.update_one({"platform": platform}, {"$set": doc}, upsert=True)
+    await _audit(user, "social.platform.connect", "platform", platform, request)
+    return {"connected": True, "platform": platform, "handle": handle or None}
+
+
+@api.delete("/social/platforms/{platform}")
+async def social_platform_disconnect(platform: str, request: Request, user: User = Depends(require_manager)):
+    if platform not in _PLATFORM_META:
+        raise HTTPException(status_code=404, detail="Unknown platform")
+    res = await db.social_platform_tokens.delete_one({"platform": platform})
+    await _audit(user, "social.platform.disconnect", "platform", platform, request)
+    return {"disconnected": res.deleted_count > 0, "platform": platform}
+
+
+@api.post("/social/platforms/{platform}/sync")
+async def social_platform_sync(platform: str, request: Request, user: User = Depends(require_manager)):
+    """V1 stub — validates the token is stored and returns a not-yet-implemented
+    result. Each platform needs its own Graph/REST mapper into social_feedback
+    (shipping after launch, driven by stakeholder priority)."""
+    if platform not in _PLATFORM_META:
+        raise HTTPException(status_code=404, detail="Unknown platform")
+    stored = await db.social_platform_tokens.find_one({"platform": platform}, {"_id": 0})
+    if not stored:
+        raise HTTPException(status_code=400, detail=f"{platform} not connected yet — call /connect first")
+    await _audit(user, "social.platform.sync", "platform", platform, request)
+    return {
+        "platform": platform,
+        "status": "pending_implementation",
+        "note": f"{_PLATFORM_META[platform]['label']} token is stored. Sync mapper lands in the next release — reach out if you'd like us to prioritise.",
+        "has_token": True,
+    }
+
+
 @api.post("/social/facebook/sync")
 async def facebook_sync(request: Request, payload: Optional[Dict[str, str]] = Body(default=None), user: User = Depends(require_manager)):
     """Pull Vivo Page content from Facebook into our social_posts + social_feedback
