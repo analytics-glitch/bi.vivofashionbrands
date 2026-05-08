@@ -19,13 +19,13 @@ export default function Login() {
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
         />
-        <div className="absolute inset-0 bg-[#1F3864]/40" />
+        <div className="absolute inset-0 bg-[#0F4D31]/55" />
         <div className="absolute bottom-12 left-12 right-12 text-white">
           <div className="eyebrow text-[var(--vivo-gold)] mb-3">VIVO · CLIENTELING</div>
           <h2 className="font-display text-4xl xl:text-5xl leading-tight max-w-lg">
             Tools that turn associates into trusted personal stylists.
           </h2>
-          <p className="mt-6 max-w-md text-white/80">
+          <p className="mt-6 max-w-md text-white/85">
             Customer profiles, follow-ups, lookbooks and WhatsApp messaging — designed
             for the shop floor.
           </p>
@@ -35,7 +35,13 @@ export default function Login() {
       {/* Right: sign-in */}
       <div className="flex items-center justify-center p-8">
         <div className="w-full max-w-md">
-          <div className="eyebrow mb-3">VIVO · FASHION GROUP</div>
+          <div className="flex items-center gap-3 mb-6">
+            <span className="vivo-logo-tile text-2xl" aria-hidden="true">Vivo</span>
+            <div>
+              <div className="font-bold tracking-tight text-[15px]">Vivo Fashion Group</div>
+              <div className="text-[11px] text-[var(--vivo-muted)] uppercase tracking-[0.2em]">Clienteling · East Africa</div>
+            </div>
+          </div>
           <h1 className="font-display text-4xl md:text-5xl tracking-tight">Sign in</h1>
           <div className="gold-rule my-6" />
           <p className="text-[var(--vivo-muted)] mb-10 leading-relaxed">
@@ -46,7 +52,7 @@ export default function Login() {
           <Button
             onClick={handleLogin}
             data-testid="login-google-button"
-            className="w-full h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm text-base font-medium"
+            className="w-full h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-md text-base font-semibold"
           >
             <LogIn className="mr-2 h-4 w-4" />
             Continue with Google

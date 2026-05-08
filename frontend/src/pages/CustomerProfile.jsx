@@ -11,7 +11,9 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X } from "lucide-react";
+import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X, Sparkles, AlertTriangle } from "lucide-react";
+import { RfmBadge } from "@/components/RfmBadge";
+import { useAuth } from "@/contexts/AuthContext";
 
 const FIT_OPTIONS = ["Fitted", "Regular", "Relaxed"];
 const FABRIC_OPTIONS = ["Cotton", "Wool", "Linen", "Silk", "Synthetic", "Denim"];
@@ -30,6 +32,10 @@ export default function CustomerProfile() {
   const [loading, setLoading] = useState(true);
   const [socialHandles, setSocialHandles] = useState([]);
   const [socialFeedback, setSocialFeedback] = useState([]);
+  const [nba, setNba] = useState(null);
+  const [nbaLoading, setNbaLoading] = useState(false);
+  const [forgetOpen, setForgetOpen] = useState(false);
+  const [forgetConfirm, setForgetConfirm] = useState("");
 
   // dialog states
   const [noteOpen, setNoteOpen] = useState(false);
@@ -79,6 +85,7 @@ export default function CustomerProfile() {
 
   useEffect(() => {
     reload();
+    loadNba();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -222,6 +229,37 @@ export default function CustomerProfile() {
           <Stat label="Orders" value={formatNumber(profile.total_orders)} />
           <Stat label="Avg basket" value={formatKES(profile.avg_basket)} />
           <Stat label="Last purchase" value={formatDate(profile.last_purchase_date)} />
+        </div>
+      </Card>
+
+      {/* AI Next-Best-Action */}
+      <Card className="vivo-card mt-6 p-6 rounded-xl border-l-4 border-l-[var(--vivo-gold)]" data-testid="nba-card">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex-1 min-w-[220px]">
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="h-4 w-4 text-[var(--vivo-gold)]" />
+              <div className="eyebrow">AI · Next best action</div>
+              {nba?.urgency && (
+                <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-md font-semibold ${
+                  nba.urgency === "high" ? "bg-red-50 text-red-700 border border-red-200" :
+                  nba.urgency === "medium" ? "bg-amber-50 text-amber-800 border border-amber-200" :
+                  "bg-zinc-50 text-zinc-600 border border-zinc-200"
+                }`}>{nba.urgency}</span>
+              )}
+            </div>
+            <div className="font-display text-xl capitalize">{nbaLoading ? "Thinking…" : (nba?.action || "—")}</div>
+            <p className="text-sm text-[var(--vivo-muted)] mt-1">{nba?.why || (nbaLoading ? "" : "No suggestion yet.")}</p>
+            {nba?.script && (
+              <div className="mt-3 bg-[var(--vivo-bg-soft)] border border-[var(--vivo-border)] p-3 rounded-md text-sm leading-relaxed" data-testid="nba-script">
+                "{nba.script}"
+              </div>
+            )}
+          </div>
+          {nba?.script && (
+            <Button onClick={useNbaScript} className="rounded-md bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white h-11" data-testid="nba-use-script">
+              <MessageCircle className="mr-2 h-4 w-4" /> Use this script
+            </Button>
+          )}
         </div>
       </Card>
 
@@ -503,6 +541,28 @@ export default function CustomerProfile() {
               </ul>
             </Card>
           )}
+
+          {user?.role === "manager" && (
+            <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-red-600 bg-red-50/40" data-testid="forget-danger-zone">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="h-5 w-5 text-red-600" />
+                <h3 className="font-display text-lg text-red-700">Right to be forgotten</h3>
+              </div>
+              <p className="text-sm text-[var(--vivo-muted)] mb-4">
+                Anonymizes all Vivo Studio records for this customer (notes, messages, tasks, lookbooks,
+                preferences, social handles). BI/BigQuery upstream data is not touched —
+                that lives in your warehouse.
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => { setForgetOpen(true); setForgetConfirm(""); }}
+                className="rounded-md border-red-600 text-red-700 hover:bg-red-50"
+                data-testid="forget-customer-button"
+              >
+                Forget this customer…
+              </Button>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -585,6 +645,39 @@ export default function CustomerProfile() {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setMsgOpen(false)}>Cancel</Button>
             <Button onClick={sendMessage} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="msg-send">Send</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Forget customer dialog */}
+      <Dialog open={forgetOpen} onOpenChange={setForgetOpen}>
+        <DialogContent className="rounded-md max-w-md">
+          <DialogHeader><DialogTitle className="font-display text-red-700">Forget this customer?</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm leading-relaxed">
+              This will anonymize all Vivo Studio records for <strong>{profile.customer_name}</strong>.
+              The action is logged in the audit trail and cannot be undone here.
+            </p>
+            <p className="text-sm">
+              Type the customer's full name to confirm:
+            </p>
+            <Input
+              value={forgetConfirm}
+              onChange={(e) => setForgetConfirm(e.target.value)}
+              placeholder={profile.customer_name}
+              className="h-11 rounded-md"
+              data-testid="forget-confirm-input"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setForgetOpen(false)}>Cancel</Button>
+            <Button
+              onClick={forgetCustomer}
+              disabled={forgetConfirm !== profile.customer_name}
+              className="bg-red-600 hover:bg-red-700 text-white rounded-md disabled:opacity-40"
+              data-testid="forget-confirm-button"
+            >
+              Forget customer
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -2,44 +2,49 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Vivo Fashion brand tokens — premium fashion-tech, navy + warm gold + off-white */
+/* Vivo Fashion brand tokens — aligned with bi.vivofashionbrands.com:
+   forest green primary + warm orange accent + cream background */
 :root {
     /* HSL forms used by shadcn tokens */
-    --background: 0 0% 98%;          /* #FAFAFA */
-    --foreground: 220 30% 12%;       /* near-black text */
+    --background: 36 78% 92%;        /* cream #FCEFD9 */
+    --foreground: 220 25% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 220 30% 12%;
+    --card-foreground: 220 25% 12%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 30% 12%;
-    --primary: 218 53% 26%;          /* #1F3864 deep navy */
+    --popover-foreground: 220 25% 12%;
+    --primary: 152 67% 18%;          /* #0F4D31 forest green */
     --primary-foreground: 0 0% 100%;
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 220 30% 12%;
-    --muted: 220 14% 96%;
+    --secondary: 36 65% 96%;
+    --secondary-foreground: 220 25% 12%;
+    --muted: 36 30% 92%;
     --muted-foreground: 220 9% 38%;
-    --accent: 41 47% 60%;            /* #C9A961 warm gold */
+    --accent: 24 84% 55%;            /* #ED7C2A warm orange */
     --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 13% 90%;
-    --input: 220 13% 90%;
-    --ring: 218 53% 26%;
-    --chart-1: 218 53% 26%;
-    --chart-2: 41 47% 60%;
+    --border: 36 32% 84%;
+    --input: 36 32% 84%;
+    --ring: 152 67% 18%;
+    --chart-1: 152 67% 18%;          /* green */
+    --chart-2: 24 84% 55%;           /* orange */
     --chart-3: 200 30% 30%;
-    --chart-4: 25 60% 55%;
-    --chart-5: 160 35% 35%;
-    --radius: 4px;
+    --chart-4: 41 47% 60%;           /* legacy gold */
+    --chart-5: 350 60% 50%;
+    --radius: 12px;
 
-    --vivo-navy: #1F3864;
-    --vivo-navy-700: #162a4a;
-    --vivo-gold: #C9A961;
-    --vivo-gold-700: #b3934d;
-    --vivo-bg: #FAFAFA;
+    /* Brand tokens — variable NAMES preserved for backwards-compat with
+       existing JSX that uses var(--vivo-navy) / var(--vivo-gold). The
+       VALUES below are the new green / orange / cream palette. */
+    --vivo-navy: #0F4D31;            /* primary (was navy) */
+    --vivo-navy-700: #0A3520;        /* primary-deep hover */
+    --vivo-gold: #ED7C2A;            /* accent (was gold) */
+    --vivo-gold-700: #CC6815;        /* accent-deep hover */
+    --vivo-bg: #FCEFD9;              /* cream */
+    --vivo-bg-soft: #FEF7E8;         /* lighter cream surface */
     --vivo-surface: #FFFFFF;
     --vivo-text: #111827;
-    --vivo-muted: #6B7280;
-    --vivo-border: #E5E7EB;
+    --vivo-muted: #6B6760;
+    --vivo-border: #EADBB8;          /* warm beige border */
 }
 
 html, body, #root {
@@ -50,16 +55,15 @@ html, body, #root {
 body {
     margin: 0;
     color: var(--vivo-text);
-    font-family: 'Manrope', -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+    font-family: 'Inter', 'Manrope', -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "ss01", "cv11";
 }
 
 h1, h2, h3, h4, .font-display {
-    font-family: 'Outfit', 'Manrope', sans-serif;
-    letter-spacing: -0.01em;
-    font-weight: 500;
+    font-family: 'Outfit', 'Inter', sans-serif;
+    letter-spacing: -0.015em;
+    font-weight: 600;
 }
 
 .font-mono-num {
@@ -67,35 +71,27 @@ h1, h2, h3, h4, .font-display {
     font-feature-settings: "tnum";
 }
 
-/* Subtle textured accent line under section headings */
 .eyebrow {
     text-transform: uppercase;
     letter-spacing: 0.22em;
     font-size: 11px;
     color: var(--vivo-gold-700);
-    font-weight: 600;
+    font-weight: 700;
 }
 
-/* Side rail / nav active indicator */
 .nav-active {
     color: var(--vivo-navy);
     font-weight: 600;
     border-left: 3px solid var(--vivo-gold);
 }
 
-/* Avoid 'apply border-border' issue by using direct classes */
 @layer base {
-    * {
-        border-color: hsl(var(--border));
-    }
+    * { border-color: hsl(var(--border)); }
     body {
         background-color: hsl(var(--background));
         color: hsl(var(--foreground));
     }
-    button,
-    [role="button"] {
-        cursor: pointer;
-    }
+    button, [role="button"] { cursor: pointer; }
 }
 
 @layer utilities {
@@ -104,27 +100,34 @@ h1, h2, h3, h4, .font-display {
         border: 1px solid var(--vivo-border);
         border-radius: var(--radius);
     }
-    .vivo-divider {
-        height: 1px;
-        background: var(--vivo-border);
-        width: 100%;
-    }
-    .gold-rule {
-        height: 2px;
-        width: 36px;
+    .vivo-divider { height: 1px; background: var(--vivo-border); width: 100%; }
+    .gold-rule { height: 2px; width: 36px; background: var(--vivo-gold); border-radius: 2px; }
+
+    /* Logo tile — orange square w/ white wordmark, like the BI dashboard */
+    .vivo-logo-tile {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         background: var(--vivo-gold);
+        color: white;
+        border-radius: 8px;
+        font-family: 'Outfit', 'Inter', sans-serif;
+        font-weight: 800;
+        font-style: italic;
+        letter-spacing: -0.04em;
+        padding: 0.25rem 0.6rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
     }
+
+    /* RFM tier badge styles */
+    .tier-vip       { background: #fff7e6; color: #b3641b; border: 1px solid #f3d8a8; }
+    .tier-loyal     { background: #e8f3ec; color: #0f4d31; border: 1px solid #b9d8c2; }
+    .tier-promising { background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
+    .tier-at_risk   { background: #fff1f1; color: #b91c1c; border: 1px solid #fecaca; }
+    .tier-churned   { background: #f4f4f5; color: #52525b; border: 1px solid #d4d4d8; }
+    .tier-new       { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 }
 
-/* Scrollbar tuning for tablets */
-::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-}
-::-webkit-scrollbar-thumb {
-    background: #d4d4d8;
-    border-radius: 4px;
-}
-::-webkit-scrollbar-track {
-    background: transparent;
-}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #d4c8a8; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }

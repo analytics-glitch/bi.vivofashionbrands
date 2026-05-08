@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 4 — World-class enhancements (theme, RFM, call list, attribution, NBA, forget, anniversaries). Backend: 14/14 pytest tests in test_world_class.py PASSED. Frontend: theme + login + dashboard call list + manager attribution all PASS. CRITICAL BUG: CustomerProfile.jsx crashes for every customer because loadNba() and useNbaScript() are referenced but never defined — this blocks RFM hero badge, NBA card, 'Use this script' prefill, and Forget danger zone (Consent tab unreachable).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CustomerProfile.jsx", "issue": "ReferenceError: loadNba is not defined (called in useEffect line 88) and useNbaScript is not defined (onClick line 259). The functions are never declared but the state hooks (nba, nbaLoading) are. Page renders blank — profile-name, rfm-badge, nba-card, nba-script all absent. React error boundary catches it but UI is unusable.", "selector": "[data-testid='customer-profile-page']", "priority": "CRITICAL"},
+      {"component": "CustomerSearch.jsx", "issue": "RFM badges did NOT render after typing 'jane' and pressing Enter (count=0). _cache_customers() does set rfm_tier on every result so backend-side data is fine; verify <RfmBadge tier={c.rfm_tier} /> is actually being placed in the DOM and that the search results array carries rfm_tier (could be a missed field-pick on the search response client-side).", "selector": "[data-testid^='rfm-badge-']", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "AI Next-Best-Action", "issue": "Cannot exercise the 'Use this script' → Send Message dialog prefill flow because CustomerProfile crashes before the NBA card mounts. Backend /api/customers/{id}/nba returns valid {action,why,script,urgency} (verified by test_nba_janet_mgr) so the integration is broken at the React layer only.", "affected_selectors": ["[data-testid='nba-card']", "[data-testid='nba-script']", "[data-testid='nba-use-script']", "[data-testid='msg-body']"]},
+      {"flow": "Forget customer (DPA)", "issue": "Cannot exercise the destructive-zone UI flow — Consent tab is unreachable when CustomerProfile crashes. Backend POST /customers/{id}/forget works (test_forget_mgr_redacts PASS).", "affected_selectors": ["[data-testid='forget-danger-zone']", "[data-testid='forget-customer-button']", "[data-testid='forget-confirm-input']", "[data-testid='forget-confirm-button']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_world_class.py",
+    "/app/test_reports/pytest/world_class_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: In /app/frontend/src/pages/CustomerProfile.jsx, define the missing functions loadNba (calls api.get(`/customers/${id}/nba`) → setNba; toggle setNbaLoading) and useNbaScript (opens send-message dialog with msgBody = nba.script). State hooks at lines 35-36 already exist; only the two function bodies are missing.",
+    "After fix, re-verify: profile-name renders, [data-testid^='rfm-badge-'] visible in hero, [data-testid='nba-card'] mounts, [data-testid='nba-script'] populates within ~10s, clicking [data-testid='nba-use-script'] opens send-message dialog with [data-testid='msg-body'] pre-filled with the script.",
+    "Investigate why /customers search shows 0 RFM badges despite backend returning rfm_tier on each result. Inspect CustomerSearch.jsx render for the c.rfm_tier prop wiring.",
+    "After CustomerProfile fix, re-verify Forget zone gating: visible to manager on Consent tab, clicking opens dialog, button disabled until exact name match, hidden for associate role."
+  ],
+  "critical_code_review_comments": [
+    "CustomerProfile.jsx — missing function declarations is a hard runtime crash. Add a CI step that runs `npm run build` (or eslint with no-undef) before merge; this would have caught both undefined references at build time.",
+    "CustomerProfile.jsx is now ~724 lines. Past the 700-line guideline. Splitting NBA card, Forget dialog, Send-message dialog into sibling components would help readability.",
+    "/api/dashboard/call-list does NOT enforce manager-only — associates can fetch every VIP/at-risk/churned customer's full record. Intentional (associate uses it as a daily call list) but worth documenting; consider scoping vip_silent to customers assigned to the calling associate.",
+    "/api/customers/{id}/nba caches per-customer for 6h but cache key does not include user_id — every associate sees the same NBA suggestion for the same customer. Probably fine for v1 but document the trade-off.",
+    "/api/customers/{id}/forget is an irreversible destructive action that returns 200 even when the customer doesn't exist (delete_many returns 0). Consider 404 if cache_deleted+notes_redacted+messages_redacted+tasks_redacted == 0 to prevent silent no-ops.",
+    "/api/anniversaries/run idempotency relies on the anniversary_runs collection. If that collection is wiped, a re-run on the same day will create duplicate tasks. Add a unique index on (customer_id, auto_theme='anniversary', auto_run_date) to customer_tasks for defense-in-depth.",
+    "Attribution KPI uses heuristic (last_purchase_date >= first_message_at[:10]) which credits ALL associates who messaged a customer who later purchased — no last-touch attribution. Documented in 'method' field but worth highlighting on the UI.",
+    "compute_rfm_tier() — if profile.last_purchase_date is missing the customer is classified 'new' even if total_orders=20 and total_sales=500K. Real cause is upstream BI; consider falling back to total_orders threshold when last is null."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_world_class.py (new, 14 tests)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "60% (login theme + dashboard call list + manager attribution PASS; CustomerProfile + dependent flows BROKEN by undefined-function bug; CustomerSearch RFM badges missing)"},
+  "test_credentials": "Reused seeded sessions: Bearer test_session_vivo_mgr_1778250692444 (manager) and test_session_vivo_assoc_1778250692444 (associate). Customer cache populated (~2,011 rows post test_top_customers_eager_caches_with_tier).",
+  "seed_data_creation": "TestForget.fixture_cid creates a synthetic customer 'test-forget-<uuid>' with note+task+message+preferences then forgets it; verified [redacted] propagation. Janet (3846911099035) was NOT touched. anniversaries/run was idempotent — already_run=true returned for today.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent fixes the missing loadNba/useNbaScript functions in CustomerProfile.jsx, re-run: pytest /app/backend/tests/test_world_class.py -v (should still be 14/14). Then the UI flows that were untestable this iteration: (1) RFM badge in hero, (2) NBA card with action/why/script + urgency chip, (3) Use this script → msg-body prefill, (4) Forget danger zone gating + name-match validation. The dashboard call list, manager attribution card, login theme, and all backend endpoints are confirmed working — no need to re-test those. Search RFM badges also need follow-up investigation."
+}

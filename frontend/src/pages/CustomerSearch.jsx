@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { Search, Phone, Mail, MapPin } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { RfmBadge } from "@/components/RfmBadge";
 
 export default function CustomerSearch() {
   const [q, setQ] = useState("");
@@ -94,7 +95,10 @@ export default function CustomerSearch() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-medium truncate text-lg">{c.customer_name}</div>
+                    <div className="font-medium truncate text-lg flex items-center gap-2 flex-wrap">
+                      {c.customer_name}
+                      <RfmBadge tier={c.rfm_tier} />
+                    </div>
                     <div className="text-xs text-[var(--vivo-muted)] mt-1 flex flex-wrap gap-3">
                       {c.phone && (<span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" />{c.phone}</span>)}
                       {c.email && (<span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" />{c.email}</span>)}

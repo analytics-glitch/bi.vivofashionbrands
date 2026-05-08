@@ -18,6 +18,67 @@ function KPI({ label, value, sub, testid }) {
   );
 }
 
+function AttributionCard() {
+  const [data, setData] = React.useState(null);
+  const [days, setDays] = React.useState(30);
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.get("/dashboard/attribution", { params: { days } });
+        setData(r.data);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [days]);
+
+  if (!data) return null;
+
+  return (
+    <Card className="vivo-card p-6 rounded-xl border-l-4 border-l-[var(--vivo-gold)]" data-testid="attribution-card">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <div className="eyebrow">Pilot KPI</div>
+          <h3 className="font-display text-xl mt-1">Clienteling-driven revenue</h3>
+          <p className="text-sm text-[var(--vivo-muted)] max-w-xl mt-1">{data.method}</p>
+        </div>
+        <div className="flex bg-white border border-[var(--vivo-border)] rounded-md overflow-hidden">
+          {[7, 30, 90].map((d) => (
+            <button key={d} onClick={() => setDays(d)} className={`h-9 px-3 text-xs ${days === d ? "bg-[var(--vivo-navy)] text-white" : "text-[var(--vivo-muted)]"}`} data-testid={`attr-period-${d}`}>{d}d</button>
+          ))}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5">
+        <KPI label="Messaged" value={formatNumber(data.messaged_customers)} testid="attr-messaged" />
+        <KPI label="Purchased" value={formatNumber(data.purchased_within_window)} sub={`${data.conversion_rate}% conversion`} testid="attr-purchased" />
+        <KPI label="Est. revenue" value={formatKES(data.estimated_revenue_kes)} testid="attr-revenue" />
+        <KPI label="Window" value={`${data.window_days}d`} />
+      </div>
+      {(data.by_associate || []).length > 0 && (
+        <div className="mt-6">
+          <div className="vivo-divider mb-3" />
+          <table className="w-full text-sm" data-testid="attr-by-associate">
+            <thead className="text-left text-[var(--vivo-muted)] uppercase text-xs tracking-wider">
+              <tr><th className="py-2">Associate</th><th>Msgs</th><th>Reached</th><th>Bought</th><th className="text-right">Conversion</th></tr>
+            </thead>
+            <tbody>
+              {data.by_associate.map((a, i) => (
+                <tr key={i} className="border-t border-[var(--vivo-border)]">
+                  <td className="py-3">{a.associate}</td>
+                  <td className="font-mono-num">{a.messages}</td>
+                  <td className="font-mono-num">{a.customers_contacted}</td>
+                  <td className="font-mono-num">{a.customers_purchased}</td>
+                  <td className="text-right font-mono-num">{a.conversion_rate}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 const NAVY = "#1F3864";
 const GOLD = "#C9A961";
 
@@ -206,7 +267,9 @@ export default function ManagerDashboard() {
             <KPI label="Open follow-ups" value={formatNumber(internal?.totals?.open_tasks || 0)} />
           </div>
 
-          <Card className="vivo-card p-6 rounded-sm">
+          <AttributionCard />
+
+          <Card className="vivo-card p-6 rounded-sm mt-6">
             <h3 className="font-display text-xl">By associate · 7d</h3>
             <div className="vivo-divider my-3" />
             {(internal?.by_associate || []).length === 0 ? (

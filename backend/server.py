@@ -368,25 +368,57 @@ async def _cache_customers(items):
         cid = c.get("customer_id")
         if not cid:
             continue
+        profile = {
+            "customer_id": cid,
+            "customer_name": c.get("customer_name"),
+            "phone": c.get("phone"),
+            "email": c.get("email"),
+            "city": c.get("city"),
+            "customer_country": c.get("customer_country"),
+            "total_orders": c.get("total_orders"),
+            "total_units": c.get("total_units"),
+            "total_sales": c.get("total_sales") or c.get("lifetime_spend"),
+            "avg_basket": c.get("avg_basket"),
+            "last_purchase_date": c.get("last_purchase_date"),
+            "first_purchase_date": c.get("first_purchase_date"),
+        }
+        profile["rfm_tier"] = compute_rfm_tier(profile)
+        profile["cached_at"] = iso(now_utc())
         await db.customer_cache.update_one(
             {"customer_id": cid},
-            {"$set": {
-                "customer_id": cid,
-                "customer_name": c.get("customer_name"),
-                "phone": c.get("phone"),
-                "email": c.get("email"),
-                "city": c.get("city"),
-                "customer_country": c.get("customer_country"),
-                "total_orders": c.get("total_orders"),
-                "total_units": c.get("total_units"),
-                "total_sales": c.get("total_sales") or c.get("lifetime_spend"),
-                "avg_basket": c.get("avg_basket"),
-                "last_purchase_date": c.get("last_purchase_date"),
-                "first_purchase_date": c.get("first_purchase_date"),
-                "cached_at": iso(now_utc()),
-            }},
+            {"$set": profile},
             upsert=True,
         )
+
+
+def compute_rfm_tier(profile):
+    """Classify a customer into a tier based on Recency, Frequency, Monetary.
+
+    Thresholds tuned to Vivo BI data (KES). Returns one of:
+    vip, loyal, promising, at_risk, churned, new
+    """
+    last = profile.get("last_purchase_date")
+    orders = int(profile.get("total_orders") or 0)
+    sales = float(profile.get("total_sales") or 0)
+    if not last:
+        return "new"
+    try:
+        last_dt = datetime.fromisoformat(str(last)[:10])
+    except Exception:
+        return "new"
+    days = (now_utc().date() - last_dt.date()).days
+    if days > 365:
+        return "churned"
+    if days > 180:
+        return "at_risk"
+    # Active (purchase within 6 months)
+    if orders >= 10 and sales >= 200000:
+        return "vip"
+    if orders >= 5 and sales >= 50000:
+        return "loyal"
+    if orders >= 2:
+        return "promising"
+    return "new"
 
 
 @api.get("/bi/top-customers")
@@ -879,10 +911,305 @@ async def startup():
     except Exception as exc:  # noqa: BLE001
         logger.warning("Weekly auto-task check failed: %s", exc)
 
+    # Eager-warm customer cache: top customers across all time (best-effort)
+    if await db.customer_cache.count_documents({}) < 100:
+        try:
+            today_iso = now_utc().date().isoformat()
+            data = await bi_get("/top-customers", {"date_from": "2020-01-01", "date_to": today_iso, "limit": 2000}) or []
+            await _cache_customers(data)
+            logger.info("Eager-cached %d customer rows", len(data) if isinstance(data, list) else 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Customer cache warm failed: %s", exc)
+
 
 @app.on_event("shutdown")
 async def shutdown():
     mongo_client.close()
+
+
+# --------------------------------------------------------------------------- #
+# Insights: RFM tiers, daily call list, attribution, NBA, anniversaries, DPA  #
+# --------------------------------------------------------------------------- #
+
+import json as _json
+import re as _re
+
+
+@api.get("/dashboard/call-list")
+async def call_list(_: User = Depends(get_current_user)):
+    """Daily action queue for an associate. Combines anniversaries, at-risk,
+    silent VIPs and churned win-backs."""
+    today_md = now_utc().strftime("%m-%d")
+    today_iso = now_utc().date().isoformat()
+
+    # 1. Today's shopping anniversaries (first_purchase_date MM-DD == today)
+    anniversaries = await db.customer_cache.find(
+        {"first_purchase_date": {"$regex": f"-{today_md}$"}},
+        {"_id": 0},
+    ).sort("total_sales", -1).limit(10).to_list(10)
+
+    # 2. At-risk (lapsed 180-365d) — top by lifetime spend
+    at_risk = await db.customer_cache.find(
+        {"rfm_tier": "at_risk"}, {"_id": 0},
+    ).sort("total_sales", -1).limit(8).to_list(8)
+
+    # 3. VIPs not contacted in 30d
+    cutoff_30 = (now_utc() - timedelta(days=30)).isoformat()
+    contacted_ids = await db.message_logs.distinct("customer_id", {"sent_at": {"$gte": cutoff_30}})
+    vip_silent = await db.customer_cache.find(
+        {"rfm_tier": "vip", "customer_id": {"$nin": contacted_ids}}, {"_id": 0},
+    ).sort("total_sales", -1).limit(8).to_list(8)
+
+    # 4. Churned (top by lifetime — best win-back candidates)
+    churned = await db.customer_cache.find(
+        {"rfm_tier": "churned"}, {"_id": 0},
+    ).sort("total_sales", -1).limit(6).to_list(6)
+
+    return {
+        "date": today_iso,
+        "anniversaries": anniversaries,
+        "at_risk": at_risk,
+        "vip_silent": vip_silent,
+        "churned": churned,
+    }
+
+
+@api.get("/dashboard/attribution")
+async def attribution(days: int = 30, _: User = Depends(require_manager)):
+    """Crude clienteling-attribution KPI: customers messaged in window who
+    have a last_purchase_date >= their first_message_at[:10]. Returns
+    overall + per-associate breakdown. Window granularity is daily."""
+    cutoff = (now_utc() - timedelta(days=days)).isoformat()
+    msgs = await db.message_logs.find({"sent_at": {"$gte": cutoff}}, {"_id": 0}).to_list(5000)
+
+    by_customer: Dict[str, Dict[str, Any]] = {}
+    for m in msgs:
+        cid = m.get("customer_id")
+        if not cid:
+            continue
+        if cid not in by_customer:
+            by_customer[cid] = {"first_msg": m["sent_at"], "senders": {m.get("sender_name", "")}}
+        else:
+            if m["sent_at"] < by_customer[cid]["first_msg"]:
+                by_customer[cid]["first_msg"] = m["sent_at"]
+            by_customer[cid]["senders"].add(m.get("sender_name", ""))
+
+    purchased: List[str] = []
+    revenue = 0.0
+    for cid, info in by_customer.items():
+        cached = await db.customer_cache.find_one({"customer_id": cid}, {"_id": 0})
+        if cached and cached.get("last_purchase_date"):
+            if str(cached["last_purchase_date"])[:10] >= info["first_msg"][:10]:
+                purchased.append(cid)
+                revenue += float(cached.get("avg_basket") or 0)
+
+    purchased_set = set(purchased)
+    by_associate: Dict[str, Dict[str, Any]] = {}
+    for m in msgs:
+        sn = m.get("sender_name") or "Unknown"
+        cid = m.get("customer_id")
+        row = by_associate.setdefault(sn, {"associate": sn, "messages": 0, "customers": set(), "purchased": set()})
+        row["messages"] += 1
+        if cid:
+            row["customers"].add(cid)
+            if cid in purchased_set:
+                row["purchased"].add(cid)
+
+    rows = []
+    for sn, data in by_associate.items():
+        c_total = len(data["customers"])
+        c_purchased = len(data["purchased"])
+        rows.append({
+            "associate": sn,
+            "messages": data["messages"],
+            "customers_contacted": c_total,
+            "customers_purchased": c_purchased,
+            "conversion_rate": round((c_purchased / c_total * 100) if c_total else 0.0, 1),
+        })
+    rows.sort(key=lambda r: -r["customers_purchased"])
+
+    return {
+        "window_days": days,
+        "messaged_customers": len(by_customer),
+        "purchased_within_window": len(purchased),
+        "estimated_revenue_kes": round(revenue, 2),
+        "conversion_rate": round((len(purchased) / len(by_customer) * 100) if by_customer else 0.0, 1),
+        "by_associate": rows,
+        "method": "Heuristic: customer counted if last_purchase_date >= date of first message in window. Treats avg_basket as the per-customer revenue contribution.",
+    }
+
+
+@api.get("/customers/{customer_id}/nba")
+async def customer_nba(customer_id: str, user: User = Depends(get_current_user)):
+    """AI Next-Best-Action for a customer (Claude Sonnet 4.5). Cached 6h."""
+    cache = await db.nba_cache.find_one({"customer_id": customer_id}, {"_id": 0})
+    if cache:
+        try:
+            ts = datetime.fromisoformat(cache["computed_at"])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if (now_utc() - ts).total_seconds() < 6 * 3600:
+                return cache["result"]
+        except Exception:
+            pass
+
+    profile = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0}) or {}
+    notes = await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).limit(3).to_list(3)
+    msgs = await db.message_logs.find({"customer_id": customer_id}, {"_id": 0}).sort("sent_at", -1).limit(2).to_list(2)
+    products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    prefs = await db.customer_preferences.find_one({"customer_id": customer_id}, {"_id": 0}) or {}
+
+    context = {
+        "name": profile.get("customer_name"),
+        "tier": profile.get("rfm_tier"),
+        "lifetime_spend_kes": profile.get("total_sales"),
+        "last_purchase": profile.get("last_purchase_date"),
+        "orders": profile.get("total_orders"),
+        "city": profile.get("city"),
+        "preferences": {k: prefs.get(k) for k in ["sizes", "fits", "fabrics", "occasions", "brands"] if prefs.get(k)},
+        "recent_purchases": [
+            {"product": p.get("style_name") or p.get("product_title"), "date": p.get("last_bought") or p.get("last_purchase_date")}
+            for p in (products[:5] if isinstance(products, list) else [])
+        ],
+        "recent_notes": [n.get("body") for n in notes],
+        "last_outreach_at": msgs[0]["sent_at"] if msgs else None,
+        "today": now_utc().date().isoformat(),
+    }
+
+    sys_prompt = (
+        "You are a personal stylist's assistant for Vivo Fashion (a Kenyan fashion retailer). "
+        "Given customer context, output STRICT JSON only — no prose, no markdown. "
+        "Schema: {\"action\": one of [\"call\",\"message\",\"wait\",\"lookbook\",\"invite\"], "
+        "\"why\": \"<one short sentence justifying the action>\", "
+        "\"script\": \"<one warm 1-2 sentence WhatsApp-ready opener using the customer's first name>\", "
+        "\"urgency\": one of [\"high\",\"medium\",\"low\"]}."
+    )
+
+    result: Dict[str, Any] = {"action": "wait", "why": "Insufficient context", "script": "", "urgency": "low"}
+    llm_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if llm_key:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+            chat = LlmChat(
+                api_key=llm_key,
+                session_id=f"vivo-nba-{customer_id}-{int(now_utc().timestamp())}",
+                system_message=sys_prompt,
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            raw = await chat.send_message(UserMessage(text=_json.dumps(context, ensure_ascii=False)))
+            text = str(raw).strip()
+            m = _re.search(r"\{[\s\S]*\}", text)
+            if m:
+                parsed = _json.loads(m.group(0))
+                if parsed.get("action") in {"call", "message", "wait", "lookbook", "invite"}:
+                    result = {
+                        "action": parsed["action"],
+                        "why": str(parsed.get("why", ""))[:280],
+                        "script": str(parsed.get("script", ""))[:400],
+                        "urgency": parsed.get("urgency", "medium") if parsed.get("urgency") in {"high", "medium", "low"} else "medium",
+                    }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("NBA LLM error for %s: %s", customer_id, exc)
+
+    await db.nba_cache.update_one(
+        {"customer_id": customer_id},
+        {"$set": {"customer_id": customer_id, "result": result, "computed_at": iso(now_utc())}},
+        upsert=True,
+    )
+    return result
+
+
+@api.post("/customers/{customer_id}/forget")
+async def forget_customer(customer_id: str, request: Request, user: User = Depends(require_manager)):
+    """Kenya-DPA 'right to be forgotten'. Anonymizes all our records.
+    BI-side data lives upstream in BigQuery and is not touched here."""
+    redacted = "[redacted]"
+    res = {
+        "cache_deleted": (await db.customer_cache.delete_many({"customer_id": customer_id})).deleted_count,
+        "preferences_deleted": (await db.customer_preferences.delete_many({"customer_id": customer_id})).deleted_count,
+        "social_handles_deleted": (await db.customer_social_handles.delete_many({"customer_id": customer_id})).deleted_count,
+        "nba_deleted": (await db.nba_cache.delete_many({"customer_id": customer_id})).deleted_count,
+        "notes_redacted": (await db.customer_notes.update_many({"customer_id": customer_id}, {"$set": {"body": redacted, "author_name": redacted}})).modified_count,
+        "tasks_redacted": (await db.customer_tasks.update_many({"customer_id": customer_id}, {"$set": {"customer_name": redacted, "title": redacted, "notes": redacted}})).modified_count,
+        "messages_redacted": (await db.message_logs.update_many({"customer_id": customer_id}, {"$set": {"customer_name": redacted, "customer_phone": redacted, "body": redacted}})).modified_count,
+        "lookbooks_expired": (await db.lookbooks.update_many({"customer_id": customer_id}, {"$set": {"customer_name": redacted, "expires_at": iso(now_utc())}})).modified_count,
+        "consent_recorded_optout": (await db.consent_records.update_many({"customer_id": customer_id}, {"$set": {"opted_in": False}})).modified_count,
+        "social_feedback_unlinked": (await db.social_feedback.update_many({"customer_id": customer_id}, {"$unset": {"customer_id": ""}})).modified_count,
+    }
+    await db.forget_log.insert_one({
+        "forget_id": new_id(),
+        "customer_id": customer_id,
+        "by_user_id": user.user_id,
+        "by_name": user.name,
+        "at": iso(now_utc()),
+        "summary": res,
+    })
+    await _audit(user, "customer.forget", "customer", customer_id, request)
+    return {"forgotten": True, "customer_id": customer_id, "summary": res, "note": "BI-side data lives upstream in BigQuery and is not deleted by this endpoint."}
+
+
+@api.post("/anniversaries/run")
+async def run_anniversaries(request: Request, user: User = Depends(require_manager)):
+    """Daily idempotent run: create one task per customer whose first_purchase_date MM-DD matches today."""
+    today_md = now_utc().strftime("%m-%d")
+    today_iso = now_utc().date().isoformat()
+
+    existing = await db.anniversary_runs.find_one({"date": today_iso})
+    if existing:
+        return {"already_run": True, "date": today_iso, "tasks_created": 0}
+
+    customers = await db.customer_cache.find(
+        {"first_purchase_date": {"$regex": f"-{today_md}$"}},
+        {"_id": 0},
+    ).to_list(500)
+
+    managers = await db.users.find({"role": "manager"}, {"_id": 0}).to_list(50)
+    if not managers:
+        return {"already_run": False, "date": today_iso, "tasks_created": 0, "note": "no managers"}
+
+    mgr = managers[0]
+    tasks_created = 0
+    for c in customers:
+        try:
+            year_first = int(str(c.get("first_purchase_date", ""))[:4])
+            years = now_utc().year - year_first
+        except Exception:
+            years = 0
+        if years <= 0:
+            continue
+        spend = float(c.get("total_sales") or 0)
+        title = f"{c.get('customer_name') or 'Customer'} — {years}-year shopping anniversary today"
+        notes_body = (
+            f"Auto-generated anniversary follow-up.\n"
+            f"Lifetime spend: KES {spend:,.0f} · Tier: {c.get('rfm_tier','—')}.\n"
+            f"Send a personal message celebrating {years} year{'s' if years != 1 else ''} as a Vivo customer."
+        )
+        await db.customer_tasks.insert_one({
+            "task_id": new_id(),
+            "customer_id": c["customer_id"],
+            "customer_name": c.get("customer_name"),
+            "assignee_user_id": mgr["user_id"],
+            "assignee_name": mgr.get("name") or mgr["email"],
+            "title": title,
+            "due_date": today_iso,
+            "notes": notes_body,
+            "completed": False,
+            "completed_at": None,
+            "created_at": iso(now_utc()),
+            "auto_generated": True,
+            "auto_theme": "anniversary",
+            "auto_count": years,
+            "auto_week_start": today_iso,
+        })
+        tasks_created += 1
+
+    await db.anniversary_runs.insert_one({
+        "run_id": new_id(),
+        "date": today_iso,
+        "tasks_created": tasks_created,
+        "ran_at": iso(now_utc()),
+    })
+    await _audit(user, "anniversary.run", "system", today_iso, request)
+    return {"already_run": False, "date": today_iso, "tasks_created": tasks_created, "customer_count": len(customers)}
 
 
 # --------------------------------------------------------------------------- #
