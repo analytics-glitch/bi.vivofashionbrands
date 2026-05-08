@@ -65,6 +65,28 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 62)
+**Daily Replenishment workflow — moved to its own page + 7 new features**:
+- **New page `/replenishments`** (sidebar between Allocations and Pricing). Removed "Daily Replenishment" tab from /exports. Role access added to both frontend `permissions.js` and backend `auth.py` (admin/exec/analyst/store_manager/owner).
+- **Owner roster panel** (admin/owner only): pick number of pickers (1-20), enter their names. Save persists to `replenishment_config` collection via new `POST /api/admin/replenishment-config` (admin-only) and the next `/replenishment-report` fetch redistributes lines across the new roster, sorted by POS ascending.
+- **Days lapsed column** with RED >2d badge: backend tracks `replenishment_first_seen` collection (keyed by `pos|barcode`, NOT date-windowed so widening the date filter doesn't reset). Each row carries `days_lapsed:int` and `first_seen_at:ISO`.
+- **Country column REMOVED** from the live table (kept on backend response for back-compat).
+- **Actual replenished input + Mark As Done**: per-row number input + button. POSTs `actual_units_replenished` + snapshots current shop-floor SOH for the SKU as `soh_after`. Row disappears from live list optimistically.
+- **Completed Replenishments report** (admin only): new `GET /api/analytics/replenishment-completed?days=30`. Audit trail showing User, POS, Product, Qty to replenish, Qty replenished, Fulfilment % (colour-coded green ≥100 / amber 50-99 / rose <50), Qty after replenishment.
+- **Per-owner PDF export**: each owner's summary pill has a PDF button (`replen-pdf-<owner>`). Generates a landscape A4 PDF with the picker's contiguous line list + signature block. Filename = `<Owner>_replenishment_<date>.pdf`. Uses jsPDF (already in package.json).
+
+**RBAC hardening (after iter-62 testing agent flagged 3 endpoints leaking)**:
+- `GET /api/admin/replenishment-config` → `Depends(require_admin)` (was anonymous).
+- `POST /api/admin/replenishment-config` → `Depends(require_admin)` (was any auth user).
+- `GET /api/analytics/replenishment-completed` → `Depends(require_admin)` (was any auth user).
+
+**Bug fixed during iter-62**: Mark As Done was 500-ing on every call because `User.full_name` doesn't exist on the pydantic model — corrected to `user.name`.
+
+**Verification (curl on preview)**:
+- Viewer 403 on all 3 hardened endpoints, anon 401, admin 200.
+- Admin custom roster `Alice,Bob` distributes 185 lines as Alice 93/15 stores, Bob 92/12 stores correctly.
+- Each row carries days_lapsed/first_seen_at/replenished/actual_units_replenished/soh_after/completed_at.
+
 ### Recent (Feb 2026 — Iter 61)
 Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~95% green):
 - **IBT flat table — new inventory + days-lapsed columns**: every row now displays `Inv. Qty FROM`, `Inv. Qty TO` (both pulled from existing `from_available`/`to_available`) and `Days lapsed` (computed server-side from `ibt_suggestions_seen.first_seen`). Days-lapsed pill renders **RED** when `> 2` (`bg-rose-100 text-rose-800 border-rose-300`) and muted-grey otherwise. Backend `/api/analytics/ibt-suggestions` and `/ibt-warehouse-to-store` now enrich every row with `days_lapsed:int >= 0` and `first_seen_at:ISO`. Helper `get_seen_map_for(suggestions)` added to `ibt_completed.py`.

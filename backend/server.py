@@ -22,7 +22,7 @@ VIVO_API_BASE = os.environ.get(
 
 from auth import (  # noqa: E402
     auth_router, admin_router, ActivityLogMiddleware,
-    get_current_user, seed_admin, db, User,
+    get_current_user, seed_admin, db, User, require_admin,
 )
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
@@ -6647,7 +6647,7 @@ async def replenishment_completed(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     days: int = Query(30, ge=1, le=180),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     """Completed Replenishments report — every row that's been ticked
     Mark As Done in the last `days` days. Returns audit trail of
@@ -6690,7 +6690,7 @@ async def replenishment_completed(
 
 
 @admin_router.get("/replenishment-config")
-async def get_replenishment_config():
+async def get_replenishment_config(_: User = Depends(require_admin)):
     """Return the persisted owner roster used by /analytics/replenishment-report
     when no `owners` query param is passed. Empty list = fall back to
     the static OWNERS const in code."""
@@ -6707,7 +6707,7 @@ async def get_replenishment_config():
 @admin_router.post("/replenishment-config")
 async def set_replenishment_config(
     payload: Dict[str, Any] = Body(...),
-    user=Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """Persist the owner roster (admin/owner only). Body: {owners: [str]}.
     Empty list resets to the static OWNERS const."""
