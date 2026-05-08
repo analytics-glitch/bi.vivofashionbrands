@@ -1,0 +1,541 @@
+import React, { useEffect, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { api, formatDate, formatKES, formatNumber } from "@/lib/api";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { toast } from "sonner";
+import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone } from "lucide-react";
+
+const FIT_OPTIONS = ["Fitted", "Regular", "Relaxed"];
+const FABRIC_OPTIONS = ["Cotton", "Wool", "Linen", "Silk", "Synthetic", "Denim"];
+const OCCASION_OPTIONS = ["Work", "Evening", "Casual", "Formal", "Travel"];
+
+export default function CustomerProfile() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [profile, setProfile] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [] });
+  const [consent, setConsent] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // dialog states
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteBody, setNoteBody] = useState("");
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskDue, setTaskDue] = useState("");
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [templates, setTemplates] = useState([]);
+  const [tplId, setTplId] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const [channel, setChannel] = useState("whatsapp");
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [p, n, t, m, pr, c, tpl] = await Promise.all([
+        api.get(`/bi/customer/${id}`),
+        api.get(`/notes`, { params: { customer_id: id } }),
+        api.get(`/tasks`, { params: { customer_id: id } }),
+        api.get(`/messages`, { params: { customer_id: id } }),
+        api.get(`/preferences/${id}`),
+        api.get(`/consent/${id}`),
+        api.get(`/templates`),
+      ]);
+      setProfile(p.data?.profile);
+      setProducts(p.data?.products || []);
+      setNotes(n.data || []);
+      setTasks(t.data || []);
+      setMessages(m.data || []);
+      setPrefs({
+        sizes: pr.data?.sizes || {},
+        fits: pr.data?.fits || [],
+        fabrics: pr.data?.fabrics || [],
+        occasions: pr.data?.occasions || [],
+        brands: pr.data?.brands || [],
+      });
+      setConsent(c.data || []);
+      setTemplates(tpl.data || []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const addNote = async () => {
+    if (!noteBody.trim()) return;
+    await api.post("/notes", { customer_id: id, customer_name: profile?.customer_name, body: noteBody });
+    setNoteBody("");
+    setNoteOpen(false);
+    toast.success("Note saved");
+    reload();
+  };
+
+  const addTask = async () => {
+    if (!taskTitle.trim()) return;
+    await api.post("/tasks", { customer_id: id, customer_name: profile?.customer_name, title: taskTitle, due_date: taskDue || null });
+    setTaskTitle("");
+    setTaskDue("");
+    setTaskOpen(false);
+    toast.success("Follow-up created");
+    reload();
+  };
+
+  const completeTask = async (taskId) => {
+    await api.post(`/tasks/${taskId}/complete`);
+    toast.success("Marked done");
+    reload();
+  };
+
+  const deleteNote = async (noteId) => {
+    await api.delete(`/notes/${noteId}`);
+    reload();
+  };
+
+  const togglePref = (key, val) => {
+    setPrefs((p) => {
+      const arr = p[key] || [];
+      const next = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
+      return { ...p, [key]: next };
+    });
+  };
+
+  const savePrefs = async () => {
+    await api.put(`/preferences/${id}`, prefs);
+    toast.success("Preferences saved");
+  };
+
+  const captureConsent = async (channelKey, optIn) => {
+    await api.post(`/consent`, { customer_id: id, channel: channelKey, opted_in: optIn, method: "in_store" });
+    toast.success(optIn ? `Opt-in captured for ${channelKey}` : `Opt-out captured for ${channelKey}`);
+    reload();
+  };
+
+  const openMessage = (tpl) => {
+    setMsgOpen(true);
+    if (tpl) {
+      setTplId(tpl.template_id);
+      setChannel(tpl.channel);
+      setMsgBody(
+        tpl.body
+          .replaceAll("{customer_name}", profile?.customer_name?.split(" ")[0] || "")
+          .replaceAll("{associate_name}", "")
+      );
+    } else {
+      setTplId("");
+      setMsgBody("");
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!msgBody.trim()) return;
+    try {
+      await api.post(`/messages`, {
+        customer_id: id,
+        customer_name: profile?.customer_name,
+        customer_phone: profile?.phone,
+        channel,
+        template_id: tplId || null,
+        template_name: templates.find((t) => t.template_id === tplId)?.name,
+        body: msgBody,
+      });
+      toast.success("Message logged (mock provider)");
+      setMsgOpen(false);
+      setMsgBody("");
+      reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to send");
+    }
+  };
+
+  if (loading && !profile) {
+    return <div className="p-10 text-[var(--vivo-muted)]">Loading customer…</div>;
+  }
+  if (!profile) {
+    return (
+      <div className="p-10">
+        <Button variant="ghost" onClick={() => navigate(-1)}><ArrowLeft className="mr-2 h-4 w-4"/>Back</Button>
+        <div className="vivo-card p-10 mt-6 text-center">
+          <div className="font-display text-2xl">Customer not found</div>
+          <p className="text-sm text-[var(--vivo-muted)] mt-2">No purchase history found in BI for id {id}.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const initials = (profile.customer_name || "?").split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
+
+  return (
+    <div className="p-6 md:p-10 max-w-[1400px] mx-auto" data-testid="customer-profile-page">
+      <Button variant="ghost" onClick={() => navigate(-1)} className="mb-4 -ml-3 text-[var(--vivo-muted)]" data-testid="profile-back">
+        <ArrowLeft className="mr-2 h-4 w-4" /> Back
+      </Button>
+
+      {/* Hero */}
+      <Card className="vivo-card p-8 rounded-sm">
+        <div className="flex flex-col md:flex-row md:items-center gap-6">
+          <div className="h-20 w-20 rounded-full bg-[var(--vivo-navy)] text-white flex items-center justify-center text-2xl font-display">
+            {initials}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="eyebrow">Customer · {profile.customer_id}</div>
+            <h1 className="font-display text-3xl md:text-4xl mt-1" data-testid="profile-name">{profile.customer_name}</h1>
+            <div className="mt-3 flex flex-wrap gap-4 text-sm text-[var(--vivo-muted)]">
+              {profile.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5"/>{profile.phone}</span>}
+              {profile.email && <span className="inline-flex items-center gap-1"><Mail className="h-3.5 w-3.5"/>{profile.email}</span>}
+              {profile.customer_country && <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5"/>{profile.customer_country}</span>}
+              <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5"/>Customer since {formatDate(profile.first_purchase_date)}</span>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <Button onClick={() => openMessage()} data-testid="action-send-message" className="h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm">
+              <MessageCircle className="mr-2 h-4 w-4" /> Send message
+            </Button>
+            <Button onClick={() => navigate(`/lookbooks/new?customer_id=${id}&customer_name=${encodeURIComponent(profile.customer_name || "")}`)} data-testid="action-create-lookbook" variant="outline" className="h-12 rounded-sm border-[var(--vivo-navy)] text-[var(--vivo-navy)] hover:bg-[var(--vivo-bg)]">
+              <BookImage className="mr-2 h-4 w-4" /> New lookbook
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-6">
+          <Stat label="Lifetime" value={formatKES(profile.total_sales)} testid="profile-lifetime-spend" />
+          <Stat label="Orders" value={formatNumber(profile.total_orders)} />
+          <Stat label="Avg basket" value={formatKES(profile.avg_basket)} />
+          <Stat label="Last purchase" value={formatDate(profile.last_purchase_date)} />
+        </div>
+      </Card>
+
+      {/* Tabs */}
+      <Tabs defaultValue="purchases" className="mt-8">
+        <TabsList className="bg-transparent border-b border-[var(--vivo-border)] w-full justify-start rounded-none h-auto p-0 gap-6">
+          {[
+            ["purchases", "Purchases", "profile-tab-purchases"],
+            ["preferences", "Preferences", "profile-tab-preferences"],
+            ["notes", "Notes", "profile-tab-notes"],
+            ["tasks", "Follow-ups", "profile-tab-tasks"],
+            ["timeline", "Messages", "profile-tab-timeline"],
+            ["consent", "Consent", "profile-tab-consent"],
+          ].map(([v, l, t]) => (
+            <TabsTrigger
+              key={v}
+              value={v}
+              data-testid={t}
+              className="relative h-12 px-1 rounded-none data-[state=active]:bg-transparent data-[state=active]:text-[var(--vivo-navy)] data-[state=active]:shadow-none data-[state=active]:font-semibold data-[state=active]:after:content-[''] data-[state=active]:after:absolute data-[state=active]:after:bottom-0 data-[state=active]:after:left-0 data-[state=active]:after:right-0 data-[state=active]:after:h-[2px] data-[state=active]:after:bg-[var(--vivo-gold)] text-[var(--vivo-muted)]"
+            >
+              {l}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value="purchases" className="mt-6">
+          <div className="vivo-card divide-y divide-[var(--vivo-border)]">
+            {products.length === 0 && <div className="p-6 text-sm text-[var(--vivo-muted)]">No purchase history.</div>}
+            {products.slice(0, 25).map((p, i) => (
+              <div key={i} className="p-4 flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{p.product_title || p.style_name}</div>
+                  <div className="text-xs text-[var(--vivo-muted)] mt-1">
+                    {p.last_purchase_date ? formatDate(p.last_purchase_date) : ""} {p.size ? `· Size ${p.size}` : ""} {p.color ? `· ${p.color}` : ""} {p.subcategory ? `· ${p.subcategory}` : ""}
+                  </div>
+                </div>
+                <div className="text-right text-sm">
+                  <div className="font-mono-num">{formatKES(p.total_sales || p.unit_price_kes)}</div>
+                  <div className="text-xs text-[var(--vivo-muted)]">{p.quantity ? `${p.quantity} unit${p.quantity > 1 ? "s" : ""}` : ""}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="preferences" className="mt-6 space-y-6">
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-4">Sizes</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {["top", "bottom", "shoes"].map((k) => (
+                <div key={k}>
+                  <Label className="capitalize text-xs text-[var(--vivo-muted)]">{k}</Label>
+                  <Input
+                    value={prefs.sizes?.[k] || ""}
+                    onChange={(e) => setPrefs((p) => ({ ...p, sizes: { ...p.sizes, [k]: e.target.value } }))}
+                    placeholder="e.g. M, 32, UK 7"
+                    className="h-12 mt-1 rounded-sm"
+                    data-testid={`pref-size-${k}`}
+                  />
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <PrefChips title="Fit" options={FIT_OPTIONS} values={prefs.fits} onToggle={(v) => togglePref("fits", v)} testidPrefix="pref-fit" />
+          <PrefChips title="Fabric" options={FABRIC_OPTIONS} values={prefs.fabrics} onToggle={(v) => togglePref("fabrics", v)} testidPrefix="pref-fabric" />
+          <PrefChips title="Occasion" options={OCCASION_OPTIONS} values={prefs.occasions} onToggle={(v) => togglePref("occasions", v)} testidPrefix="pref-occasion" />
+
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-2">Brand affinities</h3>
+            <p className="text-xs text-[var(--vivo-muted)] mb-3">Comma-separated: e.g. Vivo Lulu, Safari, Essence</p>
+            <Input
+              value={(prefs.brands || []).join(", ")}
+              onChange={(e) => setPrefs((p) => ({ ...p, brands: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }))}
+              className="h-12 rounded-sm"
+              data-testid="pref-brands"
+            />
+          </Card>
+
+          <Button onClick={savePrefs} className="h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="pref-save">
+            <Save className="mr-2 h-4 w-4" /> Save preferences
+          </Button>
+        </TabsContent>
+
+        <TabsContent value="notes" className="mt-6">
+          <div className="flex justify-end mb-4">
+            <Button onClick={() => setNoteOpen(true)} className="h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="add-note-button">
+              <Plus className="mr-2 h-4 w-4" /> Add note
+            </Button>
+          </div>
+          {notes.length === 0 ? (
+            <div className="vivo-card p-10 text-center text-sm text-[var(--vivo-muted)]">No notes yet.</div>
+          ) : (
+            <div className="space-y-4" data-testid="notes-list">
+              {notes.map((n) => (
+                <Card key={n.note_id} className="vivo-card p-5 rounded-sm">
+                  <div className="flex justify-between items-start gap-3">
+                    <div className="flex-1">
+                      <div className="text-xs text-[var(--vivo-muted)]">{n.author_name} · {formatDate(n.created_at)}</div>
+                      <p className="mt-2 text-base leading-relaxed">{n.body}</p>
+                    </div>
+                    <Button variant="ghost" size="icon" onClick={() => deleteNote(n.note_id)} aria-label="Delete note">
+                      <Trash2 className="h-4 w-4 text-[var(--vivo-muted)]" />
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="tasks" className="mt-6">
+          <div className="flex justify-end mb-4">
+            <Button onClick={() => setTaskOpen(true)} className="h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="add-task-button">
+              <Plus className="mr-2 h-4 w-4" /> New follow-up
+            </Button>
+          </div>
+          {tasks.length === 0 ? (
+            <div className="vivo-card p-10 text-center text-sm text-[var(--vivo-muted)]">No follow-ups.</div>
+          ) : (
+            <div className="space-y-3" data-testid="tasks-list-profile">
+              {tasks.map((t) => (
+                <Card key={t.task_id} className="vivo-card p-4 rounded-sm flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className={`font-medium ${t.completed ? "line-through text-[var(--vivo-muted)]" : ""}`}>{t.title}</div>
+                    <div className="text-xs text-[var(--vivo-muted)]">Due {formatDate(t.due_date)} · {t.assignee_name}</div>
+                  </div>
+                  {!t.completed ? (
+                    <Button onClick={() => completeTask(t.task_id)} variant="outline" className="rounded-sm">Mark done</Button>
+                  ) : (
+                    <Badge variant="secondary" className="rounded-sm">Done {formatDate(t.completed_at)}</Badge>
+                  )}
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="timeline" className="mt-6">
+          {messages.length === 0 ? (
+            <div className="vivo-card p-10 text-center text-sm text-[var(--vivo-muted)]">No messages yet.</div>
+          ) : (
+            <div className="space-y-3" data-testid="messages-list">
+              {messages.map((m) => (
+                <Card key={m.message_id} className="vivo-card p-5 rounded-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs text-[var(--vivo-muted)] uppercase tracking-wider">
+                      {m.channel} · {m.sender_name} · {formatDate(m.sent_at)}
+                    </div>
+                    <Badge variant="outline" className="rounded-sm text-[10px]"><Smartphone className="h-3 w-3 mr-1"/>{m.delivery_status}</Badge>
+                  </div>
+                  <p className="text-base leading-relaxed whitespace-pre-wrap">{m.body}</p>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="consent" className="mt-6 space-y-4">
+          <Card className="vivo-card p-6 rounded-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck className="h-5 w-5 text-[var(--vivo-gold)]" />
+              <h3 className="font-display text-lg">Kenya DPA consent</h3>
+            </div>
+            <p className="text-sm text-[var(--vivo-muted)] mb-4">Capture explicit consent before sending marketing messages.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {["whatsapp", "sms"].map((ch) => (
+                <div key={ch} className="border border-[var(--vivo-border)] p-4 rounded-sm flex items-center justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-[var(--vivo-muted)]">{ch}</div>
+                    <div className="text-sm mt-1">{(() => {
+                      const last = consent.find((c) => c.channel === ch);
+                      if (!last) return "No record yet";
+                      return last.opted_in ? `Opted in ${formatDate(last.timestamp)}` : `Opted out ${formatDate(last.timestamp)}`;
+                    })()}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => captureConsent(ch, true)} className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)]" data-testid={`consent-in-${ch}`}>Opt in</Button>
+                    <Button size="sm" variant="outline" onClick={() => captureConsent(ch, false)} className="rounded-sm" data-testid={`consent-out-${ch}`}>Opt out</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+          {consent.length > 0 && (
+            <Card className="vivo-card p-6 rounded-sm">
+              <h4 className="font-display text-base mb-3">History</h4>
+              <ul className="space-y-2 text-sm">
+                {consent.map((c) => (
+                  <li key={c.consent_id} className="flex justify-between border-b border-[var(--vivo-border)] py-2 last:border-0">
+                    <span>{c.channel} · {c.opted_in ? "Opted in" : "Opted out"}</span>
+                    <span className="text-[var(--vivo-muted)]">{c.captured_by_name} · {formatDate(c.timestamp)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* Note dialog */}
+      <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader><DialogTitle className="font-display">Add a note</DialogTitle></DialogHeader>
+          <Textarea value={noteBody} onChange={(e) => setNoteBody(e.target.value)} placeholder="What did you learn about this customer today?" rows={5} data-testid="note-body" />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setNoteOpen(false)}>Cancel</Button>
+            <Button onClick={addNote} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="note-save">Save note</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Task dialog */}
+      <Dialog open={taskOpen} onOpenChange={setTaskOpen}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader><DialogTitle className="font-display">New follow-up</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Task</Label>
+              <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="e.g. Call when new arrivals in size M land" className="h-12 mt-1" data-testid="task-title" />
+            </div>
+            <div>
+              <Label>Due date</Label>
+              <Input type="date" value={taskDue} onChange={(e) => setTaskDue(e.target.value)} className="h-12 mt-1" data-testid="task-due" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTaskOpen(false)}>Cancel</Button>
+            <Button onClick={addTask} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="task-save">Create</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Message dialog */}
+      <Dialog open={msgOpen} onOpenChange={setMsgOpen}>
+        <DialogContent className="rounded-sm max-w-xl">
+          <DialogHeader><DialogTitle className="font-display">Send a personal message</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Channel</Label>
+                <Select value={channel} onValueChange={setChannel}>
+                  <SelectTrigger className="h-12 mt-1 rounded-sm" data-testid="msg-channel"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                    <SelectItem value="sms">SMS</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Template</Label>
+                <Select value={tplId} onValueChange={(v) => {
+                  setTplId(v);
+                  const t = templates.find((x) => x.template_id === v);
+                  if (t) {
+                    setChannel(t.channel);
+                    setMsgBody(
+                      t.body.replaceAll("{customer_name}", profile?.customer_name?.split(" ")[0] || "")
+                    );
+                  }
+                }}>
+                  <SelectTrigger className="h-12 mt-1 rounded-sm" data-testid="msg-template-select"><SelectValue placeholder="Choose template" /></SelectTrigger>
+                  <SelectContent>
+                    {templates.filter((t) => t.channel === channel).map((t) => (
+                      <SelectItem key={t.template_id} value={t.template_id}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Message</Label>
+              <Textarea rows={5} value={msgBody} onChange={(e) => setMsgBody(e.target.value)} className="mt-1" data-testid="msg-body" />
+              <p className="text-xs text-[var(--vivo-muted)] mt-2">Provider: <strong>mock</strong> for v1 — every send is logged. Plug a real BSP via env later.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setMsgOpen(false)}>Cancel</Button>
+            <Button onClick={sendMessage} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="msg-send">Send</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Stat({ label, value, testid }) {
+  return (
+    <div data-testid={testid}>
+      <div className="eyebrow">{label}</div>
+      <div className="font-display text-2xl mt-1 font-mono-num">{value}</div>
+    </div>
+  );
+}
+
+function PrefChips({ title, options, values, onToggle, testidPrefix }) {
+  return (
+    <Card className="vivo-card p-6 rounded-sm">
+      <h3 className="font-display text-lg mb-4">{title}</h3>
+      <div className="flex flex-wrap gap-2">
+        {options.map((o) => {
+          const active = values.includes(o);
+          return (
+            <button
+              key={o}
+              type="button"
+              onClick={() => onToggle(o)}
+              data-testid={`${testidPrefix}-${o.toLowerCase()}`}
+              className={`h-10 px-4 rounded-sm border text-sm transition-colors ${
+                active
+                  ? "bg-[var(--vivo-navy)] text-white border-[var(--vivo-navy)]"
+                  : "bg-white text-[var(--vivo-text)] border-[var(--vivo-border)] hover:border-[var(--vivo-navy)]"
+              }`}
+            >
+              {o}
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}

@@ -1,51 +1,65 @@
-import { useEffect } from "react";
+import React from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import AuthCallback from "@/pages/AuthCallback";
+import Login from "@/pages/Login";
+import AppShell from "@/components/AppShell";
+import Dashboard from "@/pages/Dashboard";
+import CustomerSearch from "@/pages/CustomerSearch";
+import CustomerProfile from "@/pages/CustomerProfile";
+import LookbookBuilder from "@/pages/LookbookBuilder";
+import PublicLookbook from "@/pages/PublicLookbook";
+import ManagerDashboard from "@/pages/ManagerDashboard";
+import Templates from "@/pages/Templates";
+import AuditLog from "@/pages/AuditLog";
+import Lookbooks from "@/pages/Lookbooks";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function ProtectedRoutes() {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-[var(--vivo-muted)]">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/customers" element={<CustomerSearch />} />
+        <Route path="/customers/:id" element={<CustomerProfile />} />
+        <Route path="/lookbooks" element={<Lookbooks />} />
+        <Route path="/lookbooks/new" element={<LookbookBuilder />} />
+        <Route path="/manager" element={user.role === "manager" ? <ManagerDashboard /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/templates" element={user.role === "manager" ? <Templates /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/audit" element={user.role === "manager" ? <AuditLog /> : <Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Route>
+    </Routes>
   );
-};
+}
+
+function AppRouter() {
+  const location = useLocation();
+  // Synchronous auth-callback detection — must run before ProtectedRoutes
+  if (location.hash?.includes("session_id=")) {
+    return <AuthCallback />;
+  }
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/share/:token" element={<PublicLookbook />} />
+      <Route path="/*" element={<ProtectedRoutes />} />
+    </Routes>
+  );
+}
 
 function App() {
   return (
     <div className="App">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <AuthProvider>
+          <Toaster position="top-right" richColors />
+          <AppRouter />
+        </AuthProvider>
       </BrowserRouter>
     </div>
   );

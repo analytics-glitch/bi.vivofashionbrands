@@ -1,0 +1,41 @@
+{
+  "summary": "Comprehensive backend + frontend testing of Vivo Clienteling app. Backend: 28/28 pytest tests passed covering auth gating, BI proxy (10 endpoints), notes/tasks/preferences CRUD, templates with manager-only enforcement, messages with consent gating (mock_delivered + 400 on opt-out), public lookbook flow with share_token, audit log, dashboards, and role enforcement (associate gets 403 on /audit, /dashboard/manager, POST /templates). Frontend: All 8 critical pages render successfully — Login, public /share/{token} (no auth), Today (dashboard), Customers, Customer Profile (tabs + send-message/lookbook buttons), Insights (Manager) with recharts KPIs (Net Sales Ksh 80M, Orders 11k), Templates (4 seeded), Audit log table populated with real events.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Manager dashboard / Insights", "issues": ["Recharts ResponsiveContainer logs 'width(-1) and height(-1) of chart should be greater than 0' warnings on first paint — charts still render correctly after layout settles. Consider giving the parent container an explicit min-height or aspect to silence these warnings."]},
+      {"screen": "Login / Auth-gated pages", "issues": ["Console: 'An empty string (\"\") was passed to the src attribute' — likely user.picture or template image rendered with empty string. Use null/undefined or conditional rendering instead of empty string for src."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_vivo_clienteling.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Replace empty-string src attributes (likely <img src=\"\" />) with conditional rendering or src={pic || undefined} in Login/topbar/templates — purely cosmetic console noise.",
+    "(Optional) Set min-height on the Recharts ResponsiveContainer wrappers on Manager studio so initial render doesn't log width(-1) warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~860 lines — still readable but approaching the 700-line guideline. Consider splitting into routers per domain (auth, bi, notes_tasks, messaging, lookbooks, dashboards) when adding more features.",
+    "_BI_CACHE is an unbounded in-process dict — fine for v1 but will leak memory over time and won't be shared across workers; move to a TTL cache (cachetools) or Redis when scaling.",
+    "/api/auth/session uses Emergent's session_token verbatim as the DB session token. If a user re-authenticates, duplicate session_token rows could be inserted. Add a unique index on user_sessions.session_token and upsert on (session_token).",
+    "Date/time fields are stored as ISO strings (e.g., sent_at, created_at, expires_at). String comparisons work for ISO 8601 but break if any field is ever stored as a real datetime — recommend standardising on datetime objects in MongoDB and serialising on output only.",
+    "@app.on_event('startup'/'shutdown') is deprecated in FastAPI — switch to lifespan handlers.",
+    "POST /api/messages does not enforce that the customer_id exists in the BI system — any free-form id is accepted. Acceptable for v1 with mock provider but flag before wiring real BSP.",
+    "Public POST /api/public/lookbooks/{share_token}/interest has no rate-limiting or duplicate detection — a public client can spam the interests array."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_vivo_clienteling.py (new)"
+  ],
+  "success_rate": {"backend": "100% (28/28)", "frontend": "100% (8/8 pages render with expected content)"},
+  "test_credentials": "Manager session: Bearer test_session_vivo_mgr_1778250692444 (user_id=usr_test_mgr_1778250692444, email=test.vivo.mgr@example.com, role=manager). Associate session: Bearer test_session_vivo_assoc_1778250692444 (role=associate). Public lookbook share token (seeded): pub_lb_test_1778250775735. Real BI customer_id used in tests: 3846911099035 (Janet Masinde).",
+  "seed_data_creation": "Inserted 2 users + 2 sessions in test_database (manager + associate per playbook), and 1 lookbook for public-share frontend testing. All test rows are easily identifiable (test.vivo.* emails, test_session_vivo_* tokens, lb_test_* / pub_lb_test_* ids, TEST_ prefix on transient notes/tasks/templates/customers).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_vivo_clienteling.py is the regression entry point — run with MGR_TOKEN/ASSOC_TOKEN/REACT_APP_BACKEND_URL env vars (defaults are baked into the file from the seeded session). All 28 tests pass against live backend in ~23s. Frontend: cookie-based auth works after setting session_token cookie via Playwright add_cookies; sidebar pages are 'Today' (/dashboard), 'Customers' (/customers), 'Lookbooks', 'Insights' (/manager), 'Templates', 'Audit'. Customer search page only triggers search after clicking the 'Search' button — search-as-you-type is NOT implemented (initial load shows 'Top customers · 60d'). The chart 'width(-1)' warnings on Insights are harmless layout-warmup messages."
+}
