@@ -1,0 +1,122 @@
+{
+  "theme": "light",
+  "archetype": "5 (Jewel & Luxury - Light Variant)",
+  "brand": {
+    "name": "Vivo Fashion Group",
+    "vibe": "Distinctive, premium fashion-tech, editorial, modern retail",
+    "primary_audience": "In-store sales associates (tablet) and retail managers (desktop/tablet)"
+  },
+  "colors": {
+    "primary": "#1F3864",
+    "primary_foreground": "#FFFFFF",
+    "accent": "#C9A961",
+    "accent_foreground": "#FFFFFF",
+    "background": "#FAFAFA",
+    "surface": "#FFFFFF",
+    "text": "#111827",
+    "muted": "#6B7280",
+    "muted_background": "#F3F4F6",
+    "border": "#E5E7EB",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "destructive": "#EF4444"
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Outfit, sans-serif",
+      "body": "Manrope, sans-serif"
+    },
+    "scale": {
+      "h1": "text-4xl md:text-5xl tracking-tight font-light",
+      "h2": "text-2xl md:text-3xl tracking-tight font-normal",
+      "h3": "text-xl md:text-2xl font-medium",
+      "h4": "text-lg md:text-xl font-medium",
+      "body": "text-base md:text-lg leading-relaxed",
+      "small": "text-sm text-muted",
+      "overline": "text-xs tracking-[0.2em] uppercase font-semibold text-accent"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous whitespace, optical alignment, tablet-first clienteling focus",
+    "grid": "Bento-style grids for dashboard, wide gaps (gap-6 to gap-8)",
+    "containers": "Cards must have p-6 or p-8 to prevent text collision. Max width for forms and settings.",
+    "touch_targets": "Minimum 44px for all interactive elements (buttons, inputs, tabs) to ensure tablet friendliness.",
+    "radius": "rounded-none or rounded-sm for a sharp, editorial, premium feel."
+  },
+  "components": {
+    "buttons": "Large touch targets (h-12). Primary: bg-[#1F3864] text-white hover:bg-[#162A4A]. Accent: bg-[#C9A961] text-white hover:bg-[#B3934D]. No hover-only states.",
+    "cards": "bg-white border border-[#E5E7EB] shadow-sm. Sharp edges (rounded-none or rounded-sm). Inner padding p-6 or p-8.",
+    "inputs": "h-12, text-base, clear borders, active state rings in #1F3864. Floating labels or clear bold above.",
+    "tables": "Generous row height (min 60px) for tablet tapping. Clear distinct borders.",
+    "tabs": "Full width on mobile/tablet, large tap targets, active state indicated by bold text and #1F3864 border-bottom.",
+    "charts": "Recharts. Use primary (#1F3864) and accent (#C9A961) for bars/lines. Tooltips must be large and tappable.",
+    "badges": "Subtle background (e.g. bg-[#F3F4F6]) with strong text for tags/preferences."
+  },
+  "interactions": {
+    "motion": "Minimal, functional. No hover-dependent reveals. Swipeable carousels for lookbooks.",
+    "loading": "Skeleton loaders for data calls. Avoid spinners for full page.",
+    "empty_states": "Illustrated with high-quality icons (Lucide), clear message, and a primary action button.",
+    "errors": "Inline errors for forms. Toast notifications for failed data mutations."
+  },
+  "media_urls": {
+    "login_backgrounds": [
+      "https://images.unsplash.com/photo-1770061072353-32cc5837c28d?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1764998113473-bae96c1c3072?crop=entropy&cs=srgb&fm=jpg&q=85"
+    ],
+    "lookbook_products": [
+      "https://images.unsplash.com/photo-1603805785279-da750208c094?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1523754182607-2ff5903ec1e2?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1603805752838-aa579d77da72?crop=entropy&cs=srgb&fm=jpg&q=85"
+    ],
+    "avatars": [
+      "https://images.unsplash.com/photo-1774897795463-e6e4618a4997?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1774897795948-851e87f6d638?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1758922584983-82ffd5720c6a?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "https://images.unsplash.com/photo-1774897778836-3b13763e71b3?crop=entropy&cs=srgb&fm=jpg&q=85"
+    ]
+  },
+  "data_testids": {
+    "login": [
+      "login-email-input",
+      "login-password-input",
+      "login-submit-button"
+    ],
+    "search": [
+      "customer-search-input",
+      "customer-search-submit",
+      "customer-search-result-item"
+    ],
+    "profile": [
+      "profile-name",
+      "profile-lifetime-spend",
+      "profile-tab-preferences",
+      "profile-tab-notes",
+      "profile-tab-timeline",
+      "action-send-message",
+      "action-create-lookbook"
+    ],
+    "lookbook": [
+      "lookbook-builder-add-product",
+      "lookbook-builder-generate-link",
+      "lookbook-public-view",
+      "lookbook-express-interest-button"
+    ],
+    "manager_dashboard": [
+      "manager-kpi-sales",
+      "manager-kpi-associates",
+      "manager-chart-revenue"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Install lucide-react, recharts, and required shadcn components.",
+    "Add fonts (Outfit, Manrope) via Google Fonts in index.html and configure them in tailwind.config.js.",
+    "Configure tailwind.config.js with the specified colors (Navy #1F3864, Gold #C9A961) and background/surface colors.",
+    "Implement the UI focusing on tablet dimensions (768px - 1280px) first.",
+    "Ensure all interactive elements (buttons, inputs) have a minimum height of 44px (e.g., h-12) for tablet tapping.",
+    "Avoid using Shadcn's default rounded-md; override border radius to rounded-none or rounded-sm for an editorial premium feel.",
+    "In the Lookbook Builder and Customer Profile, use generous whitespace and minimal borders to let the content shine.",
+    "Data components must display loading skeletons when fetching from the mock APIs.",
+    "Never use purely hover-based actions since the app is tablet-first. Always use tap/click visible buttons.",
+    "Ensure the public lookbook view uses the brand's aesthetic (off-white bg, navy headers) without the internal CRM navigation."
+  ]
+}
