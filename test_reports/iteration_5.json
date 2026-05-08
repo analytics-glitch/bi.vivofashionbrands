@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 5 — focused regression on FIX 1 (CustomerProfile.jsx undefined functions) and FIX 2 (rfm_tier on /bi/* responses). Backend pytest test_world_class.py: 14/14 PASS. FIX 2 fully working — /bi/customer-search now returns rfm_tier on every row and CustomerSearch UI renders 10 VIP badges for 'jane' (Janet Masinde correctly tagged VIP). FIX 1 partially working — loadNba/useNbaScript/forgetCustomer now defined and most flows work, BUT (a) the patched code introduced a NEW runtime crash 'user is not defined' because useAuth was imported but never called; testing agent applied a 1-line trivial fix (`const { user } = useAuth();`) so the rest of FIX 1 could be exercised, and (b) the RFM 'VIP' badge in the customer hero (next to Janet's name) is STILL NOT RENDERED — RfmBadge is imported but never used in the hero JSX. Backend already returns profile.rfm_tier='vip' for Janet. After applied fix, NBA card mounts, script populates, 'Use this script' opens dialog with msg-body pre-filled (218 chars), Consent tab reachable, manager Forget danger zone visible, name-match validation gates the destructive button correctly (disabled empty/wrong, enabled on exact 'Janet Masinde').",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CustomerProfile.jsx", "issue": "useAuth was imported but `user` was never destructured, causing a fresh ReferenceError 'user is not defined' at line 580 (the manager-only Forget zone check). Same class of bug as iter-4 (undeclared identifier). Testing agent applied a trivial 1-line fix (`const { user } = useAuth();`) inside the component so the rest of FIX 1 could be tested. Main agent should keep this line and add a no-undef ESLint rule + `yarn build` CI gate to catch this class of bug pre-merge.", "selector": "[data-testid='customer-profile-page']", "priority": "HIGH"},
+      {"component": "CustomerProfile.jsx (hero)", "issue": "FIX 1 part (b) NOT IMPLEMENTED — the RFM 'VIP' badge is not rendered next to the customer name in the hero section. RfmBadge is imported (line 15) but never placed in the hero JSX (lines 243-251). Backend GET /api/bi/customer/3846911099035 already returns profile.rfm_tier='vip', so adding `<RfmBadge tier={profile.rfm_tier} />` next to the H1 (line 245) is the only change required.", "selector": "[data-testid='profile-name'] + [data-testid^='rfm-badge-']", "priority": "HIGH"},
+      {"component": "CustomerProfile.jsx (NBA card)", "issue": "data-testid attributes for `nba-action`, `nba-why`, `nba-urgency` are missing from the rendered DOM (only `nba-card`, `nba-script`, `nba-use-script` have testids). The visual content renders correctly (action='Message', why text, urgency chip 'MEDIUM'), but automated assertions on those individual elements fail. Add testids to lines 283 (urgency span), 286 (action h2), 287 (why p).", "selector": "[data-testid='nba-action'], [data-testid='nba-why'], [data-testid='nba-urgency']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_world_class.py",
+    "/app/test_reports/pytest/world_class_iter5.xml"
+  ],
+  "action_items": [
+    "Keep the testing-agent edit `const { user } = useAuth();` in CustomerProfile.jsx (around line 25). Add a `yarn build` or eslint no-undef CI gate.",
+    "Implement FIX 1 part (b): place `<RfmBadge tier={profile.rfm_tier} />` next to the H1 customer name in the hero on line 245 of CustomerProfile.jsx. Backend already provides profile.rfm_tier.",
+    "Add data-testid to the NBA action/why/urgency elements (lines 283, 286, 287) to match the contract used by the regression suite."
+  ],
+  "critical_code_review_comments": [
+    "Two consecutive iterations have shipped a broken CustomerProfile.jsx with undeclared identifiers (loadNba/useNbaScript in iter-4, `user` in iter-5). This is preventable with eslint `no-undef` and a `yarn build` step in CI. Strongly recommend adding before next iteration.",
+    "CustomerProfile.jsx is now ~760 lines. Past the 700-line guideline. Split NBA card, Forget dialog, and Send-message dialog into sibling components.",
+    "The FIX 1 spec (b) explicitly required a hero RFM badge but the merged commit imports RfmBadge without using it — a quick visual smoke test on /customers/<vip-id> would have caught the regression."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/CustomerProfile.jsx (testing-agent fix: added `const { user } = useAuth();` to unbreak page render)"
+  ],
+  "success_rate": {"backend": "100% (14/14 pytest + rfm_tier confirmed on /bi/customer-search)", "frontend": "FIX 2 100% (search badges + Janet VIP); FIX 1 ~80% (page loads after testing-agent patch; NBA + script prefill + Consent tab + Forget gating all work; hero RFM badge MISSING)"},
+  "test_credentials": "Bearer test_session_vivo_mgr_1778250692444 (manager) and test_session_vivo_assoc_1778250692444 (associate) seeded sessions. Janet Masinde (3846911099035) used for non-destructive checks only — Forget confirm button was NOT clicked.",
+  "seed_data_creation": "None new; reused iter-4 seeds. test_world_class.py TestForget still creates synthetic customer, so Janet untouched.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent (1) keeps the `const { user } = useAuth();` line, (2) places `<RfmBadge tier={profile.rfm_tier} />` in the customer hero next to the H1, and (3) optionally adds the missing data-testids on NBA action/why/urgency — re-run: pytest /app/backend/tests/test_world_class.py -v (must remain 14/14), then visit /customers/3846911099035 and confirm a single `[data-testid='rfm-badge-vip']` appears in the hero. /customers + 'jane' search already verified (10 VIP badges, Janet correctly tagged). Dashboard call list, login theme, manager attribution, anniversaries idempotency NOT re-tested this iteration — they were green in iter-4 and the 14/14 pytest still covers them.",
+  "rca_of_the_issue": "FIX 1 patch (commit added loadNba/useNbaScript/forgetCustomer) introduced a fresh undefined-identifier bug because the same hunk added a `user?.role === 'manager'` check on line 580 without invoking useAuth(). The import on line 16 is dead code without the destructure. Repro: open any /customers/{id} as manager → blank page + console PAGEERROR 'user is not defined' → React error boundary fires. Mitigation applied here: 1-line `const { user } = useAuth();` inserted at line 25. Permanent mitigation: enable eslint `no-undef` and gate merges on `yarn build` (would have caught both iter-4 and iter-5 instances at lint time)."
+}

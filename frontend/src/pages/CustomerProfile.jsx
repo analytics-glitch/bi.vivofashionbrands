@@ -22,6 +22,7 @@ const OCCASION_OPTIONS = ["Work", "Evening", "Casual", "Formal", "Travel"];
 export default function CustomerProfile() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [profile, setProfile] = useState(null);
   const [products, setProducts] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -80,6 +81,41 @@ export default function CustomerProfile() {
       setSocialFeedback(social.data?.items || []);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadNba = async () => {
+    setNbaLoading(true);
+    try {
+      const r = await api.get(`/customers/${id}/nba`);
+      setNba(r.data);
+    } catch {
+      /* ignore */
+    } finally {
+      setNbaLoading(false);
+    }
+  };
+
+  const useNbaScript = () => {
+    if (!nba?.script) return;
+    setMsgOpen(true);
+    setTplId("");
+    setChannel("whatsapp");
+    setMsgBody(nba.script);
+  };
+
+  const forgetCustomer = async () => {
+    if (forgetConfirm !== profile?.customer_name) {
+      toast.error("Type the customer's full name to confirm");
+      return;
+    }
+    try {
+      await api.post(`/customers/${id}/forget`);
+      toast.success("Customer forgotten");
+      setForgetOpen(false);
+      navigate("/customers");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not forget");
     }
   };
 

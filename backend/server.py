@@ -425,6 +425,9 @@ def compute_rfm_tier(profile):
 async def bi_top_customers(date_from: str, date_to: str, country: Optional[str] = None, channel: Optional[str] = None, limit: int = 20, _: User = Depends(get_current_user)):
     data = await bi_get("/top-customers", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": limit}) or []
     await _cache_customers(data)
+    if isinstance(data, list):
+        for c in data:
+            c["rfm_tier"] = compute_rfm_tier(c)
     return data
 
 
@@ -432,6 +435,9 @@ async def bi_top_customers(date_from: str, date_to: str, country: Optional[str] 
 async def bi_customer_search(q: str = Query(..., min_length=1), _: User = Depends(get_current_user)):
     data = await bi_get("/customer-search", {"q": q}) or []
     await _cache_customers(data)
+    if isinstance(data, list):
+        for c in data:
+            c["rfm_tier"] = compute_rfm_tier(c)
     return data
 
 
@@ -466,6 +472,9 @@ async def bi_customer_products(customer_id: str, _: User = Depends(get_current_u
 async def bi_churned(days: int = 90, limit: int = 20, _: User = Depends(get_current_user)):
     data = await bi_get("/churned-customers", {"days": days, "limit": limit}) or []
     await _cache_customers(data)
+    if isinstance(data, list):
+        for c in data:
+            c["rfm_tier"] = compute_rfm_tier(c)
     return data
 
 
