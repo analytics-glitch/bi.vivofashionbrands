@@ -594,7 +594,9 @@ def make_router(get_current_user, require_manager, db, audit_fn, bi_get):
             fp = _parse_date(r.get("first_purchase_date"))
             if fp:
                 by_month[fp.strftime("%Y-%m")] += 1
-            city = r.get("city") or r.get("customer_country") or "Unknown"
+            city = r.get("city") or r.get("customer_country")
+            if not city or city.lower() in ("unknown", "none"):
+                city = "Unspecified"
             by_city[city] += 1
 
             basket = float(r.get("avg_basket") or 0)
