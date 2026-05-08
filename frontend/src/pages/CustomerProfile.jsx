@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone } from "lucide-react";
+import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X } from "lucide-react";
 
 const FIT_OPTIONS = ["Fitted", "Regular", "Relaxed"];
 const FABRIC_OPTIONS = ["Cotton", "Wool", "Linen", "Silk", "Synthetic", "Denim"];
@@ -28,6 +28,8 @@ export default function CustomerProfile() {
   const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [] });
   const [consent, setConsent] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [socialHandles, setSocialHandles] = useState([]);
+  const [socialFeedback, setSocialFeedback] = useState([]);
 
   // dialog states
   const [noteOpen, setNoteOpen] = useState(false);
@@ -44,7 +46,7 @@ export default function CustomerProfile() {
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -52,6 +54,7 @@ export default function CustomerProfile() {
         api.get(`/preferences/${id}`),
         api.get(`/consent/${id}`),
         api.get(`/templates`),
+        api.get(`/social/timeline/${id}`),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
@@ -67,6 +70,8 @@ export default function CustomerProfile() {
       });
       setConsent(c.data || []);
       setTemplates(tpl.data || []);
+      setSocialHandles(social.data?.handles || []);
+      setSocialFeedback(social.data?.items || []);
     } finally {
       setLoading(false);
     }
@@ -229,6 +234,7 @@ export default function CustomerProfile() {
             ["notes", "Notes", "profile-tab-notes"],
             ["tasks", "Follow-ups", "profile-tab-tasks"],
             ["timeline", "Messages", "profile-tab-timeline"],
+            ["social", "Social", "profile-tab-social"],
             ["consent", "Consent", "profile-tab-consent"],
           ].map(([v, l, t]) => (
             <TabsTrigger
@@ -373,6 +379,89 @@ export default function CustomerProfile() {
               ))}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="social" className="mt-6 space-y-4" data-testid="profile-social-tab">
+          <Card className="vivo-card p-6 rounded-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <AtSign className="h-5 w-5 text-[var(--vivo-gold)]" />
+                <h3 className="font-display text-lg">Social handles</h3>
+              </div>
+              <Button
+                size="sm"
+                onClick={async () => {
+                  const platform = window.prompt("Platform (instagram, facebook, tiktok, x, whatsapp):", "instagram");
+                  if (!platform) return;
+                  const handle = window.prompt(`@handle on ${platform}:`, "");
+                  if (!handle) return;
+                  await api.post(`/social/handles/${id}`, { platform: platform.toLowerCase(), handle });
+                  toast.success("Handle linked");
+                  reload();
+                }}
+                className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white"
+                data-testid="social-add-handle"
+              >
+                <Plus className="mr-1 h-4 w-4" /> Add
+              </Button>
+            </div>
+            {socialHandles.length === 0 ? (
+              <div className="text-sm text-[var(--vivo-muted)]">No handles linked yet. Adding one auto-matches existing public feedback to this customer.</div>
+            ) : (
+              <ul className="grid grid-cols-1 md:grid-cols-2 gap-2" data-testid="social-handles-list">
+                {socialHandles.map((h) => (
+                  <li key={`${h.platform}-${h.handle}`} className="border border-[var(--vivo-border)] p-3 rounded-sm flex items-center justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--vivo-muted)]">{h.platform}</div>
+                      <div className="font-medium">{h.handle}</div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await api.delete(`/social/handles/${id}/${h.platform}`);
+                        toast.success("Handle removed");
+                        reload();
+                      }}
+                      className="text-[var(--vivo-muted)] hover:text-red-600"
+                      aria-label="Remove handle"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-3">Social timeline</h3>
+            <div className="vivo-divider mb-4" />
+            {socialFeedback.length === 0 ? (
+              <div className="text-sm text-[var(--vivo-muted)]">No social activity matched to this customer yet.</div>
+            ) : (
+              <ul className="divide-y divide-[var(--vivo-border)]" data-testid="social-feedback-list">
+                {socialFeedback.map((f) => (
+                  <li key={f.feedback_id} className="py-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-wider text-[var(--vivo-muted)]">{f.platform} · {f.type} · {formatDate(f.posted_at)}</div>
+                      {f.sentiment && (
+                        <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 border rounded-sm ${
+                          f.sentiment === "positive" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                          f.sentiment === "negative" ? "bg-red-50 text-red-700 border-red-200" :
+                          "bg-zinc-50 text-zinc-600 border-zinc-200"
+                        }`}>{f.sentiment}</span>
+                      )}
+                    </div>
+                    <p className="text-sm mt-1">{f.body}</p>
+                    {f.themes?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {f.themes.map((t) => <Badge key={t} variant="outline" className="rounded-sm text-[10px]">{t}</Badge>)}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
         </TabsContent>
 
         <TabsContent value="consent" className="mt-6 space-y-4">

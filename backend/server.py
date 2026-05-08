@@ -849,6 +849,13 @@ async def shutdown():
 
 app.include_router(api)
 
+# Social listening + customer feedback module
+from social import make_router as _social_router  # noqa: E402
+
+_social = _social_router(get_current_user, require_manager, db, _audit)
+# Mount with /api prefix
+app.include_router(_social, prefix="/api")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api, daysAgo, today, formatKES, formatNumber, formatDate } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -96,6 +96,7 @@ export default function ManagerDashboard() {
             ["sales", "Sales"],
             ["customers", "Customers"],
             ["associates", "Associates"],
+            ["social", "Social"],
           ].map(([v, l]) => (
             <TabsTrigger
               key={v}
@@ -224,11 +225,175 @@ export default function ManagerDashboard() {
             )}
           </Card>
         </TabsContent>
+
+        <TabsContent value="social" className="mt-6">
+          <SocialTab period={period} />
+        </TabsContent>
       </Tabs>
 
       <p className="mt-8 text-xs text-[var(--vivo-muted)]">
         Data window: {formatDate(period.from)} → {formatDate(period.to)} · Source: Vivo BI API
       </p>
+    </div>
+  );
+}
+
+/* eslint-disable react/no-unused-prop-types */
+function SocialTab({ period }) {
+  const [summary, setSummary] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [mentions, setMentions] = useState([]);
+  const [influencers, setInfluencers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const params = { date_from: period.from, date_to: period.to };
+      try {
+        const [s, p, m, inf] = await Promise.all([
+          api.get("/social/summary", { params }),
+          api.get("/social/posts", { params: { ...params, limit: 6 } }),
+          api.get("/social/mentions", { params: { ...params, limit: 8 } }),
+          api.get("/social/influencers", { params: { ...params, limit: 8 } }),
+        ]);
+        setSummary(s.data);
+        setPosts(p.data || []);
+        setMentions(m.data || []);
+        setInfluencers(inf.data || []);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [period]);
+
+  const sentimentChartData = useMemo(() => {
+    if (!summary) return [];
+    return [
+      { name: "Positive", value: summary.sentiment.positive, fill: "#10B981" },
+      { name: "Neutral", value: summary.sentiment.neutral, fill: "#94A3B8" },
+      { name: "Negative", value: summary.sentiment.negative, fill: "#EF4444" },
+    ];
+  }, [summary]);
+
+  const platformChartData = useMemo(() => {
+    if (!summary) return [];
+    return Object.entries(summary.by_platform || {}).map(([k, v]) => ({
+      platform: k,
+      positive: v.positive,
+      neutral: v.neutral,
+      negative: v.negative,
+    }));
+  }, [summary]);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <KPI label="Feedback" value={loading ? "—" : formatNumber(summary?.totals?.feedback || 0)} sub={`${summary?.totals?.unmatched || 0} unmatched`} testid="social-kpi-feedback" />
+        <KPI label="Reach (owned posts)" value={loading ? "—" : formatNumber(summary?.engagement?.reach || 0)} testid="social-kpi-reach" />
+        <KPI label="Likes (owned posts)" value={loading ? "—" : formatNumber(summary?.engagement?.likes || 0)} />
+        <KPI label="Posts" value={loading ? "—" : formatNumber(summary?.totals?.posts || 0)} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card className="vivo-card p-6 rounded-sm" data-testid="social-sentiment-chart">
+          <h3 className="font-display text-xl mb-4">Sentiment</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={sentimentChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B7280" }} />
+                <YAxis tick={{ fontSize: 11, fill: "#6B7280" }} />
+                <Tooltip />
+                <Bar dataKey="value" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+        <Card className="vivo-card p-6 rounded-sm">
+          <h3 className="font-display text-xl mb-4">By platform</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={platformChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                <XAxis dataKey="platform" tick={{ fontSize: 11, fill: "#6B7280" }} />
+                <YAxis tick={{ fontSize: 11, fill: "#6B7280" }} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="positive" stackId="a" fill="#10B981" />
+                <Bar dataKey="neutral" stackId="a" fill="#94A3B8" />
+                <Bar dataKey="negative" stackId="a" fill="#EF4444" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+
+      <Card className="vivo-card p-6 rounded-sm">
+        <h3 className="font-display text-xl mb-4">Top themes</h3>
+        <div className="flex flex-wrap gap-2">
+          {(summary?.top_themes || []).map((t) => (
+            <span key={t.theme} className="px-3 py-1 border border-[var(--vivo-border)] rounded-sm text-sm bg-white">
+              {t.theme} <span className="text-[var(--vivo-muted)] ml-1 font-mono-num">{t.count}</span>
+            </span>
+          ))}
+          {(summary?.top_themes || []).length === 0 && <span className="text-sm text-[var(--vivo-muted)]">Classifier hasn't run yet — try the Inbox page.</span>}
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card className="vivo-card p-6 rounded-sm">
+          <h3 className="font-display text-xl mb-4">Top owned posts</h3>
+          <ul className="divide-y divide-[var(--vivo-border)]" data-testid="social-top-posts">
+            {posts.map((p) => (
+              <li key={p.post_id} className="py-3 flex items-start gap-3">
+                {p.image_url && <img src={p.image_url} alt="" className="h-14 w-14 object-cover rounded-sm" />}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs uppercase tracking-wider text-[var(--vivo-muted)]">{p.platform} · {formatDate(p.posted_at)}</div>
+                  <p className="text-sm mt-1 line-clamp-2">{p.body}</p>
+                  <div className="text-xs text-[var(--vivo-muted)] mt-1 font-mono-num">
+                    {formatNumber(p.likes)} likes · {formatNumber(p.comments_count)} comments · {formatNumber(p.reach)} reach
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card className="vivo-card p-6 rounded-sm">
+          <h3 className="font-display text-xl mb-4">Influencers & advocates</h3>
+          <ul className="divide-y divide-[var(--vivo-border)]" data-testid="social-influencers">
+            {influencers.map((i) => (
+              <li key={i.handle} className="py-3 flex items-center justify-between">
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{i.name}</div>
+                  <div className="text-xs text-[var(--vivo-muted)]">{i.handle} · {i.platforms?.join(", ")}</div>
+                </div>
+                <div className="text-right text-xs">
+                  <div className="font-mono-num">{i.engagement} eng.</div>
+                  <div className="text-[var(--vivo-muted)]">{i.feedback_count} mentions</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      </div>
+
+      <Card className="vivo-card p-6 rounded-sm">
+        <h3 className="font-display text-xl mb-4">Recent mentions</h3>
+        <ul className="divide-y divide-[var(--vivo-border)]" data-testid="social-mentions">
+          {mentions.map((m) => (
+            <li key={m.feedback_id} className="py-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">{m.author_name} <span className="text-[var(--vivo-muted)] font-normal">{m.author_handle}</span></div>
+                <div className="text-xs text-[var(--vivo-muted)]">{m.platform} · {formatDate(m.posted_at)}</div>
+              </div>
+              <p className="text-sm mt-1">{m.body}</p>
+            </li>
+          ))}
+          {mentions.length === 0 && <li className="text-sm text-[var(--vivo-muted)]">No public mentions in this window.</li>}
+        </ul>
+      </Card>
     </div>
   );
 }

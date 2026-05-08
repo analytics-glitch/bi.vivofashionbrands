@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 2 — focused testing of NEW /api/social/* module + 3 new frontend surfaces. Backend: 25/25 pytest tests passed (auth gating, summary shape, posts, feedback filters, classifier sanity, mentions/influencers/dms, handles backfill+timeline, link, reply, audit, role matrix). Classifier (Claude Sonnet 4.5 via EMERGENT_LLM_KEY) classifies all 180 seeded items into {positive, neutral, negative} with themes from the fixed vocabulary; final state: 75 positive / 67 neutral / 38 negative; top themes (compliment, request_info, quality, stock, delivery) match content. Frontend: /inbox renders sidebar nav-inbox + 180 items + filters + reclassify (manager) + click→detail w/ reply/link buttons. /manager 'Social' tab renders KPIs (Feedback 176, Reach 600,380, Likes 35,494, Posts 40), Sentiment BarChart, By-Platform stacked BarChart, top themes chips, top posts, influencers, mentions. /customers/3846911099035 'Social' tab renders handles editor + social timeline w/ sentiment chips and theme badges.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Manager Insights → Social tab", "issues": ["Recharts ResponsiveContainer logs 10× 'width(-1) and height(-1) of chart should be greater than 0' warnings on first paint of the Sentiment + By-Platform charts. Charts render correctly after layout settles. Carryover from iteration 1; consider giving the chart card an explicit min-height to silence."]},
+      {"screen": "Customer Profile header (3846911099035)", "issues": ["Header shows 'Customer · 3846911099035' with placeholder '?' avatar and 'Customer since —', 'LIFETIME —' instead of Janet Masinde's name and stats. The Social tab itself renders correctly. Likely BI profile fetch race/empty payload — not in scope of this iteration but worth confirming since iteration 1 saw the name populated."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_social.py",
+    "/app/test_reports/pytest/social_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Set explicit min-height on Recharts ResponsiveContainer wrappers in Manager Social tab to silence chart width(-1) warnings.",
+    "(Verify) Customer profile header showing dashes for Janet Masinde (3846911099035) in this run while iteration 1 had it populated — confirm BI customer/{id} returns profile.customer_name and lifetime stats consistently."
+  ],
+  "critical_code_review_comments": [
+    "social.py classify_pending invokes the LLM synchronously on every /api/social/feedback call when any item has sentiment=null (server.py line 394-395). This blocks request handling for several seconds on first hits. Consider: (a) rate-limit to once per minute via a flag/lock, or (b) only kick a background task and return current state, or (c) cap to a smaller batch (e.g., 10).",
+    "_ensure_seed creates a fire-and-forget classify task with asyncio.create_task but the warm GET /summary then *also* schedules another classify task — easily overlaps and double-classifies the same items. Add an in-process lock or use update_one with filter {'sentiment': None} (already does, fine) but skip rescheduling if a job is already running.",
+    "POST /api/social/handles/{customer_id} backfills feedback by author_handle but never validates that customer_id exists in the BI system — same gap flagged for /api/messages in iteration 1.",
+    "POST /api/social/feedback/{id}/link does not require customer_id to be valid (no BI check) and does not bump customer_id back to null on un-link (no un-link route exists at all). Add DELETE or pass customer_id=null to clear.",
+    "social.py is 540 lines with mock seed inline. When real BigQuery wiring lands, split into social/{seed.py, classifier.py, router.py} for testability.",
+    "classify_batch falls back to sentiment='neutral' on any LLM exception — silently masks key revocation / quota errors. Log at error level and surface a /api/social/health diagnostic endpoint for the manager to detect classifier outage.",
+    "EMERGENT_LLM_KEY is read at module import time (line 199) — if the key is rotated, the backend must be restarted to pick it up. Read inside classify_batch instead.",
+    "Inbox.jsx 'Link to customer' uses prompt-style textbox + Enter/Search button only — no debounced search-as-you-type. Minor UX gap consistent with iteration 1's customer search behavior.",
+    "ManagerDashboard.jsx SocialTab and Inbox.jsx both fetch /api/social/feedback?limit=100 (Inbox) and /summary (Manager) on every tab switch with no caching — fine for v1 but inefficient when the corpus grows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_social.py (new, 25 tests)"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% (3/3 surfaces render with expected widgets and data)"},
+  "test_credentials": "Same seeded sessions as iteration 1: Bearer test_session_vivo_mgr_1778250692444 (manager) and test_session_vivo_assoc_1778250692444 (associate). Real BI customer used: 3846911099035 (Janet Masinde). EMERGENT_LLM_KEY in /app/backend/.env classifies live.",
+  "seed_data_creation": "No new test users/sessions created — reused iteration 1 seeds. Social collections (social_posts: 40, social_feedback: 180) were lazily seeded by the backend itself on first /summary call; classifier filled sentiment+themes for all 180 items. Tests added/removed transient handles for customer 3846911099035 (cleaned up at end of TestHandlesTimeline).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_social.py -v (25 tests, ~5s) + /app/backend/tests/test_vivo_clienteling.py for v1 regression (28 tests). The autouse fixture in test_social.py guarantees all 180 items are classified before assertions. Social MongoDB collections: social_posts, social_feedback, customer_social_handles. Frontend Inbox auto-selects the first feedback item; if it's already linked you'll see 'Open customer →' instead of 'Link to customer' — pick an unlinked item to see the link dialog. Recharts width(-1) warnings on Manager Social tab are layout-warmup noise (same root cause as iteration 1)."
+}

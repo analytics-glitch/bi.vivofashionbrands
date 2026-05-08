@@ -10,12 +10,14 @@ import {
   BarChart3,
   LogOut,
   Settings,
+  Inbox,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
   { to: "/dashboard", label: "Today", icon: LayoutDashboard, testid: "nav-today" },
   { to: "/customers", label: "Customers", icon: Users, testid: "nav-customers" },
+  { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks" },
   { to: "/manager", label: "Insights", icon: BarChart3, testid: "nav-manager", manager: true },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true },
