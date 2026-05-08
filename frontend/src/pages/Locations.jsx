@@ -12,6 +12,7 @@ import { DataQualityPill, DataQualityBanner } from "@/components/DataQualityPill
 import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
+import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
 import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
 
 const Locations = () => {
@@ -691,6 +692,17 @@ const Locations = () => {
                   view. The tracker is self-fetching off /analytics/
                   monthly-targets so the date range is the current month. */}
               <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
+
+              {/* Stock-to-Sales · by Subcategory — duplicated from
+                  Products page (iter 65) so location-focused users can
+                  see the merchandise-mix imbalance without leaving the
+                  Locations view. Self-fetching; honours the global
+                  filters (date / country / channel / category). */}
+              <StockToSalesBySubcategory
+                testIdPrefix="locations-sts-subcat"
+                exportNameFlat="locations-stock-to-sales-by-subcategory.csv"
+                exportNameGrouped="locations-stock-to-sales-by-subcategory-grouped.csv"
+              />
             </>
 
           {/* Store deep-dive slide-over — the audit's "single biggest missed

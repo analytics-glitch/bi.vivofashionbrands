@@ -65,6 +65,9 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 65)
+- **Stock-to-Sales · by Subcategory duplicated to Locations page**: extracted the inline block from `Products.jsx` into a reusable `StockToSalesBySubcategory` component (self-fetches `/analytics/stock-to-sales-by-subcat`, honours global filters, internal Flat/Grouped toggle). Dropped onto `Locations.jsx` below the Monthly Sales Target Tracker so location-focused users can see merchandise-mix imbalance without leaving the Locations view. The Products page still has the original block (single source of truth retained on /products).
+
 ### Recent (Feb 2026 — Iter 64)
 - **IBT sensitivity toggle**: 3-band switcher (Strict / Balanced / Wide) on the IBT page header. Backend `/api/analytics/ibt-suggestions` accepts `low_pct` (5-80, default 20) and `high_pct` (110-400, default 150) as tunable thresholds for the FROM/TO velocity bands.
   - **Strict** (≤20% / ≥150%) — default, fewest/strongest signals.
