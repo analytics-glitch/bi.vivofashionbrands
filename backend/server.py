@@ -2598,24 +2598,30 @@ async def analytics_ibt_sku_breakdown(
             continue
         sku_idx.setdefault(sku, {
             "sku": sku,
+            "barcode": r.get("barcode") or "",
             "color": r.get("color_print") or r.get("color") or "—",
             "size": r.get("size") or "—",
             "from_available": 0,
             "to_available": 0,
         })
         sku_idx[sku]["from_available"] += int(r.get("available") or 0)
+        if not sku_idx[sku].get("barcode") and r.get("barcode"):
+            sku_idx[sku]["barcode"] = r.get("barcode")
     for r in to_skus:
         sku = r.get("sku") or ""
         if not sku:
             continue
         sku_idx.setdefault(sku, {
             "sku": sku,
+            "barcode": r.get("barcode") or "",
             "color": r.get("color_print") or r.get("color") or "—",
             "size": r.get("size") or "—",
             "from_available": 0,
             "to_available": 0,
         })
         sku_idx[sku]["to_available"] += int(r.get("available") or 0)
+        if not sku_idx[sku].get("barcode") and r.get("barcode"):
+            sku_idx[sku]["barcode"] = r.get("barcode")
 
     rows = list(sku_idx.values())
 

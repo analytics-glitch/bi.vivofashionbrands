@@ -65,6 +65,16 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 60)
+- **IBT page rewritten as flat SKU-level tables**:
+  - Both **Store → Store** and **Warehouse → Store** lists now show one row per SKU (color × size). Color, Size, SKU, Barcode are visible columns — no expand toggle. Built `IBTFlatTable` component which fans out the SKU breakdown for every visible suggestion (concurrency-bounded, in-memory cached).
+  - Each row has an **inline "Actual transferred" number input** so the warehouse picker can record what was actually shipped before tapping the action button.
+  - **"Mark As Done"** button (renamed from "Done") replaces the previous "Change" dropdown / RecommendationActionPill. Single action, single workflow.
+  - **Tablet-friendly**: sticky Style column, 36px input height, py-2 buttons, horizontal scroll only when needed (`min-w-max`). Clean on iPad portrait + landscape.
+  - Mark-as-Done is now SKU-granular: marking one SKU done no longer suppresses sibling SKUs of the same parent suggestion. Backend `/api/ibt/completed/keys` returns both legacy parent keys and new `sku_keys`; frontend filters per-row by `<style>||<to_store>||<sku>`.
+  - `/api/ibt/complete` body and `CompletedMove` response now accept/persist optional `sku`, `color`, `size`, `barcode` fields.
+  - `/api/analytics/ibt-sku-breakdown` enriched to include `barcode` per SKU (sourced from inventory snapshot).
+
 ### Recent (Feb 2026 — Iter 59)
 - **Performance pass — production resilience under degraded upstream**:
   - **Frontend `_respCache` persists to `sessionStorage`**: cache survives page navigation, BFCache restore, and hard refresh within a tab. Hydrated on app boot. Wiped on logout. Debounced flush (250ms) so a request burst pays one stringify.

@@ -11,7 +11,12 @@ export default function IBTMarkAsDoneModal({ row, onClose, onSubmitted }) {
   const [poNumber, setPoNumber] = useState("");
   const [completedByName, setCompletedByName] = useState("");
   const [transferDate, setTransferDate] = useState(today);
-  const [actualUnits, setActualUnits] = useState(row?.units_to_move || row?.suggested_qty || 0);
+  const [actualUnits, setActualUnits] = useState(
+    row?.actual_units_moved
+    ?? row?.units_to_move
+    ?? row?.suggested_qty
+    ?? 0
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -20,6 +25,10 @@ export default function IBTMarkAsDoneModal({ row, onClose, onSubmitted }) {
   const fromStore = row.from_store || (flow === "warehouse_to_store" ? "Warehouse Finished Goods" : "");
   const toStore = row.to_store;
   const suggestedUnits = row.units_to_move ?? row.suggested_qty ?? 0;
+  // SKU-level identifiers (when Mark-As-Done is fired from a flat-table row).
+  const skuLine = [row.color, row.size, row.sku, row.barcode]
+    .filter(Boolean)
+    .join(" · ");
 
   const submit = async (e) => {
     e.preventDefault();
@@ -46,6 +55,10 @@ export default function IBTMarkAsDoneModal({ row, onClose, onSubmitted }) {
         completed_by_name: completedByName.trim(),
         transfer_date: transferDate,
         flow,
+        sku: row.sku || null,
+        color: row.color || null,
+        size: row.size || null,
+        barcode: row.barcode || null,
       });
       onSubmitted?.();
     } catch (err) {
@@ -71,6 +84,11 @@ export default function IBTMarkAsDoneModal({ row, onClose, onSubmitted }) {
             <p className="text-[12px] text-muted mt-0.5 break-words">
               <span className="font-semibold">{row.style_name}</span> · {fromStore} → <span className="text-brand font-semibold">{toStore}</span>
             </p>
+            {skuLine && (
+              <p className="text-[11px] text-brand-deep mt-0.5 font-mono break-words" data-testid="ibt-done-sku-line">
+                {skuLine}
+              </p>
+            )}
           </div>
           <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded" data-testid="ibt-done-modal-close">
             <X size={16} />

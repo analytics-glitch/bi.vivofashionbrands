@@ -60,6 +60,12 @@ class CompleteMoveBody(BaseModel):
     transfer_date: str  # YYYY-MM-DD
     suggested_date: Optional[str] = None  # defaults to today if absent
     flow: str = Field("store_to_store", pattern="^(store_to_store|warehouse_to_store)$")
+    # Optional SKU-level identifiers — present when the user clicks Mark
+    # As Done from a flat (per-SKU) row in the IBT page.
+    sku: Optional[str] = None
+    color: Optional[str] = None
+    size: Optional[str] = None
+    barcode: Optional[str] = None
 
 
 class CompletedMove(BaseModel):
@@ -78,6 +84,10 @@ class CompletedMove(BaseModel):
     completed_by_name: str
     completed_by_user_id: str
     flow: str
+    sku: Optional[str] = None
+    color: Optional[str] = None
+    size: Optional[str] = None
+    barcode: Optional[str] = None
 
 
 router = APIRouter(prefix="/api/ibt", tags=["ibt"])
@@ -130,6 +140,10 @@ async def complete_move(body: CompleteMoveBody, user: User = Depends(get_current
         "completed_by_name": body.completed_by_name.strip(),
         "completed_by_user_id": user.user_id,
         "flow": body.flow,
+        "sku": body.sku,
+        "color": body.color,
+        "size": body.size,
+        "barcode": body.barcode,
         "created_at": datetime.now(timezone.utc),
     }
     await _coll.insert_one(doc)
@@ -145,26 +159,39 @@ async def list_completed(_: User = Depends(require_admin)):
 
 @router.get("/completed/keys")
 async def list_completed_keys(user: User = Depends(get_current_user)):
-    """Lightweight listing of (style, to_store) pairs already actioned —
-    used by the IBT page (any role) to hide already-completed
-    suggestions from the live table. Returns a flat list of
-    "<style>||<to_store>" strings.
+    """Lightweight listing of already-actioned suggestions — used by
+    the IBT page (any role) to hide already-completed SKUs from the
+    live table. Returns:
+
+    - `keys`         : "<style>||<to_store>" pairs (legacy)
+    - `sku_keys`     : "<style>||<to_store>||<sku>" — SKU-granular,
+                       used by the new flat IBT table so marking one
+                       SKU done doesn't suppress its sibling SKUs.
 
     Scoped to the last 30 days so a transfer that was already done
     months ago doesn't permanently suppress a fresh recommendation.
     """
-    since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    since = since.replace(day=1) if False else since  # noqa: keep readable
     from datetime import timedelta
     since = datetime.now(timezone.utc) - timedelta(days=30)
     cursor = _coll.find(
         {"completed_at": {"$gte": since}},
-        {"_id": 0, "style_name": 1, "to_store": 1},
+        {"_id": 0, "style_name": 1, "to_store": 1, "sku": 1},
     )
-    keys = []
+    keys = set()
+    sku_keys = set()
     async for doc in cursor:
-        keys.append(f"{doc.get('style_name')}||{doc.get('to_store')}")
-    return {"keys": keys}
+        st = doc.get("style_name")
+        ts = doc.get("to_store")
+        sk = doc.get("sku")
+        if st and ts:
+            keys.add(f"{st}||{ts}")
+            if sk:
+                sku_keys.add(f"{st}||{ts}||{sk}")
+            else:
+                # Legacy row without SKU — treat as "all SKUs of this
+                # parent already done".
+                keys.add(f"{st}||{ts}||__all__")
+    return {"keys": list(keys), "sku_keys": list(sku_keys)}
 
 
 # ── First-seen tracking + late-count ────────────────────────────────
