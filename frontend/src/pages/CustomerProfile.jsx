@@ -276,15 +276,15 @@ export default function CustomerProfile() {
               <Sparkles className="h-4 w-4 text-[var(--vivo-gold)]" />
               <div className="eyebrow">AI · Next best action</div>
               {nba?.urgency && (
-                <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-md font-semibold ${
+                <span data-testid="nba-urgency" className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-md font-semibold ${
                   nba.urgency === "high" ? "bg-red-50 text-red-700 border border-red-200" :
                   nba.urgency === "medium" ? "bg-amber-50 text-amber-800 border border-amber-200" :
                   "bg-zinc-50 text-zinc-600 border border-zinc-200"
                 }`}>{nba.urgency}</span>
               )}
             </div>
-            <div className="font-display text-xl capitalize">{nbaLoading ? "Thinking…" : (nba?.action || "—")}</div>
-            <p className="text-sm text-[var(--vivo-muted)] mt-1">{nba?.why || (nbaLoading ? "" : "No suggestion yet.")}</p>
+            <div className="font-display text-xl capitalize" data-testid="nba-action">{nbaLoading ? "Thinking…" : (nba?.action || "—")}</div>
+            <p className="text-sm text-[var(--vivo-muted)] mt-1" data-testid="nba-why">{nba?.why || (nbaLoading ? "" : "No suggestion yet.")}</p>
             {nba?.script && (
               <div className="mt-3 bg-[var(--vivo-bg-soft)] border border-[var(--vivo-border)] p-3 rounded-md text-sm leading-relaxed" data-testid="nba-script">
                 "{nba.script}"
