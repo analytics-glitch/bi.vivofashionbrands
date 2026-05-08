@@ -360,36 +360,67 @@ async def bi_daily(date_from: str, date_to: str, country: Optional[str] = None, 
     return await bi_get("/daily-trend", {"date_from": date_from, "date_to": date_to, "country": country}) or []
 
 
+async def _cache_customers(items):
+    """Upsert customer profile rows seen in BI responses for fast id-lookup."""
+    if not isinstance(items, list):
+        return
+    for c in items:
+        cid = c.get("customer_id")
+        if not cid:
+            continue
+        await db.customer_cache.update_one(
+            {"customer_id": cid},
+            {"$set": {
+                "customer_id": cid,
+                "customer_name": c.get("customer_name"),
+                "phone": c.get("phone"),
+                "email": c.get("email"),
+                "city": c.get("city"),
+                "customer_country": c.get("customer_country"),
+                "total_orders": c.get("total_orders"),
+                "total_units": c.get("total_units"),
+                "total_sales": c.get("total_sales") or c.get("lifetime_spend"),
+                "avg_basket": c.get("avg_basket"),
+                "last_purchase_date": c.get("last_purchase_date"),
+                "first_purchase_date": c.get("first_purchase_date"),
+                "cached_at": iso(now_utc()),
+            }},
+            upsert=True,
+        )
+
+
 @api.get("/bi/top-customers")
 async def bi_top_customers(date_from: str, date_to: str, country: Optional[str] = None, channel: Optional[str] = None, limit: int = 20, _: User = Depends(get_current_user)):
-    return await bi_get("/top-customers", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": limit}) or []
+    data = await bi_get("/top-customers", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": limit}) or []
+    await _cache_customers(data)
+    return data
 
 
 @api.get("/bi/customer-search")
 async def bi_customer_search(q: str = Query(..., min_length=1), _: User = Depends(get_current_user)):
-    return await bi_get("/customer-search", {"q": q}) or []
+    data = await bi_get("/customer-search", {"q": q}) or []
+    await _cache_customers(data)
+    return data
 
 
 @api.get("/bi/customer/{customer_id}")
 async def bi_customer_profile(customer_id: str, user: User = Depends(get_current_user)):
     products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
-    profile_card = None
-    if isinstance(products, list) and products:
-        first = products[0]
-        profile_card = {
-            "customer_id": first.get("customer_id", customer_id),
-            "customer_name": first.get("customer_name"),
-            "phone": first.get("phone"),
-            "email": first.get("email"),
-            "city": first.get("city"),
-            "customer_country": first.get("customer_country"),
-            "total_orders": first.get("total_orders"),
-            "total_units": first.get("total_units"),
-            "total_sales": first.get("total_sales"),
-            "avg_basket": first.get("avg_basket"),
-            "last_purchase_date": first.get("last_purchase_date"),
-            "first_purchase_date": first.get("first_purchase_date"),
-        }
+    # Profile fields don't live on /customer-products. Use the cache populated by
+    # any prior /customer-search, /top-customers or /churned-customers call.
+    cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
+
+    if not cached:
+        # First-time load fallback: a wide top-customers sweep so the profile resolves.
+        big = await bi_get("/top-customers", {
+            "date_from": "2020-01-01",
+            "date_to": now_utc().date().isoformat(),
+            "limit": 2000,
+        }) or []
+        await _cache_customers(big)
+        cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
+
+    profile_card = cached or {"customer_id": customer_id}
     await _audit(user, "customer.view", "customer", customer_id)
     return {"profile": profile_card, "products": products}
 
@@ -401,7 +432,9 @@ async def bi_customer_products(customer_id: str, _: User = Depends(get_current_u
 
 @api.get("/bi/churned-customers")
 async def bi_churned(days: int = 90, limit: int = 20, _: User = Depends(get_current_user)):
-    return await bi_get("/churned-customers", {"days": days, "limit": limit}) or []
+    data = await bi_get("/churned-customers", {"days": days, "limit": limit}) or []
+    await _cache_customers(data)
+    return data
 
 
 @api.get("/bi/locations")

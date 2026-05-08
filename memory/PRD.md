@@ -26,21 +26,27 @@ Brief explicitly scopes v1 to a **clienteling app** (not a full CRM): tablet-fir
 - ✅ Login (Emergent Google OAuth) + session callback handler with race-safe synchronous detection.
 - ✅ Associate "Today" home: KPIs, follow-ups (overdue highlighting), top VIPs, win-back list.
 - ✅ Customer search: phone / name / email (Kenyan format aware via BI API), default top-customers when empty.
-- ✅ 360 Customer Profile: hero with lifetime/orders/avg basket/last visit; tabs for Purchases, Preferences, Notes, Follow-ups, Messages, Consent.
+- ✅ 360 Customer Profile: hero with lifetime/orders/avg basket/last visit; tabs for Purchases, Preferences, Notes, Follow-ups, Messages, Social, Consent.
 - ✅ Style Preferences editor (sizes, fits, fabrics, occasions, brand affinities).
 - ✅ Notes timeline & follow-up tasks with due-date sorting + overdue flag.
 - ✅ WhatsApp/SMS messaging (mock provider) with template library and placeholder substitution; opt-out blocks future sends.
 - ✅ Personalised lookbooks: 3–15 items, 30-day share UUID URL, public no-auth view, "Love this" interest capture.
-- ✅ Manager Insights: BI-driven KPIs, daily trend, country & top-store charts (recharts), top customers, churn list, per-associate activity table.
+- ✅ Manager Insights: BI-driven KPIs, daily trend, country & top-store charts (recharts), top customers, churn list, per-associate activity table, **Social tab**.
 - ✅ Message templates admin (manager-only) with 4 seeded defaults.
 - ✅ Kenya DPA: per-channel consent capture/history; full audit log for views/edits/sends.
-- ✅ 28/28 backend tests pass; all 8 frontend pages render with expected content.
+- ✅ **Social listening (Feb 2026 v1.1)**: 11 endpoints under `/api/social/*` covering posts, feedback, mentions, influencers, DMs, per-customer timeline, handle linking, replies, sentiment classifier (Claude Sonnet 4.5 via Emergent universal LLM key), audit hooks. 40 mock posts + 180 mock feedback items seeded; classifier returns sentiment {positive|neutral|negative} + themes from a fixed vocabulary. Frontend: dedicated `/inbox` page (filters, classify on demand, link-to-customer, reply), Social tab on Manager Insights, Social tab on Customer Profile.
+- ✅ **Customer profile cache (Feb 2026 v1.1.1)**: `/api/bi/customer/{id}` now resolves profile fields via a customer cache populated from any BI call returning customer data, with a wide top-customers fallback for first-time loads.
+- ✅ 28/28 v1 backend tests pass; 25/25 social backend tests pass; all 11 frontend pages render with expected content.
 
 ## Backlog (P0 → P2)
+- **P1** Wire real BigQuery social tables (today the 180-item feedback corpus is mocked) — schemas needed from Vivo's data team. Single env-flag flip + endpoint mapping in `social.py`.
 - **P1** WhatsApp BSP integration (Africa's Talking or Twilio) — replace mock send.
 - **P1** Customer ↔ associate assignment (today any associate sees any customer).
 - **P1** Inbound messages / replies into the message timeline (BSP webhooks).
 - **P1** Replace ISO-string timestamps with native Mongo datetimes.
+- **P2** Run social classifier as a background task with an in-process lock instead of inline-on-read.
+- **P2** Read EMERGENT_LLM_KEY at call time so key rotation works without restart; expose `/api/social/health` to surface classifier errors instead of silent neutral fallback.
+- **P2** Real social media post-fetcher (Meta Graph, TikTok Business, X) once schemas land in BigQuery.
 - **P2** Replace in-process BI cache with Redis or cachetools.TTLCache.
 - **P2** Add unique index on `user_sessions.session_token` and upsert-on-insert.
 - **P2** Migrate `@app.on_event` → FastAPI lifespan handlers.
