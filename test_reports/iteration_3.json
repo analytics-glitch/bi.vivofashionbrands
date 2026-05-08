@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 3 — focused testing of the NEW Closed-loop / auto-task generator feature. Backend: 13/13 pytest tests in test_auto_tasks.py PASSED (role enforcement 403 for associate on all 4 /auto-tasks/* endpoints + unauth 401, idempotency on /run, /auto-tasks list shape + auto_generated/auto_theme/auto_count/auto_week_start/auto_platforms/assignee_user_id/assignee_name/customer_id=='', /auto-tasks/runs history with themes summary, /auto-tasks/kpi shape + delta after completing one task: open 8→7, completed_14d 0→1, median_resolution_hours null→0.1, audit log contains social.autotask.run). Frontend: /manager Social tab Quality strip renders with heading 'Closed-loop feedback', Run-now button, all 4 KPIs (OPEN AUTO-TASKS=7, COMPLETED·14D=1, MEDIAN RESOLUTION=0.1h, NEGATIVE·7D=15 with '8 tasks created' caption), and an 8-row auto-tasks-list with theme chips (pricing, fabric, delivery, fit, sizing), week-of label '2026-05-04', assignee 'Test Manager', completed task is strikethrough+'Done 08 May 2026'. Clicking 'Run now' shows toast 'Already run for week of 2026-05-04' (idempotent). Clicking 'Mark resolved' completes the task, refreshes the KPI live (Open: 7→6).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Manager Insights → Social tab", "issues": ["Carryover from iteration 2: Recharts ResponsiveContainer logs 10× 'width(-1)/height(-1)' warnings on first paint of the existing Sentiment+By-Platform charts below the Quality strip. Charts render correctly; only console noise. Add explicit min-height on the chart wrappers to silence."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auto_tasks.py",
+    "/app/test_reports/pytest/auto_tasks_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Silence Recharts width(-1) warnings on existing Sentiment + By-Platform charts (pre-existing, not related to this iteration)."
+  ],
+  "critical_code_review_comments": [
+    "social.py:411 generate_negative_theme_tasks() inserts (theme × manager) tasks but enforces idempotency only at the per-week run level via social_auto_runs. There is no compound unique index on customer_tasks for (auto_generated, auto_week_start, auto_theme, assignee_user_id), so if social_auto_runs is ever wiped/edited manually, a re-run would silently duplicate tasks. Recommend adding a guarded insert (find_one before insert_one or a unique index) for defense-in-depth.",
+    "maybe_run_weekly() is called only on backend startup and only fires if today is Monday. If the backend stays up across the week, the Monday hook never fires after the initial Monday boot, and on Tuesday-Sunday boots it's a no-op — the manual /run is the only fallback. A real cron/APScheduler 'every Monday 08:00 UTC' would be more reliable.",
+    "Auto-task notes hardcode the inbox link path '/inbox (filter sentiment=negative, theme={theme})' but the inbox UI doesn't yet accept theme as a query param — the deep-link is informational only; consider wiring the filter param into Inbox.jsx so the manager can one-click jump.",
+    "/auto-tasks/kpi computes median_resolution_hours over 60 days but completed_14d uses 14 days — slightly inconsistent windows. Document or unify.",
+    "ManagerDashboard.jsx line 294 runAutoTasks awaits api.post then refetches; there is no optimistic disabled state on the per-task 'Mark resolved' buttons, so a user can double-click and fire two POSTs (only one succeeds, but it's ugly). Disable individual row buttons during refresh.",
+    "social.py is now ~760 lines — past the 700-line guideline. With the auto-task module added, splitting into social/{seed.py, classifier.py, autotasks.py, router.py} is overdue.",
+    "The 'Run now' toast text 'Already run for week of …' is good, but on a fresh week the success toast would say 'Created N tasks' — verify the success branch text is also tested (couldn't verify in this run because the week's run was already in MongoDB)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auto_tasks.py (new, 13 tests)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (Quality strip renders; Run now + Mark resolved both wired & live-refresh KPI)"},
+  "test_credentials": "Reused seeded sessions: Bearer test_session_vivo_mgr_1778250692444 (manager) and test_session_vivo_assoc_1778250692444 (associate). Backend already had 8 auto-tasks for ISO week 2026-05-04 from a prior dev /run.",
+  "seed_data_creation": "No new seed. The /complete on one auto-task during TestKpiAndCompletion.test_complete_task_shifts_kpi mutated state (8 open → 7 open). The frontend Mark-resolved click in the UI test mutated again (7 → 6). State after this iteration: 6 open auto-tasks, 2 completed for week 2026-05-04. Idempotency holds: re-running /run still returns already_run=true.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_auto_tasks.py -v (13 tests, ~1.5s). Idempotency tests rely on already_run=true being the steady state for the current ISO week; if the next agent runs in a new ISO week (after Monday rollover), the first /run will return already_run=false with tasks_created>0 — both tests still pass because they assert shape, then second-call idempotency. The 'fresh-week success toast' branch (toast 'Created N tasks') was NOT exercised in this run because the run had already happened. To force-test the fresh-week branch, delete the social_auto_runs document for the current week_start in Mongo, then click 'Run now' in the UI."
+}

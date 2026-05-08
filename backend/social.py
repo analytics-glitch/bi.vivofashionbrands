@@ -273,6 +273,145 @@ async def classify_pending(db, limit: int = 60) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Auto-task generator                                                         #
+# --------------------------------------------------------------------------- #
+
+THEME_LABELS = {
+    "sizing": "sizing",
+    "fit": "fit",
+    "fabric": "fabric quality",
+    "delivery": "delivery & shipping",
+    "customer_service": "customer service",
+    "pricing": "pricing",
+    "style": "style & design",
+    "stock": "stock availability",
+    "returns": "returns & refunds",
+    "quality": "product quality",
+    "compliment": "compliment",
+    "request_info": "info requests",
+}
+
+
+def _week_start_iso(dt: Optional[datetime] = None) -> str:
+    """ISO date of Monday 00:00 UTC for the week containing `dt` (or now)."""
+    dt = dt or now_utc()
+    monday = dt - timedelta(days=dt.weekday())
+    return monday.date().isoformat()
+
+
+async def generate_negative_theme_tasks(db, lookback_days: int = 7, threshold: int = 2) -> Dict[str, Any]:
+    """Scan recent negative feedback, group by theme, and create one follow-up
+    task per qualifying theme on EACH manager's dashboard. Idempotent per ISO week."""
+    week_start = _week_start_iso()
+    existing = await db.social_auto_runs.find_one({"week_start": week_start})
+    if existing:
+        return {"already_run": True, "week_start": week_start, "tasks_created": 0, "themes": []}
+
+    cutoff = (now_utc() - timedelta(days=lookback_days)).isoformat()
+    cursor = db.social_feedback.find(
+        {"sentiment": "negative", "posted_at": {"$gte": cutoff}, "themes": {"$ne": []}},
+        {"_id": 0, "feedback_id": 1, "themes": 1, "platform": 1, "body": 1, "author_handle": 1},
+    )
+    feedback = await cursor.to_list(2000)
+
+    # Group by theme
+    by_theme: Dict[str, List[Dict[str, Any]]] = {}
+    for f in feedback:
+        for t in (f.get("themes") or []):
+            by_theme.setdefault(t, []).append(f)
+
+    qualifying = sorted(
+        [(t, items) for t, items in by_theme.items() if len(items) >= threshold and t != "compliment"],
+        key=lambda x: -len(x[1]),
+    )
+
+    managers = await db.users.find({"role": "manager"}, {"_id": 0}).to_list(50)
+    if not managers:
+        return {"already_run": False, "week_start": week_start, "tasks_created": 0, "themes": [], "note": "No managers found"}
+
+    due = (now_utc() + timedelta(days=7)).date().isoformat()
+    tasks_created = 0
+    themes_summary: List[Dict[str, Any]] = []
+
+    for theme, items in qualifying:
+        platforms = sorted(set(i["platform"] for i in items))
+        sample_body = items[0]["body"][:140] + ("…" if len(items[0]["body"]) > 140 else "")
+        sample_ids = [i["feedback_id"] for i in items[:5]]
+        label = THEME_LABELS.get(theme, theme)
+        title = f"Review {len(items)} negative {label} mention{'s' if len(items) > 1 else ''} from last {lookback_days}d"
+        notes = (
+            f"Auto-generated weekly quality task.\n\n"
+            f"Theme: {label}\n"
+            f"Volume: {len(items)} negative mentions across {', '.join(platforms)}\n"
+            f"Sample: \"{sample_body}\"\n\n"
+            f"Action: review tagged feedback in /inbox (filter sentiment=negative, theme={theme}), "
+            f"reply to top accounts, agree a corrective action with the team, then mark this task complete."
+        )
+
+        for mgr in managers:
+            doc = {
+                "task_id": uuid_str(),
+                "customer_id": "",  # system task — not tied to a single customer
+                "customer_name": f"Quality · {label}",
+                "assignee_user_id": mgr["user_id"],
+                "assignee_name": mgr.get("name") or mgr["email"],
+                "title": title,
+                "due_date": due,
+                "notes": notes,
+                "completed": False,
+                "completed_at": None,
+                "created_at": iso(now_utc()),
+                "auto_generated": True,
+                "auto_theme": theme,
+                "auto_count": len(items),
+                "auto_week_start": week_start,
+                "auto_sample_feedback_ids": sample_ids,
+                "auto_platforms": platforms,
+            }
+            await db.customer_tasks.insert_one(dict(doc))
+            tasks_created += 1
+
+        themes_summary.append({
+            "theme": theme,
+            "label": label,
+            "count": len(items),
+            "platforms": platforms,
+        })
+
+    await db.social_auto_runs.insert_one({
+        "run_id": uuid_str(),
+        "week_start": week_start,
+        "lookback_days": lookback_days,
+        "threshold": threshold,
+        "themes": themes_summary,
+        "tasks_created": tasks_created,
+        "managers_notified": len(managers),
+        "ran_at": iso(now_utc()),
+    })
+
+    return {
+        "already_run": False,
+        "week_start": week_start,
+        "tasks_created": tasks_created,
+        "themes": themes_summary,
+        "managers_notified": len(managers),
+    }
+
+
+def uuid_str() -> str:
+    import uuid
+    return uuid.uuid4().hex
+
+
+async def maybe_run_weekly(db) -> Dict[str, Any]:
+    """Called on backend startup. Runs the generator only if today is Monday and
+    the week's run hasn't happened yet. Idempotent."""
+    if now_utc().weekday() != 0:  # 0 == Monday
+        return {"skipped": True, "reason": "not Monday"}
+    return await generate_negative_theme_tasks(db)
+
+
+# --------------------------------------------------------------------------- #
 # Models                                                                      #
 # --------------------------------------------------------------------------- #
 
@@ -539,5 +678,84 @@ def make_router(get_current_user, require_manager, db, audit_fn):
     async def run_classifier(_: Any = Depends(require_manager)):
         n = await classify_pending(db, limit=200)
         return {"classified": n}
+
+    # ----- Auto-task generator (weekly negative-theme follow-ups) ----- #
+
+    @router.post("/auto-tasks/run")
+    async def run_auto_tasks(user: Any = Depends(require_manager)):
+        result = await generate_negative_theme_tasks(db)
+        await audit_fn(user, "social.autotask.run", "system", result.get("week_start", ""), None)
+        return result
+
+    @router.get("/auto-tasks")
+    async def list_auto_tasks(include_completed: bool = True, limit: int = 50, _: Any = Depends(require_manager)):
+        q: Dict[str, Any] = {"auto_generated": True}
+        if not include_completed:
+            q["completed"] = False
+        docs = await db.customer_tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
+        return docs
+
+    @router.get("/auto-tasks/runs")
+    async def list_runs(limit: int = 12, _: Any = Depends(require_manager)):
+        docs = await db.social_auto_runs.find({}, {"_id": 0}).sort("ran_at", -1).to_list(limit)
+        return docs
+
+    @router.get("/auto-tasks/kpi")
+    async def auto_tasks_kpi(_: Any = Depends(require_manager)):
+        # Open
+        open_count = await db.customer_tasks.count_documents({"auto_generated": True, "completed": False})
+
+        # Completed in last 14d
+        cutoff_14 = (now_utc() - timedelta(days=14)).isoformat()
+        completed_14d = await db.customer_tasks.count_documents({
+            "auto_generated": True,
+            "completed": True,
+            "completed_at": {"$gte": cutoff_14},
+        })
+
+        # Median resolution hours over last 60 days
+        cutoff_60 = (now_utc() - timedelta(days=60)).isoformat()
+        completed_docs = await db.customer_tasks.find(
+            {"auto_generated": True, "completed": True, "completed_at": {"$gte": cutoff_60}},
+            {"_id": 0, "created_at": 1, "completed_at": 1},
+        ).to_list(500)
+
+        deltas: List[float] = []
+        for d in completed_docs:
+            try:
+                ca = datetime.fromisoformat(d["created_at"])
+                co = datetime.fromisoformat(d["completed_at"])
+                if ca.tzinfo is None:
+                    ca = ca.replace(tzinfo=timezone.utc)
+                if co.tzinfo is None:
+                    co = co.replace(tzinfo=timezone.utc)
+                deltas.append((co - ca).total_seconds() / 3600.0)
+            except Exception:
+                continue
+
+        median_h = None
+        if deltas:
+            deltas.sort()
+            mid = len(deltas) // 2
+            median_h = deltas[mid] if len(deltas) % 2 else (deltas[mid - 1] + deltas[mid]) / 2
+
+        # Negative items in last 7d (latency input)
+        cutoff_7 = (now_utc() - timedelta(days=7)).isoformat()
+        negative_7d = await db.social_feedback.count_documents({"sentiment": "negative", "posted_at": {"$gte": cutoff_7}})
+
+        # Tasks created last 7d
+        cutoff_tasks_7 = (now_utc() - timedelta(days=7)).isoformat()
+        created_7d = await db.customer_tasks.count_documents({"auto_generated": True, "created_at": {"$gte": cutoff_tasks_7}})
+
+        last_run = await db.social_auto_runs.find_one({}, {"_id": 0}, sort=[("ran_at", -1)])
+
+        return {
+            "open": open_count,
+            "completed_14d": completed_14d,
+            "median_resolution_hours": median_h,
+            "negative_feedback_7d": negative_7d,
+            "tasks_created_7d": created_7d,
+            "last_run": last_run,
+        }
 
     return router

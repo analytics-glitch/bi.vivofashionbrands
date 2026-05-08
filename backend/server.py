@@ -870,6 +870,15 @@ async def startup():
         await db.message_templates.insert_many([dict(d) for d in seeded])
         logger.info("Seeded %d default message templates", len(seeded))
 
+    # Best-effort weekly auto-task run (only fires on Monday + idempotent per ISO week)
+    try:
+        from social import maybe_run_weekly  # noqa: WPS433
+        result = await maybe_run_weekly(db)
+        if result.get("tasks_created"):
+            logger.info("Weekly auto-tasks: created %d tasks for week %s", result["tasks_created"], result["week_start"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Weekly auto-task check failed: %s", exc)
+
 
 @app.on_event("shutdown")
 async def shutdown():

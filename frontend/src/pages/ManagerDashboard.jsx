@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, daysAgo, today, formatKES, formatNumber, formatDate } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Sparkles } from "lucide-react";
+import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
 
 function KPI({ label, value, sub, testid }) {
@@ -245,6 +249,22 @@ function SocialTab({ period }) {
   const [mentions, setMentions] = useState([]);
   const [influencers, setInfluencers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [autoKpi, setAutoKpi] = useState(null);
+  const [autoTasks, setAutoTasks] = useState([]);
+  const [autoBusy, setAutoBusy] = useState(false);
+
+  const loadAuto = async () => {
+    try {
+      const [k, t] = await Promise.all([
+        api.get("/social/auto-tasks/kpi"),
+        api.get("/social/auto-tasks", { params: { include_completed: true, limit: 12 } }),
+      ]);
+      setAutoKpi(k.data);
+      setAutoTasks(t.data || []);
+    } catch {
+      /* manager-only; ignore for non-managers */
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -261,11 +281,35 @@ function SocialTab({ period }) {
         setPosts(p.data || []);
         setMentions(m.data || []);
         setInfluencers(inf.data || []);
+        await loadAuto();
       } finally {
         setLoading(false);
       }
     })();
   }, [period]);
+
+  const runAutoTasks = async () => {
+    setAutoBusy(true);
+    try {
+      const r = await api.post("/social/auto-tasks/run");
+      if (r.data?.already_run) {
+        toast.info(`Already run for week of ${r.data.week_start}`);
+      } else {
+        toast.success(`Created ${r.data.tasks_created} task${r.data.tasks_created === 1 ? "" : "s"} across ${r.data.themes?.length || 0} themes`);
+      }
+      await loadAuto();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not run");
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const completeTask = async (taskId) => {
+    await api.post(`/tasks/${taskId}/complete`);
+    toast.success("Marked done");
+    loadAuto();
+  };
 
   const sentimentChartData = useMemo(() => {
     if (!summary) return [];
@@ -288,6 +332,56 @@ function SocialTab({ period }) {
 
   return (
     <div className="space-y-6">
+      {/* Quality auto-tasks strip */}
+      <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[var(--vivo-gold)]" data-testid="quality-strip">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="eyebrow">Quality · auto-tasks</div>
+            <h3 className="font-display text-xl mt-1">Closed-loop feedback</h3>
+            <p className="text-sm text-[var(--vivo-muted)] mt-1 max-w-xl">
+              Every Monday we cluster negative feedback by theme and create one follow-up per theme on every manager.
+              Resolution time = the headline pilot KPI.
+            </p>
+          </div>
+          <Button onClick={runAutoTasks} disabled={autoBusy} className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white h-11" data-testid="auto-tasks-run">
+            <Sparkles className="mr-2 h-4 w-4" /> {autoBusy ? "Working…" : "Run now"}
+          </Button>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5">
+          <KPI label="Open auto-tasks" value={formatNumber(autoKpi?.open || 0)} testid="auto-kpi-open" />
+          <KPI label="Completed · 14d" value={formatNumber(autoKpi?.completed_14d || 0)} />
+          <KPI label="Median resolution" value={autoKpi?.median_resolution_hours == null ? "—" : `${autoKpi.median_resolution_hours.toFixed(1)}h`} testid="auto-kpi-median" />
+          <KPI label="Negative · 7d" value={formatNumber(autoKpi?.negative_feedback_7d || 0)} sub={`${autoKpi?.tasks_created_7d || 0} tasks created`} />
+        </div>
+        {autoTasks.length > 0 && (
+          <div className="mt-6">
+            <div className="vivo-divider mb-4" />
+            <ul className="divide-y divide-[var(--vivo-border)]" data-testid="auto-tasks-list">
+              {autoTasks.map((t) => (
+                <li key={t.task_id} className="py-3 flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-sm ${t.completed ? "line-through text-[var(--vivo-muted)]" : "font-medium"}`}>{t.title}</div>
+                    <div className="text-xs text-[var(--vivo-muted)] mt-1 flex flex-wrap gap-2 items-center">
+                      <Badge variant="outline" className="rounded-sm text-[10px]">{t.auto_theme}</Badge>
+                      <span>· {t.auto_platforms?.join(", ")}</span>
+                      <span>· week of {t.auto_week_start}</span>
+                      <span>· assigned to {t.assignee_name}</span>
+                    </div>
+                  </div>
+                  {t.completed ? (
+                    <Badge variant="secondary" className="rounded-sm">Done {formatDate(t.completed_at)}</Badge>
+                  ) : (
+                    <Button onClick={() => completeTask(t.task_id)} variant="outline" className="rounded-sm" data-testid={`auto-task-complete-${t.task_id}`}>
+                      Mark resolved
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Card>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPI label="Feedback" value={loading ? "—" : formatNumber(summary?.totals?.feedback || 0)} sub={`${summary?.totals?.unmatched || 0} unmatched`} testid="social-kpi-feedback" />
         <KPI label="Reach (owned posts)" value={loading ? "—" : formatNumber(summary?.engagement?.reach || 0)} testid="social-kpi-reach" />
