@@ -16,6 +16,7 @@ import Templates from "@/pages/Templates";
 import AuditLog from "@/pages/AuditLog";
 import Lookbooks from "@/pages/Lookbooks";
 import Inbox from "@/pages/Inbox";
+import Overview from "@/pages/Overview";
 import { CohortsPage, OperationsPage } from "@/pages/InsightsPages";
 
 function ProtectedRoutes() {
@@ -31,6 +32,7 @@ function ProtectedRoutes() {
         <Route path="/lookbooks" element={<Lookbooks />} />
         <Route path="/lookbooks/new" element={<LookbookBuilder />} />
         <Route path="/inbox" element={<Inbox />} />
+        <Route path="/overview" element={user.role === "manager" ? <Overview /> : <Navigate to="/dashboard" replace />} />
         <Route path="/cohorts" element={user.role === "manager" ? <CohortsPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/operations" element={user.role === "manager" ? <OperationsPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/manager" element={user.role === "manager" ? <ManagerDashboard /> : <Navigate to="/dashboard" replace />} />

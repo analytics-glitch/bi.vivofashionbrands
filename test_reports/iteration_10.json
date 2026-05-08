@@ -1,0 +1,49 @@
+{
+  "summary": "Iter10 — verified Overview page end-to-end: 4 new backend endpoints (overview, purchase-frequency, new-customers, dropoff-forecast) + manager-only Overview frontend with KPI strip, tier pie, frequency bar, new-customer line + city/arrivals lists, drop-off forecast banner & list. Backend 11/11 pytest green; Playwright run for all required selectors green; associate properly redirected and sidebar entry hidden.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview (initial paint)", "issues": ["Recharts emits 'width(-1) height(-1)' warnings on mount until ResponsiveContainer measures (Customer mix Pie 50% width, Purchase frequency Bar, Acquisition Line). Cosmetic — charts paint correctly after first frame. Same warning class observed in iter9."]},
+      {"screen": "Acquisition · last 30 days top-cities", "issues": ["Top city is 'Unknown' (7) ahead of 'Kenya' (3) — the by_city aggregation falls back to customer_country when city missing, so unspecified rows surface as 'Unknown'. Consider hiding 'Unknown' or relabelling to 'Unspecified' so the panel reads cleaner to the manager."]},
+      {"screen": "Overview KPI strip", "issues": ["8 KPIs render in a 4-col grid → row 2 has 4 cards (basket / messages / sentiment / churn). Visually fine on desktop; on a 1280-1366 laptop the 'PROJECTED CHURN · 30D' label can wrap. Minor."]}
+    ]
+  },
+  "verified_acceptance_criteria": [
+    "Sidebar — Manager sees nav-overview entry with 'Overview' label (Compass icon). Associate's sidebar does NOT contain nav-overview. PASS.",
+    "Route /overview — Manager renders data-testid='overview-page' with h1='Overview'. Associate hitting /overview is redirected to /dashboard. PASS.",
+    "GET /api/insights/overview (manager) returns generated_at + 12 expected KPIs + tier_distribution + sentiment_distribution + callouts[]; associate → 403. PASS.",
+    "GET /api/insights/purchase-frequency (manager) returns total/multi/one_time/avg/median + buckets[] of length 7 with keys {weekly, monthly, quarterly, biannual, yearly, lapsed, one_time}; associate → 403. PASS.",
+    "GET /api/insights/new-customers — days=30,60,90 all return correct shape; count is monotonic non-decreasing across 30→90; top_arrivals carries customer_id/name/city/first_purchase_date/total_orders/total_sales/rfm_tier; associate → 403. PASS.",
+    "GET /api/insights/dropoff-forecast?days=90 returns window_days/evaluated/already_converted/projected_churn_next_30d/bands{high,medium,low}/at_risk_customers[]/methodology; at_risk_customers sorted desc by risk_score; risk_band ∈ {high,medium,low}; associate → 403. PASS.",
+    "Overview page renders overview-kpis grid with 8 cards (kpi-total, kpi-new, kpi-active, kpi-vip, kpi-basket, kpi-messages, kpi-sentiment, kpi-churn). PASS.",
+    "tier-distribution-card renders Pie (5 slices for the seeded tiers) + legend list with RFM badges + counts. purchase-frequency-card renders horizontal BarChart with 7 colored bars. PASS.",
+    "new-customers-card window toggle: nw-window-30/60/90 all present; clicking 60 and 90 updates the LineChart and the 'Acquisition · last X days' headline. new-by-city and top-arrivals-list render under the chart. PASS.",
+    "dropoff-card: projection-banner shows 'Of the 19 customers acquired… ~0 are projected to churn'; dropoff-list rendered; risk-band chips use red/amber/emerald palette per BAND_STYLE. PASS.",
+    "Regression — sidebar still shows Today, Customers, Inbox, Lookbooks, Insights, Cohorts, Operations, Templates, Audit; clicking nav-overview routes to /overview without breaking neighbour routes. PASS (visually confirmed in screenshot)."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_overview.py",
+    "/app/test_reports/pytest/iter10_results.xml"
+  ],
+  "action_items": [
+    "(Low priority, design) In new-customers by_city aggregation, drop or relabel 'Unknown' bucket so the Top cities panel doesn't lead with it.",
+    "(Low priority, cosmetic) Suppress Recharts 'width(-1) height(-1)' warnings on the Overview mount — the Customer-mix Pie uses width='50%' inside a flex row; a min-width on the ResponsiveContainer parent or aspect prop would silence it."
+  ],
+  "critical_code_review_comments": [
+    "insights.py is now ~1213 lines — past the 700-line guideline. Worth splitting cohort/overview/operational/leaderboard endpoints into separate modules in next refactor.",
+    "Overview.jsx (~331 lines, 1 file) is healthy size, but the inline Kpi/DeltaChip components could move to /components for reuse in future dashboards.",
+    "_pct_delta returns 100.0 when prev=0 and curr>0; that's deceptive for very small samples (e.g. messages_sent_30d=6 vs prev=0 shows '+100%'). Consider returning null when prev=0 AND curr is small (<10) to avoid misleading the manager.",
+    "dropoff-forecast issues a per-customer customer_preferences.find_one() inside the loop (line ~713). For a 10k-customer cache this would be 10k round-trips. Today new-window is small (≤19), but a single batched $in lookup would be cleaner.",
+    "Overview page does 4 parallel API calls on mount but swallows all errors silently (catch { /* ignore */ }). If overview API 500s the user just sees em-dashes with no toast or retry — add a minimal error banner."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter10_overview.py (new)"],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100%"},
+  "test_credentials": "Manager session: test_session_vivo_mgr_1778250692444; Associate session: test_session_vivo_assoc_1778250692444 (set via session_token cookie or Authorization: Bearer).",
+  "seed_data_creation": "None — read-only verification against existing customer_cache / message_logs / social_feedback collections.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter10 covered the Overview MVP (4 backend endpoints + manager-only /overview page with KPI grid, tier pie, frequency bar, new-customer line/cities/arrivals, drop-off banner/list). All acceptance criteria pass. Recharts width(-1) warnings and DialogDescription a11y warnings are pre-existing cosmetic issues from earlier iterations. Use the seeded manager/associate session tokens against REACT_APP_BACKEND_URL.",
+  "rca of the issue": "N/A — no defects found."
+}

@@ -13,11 +13,13 @@ import {
   Inbox,
   Layers,
   ClipboardList,
+  Compass,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
   { to: "/dashboard", label: "Today", icon: LayoutDashboard, testid: "nav-today" },
+  { to: "/overview", label: "Overview", icon: Compass, testid: "nav-overview", manager: true },
   { to: "/customers", label: "Customers", icon: Users, testid: "nav-customers" },
   { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks" },

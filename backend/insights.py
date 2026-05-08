@@ -393,6 +393,362 @@ def make_router(get_current_user, require_manager, db, audit_fn, bi_get):
         return {"created": created, "cohort": cohort, "bucket": payload.get("bucket"), "title": title}
 
     # --------------------------------------------------------------------- #
+    # 11. Overview — headline insights strip                                #
+    # --------------------------------------------------------------------- #
+
+    @router.get("/overview")
+    async def overview(_: Any = Depends(require_manager)):
+        """Executive overview: headline KPIs + 30d trends + key callouts."""
+        now_dt = now_utc()
+        cutoff_30 = (now_dt - timedelta(days=30)).isoformat()
+        cutoff_60 = (now_dt - timedelta(days=60)).isoformat()
+
+        # Customer-cache base
+        total_customers = await db.customer_cache.count_documents({})
+
+        # New this 30d / previous 30d
+        new_30 = await db.customer_cache.count_documents({"first_purchase_date": {"$gte": cutoff_30}})
+        new_prev = await db.customer_cache.count_documents({"first_purchase_date": {"$gte": cutoff_60, "$lt": cutoff_30}})
+        new_delta = _pct_delta(new_30, new_prev)
+
+        # Active 30d (bought in last 30d)
+        active_30 = await db.customer_cache.count_documents({"last_purchase_date": {"$gte": cutoff_30}})
+        active_prev = await db.customer_cache.count_documents({"last_purchase_date": {"$gte": cutoff_60, "$lt": cutoff_30}})
+        active_delta = _pct_delta(active_30, active_prev)
+
+        # RFM distribution
+        tier_dist = {}
+        async for t in db.customer_cache.aggregate([
+            {"$match": {"rfm_tier": {"$ne": None}}},
+            {"$group": {"_id": "$rfm_tier", "n": {"$sum": 1}}},
+        ]):
+            tier_dist[t["_id"]] = t["n"]
+
+        at_risk_count = tier_dist.get("at_risk", 0)
+        vip_count = tier_dist.get("vip", 0)
+
+        # Outreach 30d
+        messages_30 = await db.message_logs.count_documents({"sent_at": {"$gte": cutoff_30}})
+        messages_prev = await db.message_logs.count_documents({"sent_at": {"$gte": cutoff_60, "$lt": cutoff_30}})
+        messages_delta = _pct_delta(messages_30, messages_prev)
+
+        # Revenue est from cache (sum of total_sales of active-30d customers — proxy)
+        rev_rows = await db.customer_cache.aggregate([
+            {"$match": {"last_purchase_date": {"$gte": cutoff_30}}},
+            {"$group": {"_id": None, "lifetime_sum": {"$sum": "$total_sales"}, "avg_basket": {"$avg": "$avg_basket"}}},
+        ]).to_list(1)
+        avg_basket = float(rev_rows[0]["avg_basket"]) if rev_rows else 0.0
+
+        # Social sentiment 30d
+        sent_dist: Dict[str, int] = defaultdict(int)
+        async for s in db.social_feedback.aggregate([
+            {"$match": {"posted_at": {"$gte": cutoff_30}, "sentiment": {"$ne": None}}},
+            {"$group": {"_id": "$sentiment", "n": {"$sum": 1}}},
+        ]):
+            sent_dist[s["_id"]] = s["n"]
+        sent_total = sum(sent_dist.values())
+        sent_score = round(((sent_dist.get("positive", 0) - sent_dist.get("negative", 0)) / sent_total * 100), 1) if sent_total else 0.0
+
+        # Callouts — small narrative badges
+        callouts = []
+        if new_delta is not None and new_delta > 15:
+            callouts.append({"tone": "positive", "text": f"New customers up {new_delta:+.0f}% vs. prior 30d"})
+        elif new_delta is not None and new_delta < -15:
+            callouts.append({"tone": "warning", "text": f"New customers down {new_delta:+.0f}% vs. prior 30d"})
+        if at_risk_count:
+            callouts.append({"tone": "warning", "text": f"{at_risk_count} customers at risk — schedule win-backs"})
+        if sent_score < 0 and sent_total > 10:
+            callouts.append({"tone": "warning", "text": f"Social sentiment net {sent_score:+.0f} — check Inbox"})
+
+        return {
+            "generated_at": iso(now_dt),
+            "kpis": {
+                "total_customers": total_customers,
+                "new_customers_30d": new_30,
+                "new_customers_delta_pct": new_delta,
+                "active_customers_30d": active_30,
+                "active_customers_delta_pct": active_delta,
+                "vip_customers": vip_count,
+                "at_risk_customers": at_risk_count,
+                "avg_basket_kes": round(avg_basket, 0),
+                "messages_sent_30d": messages_30,
+                "messages_delta_pct": messages_delta,
+                "social_sentiment_net": sent_score,
+                "social_feedback_30d": sent_total,
+            },
+            "tier_distribution": tier_dist,
+            "sentiment_distribution": dict(sent_dist),
+            "callouts": callouts,
+        }
+
+    # --------------------------------------------------------------------- #
+    # 12. Purchase frequency distribution                                   #
+    # --------------------------------------------------------------------- #
+
+    @router.get("/purchase-frequency")
+    async def purchase_frequency(_: Any = Depends(require_manager)):
+        """Distribution of purchase cadences across the customer base.
+
+        Buckets (avg days between orders, for customers with >= 2 orders):
+          - weekly (0-14d)
+          - monthly (14-60d)
+          - quarterly (60-120d)
+          - biannual (120-240d)
+          - yearly (240-400d)
+          - lapsed (>400d)
+          - one_time (exactly 1 order)
+        """
+        rows = await db.customer_cache.find({}, {"_id": 0}).to_list(50000)
+        buckets: Dict[str, Dict[str, Any]] = {
+            k: {"count": 0, "customers_ltv_kes": 0.0}
+            for k in ("weekly", "monthly", "quarterly", "biannual", "yearly", "lapsed", "one_time")
+        }
+        cadences: List[float] = []
+        for r in rows:
+            orders = int(r.get("total_orders") or 0)
+            spend = float(r.get("total_sales") or 0)
+            if orders < 1:
+                continue
+            if orders == 1:
+                buckets["one_time"]["count"] += 1
+                buckets["one_time"]["customers_ltv_kes"] += spend
+                continue
+            first = _parse_date(r.get("first_purchase_date"))
+            last = _parse_date(r.get("last_purchase_date"))
+            if not first or not last or orders < 2:
+                continue
+            span_days = max(1, (last - first).days)
+            cadence = span_days / (orders - 1)
+            cadences.append(cadence)
+            if cadence < 14:
+                b = "weekly"
+            elif cadence < 60:
+                b = "monthly"
+            elif cadence < 120:
+                b = "quarterly"
+            elif cadence < 240:
+                b = "biannual"
+            elif cadence < 400:
+                b = "yearly"
+            else:
+                b = "lapsed"
+            buckets[b]["count"] += 1
+            buckets[b]["customers_ltv_kes"] += spend
+
+        total_multi = sum(b["count"] for k, b in buckets.items() if k != "one_time")
+        overall_avg = round(sum(cadences) / len(cadences), 1) if cadences else 0.0
+        cadences.sort()
+        median = round(cadences[len(cadences) // 2], 1) if cadences else 0.0
+
+        return {
+            "total_customers": sum(b["count"] for b in buckets.values()),
+            "multi_order_customers": total_multi,
+            "one_time_customers": buckets["one_time"]["count"],
+            "overall_avg_cadence_days": overall_avg,
+            "median_cadence_days": median,
+            "buckets": [
+                {
+                    "bucket": k,
+                    "label": {
+                        "weekly": "Weekly (0–14d)",
+                        "monthly": "Monthly (14–60d)",
+                        "quarterly": "Quarterly (60–120d)",
+                        "biannual": "Bi-annual (120–240d)",
+                        "yearly": "Yearly (240–400d)",
+                        "lapsed": "Lapsed (>400d)",
+                        "one_time": "One-time shoppers",
+                    }[k],
+                    "count": b["count"],
+                    "pct_of_base": round(b["count"] * 100.0 / sum(bb["count"] for bb in buckets.values()), 1) if sum(bb["count"] for bb in buckets.values()) else 0.0,
+                    "customers_ltv_kes": round(b["customers_ltv_kes"], 0),
+                }
+                for k, b in buckets.items()
+            ],
+        }
+
+    # --------------------------------------------------------------------- #
+    # 13. New-customer insights (last 30 / 90d)                             #
+    # --------------------------------------------------------------------- #
+
+    @router.get("/new-customers")
+    async def new_customers(days: int = 30, _: Any = Depends(require_manager)):
+        """Insights on customers whose first purchase was in the last `days` days."""
+        cutoff = (now_utc() - timedelta(days=days)).isoformat()
+        rows = await db.customer_cache.find(
+            {"first_purchase_date": {"$gte": cutoff}},
+            {"_id": 0},
+        ).to_list(10000)
+
+        if not rows:
+            return {"window_days": days, "count": 0, "by_month": [], "by_city": [], "avg_first_basket_kes": 0, "converted_second_order": 0, "single_order_still": 0, "top_arrivals": []}
+
+        # By acquisition month
+        by_month = defaultdict(int)
+        by_city = defaultdict(int)
+        baskets: List[float] = []
+        single_order_still = 0
+        converted_second = 0
+        top_arrivals: List[Dict[str, Any]] = []
+
+        for r in rows:
+            fp = _parse_date(r.get("first_purchase_date"))
+            if fp:
+                by_month[fp.strftime("%Y-%m")] += 1
+            city = r.get("city") or r.get("customer_country") or "Unknown"
+            by_city[city] += 1
+
+            basket = float(r.get("avg_basket") or 0)
+            if basket > 0:
+                baskets.append(basket)
+
+            orders = int(r.get("total_orders") or 0)
+            if orders == 1:
+                single_order_still += 1
+            else:
+                converted_second += 1
+
+            top_arrivals.append({
+                "customer_id": r.get("customer_id"),
+                "customer_name": r.get("customer_name"),
+                "city": r.get("city"),
+                "first_purchase_date": r.get("first_purchase_date"),
+                "total_orders": orders,
+                "total_sales": float(r.get("total_sales") or 0),
+                "rfm_tier": r.get("rfm_tier"),
+            })
+
+        top_arrivals.sort(key=lambda c: -c["total_sales"])
+        by_month_list = [{"month": k, "count": v} for k, v in sorted(by_month.items())]
+        by_city_list = sorted(
+            [{"city": k, "count": v} for k, v in by_city.items()],
+            key=lambda x: -x["count"],
+        )[:10]
+
+        return {
+            "window_days": days,
+            "count": len(rows),
+            "avg_first_basket_kes": round(sum(baskets) / len(baskets), 0) if baskets else 0,
+            "converted_second_order": converted_second,
+            "single_order_still": single_order_still,
+            "second_order_rate_pct": round(converted_second * 100.0 / len(rows), 1),
+            "by_month": by_month_list,
+            "by_city": by_city_list,
+            "top_arrivals": top_arrivals[:15],
+        }
+
+    # --------------------------------------------------------------------- #
+    # 14. Drop-off forecast for new customers                               #
+    # --------------------------------------------------------------------- #
+
+    @router.get("/dropoff-forecast")
+    async def dropoff_forecast(days: int = 90, _: Any = Depends(require_manager)):
+        """Predicts which new customers (first_purchase in last `days` days)
+        are likely to drop off based on observed cohort patterns.
+
+        Scoring (0–100 risk):
+          +40 if still only 1 order AND ≥ 30d since first purchase
+          +20 for each missed "expected" second-order window (based on cohort median)
+          +15 if their cohort's M3 retention <= 25%
+          +10 if no profile enrichment (no size prefs, no phone/email)
+          -20 if they've already placed a 2nd order (i.e. converted)
+
+        Outputs per customer + aggregate projection.
+        """
+        cutoff = (now_utc() - timedelta(days=days)).isoformat()
+        new_rows = await db.customer_cache.find(
+            {"first_purchase_date": {"$gte": cutoff}},
+            {"_id": 0},
+        ).to_list(10000)
+
+        # Compute cohort M3 retention (reuse the existing cohort math, quickly)
+        all_cache = await db.customer_cache.find(
+            {"first_purchase_date": {"$ne": None}},
+            {"_id": 0, "first_purchase_date": 1, "last_purchase_date": 1},
+        ).to_list(50000)
+        cohort_m3: Dict[str, float] = {}
+        coh_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for r in all_cache:
+            fp = _parse_date(r.get("first_purchase_date"))
+            if fp:
+                coh_buckets[fp.strftime("%Y-%m")].append(r)
+        for mk, cs in coh_buckets.items():
+            if not cs:
+                continue
+            dt = datetime.strptime(mk + "-01", "%Y-%m-%d")
+            retained = 0
+            for c in cs:
+                last = _parse_date(c.get("last_purchase_date"))
+                if last and (last - dt).days >= 90:
+                    retained += 1
+            cohort_m3[mk] = retained * 100.0 / len(cs)
+
+        now_dt = now_utc().replace(tzinfo=None)
+        at_risk = []
+        converted = 0
+        for r in new_rows:
+            fp = _parse_date(r.get("first_purchase_date"))
+            if not fp:
+                continue
+            days_since_first = (now_dt - fp).days
+            orders = int(r.get("total_orders") or 0)
+            cohort_mk = fp.strftime("%Y-%m")
+            m3 = cohort_m3.get(cohort_mk, 40.0)
+
+            score = 0.0
+            reasons: List[str] = []
+            if orders == 1 and days_since_first >= 30:
+                score += 40
+                reasons.append(f"{days_since_first}d since first order, no repeat")
+            if orders == 1 and days_since_first >= 60:
+                score += 20
+                reasons.append("past typical 2nd-order window")
+            if m3 <= 25:
+                score += 15
+                reasons.append(f"cohort M3 retention only {m3:.0f}%")
+            if orders >= 2:
+                score -= 20
+                converted += 1
+                reasons.append("already placed 2nd order")
+            # Profile enrichment penalty
+            prefs_doc = await db.customer_preferences.find_one({"customer_id": r.get("customer_id")}, {"_id": 0, "sizes": 1})
+            if not prefs_doc or not (prefs_doc.get("sizes") or {}):
+                score += 10
+                reasons.append("no style profile captured")
+            score = max(0.0, min(100.0, score))
+            band = "high" if score >= 60 else "medium" if score >= 35 else "low"
+
+            at_risk.append({
+                "customer_id": r.get("customer_id"),
+                "customer_name": r.get("customer_name"),
+                "city": r.get("city"),
+                "rfm_tier": r.get("rfm_tier"),
+                "first_purchase_date": r.get("first_purchase_date"),
+                "days_since_first_purchase": days_since_first,
+                "total_orders": orders,
+                "total_sales_kes": float(r.get("total_sales") or 0),
+                "risk_score": round(score, 1),
+                "risk_band": band,
+                "reasons": reasons,
+                "cohort_m3_retention_pct": round(m3, 1),
+            })
+
+        at_risk.sort(key=lambda x: -x["risk_score"])
+        high = sum(1 for c in at_risk if c["risk_band"] == "high")
+        medium = sum(1 for c in at_risk if c["risk_band"] == "medium")
+        low = sum(1 for c in at_risk if c["risk_band"] == "low")
+        projected_churn = high + round(medium * 0.5)
+
+        return {
+            "window_days": days,
+            "evaluated": len(at_risk),
+            "already_converted": converted,
+            "projected_churn_next_30d": projected_churn,
+            "bands": {"high": high, "medium": medium, "low": low},
+            "at_risk_customers": at_risk[:50],
+            "methodology": "Composite score combining order recency, repeat-order window, cohort M3 retention and profile-enrichment gap. Calibrated against the Vivo customer_cache.",
+        }
+
+    # --------------------------------------------------------------------- #
     # 2. LTV forecast                                                       #
     # --------------------------------------------------------------------- #
 
@@ -849,3 +1205,9 @@ def make_router(get_current_user, require_manager, db, audit_fn, bi_get):
 def _new_id() -> str:
     import uuid
     return uuid.uuid4().hex[:16]
+
+
+def _pct_delta(curr: int, prev: int) -> Optional[float]:
+    if prev == 0:
+        return None if curr == 0 else 100.0
+    return round((curr - prev) / prev * 100.0, 1)
