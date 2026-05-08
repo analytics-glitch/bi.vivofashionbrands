@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Sparkles, Facebook, Link as LinkIcon, RefreshCw, Trash2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
+import { CohortsTab, OperationsTab } from "./InsightsTabs";
 
 function KPI({ label, value, sub, testid }) {
   return (
@@ -127,7 +128,7 @@ export default function ManagerDashboard() {
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <div className="eyebrow">Insights</div>
-          <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Manager studio</h1>
+          <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Manager CRM</h1>
           <div className="gold-rule mt-4" />
         </div>
         <div className="flex bg-white border border-[var(--vivo-border)] rounded-sm overflow-hidden" data-testid="period-toggle">
@@ -161,6 +162,8 @@ export default function ManagerDashboard() {
             ["sales", "Sales"],
             ["customers", "Customers"],
             ["associates", "Associates"],
+            ["cohorts", "Cohorts"],
+            ["operations", "Operations"],
             ["social", "Social"],
           ].map(([v, l]) => (
             <TabsTrigger
@@ -291,6 +294,14 @@ export default function ManagerDashboard() {
               </table>
             )}
           </Card>
+        </TabsContent>
+
+        <TabsContent value="cohorts" className="mt-6">
+          <CohortsTab />
+        </TabsContent>
+
+        <TabsContent value="operations" className="mt-6">
+          <OperationsTab />
         </TabsContent>
 
         <TabsContent value="social" className="mt-6">

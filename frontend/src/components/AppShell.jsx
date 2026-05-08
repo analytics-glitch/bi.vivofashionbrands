@@ -47,7 +47,7 @@ export default function AppShell() {
       <aside className="w-64 shrink-0 hidden md:flex flex-col bg-white border-r border-[var(--vivo-border)]">
         <Link to="/dashboard" className="px-7 pt-8 pb-6 block" data-testid="brand-link">
           <div className="eyebrow">VIVO · CLIENTELING</div>
-          <div className="font-display text-2xl mt-1 tracking-tight">Vivo Studio</div>
+          <div className="font-display text-2xl mt-1 tracking-tight">Vivo CRM</div>
           <div className="gold-rule mt-3" />
         </Link>
         <nav className="px-3 py-2 flex-1">
@@ -94,7 +94,7 @@ export default function AppShell() {
 
       {/* Mobile top bar (hidden ≥ md) */}
       <div className="md:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-[var(--vivo-border)] flex items-center justify-between px-4 h-14">
-        <div className="font-display text-lg">Vivo Studio</div>
+        <div className="font-display text-lg">Vivo CRM</div>
         <Button onClick={logout} variant="ghost" size="icon" data-testid="logout-button-mobile">
           <LogOut className="h-4 w-4" />
         </Button>

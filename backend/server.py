@@ -148,6 +148,8 @@ class PreferencesIn(BaseModel):
     fabrics: Optional[List[str]] = None
     occasions: Optional[List[str]] = None
     brands: Optional[List[str]] = None
+    dob: Optional[str] = None  # YYYY-MM-DD or MM-DD
+    key_dates: Optional[List[Dict[str, str]]] = None  # [{label, date or date_md}]
 
 
 class TemplateIn(BaseModel):
@@ -1483,6 +1485,13 @@ from social import make_router as _social_router  # noqa: E402
 _social = _social_router(get_current_user, require_manager, db, _audit)
 # Mount with /api prefix
 app.include_router(_social, prefix="/api")
+
+# Insights: cohorts, LTV forecast, reorder, lookalikes, life-events, daily brief,
+# walk-ins, wishlist, suggest-reply, leaderboard.
+from insights import make_router as _insights_router  # noqa: E402
+
+_insights = _insights_router(get_current_user, require_manager, db, _audit, bi_get)
+app.include_router(_insights, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,

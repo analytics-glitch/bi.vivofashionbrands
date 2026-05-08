@@ -28,7 +28,12 @@ export default function CustomerProfile() {
   const [notes, setNotes] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [messages, setMessages] = useState([]);
-  const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [] });
+  const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [], dob: "", key_dates: [] });
+  const [wishlist, setWishlist] = useState([]);
+  const [wishOpen, setWishOpen] = useState(false);
+  const [wishProduct, setWishProduct] = useState("");
+  const [wishNote, setWishNote] = useState("");
+  const [lookalikes, setLookalikes] = useState(null);
   const [consent, setConsent] = useState([]);
   const [loading, setLoading] = useState(true);
   const [socialHandles, setSocialHandles] = useState([]);
@@ -53,7 +58,7 @@ export default function CustomerProfile() {
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl, social] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social, wl] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -62,6 +67,7 @@ export default function CustomerProfile() {
         api.get(`/consent/${id}`),
         api.get(`/templates`),
         api.get(`/social/timeline/${id}`),
+        api.get(`/insights/wishlists/${id}`),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
@@ -74,11 +80,14 @@ export default function CustomerProfile() {
         fabrics: pr.data?.fabrics || [],
         occasions: pr.data?.occasions || [],
         brands: pr.data?.brands || [],
+        dob: pr.data?.dob || "",
+        key_dates: pr.data?.key_dates || [],
       });
       setConsent(c.data || []);
       setTemplates(tpl.data || []);
       setSocialHandles(social.data?.handles || []);
       setSocialFeedback(social.data?.items || []);
+      setWishlist(wl.data || []);
     } finally {
       setLoading(false);
     }
@@ -305,10 +314,12 @@ export default function CustomerProfile() {
           {[
             ["purchases", "Purchases", "profile-tab-purchases"],
             ["preferences", "Preferences", "profile-tab-preferences"],
+            ["wishlist", "Wishlist", "profile-tab-wishlist"],
             ["notes", "Notes", "profile-tab-notes"],
             ["tasks", "Follow-ups", "profile-tab-tasks"],
             ["timeline", "Messages", "profile-tab-timeline"],
             ["social", "Social", "profile-tab-social"],
+            ["lookalikes", "Look-alikes", "profile-tab-lookalikes"],
             ["consent", "Consent", "profile-tab-consent"],
           ].map(([v, l, t]) => (
             <TabsTrigger
@@ -376,9 +387,102 @@ export default function CustomerProfile() {
             />
           </Card>
 
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-2">Life events</h3>
+            <p className="text-xs text-[var(--vivo-muted)] mb-3">Birthday + key dates we'll surface 30 days ahead in Operations.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label className="text-xs text-[var(--vivo-muted)]">Date of birth</Label>
+                <Input
+                  type="date"
+                  value={prefs.dob || ""}
+                  onChange={(e) => setPrefs((p) => ({ ...p, dob: e.target.value }))}
+                  className="h-12 mt-1 rounded-sm"
+                  data-testid="pref-dob"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-[var(--vivo-muted)]">Wedding / kids' birthdays</Label>
+                <Input
+                  placeholder='e.g. Anniversary 06-12, Kid 03-22'
+                  value={(prefs.key_dates || []).map((d) => `${d.label || ""} ${d.date_md || d.date || ""}`.trim()).join(", ")}
+                  onChange={(e) => {
+                    const parsed = e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                      .map((s) => {
+                        const m = s.match(/^(.+?)\s+(\d{2}-\d{2}|\d{4}-\d{2}-\d{2})$/);
+                        if (!m) return null;
+                        return m[2].length === 5
+                          ? { label: m[1], date_md: m[2] }
+                          : { label: m[1], date: m[2] };
+                      })
+                      .filter(Boolean);
+                    setPrefs((p) => ({ ...p, key_dates: parsed }));
+                  }}
+                  className="h-12 mt-1 rounded-sm"
+                  data-testid="pref-key-dates"
+                />
+              </div>
+            </div>
+          </Card>
+
           <Button onClick={savePrefs} className="h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="pref-save">
             <Save className="mr-2 h-4 w-4" /> Save preferences
           </Button>
+        </TabsContent>
+
+        <TabsContent value="wishlist" className="mt-6 space-y-4" data-testid="profile-wishlist-tab">
+          <div className="flex justify-between items-center">
+            <p className="text-sm text-[var(--vivo-muted)]">Set-aside items, expires 30 days from creation by default.</p>
+            <Button onClick={() => setWishOpen(true)} className="h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="add-wishlist-button">
+              <Plus className="mr-2 h-4 w-4" /> Add item
+            </Button>
+          </div>
+          <Card className="vivo-card rounded-sm divide-y divide-[var(--vivo-border)]">
+            {wishlist.length === 0 && <div className="p-6 text-sm text-[var(--vivo-muted)]">No wishlist items yet.</div>}
+            {wishlist.map((w) => (
+              <div key={w.wishlist_id} className="p-4 flex items-start justify-between gap-4" data-testid={`wishlist-item-${w.wishlist_id}`}>
+                <div className="flex-1 min-w-0">
+                  <div className={`font-medium ${w.fulfilled ? "line-through text-[var(--vivo-muted)]" : ""}`}>{w.product_title}</div>
+                  {w.note && <div className="text-sm text-[var(--vivo-muted)] mt-1">{w.note}</div>}
+                  <div className="text-xs text-[var(--vivo-muted)] mt-1">
+                    Added {formatDate(w.created_at)} by {w.created_by_name} · expires {formatDate(w.expires_at)}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!w.fulfilled && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-sm"
+                      onClick={async () => {
+                        await api.post(`/insights/wishlists/${w.wishlist_id}/fulfill`);
+                        toast.success("Marked fulfilled");
+                        reload();
+                      }}
+                      data-testid={`wishlist-fulfill-${w.wishlist_id}`}
+                    >
+                      Fulfilled
+                    </Button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      if (!confirm("Remove this wishlist item?")) return;
+                      await api.delete(`/insights/wishlists/${w.wishlist_id}`);
+                      toast.success("Removed");
+                      reload();
+                    }}
+                    className="text-[var(--vivo-muted)] hover:text-red-600 p-2"
+                    data-testid={`wishlist-delete-${w.wishlist_id}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </Card>
         </TabsContent>
 
         <TabsContent value="notes" className="mt-6">
@@ -538,6 +642,52 @@ export default function CustomerProfile() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="lookalikes" className="mt-6" data-testid="profile-lookalikes-tab">
+          <Card className="vivo-card p-6 rounded-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-display text-lg">Look-alike customers</h3>
+                <p className="text-sm text-[var(--vivo-muted)]">Customers with the same RFM tier, similar spend bracket and matching size signature.</p>
+              </div>
+              <Button
+                variant="outline"
+                className="rounded-sm h-10"
+                data-testid="lookalikes-load"
+                onClick={async () => {
+                  try {
+                    const r = await api.get(`/insights/lookalikes/${id}?limit=10`);
+                    setLookalikes(r.data);
+                    toast.success(`${r.data.matches.length} match${r.data.matches.length === 1 ? "" : "es"}`);
+                  } catch (e) {
+                    toast.error(e?.response?.data?.detail || "Failed");
+                  }
+                }}
+              >
+                {lookalikes ? "Refresh" : "Find look-alikes"}
+              </Button>
+            </div>
+            {!lookalikes ? (
+              <div className="text-sm text-[var(--vivo-muted)]">Click "Find look-alikes" to compute.</div>
+            ) : (
+              <ul className="divide-y divide-[var(--vivo-border)]">
+                {lookalikes.matches.map((m) => (
+                  <li key={m.customer_id} className="py-3 flex items-center justify-between gap-3">
+                    <Link to={`/customers/${m.customer_id}`} className="flex-1 min-w-0 hover:text-[var(--vivo-navy)]">
+                      <div className="font-medium truncate flex items-center gap-2">{m.customer_name} <RfmBadge tier={m.rfm_tier} /></div>
+                      <div className="text-xs text-[var(--vivo-muted)] mt-0.5">{m.city || "—"} · {formatKES(m.lifetime_spend_kes)}</div>
+                    </Link>
+                    <div className="text-right shrink-0">
+                      <div className="font-mono-num text-sm">{m.match_score}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--vivo-muted)]">match</div>
+                    </div>
+                  </li>
+                ))}
+                {lookalikes.matches.length === 0 && <li className="py-3 text-sm text-[var(--vivo-muted)]">No look-alikes found.</li>}
+              </ul>
+            )}
+          </Card>
+        </TabsContent>
+
         <TabsContent value="consent" className="mt-6 space-y-4">
           <Card className="vivo-card p-6 rounded-sm">
             <div className="flex items-center gap-2 mb-3">
@@ -585,7 +735,7 @@ export default function CustomerProfile() {
                 <h3 className="font-display text-lg text-red-700">Right to be forgotten</h3>
               </div>
               <p className="text-sm text-[var(--vivo-muted)] mb-4">
-                Anonymizes all Vivo Studio records for this customer (notes, messages, tasks, lookbooks,
+                Anonymizes all Vivo CRM records for this customer (notes, messages, tasks, lookbooks,
                 preferences, social handles). BI/BigQuery upstream data is not touched —
                 that lives in your warehouse.
               </p>
@@ -634,6 +784,51 @@ export default function CustomerProfile() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Wishlist dialog */}
+      <Dialog open={wishOpen} onOpenChange={setWishOpen}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader><DialogTitle className="font-display">Add to wishlist</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Product</Label>
+              <Input value={wishProduct} onChange={(e) => setWishProduct(e.target.value)} placeholder="e.g. Vivo Lulu Cotton Tent Mini Dress in Mustard, size M" className="h-12 mt-1 rounded-sm" data-testid="wishlist-product" />
+            </div>
+            <div>
+              <Label>Note (optional)</Label>
+              <Textarea rows={3} value={wishNote} onChange={(e) => setWishNote(e.target.value)} placeholder="ETA, size, store..." data-testid="wishlist-note" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setWishOpen(false)}>Cancel</Button>
+            <Button
+              className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white"
+              data-testid="wishlist-save"
+              onClick={async () => {
+                if (!wishProduct.trim()) return;
+                try {
+                  await api.post("/insights/wishlists", {
+                    customer_id: id,
+                    customer_name: profile?.customer_name,
+                    product_title: wishProduct.trim(),
+                    note: wishNote.trim() || null,
+                  });
+                  toast.success("Added to wishlist");
+                  setWishOpen(false);
+                  setWishProduct("");
+                  setWishNote("");
+                  reload();
+                } catch (e) {
+                  toast.error(e?.response?.data?.detail || "Failed");
+                }
+              }}
+            >
+              Add
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
 
       {/* Message dialog */}
       <Dialog open={msgOpen} onOpenChange={setMsgOpen}>
@@ -690,7 +885,7 @@ export default function CustomerProfile() {
           <DialogHeader><DialogTitle className="font-display text-red-700">Forget this customer?</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm leading-relaxed">
-              This will anonymize all Vivo Studio records for <strong>{profile.customer_name}</strong>.
+              This will anonymize all Vivo CRM records for <strong>{profile.customer_name}</strong>.
               The action is logged in the audit trail and cannot be undone here.
             </p>
             <p className="text-sm">

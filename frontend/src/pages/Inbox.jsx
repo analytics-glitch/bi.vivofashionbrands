@@ -287,7 +287,30 @@ export default function Inbox() {
         <DialogContent className="rounded-sm max-w-lg">
           <DialogHeader><DialogTitle className="font-display">Reply</DialogTitle></DialogHeader>
           <Textarea rows={5} value={replyBody} onChange={(e) => setReplyBody(e.target.value)} placeholder="Reply on platform…" data-testid="reply-body" />
-          <p className="text-xs text-[var(--vivo-muted)]">v1: reply is logged here. Real platform delivery wires in via the social provider env later.</p>
+          <div className="flex items-center justify-between">
+            <Button
+              variant="outline"
+              className="rounded-sm h-9"
+              data-testid="reply-suggest"
+              onClick={async () => {
+                if (!selected) return;
+                try {
+                  const r = await api.post("/insights/social/suggest-reply", { feedback_id: selected.feedback_id });
+                  if (r.data?.reply) {
+                    setReplyBody(r.data.reply);
+                    toast.success(`AI draft (${r.data.tone})`);
+                  } else {
+                    toast.info("Couldn't draft a reply for this one — try writing manually.");
+                  }
+                } catch (e) {
+                  toast.error(e?.response?.data?.detail || "Suggest failed");
+                }
+              }}
+            >
+              ✨ Suggest with AI
+            </Button>
+            <p className="text-xs text-[var(--vivo-muted)]">Logged here · platform delivery later.</p>
+          </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setReplyOpen(false)}>Cancel</Button>
             <Button onClick={sendReply} className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white" data-testid="reply-send">Save reply</Button>
