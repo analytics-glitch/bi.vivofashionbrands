@@ -31,6 +31,23 @@ const IBT = () => {
   const [completedSkuKeys, setCompletedSkuKeys] = useState(new Set());
   const [completedRefresh, setCompletedRefresh] = useState(0);
   const [doneModalRow, setDoneModalRow] = useState(null);
+  // Sensitivity preset for the FROM/TO velocity bands. Persists across
+  // sessions so a buyer who likes the looser view doesn't have to
+  // re-pick it every visit. Default = strict (matches pre-iter-64).
+  const [sensitivity, setSensitivity] = useState(() => {
+    try { return localStorage.getItem("vivo_ibt_sensitivity") || "strict"; }
+    catch { return "strict"; }
+  });
+  // (low_pct, high_pct) for each preset.
+  const SENSITIVITY = {
+    strict:   { low: 20, high: 150, label: "Strict",   help: "≤20% / ≥150% of group avg — fewer rows, strongest signals" },
+    balanced: { low: 30, high: 130, label: "Balanced", help: "≤30% / ≥130% — surfaces ~3× more stores" },
+    wide:     { low: 40, high: 120, label: "Wide",     help: "≤40% / ≥120% — most stores visible, weakest signal" },
+  };
+  const setSensitivityPersist = (key) => {
+    setSensitivity(key);
+    try { localStorage.setItem("vivo_ibt_sensitivity", key); } catch { /* private browsing */ }
+  };
   // Recommendation pill state retained at module level only because
   // useRecommendationState writes to MongoDB; we no longer surface the
   // pill UI per leadership request — Mark As Done is the single
@@ -71,9 +88,14 @@ const IBT = () => {
     setLoading(true);
     setError(null);
     const country = countries.length === 1 ? countries[0] : undefined;
+    const { low, high } = SENSITIVITY[sensitivity] || SENSITIVITY.strict;
     api
       .get("/analytics/ibt-suggestions", {
-        params: { date_from: dateFrom, date_to: dateTo, country, limit: 300 },
+        params: {
+          date_from: dateFrom, date_to: dateTo, country,
+          limit: 300,
+          low_pct: low, high_pct: high,
+        },
         timeout: 180000,
       })
       .then(({ data }) => {
@@ -85,7 +107,7 @@ const IBT = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), dataVersion, sensitivity]);
 
   const brands = useMemo(
     () => Array.from(new Set(rows.map((r) => r.brand).filter(Boolean))).sort(),
@@ -243,6 +265,32 @@ const IBT = () => {
             <SectionTitle
               title={`Store → Store transfer list · ${visible.length} suggestions`}
               subtitle="Each row is one SKU (color × size). Type the units you actually transferred, then tap Mark As Done to log the PO and remove it from this list. Tablet-friendly — scroll horizontally to see all columns."
+              action={
+                <div className="inline-flex items-center gap-2 text-[11.5px]" data-testid="ibt-sensitivity">
+                  <span className="font-semibold text-foreground/80">Sensitivity:</span>
+                  <div className="inline-flex border border-border rounded-lg overflow-hidden">
+                    {Object.entries(SENSITIVITY).map(([key, cfg]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSensitivityPersist(key)}
+                        title={cfg.help}
+                        data-testid={`ibt-sensitivity-${key}`}
+                        className={`px-2.5 py-1 font-bold transition-colors ${
+                          sensitivity === key
+                            ? "bg-brand text-white"
+                            : "bg-white text-foreground/70 hover:bg-panel"
+                        }`}
+                      >
+                        {cfg.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-[10.5px] text-muted">
+                    ≤{SENSITIVITY[sensitivity].low}% / ≥{SENSITIVITY[sensitivity].high}%
+                  </span>
+                </div>
+              }
             />
             <IBTFlatTable
               suggestions={visible}

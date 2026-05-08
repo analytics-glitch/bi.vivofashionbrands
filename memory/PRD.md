@@ -65,6 +65,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 64)
+- **IBT sensitivity toggle**: 3-band switcher (Strict / Balanced / Wide) on the IBT page header. Backend `/api/analytics/ibt-suggestions` accepts `low_pct` (5-80, default 20) and `high_pct` (110-400, default 150) as tunable thresholds for the FROM/TO velocity bands.
+  - **Strict** (≤20% / ≥150%) — default, fewest/strongest signals.
+  - **Balanced** (≤30% / ≥130%) — surfaces moderately more rows.
+  - **Wide** (≤40% / ≥120%) — most rows visible, weakest signal.
+  - Verified on preview: 2026-04-01→2026-05-01 window goes from **21 → 22 → 27 unique stores involved** (+6 newly visible). User selection persists in `localStorage` (`vivo_ibt_sensitivity`).
+
 ### Recent (Feb 2026 — Iter 63)
 **Phase 1 of the Peer-Cluster design (per `/app/memory/IBT_PEER_CLUSTERING_DESIGN.md`)**: surface only — IBT recommendations now display each store's peer-cluster id (`A1`, `B2`, `C1`, etc.) but the IBT math still uses the chain-wide average. Phase 2 will flip the engine to use cluster medians once the clusters look right to merchandising.
 

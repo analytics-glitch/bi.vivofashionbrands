@@ -2199,6 +2199,15 @@ async def analytics_ibt_suggestions(
     country: Optional[str] = None,
     min_move: int = 2,
     limit: int = 100,
+    # Tunable sensitivity bands. Defaults preserve pre-iter-64 behaviour.
+    low_pct: float = Query(
+        20.0, ge=5.0, le=80.0,
+        description="FROM threshold — store qualifies when units_sold ≤ low_pct% of group average. Default 20%.",
+    ),
+    high_pct: float = Query(
+        150.0, ge=110.0, le=400.0,
+        description="TO threshold — store qualifies when units_sold ≥ high_pct% of group average. Default 150%.",
+    ),
 ):
     """Inter-Branch Transfer recommendations.
 
@@ -2295,12 +2304,14 @@ async def analytics_ibt_suggestions(
         if avg_units <= 0:
             continue
 
-        # Low-velocity candidates (FROM)
+        # Low-velocity candidates (FROM) — tunable via low_pct.
+        low_threshold = avg_units * (low_pct / 100.0)
         lows = [(loc, s) for loc, s in per_store.items()
-                if s["available"] >= min_move and s["units_sold"] <= avg_units * 0.2]
-        # High-demand candidates (TO)
+                if s["available"] >= min_move and s["units_sold"] <= low_threshold]
+        # High-demand candidates (TO) — tunable via high_pct.
+        high_threshold = avg_units * (high_pct / 100.0)
         highs = [(loc, s) for loc, s in per_store.items()
-                 if s["units_sold"] >= avg_units * 1.5 and s["available"] < 5]
+                 if s["units_sold"] >= high_threshold and s["available"] < 5]
 
         for from_loc, from_s in lows:
             for to_loc, to_s in highs:
