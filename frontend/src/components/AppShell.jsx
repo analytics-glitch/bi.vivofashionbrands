@@ -11,6 +11,8 @@ import {
   LogOut,
   Settings,
   Inbox,
+  Layers,
+  ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -20,6 +22,8 @@ const NAV = [
   { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks" },
   { to: "/manager", label: "Insights", icon: BarChart3, testid: "nav-manager", manager: true },
+  { to: "/cohorts", label: "Cohorts", icon: Layers, testid: "nav-cohorts", manager: true },
+  { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true },
   { to: "/audit", label: "Audit", icon: ShieldCheck, testid: "nav-audit", manager: true },
 ];

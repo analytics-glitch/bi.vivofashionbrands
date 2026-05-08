@@ -157,7 +157,7 @@ export default function ManagerDashboard() {
       </div>
 
       <Tabs defaultValue="sales" className="mt-10">
-        <TabsList className="bg-transparent border-b border-[var(--vivo-border)] w-full justify-start rounded-none h-auto p-0 gap-6">
+        <TabsList className="bg-transparent border-b border-[var(--vivo-border)] w-full justify-start rounded-none h-auto p-0 gap-6 flex-wrap">
           {[
             ["sales", "Sales"],
             ["customers", "Customers"],
