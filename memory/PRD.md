@@ -45,6 +45,16 @@ Brief explicitly scopes v1 to a **clienteling app** (not a full CRM): tablet-fir
   - **AI Next-Best-Action card** on every Customer Profile — Claude Sonnet 4.5 reads tier + history + prefs + last contact and outputs `{action, why, script, urgency}`. "Use this script" pre-fills the Send-Message dialog. 6h cache.
   - **DPA "Right to be forgotten"** — `/api/customers/{id}/forget` (manager only) anonymizes notes, tasks, messages, lookbooks, preferences, NBA cache, customer cache, social handles; consent flipped to opted-out; full forget-log + audit trail. Danger-zone UI on the Consent tab requires exact-name confirmation.
   - **Anniversary auto-tasks** — `/api/anniversaries/run` creates one task per customer whose first-purchase MM-DD matches today, idempotent per day, integrates with the existing weekly auto-task engine.
+- ✅ **Iteration 6 — Real Facebook + NBA in Call List + Vivo imagery + bag filter (Feb 2026 v1.4)**:
+  - **Facebook Graph integration**: app credentials wired in `.env` (App ID, App Secret, Client Token). New endpoints under `/api/social/facebook/*`:
+    - `GET /status` — manager view of what's wired vs. missing.
+    - `POST /discover` — accepts a `user_access_token`, calls `/me/accounts`, stores every Page admin-token returned.
+    - `GET /pages` / `DELETE /pages/{id}` — list/unlink discovered pages.
+    - `POST /sync` — pulls posts + comments + reviews from one or all linked Pages into our `social_posts` + `social_feedback` collections (upsert), then schedules the existing Claude classifier so sentiment + themes are populated automatically.
+  - **NBA stitched into Daily Call List**: `/api/dashboard/call-list?with_nba=true` enriches each row with `nba_action`, `nba_urgency`, `nba_why`, `nba_script` from the 6h NBA cache. On cache miss, fires a background precompute (capped at 12 customers per call); returns `ai_pending` count so the frontend can poll. Dashboard UI shows AI urgency chips (high/medium/low) and the suggested action text inline on each call-list row, with auto-refresh after 8s.
+  - **Login page imagery** sourced from `vivofashiongroup.com/cdn/shop/files/...` — full-bleed campaign hero + 3-thumbnail strip, all real brand photography.
+  - **Shopping-bag exclusion** — every BI products endpoint (`/bi/customer/{id}`, `/bi/customer/{id}/products`, `/bi/top-skus`) plus the NBA context-builder strips items whose `style_name`/`subcategory`/`product_title` contains "shopping bag(s)". KES-0 promotional bag lines no longer skew style insight or AI recommendations.
+  - **Tests**: 19/19 backend pytest (iter6) green; frontend smoke 100%. No regressions in existing 80/80 suite.
 - ✅ 28/28 v1 + 25/25 social + 13/13 auto-task + 14/14 world-class backend tests = **80/80 backend tests green**. Frontend regression-tested across all 13 surfaces.
 
 ## Backlog (P0 → P2)
