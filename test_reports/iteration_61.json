@@ -1,0 +1,46 @@
+{
+  "summary": "Iter-61 backend + frontend regression on the four user-requested deltas: (1) Allocations WH→Online→Stores tiering with multi-criteria weight sliders, (2) IBT flat-table days_lapsed/first_seen_at enrichment, (3) Monthly Tracker per-store ASP/basket/orders-per-day + per-day suggested_daily_quantity/suggested_basket_size, (4) IBT SKU-breakdown barcode global fallback. Backend: 19/19 PASSED via /app/backend/tests/test_iteration_61.py (45s warm). Verified 10/5/85 split returns warehouse_units=40, online_units=16, store_units=344 for units_total=400; rows carry channel ∈ {warehouse,online,store}, asp_score, asp_kes; warehouse + online rows appear at top of `rows`; all-zero weights fall back to even split (no 500); unbalanced weights (sum > 1) renormalise; defaults 0/0% give all 400 units to stores. /api/allocations/save accepts new optional fields (stock_weight, asp_weight, warehouse_pct, online_pct) — 200 with id, no _id leak. /api/analytics/ibt-suggestions and /api/analytics/ibt-warehouse-to-store rows enriched with `days_lapsed:int>=0` and `first_seen_at:ISO`. /api/analytics/monthly-targets?month=YYYY-MM-01 stores carry asp/basket_kes/orders_per_day; future days have suggested_daily_quantity (int|null) and suggested_basket_size (float|null); past/today days have these as null. /api/analytics/ibt-sku-breakdown for Poncho Meru→Sarit returns barcode populated on ALL rows (global fallback intact). Smoke regression: /api/auth/me, /api/kpis, /api/sales-summary, /api/inventory, /api/footfall, /api/analytics/ibt-suggestions, /api/analytics/sor-all-styles, /api/analytics/monthly-targets all 200. Frontend: /allocations renders alloc-warehouse-pct, alloc-online-pct, alloc-velocity-weight, alloc-stock-weight, alloc-asp-weight; after Calculate the alloc-tier-breakdown card shows '1. Warehouse 40 units / 2. Online 16 units / 3. Stores 344 units' (matches backend). /ibt renders new columns 'Inv. Qty FROM', 'Inv. Qty TO', 'Days lapsed' with 256 ibt-table-days-lapsed-* pills. /locations Monthly Tracker exposes monthly-store-Vivo Junction etc. testids and the store-header pills include 'ASP: KES 4,461' and 'Avg basket: KES 9,084' for Vivo Junction (backend curl baseline was asp=4467.32/basket=9099.08 — numbers drift live as same-day sales accrue, expected).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/allocations/calculate", "issue": "First call after backend warm-up can 502 from ingress (>120s upstream cold-start). Test mitigates with retry. Suggest backing this endpoint with a brief warmup hook."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "IBTFlatTable days-lapsed pill", "issue": "Could NOT empirically verify RED background for days_lapsed > 2 — the live /api/analytics/ibt-suggestions dataset on this preview only contained values {0d:35, 1d:229} so no >2 rows exist to render. The 256 pills currently render with bg=transparent (rgba(0,0,0,0)) which is correct for <=2d. Backend confirms 'Vivo Sierra Maxi Chiffon Dress / Apr-2026' has days_lapsed=8 elsewhere; suggest seeding/forcing a >2d row via `db.ibt_first_seen.update_one({...}, {$set:{first_seen_at: <8 days ago>}})` to spot-check the RED branch in real UI. Code path in IBTFlatTable.jsx is reachable but unverified by automation today.", "selector": "[data-testid^=ibt-table-days-lapsed-]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_61.py",
+    "/app/test_reports/pytest/iter61.xml"
+  ],
+  "action_items": [
+    "(Optional) Spot-check IBT days-lapsed RED branch by aging a single first_seen_at to >2 days in mongo and reload /ibt — automated test cannot do this without seeding privileges.",
+    "(Optional) Add a brief warmup for /api/allocations/calculate so the first call after a cold-start doesn't 502."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/routes/allocations.py:80-105 AllocationRequest cleanly adds warehouse_pct (0-100), online_pct (0-100), stock_weight, asp_weight with sane Field bounds; defaults match user spec (50/30/20 vel/stock/asp; 0/0 reservations).",
+    "/app/backend/routes/allocations.py:307-320 wh+online pack reservation correctly trims overflow when wh%+online% >= 100% and never goes below 0 for stores; logic verified end-to-end (10/5/85 → 5/2/43 packs of 8 = 40/16/344 units).",
+    "/app/backend/routes/allocations.py:325-331 Weight renormalisation including the all-zero fallback (1/3 each) — verified by test_zero_weights_falls_back_no_500; no 500 path.",
+    "/app/backend/routes/allocations.py:421-428 sort key ranks warehouse=0 → online=1 → store=2 ensuring rows[] always presents WH+Online at top — verified by test_rows_carry_channel_asp_score_asp_kes.",
+    "/app/backend/server.py:2391-2396 + 2564-2568 days_lapsed/first_seen_at enrichment uses now_utc.date() - fs.date() (avoids timezone race on same-day rows). Confirmed days_lapsed=0 for fresh rows.",
+    "/app/backend/routes/monthly_targets.py:151-187 _channel_pace_metrics correctly avoids /0 (returns 0.0 if units/orders are 0) and enriches future-only days (303-329) with int(round(sdt/asp)) for qty + round(sdt/orders_per_day,2) for basket — past/today days set to None.",
+    "/app/backend/tests/test_iteration_61.py — new regression suite, 19 tests, run in ~45s warm; covers all four iter-61 deltas and a smoke regression."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_61.py"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19 pytest after retry on cold-start)",
+    "frontend": "~95% — alloc-tier-breakdown verified 40/16/344, IBT new columns + 256 days-lapsed pills present, Monthly Tracker store ASP/basket pills present (Vivo Junction ASP=KES 4,461, Avg basket=KES 9,084). RED-pill branch unverified due to no >2d row in live dataset."
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (admin), viewer@vivofashiongroup.com / Viewer!2026 (viewer) — per /app/memory/test_credentials.md",
+  "seed_data_creation": "1 allocation_runs doc with style_name='TEST_iter61_<ts>' saved as pending_fulfilment via /api/allocations/save; recommend mongo cleanup on style_name LIKE 'TEST_iter61_%'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend regression for iter-61 lives in /app/backend/tests/test_iteration_61.py (19 tests, ~45s warm). KEY GOTCHAS: (1) Allocation calculate requires sizes from canonical pack table — 'XL' is NOT valid; use ['XS','S','M','L'] or '1X','2X','F'. Subcategory 'Maxi Dresses' has data; 'Dresses' does not. (2) /api/analytics/monthly-targets requires ?month=YYYY-MM-01 (full date, not YYYY-MM). (3) /api/analytics/ibt-sku-breakdown query param is `style_name` (not `style`); response key is `skus` (not `rows`). (4) Pydantic weight bounds le=1 — to test renormalisation use 0.9/0.8/0.7 (not >1). (5) /api/allocations/calculate first-call cold-start can 502 from ingress; tests retry. (6) IBT days-lapsed RED-pill branch unverifiable via automation today (live data has only 0d/1d rows) — main agent or seeded data needed to spot-check. (7) Monthly tracker store testids are `monthly-store-<store name>` — clicking expand needs the chevron button inside that container; my single-button click did not always trigger expansion.",
+  "rca_of_the_issue": "n/a — feature verification sweep, no bugs found. The single 'unverified' item (IBT RED pill branch on >2d) is data-dependent rather than a code bug; backend `days_lapsed` calc is correct and frontend code path exists per IBTFlatTable.jsx."
+}

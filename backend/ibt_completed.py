@@ -220,6 +220,32 @@ async def track_suggestion_seen(style_name: str, from_store: str, to_store: str)
     )
 
 
+async def get_seen_map_for(suggestions):
+    """Return a dict keyed by `<style>||<from>||<to>` with the first_seen
+    datetime for each suggestion that's been recorded by the tracker.
+    Used to attach `days_lapsed` to the live suggestion endpoints.
+    """
+    if not suggestions:
+        return {}
+    keys = set()
+    for s in suggestions:
+        if not isinstance(s, dict):
+            continue
+        st = s.get("style_name"); fs = s.get("from_store"); ts = s.get("to_store")
+        if st and fs and ts:
+            keys.add(f"{st}||{fs}||{ts}")
+    if not keys:
+        return {}
+    out = {}
+    cursor = _seen_coll.find(
+        {"_id": {"$in": list(keys)}},
+        {"_id": 1, "first_seen": 1},
+    )
+    async for d in cursor:
+        out[d["_id"]] = d.get("first_seen")
+    return out
+
+
 async def track_suggestions_batch(suggestions):
     """Bulk-friendly tracker — fire-and-forget batch upsert."""
     import asyncio as _asyncio

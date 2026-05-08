@@ -14,6 +14,32 @@ import { useFilters } from "@/lib/filters";
  * velocity (sales) + low-stock score. Sized in whole packs (size
  * ratios from leadership table). Online channels excluded.
  */
+
+// Single weight slider used in the multi-criteria scoring panel.
+const WeightSlider = ({ label, value, onChange, hint, testId }) => (
+  <div className="flex items-center gap-2">
+    <span className="text-[11.5px] font-semibold text-foreground w-20 shrink-0">
+      {label}
+    </span>
+    <input
+      type="range"
+      min={0} max={1} step={0.05}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="flex-1"
+      data-testid={testId}
+    />
+    <span className="tabular-nums text-[11.5px] font-bold w-10 text-right">
+      {Math.round(value * 100)}%
+    </span>
+    {hint && (
+      <span className="text-[10.5px] text-muted hidden md:inline truncate max-w-[160px]" title={hint}>
+        {hint}
+      </span>
+    )}
+  </div>
+);
+
 const Allocations = () => {
   const { applied } = useFilters();
   const { user } = useAuth();
@@ -23,7 +49,16 @@ const Allocations = () => {
   const [color, setColor] = useState("");
   const [units, setUnits] = useState(400);
   const [selectedSizes, setSelectedSizes] = useState(["S", "M", "L"]);
+  // Multi-criteria weights — Velocity / Stock / ASP. Default skews to
+  // velocity which preserves pre-iter-61 behaviour. The form
+  // renormalises them on submit so sliders don't have to sum to 1.
   const [velocityWeight, setVelocityWeight] = useState(0.5);
+  const [stockWeight, setStockWeight] = useState(0.3);
+  const [aspWeight, setAspWeight] = useState(0.2);
+  // Off-the-top reservations (whole-number percent of buying total).
+  // Warehouse first, online second, balance to physical stores.
+  const [warehousePct, setWarehousePct] = useState(0);
+  const [onlinePct, setOnlinePct] = useState(0);
   const [subcatOptions, setSubcatOptions] = useState([]);
   const [excludedStores, setExcludedStores] = useState([]);
   const [allStores, setAllStores] = useState([]);
@@ -109,6 +144,10 @@ const Allocations = () => {
         date_from: dateFrom,
         date_to: dateTo,
         velocity_weight: Number(velocityWeight),
+        stock_weight: Number(stockWeight),
+        asp_weight: Number(aspWeight),
+        warehouse_pct: Number(warehousePct),
+        online_pct: Number(onlinePct),
         excluded_stores: excludedStores,
         style_name: styleName.trim() || null,
         allocation_type: allocationType,
@@ -201,6 +240,10 @@ const Allocations = () => {
         pack_unit_size: result.pack_unit_size,
         pack_breakdown: result.pack_breakdown,
         velocity_weight: Number(velocityWeight),
+        stock_weight: Number(stockWeight),
+        asp_weight: Number(aspWeight),
+        warehouse_pct: Number(warehousePct),
+        online_pct: Number(onlinePct),
         date_from: dateFrom,
         date_to: dateTo,
         rows: effectiveRows.map((r) => ({
@@ -382,22 +425,76 @@ const Allocations = () => {
             />
           </div>
           <div>
-            <label className="eyebrow block mb-1">
-              Velocity ↔ Low-stock weight ({velocityWeight.toFixed(2)})
+            <label className="eyebrow block mb-1.5">
+              Scoring weights · sliders auto-renormalise
+              <span className="ml-1 text-[10px] text-muted font-normal">
+                (currently {Math.round(((velocityWeight + stockWeight + aspWeight) || 1) * 100) / 100})
+              </span>
             </label>
-            <input
-              type="range"
-              min={0} max={1} step={0.05}
-              value={velocityWeight}
-              onChange={(e) => setVelocityWeight(Number(e.target.value))}
-              className="w-full"
-              data-testid="alloc-velocity-weight"
-            />
-            <div className="flex justify-between text-[10.5px] text-muted">
-              <span>Pure low-stock</span>
-              <span>50/50</span>
-              <span>Pure velocity</span>
+            <div className="space-y-2" data-testid="alloc-weights">
+              <WeightSlider
+                label="Velocity"
+                value={velocityWeight}
+                onChange={setVelocityWeight}
+                hint="Stores selling more get more"
+                testId="alloc-velocity-weight"
+              />
+              <WeightSlider
+                label="Stock-need"
+                value={stockWeight}
+                onChange={setStockWeight}
+                hint="Stores with the lowest stock get more"
+                testId="alloc-stock-weight"
+              />
+              <WeightSlider
+                label="ASP"
+                value={aspWeight}
+                onChange={setAspWeight}
+                hint="Stores selling at higher avg price get more"
+                testId="alloc-asp-weight"
+              />
             </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mt-3 p-3 rounded-md border border-amber-300 bg-amber-50/60">
+          <div className="sm:col-span-2 text-[11.5px] text-amber-900 font-semibold">
+            Off-the-top reservations (priority order: Warehouse → Online → Stores)
+          </div>
+          <div>
+            <label className="eyebrow block mb-1">Warehouse %</label>
+            <input
+              type="number"
+              min={0} max={100} step={1}
+              value={warehousePct}
+              onChange={(e) => setWarehousePct(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+              className="input-pill w-full"
+              data-testid="alloc-warehouse-pct"
+            />
+            <div className="text-[10.5px] text-muted mt-0.5">
+              {warehousePct > 0 ? `~${Math.round(units * warehousePct / 100)} units to warehouse first` : "0 units to warehouse"}
+            </div>
+          </div>
+          <div>
+            <label className="eyebrow block mb-1">Online %</label>
+            <input
+              type="number"
+              min={0} max={100} step={1}
+              value={onlinePct}
+              onChange={(e) => setOnlinePct(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+              className="input-pill w-full"
+              data-testid="alloc-online-pct"
+            />
+            <div className="text-[10.5px] text-muted mt-0.5">
+              {onlinePct > 0 ? `~${Math.round(units * onlinePct / 100)} units to online next` : "0 units to online"}
+            </div>
+          </div>
+          <div className="sm:col-span-2 text-[11px] text-amber-900">
+            Balance to physical stores: <b>{Math.max(0, 100 - warehousePct - onlinePct)}%</b>
+            {" "}(~{Math.max(0, units - Math.round(units * (warehousePct + onlinePct) / 100))} units)
+            {(warehousePct + onlinePct) > 100 && (
+              <span className="ml-2 text-rose-700 font-bold">⚠ Warehouse + Online exceed 100%</span>
+            )}
           </div>
         </div>
 
@@ -500,6 +597,29 @@ const Allocations = () => {
               {result.available_packs} packs available · pack = {result.pack_unit_size} units
             </span>
           </div>
+          {/* Tier breakdown — Warehouse → Online → Stores */}
+          {(result.warehouse_units > 0 || result.online_units > 0) && (
+            <div className="grid grid-cols-3 gap-2 mb-3 text-[12px]" data-testid="alloc-tier-breakdown">
+              <div className="rounded-md border border-purple-300 bg-purple-50 px-3 py-2">
+                <div className="eyebrow text-purple-800">1. Warehouse</div>
+                <div className="font-extrabold text-[15px] num text-purple-900">
+                  {fmtNum(result.warehouse_units || 0)} units
+                </div>
+              </div>
+              <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
+                <div className="eyebrow text-sky-800">2. Online</div>
+                <div className="font-extrabold text-[15px] num text-sky-900">
+                  {fmtNum(result.online_units || 0)} units
+                </div>
+              </div>
+              <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2">
+                <div className="eyebrow text-emerald-800">3. Stores</div>
+                <div className="font-extrabold text-[15px] num text-emerald-900">
+                  {fmtNum(result.store_units || 0)} units
+                </div>
+              </div>
+            </div>
+          )}
           {result.rows.length === 0 ? (
             <Empty label="No stores to allocate to with the current filters." />
           ) : (
@@ -510,7 +630,17 @@ const Allocations = () => {
               columns={[
                 {
                   key: "store", label: "Store", align: "left", mobilePrimary: true,
-                  render: (r) => <span className="font-medium">{r.store}</span>,
+                  render: (r) => (
+                    <span className="font-medium inline-flex items-center gap-1.5">
+                      {r.channel === "warehouse" && (
+                        <span className="text-[9.5px] font-bold uppercase tracking-wide bg-purple-100 text-purple-900 px-1.5 py-0.5 rounded">WH</span>
+                      )}
+                      {r.channel === "online" && (
+                        <span className="text-[9.5px] font-bold uppercase tracking-wide bg-sky-100 text-sky-900 px-1.5 py-0.5 rounded">ONLINE</span>
+                      )}
+                      {r.store}
+                    </span>
+                  ),
                 },
                 {
                   key: "packs_allocated", label: "Packs", numeric: true,
@@ -537,6 +667,14 @@ const Allocations = () => {
                   key: "current_soh", label: "Current SOH", numeric: true,
                   render: (r) => fmtNum(r.current_soh),
                   csv: (r) => r.current_soh,
+                },
+                {
+                  key: "asp_kes", label: "ASP", numeric: true,
+                  render: (r) => r.asp_kes > 0
+                    ? <span className="num">{Math.round(r.asp_kes).toLocaleString("en-KE")}</span>
+                    : <span className="text-muted">—</span>,
+                  sortValue: (r) => r.asp_kes || 0,
+                  csv: (r) => r.asp_kes,
                 },
                 {
                   key: "score", label: "Blend score", numeric: true,

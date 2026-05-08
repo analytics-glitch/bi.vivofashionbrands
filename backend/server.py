@@ -2377,8 +2377,23 @@ async def analytics_ibt_suggestions(
     # without action). Fire-and-forget — tracking failure must NEVER
     # block the suggestions response.
     try:
-        from ibt_completed import track_suggestions_batch
+        from ibt_completed import track_suggestions_batch, get_seen_map_for
         await track_suggestions_batch(final)
+        seen_map = await get_seen_map_for(final)
+        now_utc = datetime.now(timezone.utc)
+        for s in final:
+            key = f"{s.get('style_name')}||{s.get('from_store')}||{s.get('to_store')}"
+            fs = seen_map.get(key)
+            if fs is not None:
+                # Tracker just upserted this key with last_seen=now and
+                # set first_seen ONLY if it didn't already exist; if the
+                # row was just created its first_seen is also `now` so
+                # days_lapsed correctly returns 0 for fresh suggestions.
+                s["first_seen_at"] = fs.isoformat()
+                s["days_lapsed"] = max(0, (now_utc.date() - fs.date()).days)
+            else:
+                s["first_seen_at"] = None
+                s["days_lapsed"] = 0
     except Exception:
         pass
     return final
@@ -2530,15 +2545,27 @@ async def analytics_ibt_warehouse_to_store(
     # Track first-seen for warehouse → store too (from_store is always
     # the central warehouse so we tag it explicitly).
     try:
-        from ibt_completed import track_suggestions_batch
-        await track_suggestions_batch([
+        from ibt_completed import track_suggestions_batch, get_seen_map_for
+        tracker_payload = [
             {
                 "style_name": s["style_name"],
                 "from_store": "Warehouse Finished Goods",
                 "to_store": s["to_store"],
             }
             for s in final_wh
-        ])
+        ]
+        await track_suggestions_batch(tracker_payload)
+        seen_map = await get_seen_map_for(tracker_payload)
+        now_utc = datetime.now(timezone.utc)
+        for s in final_wh:
+            key = f"{s.get('style_name')}||Warehouse Finished Goods||{s.get('to_store')}"
+            fs = seen_map.get(key)
+            if fs is not None:
+                s["first_seen_at"] = fs.isoformat()
+                s["days_lapsed"] = max(0, (now_utc.date() - fs.date()).days)
+            else:
+                s["first_seen_at"] = None
+                s["days_lapsed"] = 0
     except Exception:
         pass
     return final_wh

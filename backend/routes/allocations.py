@@ -84,7 +84,20 @@ class AllocationRequest(BaseModel):
     units_total: int = Field(..., ge=1, le=100000)
     date_from: str
     date_to: str
+    # Multi-criteria weights — Velocity, Stock-need, ASP. Caller can
+    # set any combination; weights are renormalised to sum to 1 so the
+    # UI sliders don't have to be perfectly balanced. Default skews
+    # heavily toward sell-through (velocity) which matches buying
+    # team's existing behaviour pre-ASP.
     velocity_weight: float = Field(0.5, ge=0, le=1)
+    stock_weight: float = Field(0.3, ge=0, le=1)
+    asp_weight: float = Field(0.2, ge=0, le=1)
+    # First-cut % allocated off the top to Warehouse and Online before
+    # the remainder is distributed to physical stores via the score.
+    warehouse_pct: float = Field(0.0, ge=0, le=100,
+                                  description="0-100. Percent of total units allocated to Warehouse first.")
+    online_pct: float = Field(0.0, ge=0, le=100,
+                               description="0-100. Percent of total units allocated to Online channels next.")
     excluded_stores: List[str] = []
     # New fields
     style_name: Optional[str] = None  # free-text label, persisted with
@@ -100,10 +113,15 @@ class StoreAllocationRow(BaseModel):
     score: float
     velocity_score: float
     low_stock_score: float
+    asp_score: float
+    asp_kes: float
     units_sold_window: int
     current_soh: int
     packs_allocated: int
     units_allocated: int
+    # Channel tag — "warehouse", "online", or "store" — so the front
+    # end can color-bucket and report each tier separately.
+    channel: str
     sizes: Dict[str, int]  # size → units
 
 
@@ -114,6 +132,9 @@ class AllocationResponse(BaseModel):
     requested_units: int
     allocated_units: int
     leftover_units: int
+    warehouse_units: int
+    online_units: int
+    store_units: int
     rows: List[StoreAllocationRow]
 
 
@@ -239,8 +260,9 @@ async def calculate_allocation(
             continue
         soh_by_store[loc] = soh_by_store.get(loc, 0) + int(r.get("available") or 0)
 
-    # Velocity per store from /orders.
+    # Velocity per store from /orders + sales-KES so we can derive ASP.
     sold_by_store: Dict[str, int] = {}
+    sales_kes_by_store: Dict[str, float] = {}
     for r in (orders or []):
         store = r.get("pos_location_name") or r.get("channel") or ""
         if not store or is_warehouse_location(store) or store in excluded:
@@ -249,7 +271,21 @@ async def calculate_allocation(
             continue
         if not _sales_matches(r):
             continue
-        sold_by_store[store] = sold_by_store.get(store, 0) + int(r.get("quantity") or 0)
+        qty = int(r.get("quantity") or 0)
+        sold_by_store[store] = sold_by_store.get(store, 0) + qty
+        try:
+            sales_kes_by_store[store] = (
+                sales_kes_by_store.get(store, 0.0)
+                + float(r.get("total_sales_kes") or 0)
+            )
+        except Exception:
+            pass
+
+    # Per-store ASP for the SAME subcat/color/style filter window.
+    asp_by_store: Dict[str, float] = {}
+    for s, units in sold_by_store.items():
+        if units > 0:
+            asp_by_store[s] = sales_kes_by_store.get(s, 0.0) / units
 
     candidate_stores = sorted(set(soh_by_store) | set(sold_by_store))
     if not candidate_stores:
@@ -262,9 +298,38 @@ async def calculate_allocation(
 
     max_velocity = max((sold_by_store.get(s, 0) for s in candidate_stores), default=0)
     max_soh = max((soh_by_store.get(s, 0) for s in candidate_stores), default=0)
+    max_asp = max((asp_by_store.get(s, 0.0) for s in candidate_stores), default=0.0)
 
-    # 3) Score = w·velocity + (1-w)·low-stock-need
-    # Both normalised to [0,1] across the candidate set.
+    # 2.5) Reserve Warehouse % and Online % off the top (in WHOLE PACKS
+    # so the buying team always ships clean packs even to the
+    # warehouse / online buckets). The remainder goes to physical
+    # stores via the weighted score.
+    wh_packs = int(round(available_packs * (body.warehouse_pct / 100.0)))
+    online_packs = int(round(available_packs * (body.online_pct / 100.0)))
+    # Cap so we never allocate more packs than we actually have, and
+    # reserve at least 1 pack for the store cohort if the user set
+    # warehouse + online to >=100%.
+    if wh_packs + online_packs > available_packs:
+        # Trim the smaller of the two so the bigger reservation wins.
+        overflow = (wh_packs + online_packs) - available_packs
+        if online_packs >= overflow:
+            online_packs -= overflow
+        else:
+            wh_packs -= (overflow - online_packs)
+            online_packs = 0
+    store_packs = max(0, available_packs - wh_packs - online_packs)
+
+    # 3) Score = vw·velocity + sw·low-stock + aw·asp
+    # Each component normalised to [0,1] across the candidate set,
+    # weights renormalised so they sum to 1.
+    vw, sw, aw = body.velocity_weight, body.stock_weight, body.asp_weight
+    wsum = vw + sw + aw
+    if wsum <= 0:
+        # Defend against all-zero sliders — fall back to even weighting.
+        vw = sw = aw = 1 / 3
+        wsum = 1.0
+    vw, sw, aw = vw / wsum, sw / wsum, aw / wsum
+
     rows: List[StoreAllocationRow] = []
     scores: List[Tuple[str, float]] = []
     for s in candidate_stores:
@@ -275,26 +340,65 @@ async def calculate_allocation(
             ls_norm = 1.0 - (soh_by_store.get(s, 0) / max_soh)
         else:
             ls_norm = 1.0
-        score = body.velocity_weight * v_norm + (1 - body.velocity_weight) * ls_norm
+        # ASP score: stores with the HIGHEST per-unit price get the
+        # highest score (favours sending stock where it sells dearer).
+        # Stores with no sales have zero ASP score — they get pulled in
+        # via velocity/stock factors anyway.
+        asp_norm = (asp_by_store.get(s, 0.0) / max_asp) if max_asp > 0 else 0.0
+        score = vw * v_norm + sw * ls_norm + aw * asp_norm
         scores.append((s, score))
     total_score = sum(sc for _, sc in scores) or 1.0
 
-    # 4) Largest-remainder allocation of packs.
-    raw = [(s, sc / total_score * available_packs) for s, sc in scores]
+    # 4) Largest-remainder allocation of STORE packs (warehouse + online
+    # are reserved off the top above, not via score).
+    raw = [(s, sc / total_score * store_packs) for s, sc in scores]
     floors = [(s, int(v)) for s, v in raw]
     remainders = sorted(
         ((s, v - int(v)) for s, v in raw),
         key=lambda x: x[1], reverse=True,
     )
     assigned = sum(f for _, f in floors)
-    leftover = available_packs - assigned
+    leftover = store_packs - assigned
     bonus = {s: 0 for s, _ in remainders}
     for s, _ in remainders[:max(0, leftover)]:
         bonus[s] += 1
     pack_count: Dict[str, int] = {s: f + bonus.get(s, 0) for s, f in floors}
 
-    # 5) Build response rows.
+    # 5) Build response rows. Warehouse + Online tiers come first as
+    # synthetic rows so the front-end can render the priority hierarchy.
     score_map = dict(scores)
+    if wh_packs > 0:
+        sizes = {sz: wh_packs * v for sz, v in pack_breakdown.items()}
+        rows.append(StoreAllocationRow(
+            store="Warehouse Finished Goods",
+            score=1.0,
+            velocity_score=0.0,
+            low_stock_score=0.0,
+            asp_score=0.0,
+            asp_kes=0.0,
+            units_sold_window=0,
+            current_soh=0,
+            packs_allocated=wh_packs,
+            units_allocated=sum(sizes.values()),
+            channel="warehouse",
+            sizes=sizes,
+        ))
+    if online_packs > 0:
+        sizes = {sz: online_packs * v for sz, v in pack_breakdown.items()}
+        rows.append(StoreAllocationRow(
+            store="Online (shop-zetu / studio)",
+            score=1.0,
+            velocity_score=0.0,
+            low_stock_score=0.0,
+            asp_score=0.0,
+            asp_kes=0.0,
+            units_sold_window=0,
+            current_soh=0,
+            packs_allocated=online_packs,
+            units_allocated=sum(sizes.values()),
+            channel="online",
+            sizes=sizes,
+        ))
     for s in candidate_stores:
         packs = pack_count.get(s, 0)
         sizes = {sz: packs * v for sz, v in pack_breakdown.items()}
@@ -304,15 +408,24 @@ async def calculate_allocation(
             score=round(score_map[s], 4),
             velocity_score=round((sold_by_store.get(s, 0) / max_velocity) if max_velocity else 0.0, 4),
             low_stock_score=round((1.0 - (soh_by_store.get(s, 0) / max_soh)) if max_soh else 1.0, 4),
+            asp_score=round((asp_by_store.get(s, 0.0) / max_asp) if max_asp else 0.0, 4),
+            asp_kes=round(asp_by_store.get(s, 0.0), 2),
             units_sold_window=int(sold_by_store.get(s, 0)),
             current_soh=int(soh_by_store.get(s, 0)),
             packs_allocated=packs,
             units_allocated=units,
+            channel="store",
             sizes=sizes,
         ))
 
-    rows.sort(key=lambda r: r.units_allocated, reverse=True)
+    # Sort: warehouse → online → stores by units_allocated.
+    def _channel_rank(c: str) -> int:
+        return {"warehouse": 0, "online": 1}.get(c, 2)
+    rows.sort(key=lambda r: (_channel_rank(r.channel), -r.units_allocated))
     allocated = sum(r.units_allocated for r in rows)
+    wh_units = sum(r.units_allocated for r in rows if r.channel == "warehouse")
+    online_units = sum(r.units_allocated for r in rows if r.channel == "online")
+    store_units = sum(r.units_allocated for r in rows if r.channel == "store")
     return AllocationResponse(
         pack_unit_size=pack_unit_size,
         pack_breakdown=pack_breakdown,
@@ -320,6 +433,9 @@ async def calculate_allocation(
         requested_units=body.units_total,
         allocated_units=allocated,
         leftover_units=body.units_total - allocated,
+        warehouse_units=wh_units,
+        online_units=online_units,
+        store_units=store_units,
         rows=rows,
     )
 
@@ -369,6 +485,11 @@ class SaveAllocationRun(BaseModel):
     pack_unit_size: int
     pack_breakdown: Dict[str, int]
     velocity_weight: float
+    # New optional sliders — present on runs saved after iter 61.
+    stock_weight: Optional[float] = None
+    asp_weight: Optional[float] = None
+    warehouse_pct: Optional[float] = None
+    online_pct: Optional[float] = None
     date_from: str
     date_to: str
     rows: List[Dict[str, Any]]

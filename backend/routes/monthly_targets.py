@@ -143,6 +143,51 @@ async def _channel_daily_actuals(
     return out
 
 
+async def _channel_pace_metrics(
+    channel: str,
+    df: _dt.date,
+    dt: _dt.date,
+) -> Dict[str, float]:
+    """Return {asp, basket_kes, orders_per_day} for one channel over the
+    given window. Used to convert the "Suggested daily KES need" target
+    into Suggested Quantity (units) and Suggested Basket Size (KES)
+    on the Monthly Tracker.
+
+    asp           = total_sales_kes / units_sold   (avg per-unit price)
+    basket_kes    = total_sales_kes / unique_orders (avg basket value)
+    orders_per_day= unique_orders / days_in_window
+    """
+    rows = await _orders_for_window(
+        df.isoformat(), dt.isoformat(), country=None, channel=channel,
+    )
+    units = 0.0
+    sales = 0.0
+    order_ids: set = set()
+    days = max(1, (dt - df).days + 1)
+    for r in rows:
+        if (r.get("channel") or r.get("pos_location_name")) != channel:
+            continue
+        try:
+            sales += float(r.get("total_sales_kes") or 0)
+        except Exception:
+            pass
+        try:
+            units += float(r.get("units_sold") or r.get("quantity") or 0)
+        except Exception:
+            pass
+        oid = r.get("order_id") or r.get("order_number")
+        if oid:
+            order_ids.add(str(oid))
+    asp = (sales / units) if units > 0 else 0.0
+    basket = (sales / len(order_ids)) if order_ids else 0.0
+    orders_per_day = (len(order_ids) / days) if days > 0 else 0.0
+    return {
+        "asp": asp,
+        "basket_kes": basket,
+        "orders_per_day": orders_per_day,
+    }
+
+
 # ─── /api/analytics/monthly-targets ──────────────────────────────────
 
 @api_router.get("/analytics/monthly-targets")
@@ -178,6 +223,15 @@ async def analytics_monthly_targets(
     }
     actuals_per_ch = dict(zip(actual_tasks.keys(),
                               await asyncio.gather(*actual_tasks.values())))
+
+    # Pull per-channel pace metrics (ASP + basket KES + orders/day) for
+    # the SAME MTD window so Suggested Quantity / Suggested Basket Size
+    # use store-specific selling reality (not chain-wide averages).
+    pace_tasks = {
+        ch: _channel_pace_metrics(ch, m, actuals_to) for ch in requested_channels
+    }
+    pace_per_ch = dict(zip(pace_tasks.keys(),
+                           await asyncio.gather(*pace_tasks.values())))
 
     stores: List[Dict[str, Any]] = []
     for ch in requested_channels:
@@ -244,9 +298,16 @@ async def analytics_monthly_targets(
             r["daily_target"] for r in daily_rows if r["is_future"]
         ) or 0.0
         gap_to_target = max(0.0, target - running_actual)
+        # Pace metrics for THIS channel.
+        ch_pace = pace_per_ch.get(ch) or {}
+        ch_asp = float(ch_pace.get("asp") or 0.0)
+        ch_basket = float(ch_pace.get("basket_kes") or 0.0)
+        ch_orders_per_day = float(ch_pace.get("orders_per_day") or 0.0)
         for r in daily_rows:
             if not r["is_future"]:
                 r["suggested_daily_target"] = None
+                r["suggested_daily_quantity"] = None
+                r["suggested_basket_size"] = None
                 continue
             if target_remaining_dow > 0 and days_remaining > 0:
                 # Re-weight the gap by this day's share of the
@@ -257,6 +318,16 @@ async def analytics_monthly_targets(
                 r["suggested_daily_target"] = round(
                     gap_to_target / days_remaining, 2,
                 ) if days_remaining > 0 else 0.0
+            # Suggested Quantity = daily KES need ÷ store ASP.
+            sdt = r["suggested_daily_target"] or 0.0
+            r["suggested_daily_quantity"] = (
+                int(round(sdt / ch_asp)) if ch_asp > 0 else None
+            )
+            # Suggested Basket Size = daily KES need ÷ orders pace.
+            r["suggested_basket_size"] = (
+                round(sdt / ch_orders_per_day, 2)
+                if ch_orders_per_day > 0 else None
+            )
 
         # Headline number — what's needed PER DAY on average across
         # remaining days. Frontend renders this in the new column.
@@ -279,6 +350,9 @@ async def analytics_monthly_targets(
             "ksh_variance_total": round(running_var, 2),
             "gap_to_target": round(gap_to_target, 2),
             "avg_suggested_remaining": avg_suggested_remaining,
+            "asp": round(ch_asp, 2),
+            "basket_kes": round(ch_basket, 2),
+            "orders_per_day": round(ch_orders_per_day, 2),
             "daily": daily_rows,
         })
     stores.sort(key=lambda s: s["sales_target"], reverse=True)

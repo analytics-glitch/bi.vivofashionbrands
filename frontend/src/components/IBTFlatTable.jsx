@@ -147,6 +147,8 @@ export default function IBTFlatTable({
           sku: "",
           barcode: "",
           suggested_qty: units,
+          days_lapsed: s.days_lapsed,
+          first_seen_at: s.first_seen_at,
           parent: s,
         });
         continue;
@@ -166,6 +168,11 @@ export default function IBTFlatTable({
           from_available: sk.from_available,
           to_available: sk.to_available,
           suggested_qty: sk.suggested_qty,
+          // Days-lapsed badge — only present on the parent suggestion;
+          // mirror it onto every SKU row of that suggestion so the
+          // picker can see how long this transfer has been overdue.
+          days_lapsed: s.days_lapsed,
+          first_seen_at: s.first_seen_at,
           parent: s,
         });
       }
@@ -218,8 +225,10 @@ export default function IBTFlatTable({
 
   const exportCSV = () => {
     const header = ["Style", "Brand", "Subcategory", "From Store", "To Store",
-      "Color", "Size", "SKU", "Barcode", "Stock at FROM", "Stock at TO",
-      "Suggested Qty", "Actual Transferred"];
+      "Color", "Size", "SKU", "Barcode",
+      "Inv. Qty FROM", "Inv. Qty TO",
+      "Suggested Qty", "Actual Transferred",
+      "Days Lapsed", "First Seen"];
     const out = [header];
     for (const r of filteredRows) {
       out.push([
@@ -229,6 +238,8 @@ export default function IBTFlatTable({
         r.from_available ?? "", r.to_available ?? "",
         r.suggested_qty,
         actuals[r.rowKey] ?? "",
+        r.days_lapsed ?? "",
+        r.first_seen_at ?? "",
       ]);
     }
     const csv = out.map((row) =>
@@ -291,14 +302,17 @@ export default function IBTFlatTable({
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">SKU</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the FROM store">Inv. Qty FROM</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the TO store">Inv. Qty TO</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Suggested</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual transferred</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Days since the system first surfaced this transfer. Highlighted RED when more than 2 days.">Days lapsed</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Action</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.length === 0 && !loading && (
-              <tr><td colSpan={11} className="px-3 py-6 text-center text-muted">No matches.</td></tr>
+              <tr><td colSpan={14} className="px-3 py-6 text-center text-muted">No matches.</td></tr>
             )}
             {filteredRows.map((r, idx) => (
               <tr
@@ -319,6 +333,12 @@ export default function IBTFlatTable({
                 <td className="px-3 py-3 whitespace-nowrap">{r.size || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.sku || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.barcode || "—"}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{fmtNum(r.from_available ?? 0)}</td>
+                <td className="px-3 py-3 text-right tabular-nums">
+                  {r.to_available === 0 || r.to_available == null
+                    ? <span className="text-rose-700 font-bold">{fmtNum(r.to_available ?? 0)}</span>
+                    : fmtNum(r.to_available)}
+                </td>
                 <td className="px-3 py-3 text-right tabular-nums">
                   <span className="pill-green font-bold">{fmtNum(r.suggested_qty || 0)}</span>
                 </td>
@@ -335,6 +355,17 @@ export default function IBTFlatTable({
                     data-testid={`${testId}-actual-${idx}`}
                     aria-label={`Actual transferred for ${r.sku || r.style_name}`}
                   />
+                </td>
+                <td className="px-3 py-3 text-right tabular-nums whitespace-nowrap" data-testid={`${testId}-days-lapsed-${idx}`}>
+                  {r.days_lapsed == null ? (
+                    <span className="text-muted">—</span>
+                  ) : r.days_lapsed > 2 ? (
+                    <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 border border-rose-300 font-bold px-2 py-0.5 rounded-full">
+                      {r.days_lapsed}d
+                    </span>
+                  ) : (
+                    <span className="text-muted">{r.days_lapsed}d</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <button

@@ -50,6 +50,12 @@ function StoreCard({ store }) {
               valueClass={`font-bold ${store.gap_to_target > 0 ? "text-[#dc2626]" : "text-[#166534]"}`}
             />
           )}
+          {store.asp > 0 && (
+            <Stat label="ASP" value={fmtKES(store.asp)} valueClass="text-[#0f3d24]" />
+          )}
+          {store.basket_kes > 0 && (
+            <Stat label="Avg basket" value={fmtKES(store.basket_kes)} valueClass="text-[#0f3d24]" />
+          )}
         </div>
       </div>
 
@@ -67,6 +73,18 @@ function StoreCard({ store }) {
                   title="What you need to do per day on remaining days to still hit the monthly target — re-weighted by the day-of-week pattern."
                 >
                   Suggested Daily Need
+                </th>
+                <th
+                  className="text-right px-3 py-2 bg-amber-100/70"
+                  title="Suggested Daily Need ÷ store ASP — units to sell that day to land the target."
+                >
+                  Suggested Quantity
+                </th>
+                <th
+                  className="text-right px-3 py-2 bg-amber-100/70"
+                  title="Suggested Daily Need ÷ store's daily-orders pace — avg basket KES each transaction needs to be."
+                >
+                  Suggested Basket Size
                 </th>
                 <th className="text-right px-3 py-2">Actual</th>
                 <th className="text-right px-3 py-2">Variance %</th>
@@ -98,6 +116,12 @@ function StoreCard({ store }) {
                         : "text-muted/60"
                     }`}>
                       {future && r.suggested_daily_target != null ? fmtKES(r.suggested_daily_target) : "—"}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right tabular-nums ${future ? "" : "text-muted/60"}`}>
+                      {future && r.suggested_daily_quantity != null ? fmtNum(r.suggested_daily_quantity) : "—"}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right tabular-nums ${future ? "" : "text-muted/60"}`}>
+                      {future && r.suggested_basket_size != null ? fmtKES(r.suggested_basket_size) : "—"}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">
                       {future ? <span className="text-muted/60">—</span> : fmtKES(r.actual)}
