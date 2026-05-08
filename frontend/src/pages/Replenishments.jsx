@@ -109,10 +109,14 @@ const Replenishments = () => {
     try {
       const cleaned = ownerNames.map((s) => s.trim()).filter(Boolean);
       await api.post("/admin/replenishment-config", { owners: cleaned });
-      setOwnerSavedTick((t) => t + 1);
       toast.success(cleaned.length
-        ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}`
-        : "Roster reset to default");
+        ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}. Redistributing…`
+        : "Roster reset to default. Redistributing…");
+      // Bypass the 5-min response cache so the redistribution is
+      // visible instantly (otherwise the admin sees the OLD owner pills
+      // until the cache expires).
+      await loadLive({ forceFresh: true });
+      setOwnerSavedTick((t) => t + 1);
     } catch (e) {
       toast.error("Couldn't save — " + (e?.response?.data?.detail || e.message));
     } finally {
@@ -122,13 +126,16 @@ const Replenishments = () => {
 
   // Fetch live replenishment list (re-runs when roster save tick changes
   // so admins see the new owner assignment immediately).
-  const loadLive = useCallback(async () => {
+  const loadLive = useCallback(async (opts = {}) => {
     setLoading(true);
     setError(null);
     try {
       const { data: d } = await api.get("/analytics/replenishment-report", {
         params: { date_from: dateFrom, date_to: dateTo },
         timeout: 240000,
+        // After Save & redistribute, bypass the 5-min response cache so
+        // the new owner assignment is immediately visible.
+        forceFresh: !!opts.forceFresh,
       });
       setData(d || { rows: [], summary: null });
       // Re-seed the actuals input with the suggested qty for any row not
@@ -159,7 +166,7 @@ const Replenishments = () => {
     if (!isAdmin) return;
     let cancel = false;
     setCompletedLoading(true);
-    api.get("/analytics/replenishment-completed", { params: { days: 30 } })
+    api.get("/analytics/replenishment-completed", { params: { days: 30 }, forceFresh: completedRefresh > 0 })
       .then(({ data: c }) => { if (!cancel) setCompleted(c || { rows: [], total: 0 }); })
       .catch(() => { if (!cancel) setCompleted({ rows: [], total: 0 }); })
       .finally(() => { if (!cancel) setCompletedLoading(false); });
@@ -232,8 +239,26 @@ const Replenishments = () => {
     }
   };
 
-  // Build a per-owner subset for PDF export.
-  const ownersUsed = data.summary?.owners_used || [];
+  // Per-user fulfilment summary — small focused widget. Aggregates
+  // completed rows by owner/picker and computes their overall
+  // fulfilment % = sum(actual) / sum(suggested) over the same window.
+  const fulfilmentByUser = useMemo(() => {
+    const acc = new Map(); // user → {target, actual, lines}
+    for (const r of completed.rows || []) {
+      const u = r.owner || r.completed_by_name || "—";
+      const cur = acc.get(u) || { user: u, target: 0, actual: 0, lines: 0 };
+      cur.target += Number(r.units_to_replenish || 0);
+      cur.actual += Number(r.actual_units_replenished || 0);
+      cur.lines += 1;
+      acc.set(u, cur);
+    }
+    const out = [...acc.values()].map((x) => ({
+      ...x,
+      rate: x.target > 0 ? (x.actual / x.target * 100) : null,
+    }));
+    out.sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
+    return out;
+  }, [completed.rows]);
 
   const exportOwnerPdf = (ownerName) => {
     const rows = (data.rows || []).filter(
@@ -571,6 +596,61 @@ const Replenishments = () => {
           )
         )}
       </div>
+
+      {/* Per-user fulfilment rate — small focused summary. */}
+      {isAdmin && fulfilmentByUser.length > 0 && (
+        <div className="card-white p-4 sm:p-5" data-testid="replen-fulfilment-summary">
+          <SectionTitle
+            title={
+              <span className="inline-flex items-center gap-2 text-[14px]">
+                <CheckCircle size={16} weight="duotone" className="text-emerald-700" />
+                Fulfilment rate by picker · last 30 days
+              </span>
+            }
+            subtitle="Aggregate of every Mark As Done in the window — actual units replenished ÷ suggested. Use this to spot pickers who consistently under- or over-replenish."
+          />
+          <div className="overflow-x-auto rounded-lg border border-border bg-white max-w-2xl">
+            <table className="w-full text-[12.5px]">
+              <thead className="bg-panel">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">User</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Lines done</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Suggested</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Replenished</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Fulfilment rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fulfilmentByUser.map((u, i) => (
+                  <tr key={u.user} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-fulfilment-row-${i}`}>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                        {u.user}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(u.lines)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(u.target)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(u.actual)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {u.rate == null ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        <span className={`inline-flex items-center font-bold px-2 py-0.5 rounded-full ${
+                          u.rate >= 100 ? "bg-emerald-100 text-emerald-900"
+                            : u.rate >= 50 ? "bg-amber-100 text-amber-900"
+                            : "bg-rose-100 text-rose-900"
+                        }`}>
+                          {u.rate.toFixed(1)}%
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Completed report (admin/owner). */}
       {isAdmin && (

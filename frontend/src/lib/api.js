@@ -130,8 +130,18 @@ const _origGet = api.get.bind(api);
 api.get = (url, config = {}) => {
   const params = (config && config.params) || {};
   const key = _cacheKey(url, params);
+  // Caller can force-bypass the response cache by passing
+  // `forceFresh: true` in config. Used when an action just mutated
+  // server state and we need the next read to actually hit the wire
+  // (e.g. saving the replenishment owner roster, then refetching the
+  // distributed list).
+  const force = !!config.forceFresh;
+  if (force) {
+    _respCache.delete(key);
+    _inflight.delete(key);
+  }
 
-  const cached = _respCache.get(key);
+  const cached = !force && _respCache.get(key);
   if (cached && (Date.now() - cached.ts) < _ttlFor(url)) {
     return Promise.resolve({
       data: cached.data,
@@ -141,7 +151,7 @@ api.get = (url, config = {}) => {
       config,
     });
   }
-  const existing = _inflight.get(key);
+  const existing = !force && _inflight.get(key);
   if (existing) return existing;
 
   const p = _origGet(url, config)
