@@ -7,7 +7,7 @@ import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import { DownloadSimple, MagnifyingGlass, Warning } from "@phosphor-icons/react";
-import ReplenishmentReport from "@/components/ReplenishmentReport";
+// import ReplenishmentReport from "@/components/ReplenishmentReport"; // moved to /replenishments page
 import SORReportExport from "@/components/SORReportExport";
 import {
   StoreKpisExport,
@@ -736,16 +736,6 @@ const Exports = () => {
         </button>
         <button
           type="button"
-          onClick={() => setTab("replen")}
-          data-testid="exports-tab-replen"
-          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
-            tab === "replen" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
-          }`}
-        >
-          Daily Replenishment
-        </button>
-        <button
-          type="button"
           onClick={() => setTab("sor")}
           data-testid="exports-tab-sor"
           className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
@@ -762,7 +752,6 @@ const Exports = () => {
       {!isStoreManager && tab === "kpis" && <StoreKpisExport />}
       {!isStoreManager && tab === "period" && <PeriodPerformanceExport />}
       {!isStoreManager && tab === "stock" && <StockRebalancingExport />}
-      {!isStoreManager && tab === "replen" && <ReplenishmentReport />}
       {!isStoreManager && tab === "sor" && <SORReportExport />}
     </div>
   );

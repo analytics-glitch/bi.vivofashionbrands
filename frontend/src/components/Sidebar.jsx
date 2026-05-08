@@ -41,6 +41,7 @@ const tabs = [
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations" },
+  { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments" },
   { to: "/pricing", label: "Pricing", icon: CurrencyCircleDollar, id: "pricing" },
   { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets" },

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import pymongo
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Body, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -21,7 +22,7 @@ VIVO_API_BASE = os.environ.get(
 
 from auth import (  # noqa: E402
     auth_router, admin_router, ActivityLogMiddleware,
-    get_current_user, seed_admin, db,
+    get_current_user, seed_admin, db, User,
 )
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
@@ -6151,6 +6152,9 @@ async def analytics_replenishment_report(
     date_to: Optional[str] = None,
     date: Optional[str] = None,  # legacy single-day param, kept for back-compat
     country: Optional[str] = None,
+    owners: Optional[str] = None,  # comma-separated names — if provided,
+                                   # overrides the default OWNERS list and
+                                   # distributes lines equally across them.
 ):
     """Daily replenishment report — returns rows that need a top-up today.
 
@@ -6174,7 +6178,23 @@ async def analytics_replenishment_report(
     )
     if dt < df:
         df, dt = dt, df
-    cache_key = f"{df.isoformat()}|{dt.isoformat()}|{country or ''}"
+    # Resolve effective owner roster — caller-provided list wins, else
+    # admin-configured persisted list, else the static fallback.
+    eff_owners: List[str] = []
+    if owners:
+        eff_owners = [n.strip() for n in owners.split(",") if n and n.strip()]
+    if not eff_owners:
+        try:
+            cfg_doc = await db.replenishment_config.find_one(
+                {"_id": "default"}, {"_id": 0, "owners": 1}
+            )
+            if cfg_doc and isinstance(cfg_doc.get("owners"), list):
+                eff_owners = [str(x).strip() for x in cfg_doc["owners"] if str(x).strip()]
+        except Exception as e:
+            logger.warning("[replen] could not load saved owners: %s", e)
+    if not eff_owners:
+        eff_owners = list(OWNERS)
+    cache_key = f"{df.isoformat()}|{dt.isoformat()}|{country or ''}|{','.join(eff_owners)}"
     if cache_key in _repl_cache:
         ts, payload = _repl_cache[cache_key]
         if _time.time() - ts < _REPL_TTL:
@@ -6402,18 +6422,19 @@ async def analytics_replenishment_report(
         })
 
     # 6) Owner assignment — sort all lines alphabetically by POS, then split
-    # into 4 equal slices. Each owner gets exactly N/4 rows; one owner may
-    # span the boundary between two stores (acceptable per spec). Simple
-    # row-count division — equal pick volume by lines, not by units.
+    # into N equal slices (N = effective owner roster size). Each owner
+    # gets exactly N/owners rows; one owner may span the boundary between
+    # two stores (acceptable per spec). Simple row-count division — equal
+    # pick volume by lines, not by units.
     rows.sort(key=lambda r: (r["pos_location"], r["product_name"], r["size"]))
     n = len(rows)
-    n_owners = max(len(OWNERS), 1)
+    n_owners = max(len(eff_owners), 1)
     base = n // n_owners
     extra = n % n_owners
     cursor = 0
     store_owners: Dict[str, set] = {}
-    owners_load: Dict[str, int] = {o: 0 for o in OWNERS}
-    for i, owner in enumerate(OWNERS):
+    owners_load: Dict[str, int] = {o: 0 for o in eff_owners}
+    for i, owner in enumerate(eff_owners):
         # First `extra` owners absorb the remainder so the totals add up.
         slice_len = base + (1 if i < extra else 0)
         for r in rows[cursor:cursor + slice_len]:
@@ -6440,12 +6461,13 @@ async def analytics_replenishment_report(
         "summary": {
             "total_rows": len(rows),
             "total_units": sum(r["replenish"] for r in rows),
+            "owners_used": list(eff_owners),
             "by_owner": [
                 {"owner": o,
                  "stores": sum(1 for s, ows in store_owners.items() if o in ows),
                  "lines": sum(1 for r in rows if r["owner"] == o),
                  "units": owners_load[o]}
-                for o in OWNERS
+                for o in eff_owners
             ],
         },
     }
@@ -6459,29 +6481,83 @@ def _repl_state_key(date_from: str, date_to: str, pos: str, barcode: str) -> str
 
 
 async def _overlay_repl_state(payload: Dict[str, Any], df: date, dt: date):
-    """Stamp `replenished: bool` on every row from the `replenishment_state`
-    Mongo collection. Cheap — one indexed find with a key set."""
+    """Stamp `replenished: bool`, `actual_units_replenished: int|None`,
+    `soh_after: int|None`, and `days_lapsed: int` on every row from the
+    `replenishment_state` Mongo collection. Cheap — one indexed find with
+    a key set.
+    """
     try:
+        rows_in = payload.get("rows", [])
         keys = [
             _repl_state_key(df.isoformat(), dt.isoformat(), r["pos_location"], r["barcode"])
-            for r in payload.get("rows", [])
+            for r in rows_in
         ]
+        # Track + read per-(pos,barcode) first-seen so the UI can show
+        # "Days lapsed" since this SKU first appeared on the
+        # replenishment list. Note we key WITHOUT the date window so a
+        # user widening the window doesn't reset the lapse counter.
+        first_seen_keys = [f"{r['pos_location']}|{r['barcode']}" for r in rows_in]
         if not keys:
             if "summary" in payload:
                 payload["summary"]["completed"] = 0
             return
+        # State + completion overlay.
         docs = await db.replenishment_state.find(
-            {"key": {"$in": keys}, "replenished": True},
-            {"_id": 0, "key": 1},
+            {"key": {"$in": keys}},
+            {"_id": 0, "key": 1, "replenished": 1,
+             "actual_units_replenished": 1, "soh_after": 1,
+             "completed_at": 1},
         ).to_list(length=None)
-        marked = {doc["key"] for doc in docs}
+        state_by_key = {d["key"]: d for d in docs}
+        # First-seen overlay (permanent — not date-windowed).
+        first_seen_docs = await db.replenishment_first_seen.find(
+            {"key": {"$in": first_seen_keys}},
+            {"_id": 0, "key": 1, "first_seen_at": 1},
+        ).to_list(length=None)
+        first_seen_by_key = {d["key"]: d.get("first_seen_at") for d in first_seen_docs}
+        # Backfill any missing first_seen rows in one bulk upsert.
+        now_utc = datetime.now(timezone.utc)
+        missing = [
+            f"{r['pos_location']}|{r['barcode']}"
+            for r in rows_in
+            if f"{r['pos_location']}|{r['barcode']}" not in first_seen_by_key
+        ]
+        if missing:
+            try:
+                await db.replenishment_first_seen.bulk_write([
+                    pymongo.UpdateOne(
+                        {"key": k},
+                        {"$setOnInsert": {"key": k, "first_seen_at": now_utc}},
+                        upsert=True,
+                    )
+                    for k in set(missing)
+                ], ordered=False)
+                for k in missing:
+                    first_seen_by_key[k] = now_utc
+            except Exception:
+                pass
+
         completed = 0
-        for r in payload["rows"]:
+        for r in rows_in:
             k = _repl_state_key(df.isoformat(), dt.isoformat(), r["pos_location"], r["barcode"])
-            on = k in marked
+            st = state_by_key.get(k) or {}
+            on = bool(st.get("replenished"))
             r["replenished"] = on
+            r["actual_units_replenished"] = st.get("actual_units_replenished")
+            r["soh_after"] = st.get("soh_after")
+            r["completed_at"] = (
+                st["completed_at"].isoformat() if st.get("completed_at") else None
+            )
             if on:
                 completed += 1
+            fs_key = f"{r['pos_location']}|{r['barcode']}"
+            fs = first_seen_by_key.get(fs_key)
+            if isinstance(fs, datetime):
+                r["first_seen_at"] = fs.isoformat()
+                r["days_lapsed"] = max(0, (now_utc.date() - fs.date()).days)
+            else:
+                r["first_seen_at"] = None
+                r["days_lapsed"] = 0
         if "summary" in payload:
             payload["summary"]["completed"] = completed
     except Exception as e:
@@ -6495,8 +6571,15 @@ async def replenishment_mark(
     payload: Dict[str, Any] = Body(...),
     user=Depends(get_current_user),
 ):
-    """Toggle a single replenishment row to replenished=true|false. Body:
-    {date_from, date_to, pos_location, barcode, replenished}."""
+    """Mark a single replenishment row as done (or not). Body:
+    {date_from, date_to, pos_location, barcode, replenished,
+     actual_units_replenished?, units_to_replenish?, owner?,
+     product_name?, size?, sku?}.
+
+    When replenished=true and `actual_units_replenished` is provided, we
+    also snapshot the CURRENT shop-floor stock for that barcode so the
+    Completed Replenishments report shows quantity AFTER replenishment.
+    """
     df_str = payload.get("date_from")
     dt_str = payload.get("date_to") or df_str
     pos = (payload.get("pos_location") or "").strip()
@@ -6504,20 +6587,146 @@ async def replenishment_mark(
     state = bool(payload.get("replenished"))
     if not (df_str and dt_str and pos and bc):
         raise HTTPException(status_code=400, detail="date_from, date_to, pos_location, barcode are required")
+    actual_units = payload.get("actual_units_replenished")
+    if actual_units is not None:
+        try:
+            actual_units = int(actual_units)
+            if actual_units < 0:
+                raise ValueError
+        except Exception:
+            raise HTTPException(400, "actual_units_replenished must be a non-negative integer")
+
+    # When marking complete, snapshot current shop-floor stock for that
+    # barcode so the completed report can show the post-replenishment SOH.
+    soh_after: Optional[int] = None
+    if state and actual_units is not None:
+        try:
+            inv = await fetch_all_inventory(location=pos)
+            for row in (inv or []):
+                if (row.get("barcode") or "").strip() == bc:
+                    soh_after = (soh_after or 0) + int(row.get("available") or 0)
+        except Exception as e:
+            logger.warning("[replen] could not snapshot soh_after: %s", e)
+
     key = _repl_state_key(df_str, dt_str, pos, bc)
+    update_doc: Dict[str, Any] = {
+        "key": key,
+        "date_from": df_str, "date_to": dt_str,
+        "pos_location": pos, "barcode": bc,
+        "replenished": state,
+        "updated_by": user.email if user else None,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    if state:
+        update_doc["completed_at"] = datetime.now(timezone.utc)
+        update_doc["completed_by_name"] = (
+            (user.name or user.email) if user else None
+        )
+    if actual_units is not None:
+        update_doc["actual_units_replenished"] = actual_units
+    if soh_after is not None:
+        update_doc["soh_after"] = soh_after
+    # Optional context for the completed report (audit trail).
+    for fld in ("owner", "product_name", "size", "sku",
+                "units_to_replenish", "soh_store", "soh_wh", "country"):
+        if fld in payload:
+            update_doc[fld] = payload[fld]
+
     await db.replenishment_state.update_one(
         {"key": key},
+        {"$set": update_doc},
+        upsert=True,
+    )
+    return {"ok": True, "key": key, "replenished": state,
+            "actual_units_replenished": actual_units,
+            "soh_after": soh_after}
+
+
+@api_router.get("/analytics/replenishment-completed")
+async def replenishment_completed(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    days: int = Query(30, ge=1, le=180),
+    _: User = Depends(get_current_user),
+):
+    """Completed Replenishments report — every row that's been ticked
+    Mark As Done in the last `days` days. Returns audit trail of
+    User · POS · Product · Qty to replenish · Qty replenished ·
+    Fulfilment % · Qty after replenishment.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    q: Dict[str, Any] = {"replenished": True, "completed_at": {"$gte": since}}
+    if date_from:
+        q["date_from"] = {"$gte": date_from}
+    if date_to:
+        q["date_to"] = {"$lte": date_to}
+    cursor = db.replenishment_state.find(q, {"_id": 0}).sort("completed_at", -1)
+    rows = await cursor.to_list(length=2000)
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        u_target = int(r.get("units_to_replenish") or 0)
+        u_actual = int(r.get("actual_units_replenished") or 0)
+        fulfil_pct = (u_actual / u_target * 100.0) if u_target > 0 else None
+        out.append({
+            "key": r.get("key"),
+            "owner": r.get("owner") or "",
+            "completed_by_name": r.get("completed_by_name") or r.get("updated_by") or "",
+            "pos_location": r.get("pos_location") or "",
+            "country": r.get("country") or "",
+            "product_name": r.get("product_name") or "",
+            "size": r.get("size") or "",
+            "barcode": r.get("barcode") or "",
+            "sku": r.get("sku") or "",
+            "units_to_replenish": u_target,
+            "actual_units_replenished": u_actual,
+            "fulfilment_pct": round(fulfil_pct, 1) if fulfil_pct is not None else None,
+            "soh_before": int(r.get("soh_store") or 0),
+            "soh_after": int(r.get("soh_after")) if r.get("soh_after") is not None else None,
+            "completed_at": r["completed_at"].isoformat() if r.get("completed_at") else None,
+            "date_from": r.get("date_from"),
+            "date_to": r.get("date_to"),
+        })
+    return {"rows": out, "total": len(out), "since_days": days}
+
+
+@admin_router.get("/replenishment-config")
+async def get_replenishment_config():
+    """Return the persisted owner roster used by /analytics/replenishment-report
+    when no `owners` query param is passed. Empty list = fall back to
+    the static OWNERS const in code."""
+    doc = await db.replenishment_config.find_one(
+        {"_id": "default"}, {"_id": 0, "owners": 1, "updated_by": 1, "updated_at": 1}
+    )
+    if not doc:
+        return {"owners": list(OWNERS), "default": True}
+    if isinstance(doc.get("updated_at"), datetime):
+        doc["updated_at"] = doc["updated_at"].isoformat()
+    return {**doc, "default": False}
+
+
+@admin_router.post("/replenishment-config")
+async def set_replenishment_config(
+    payload: Dict[str, Any] = Body(...),
+    user=Depends(get_current_user),
+):
+    """Persist the owner roster (admin/owner only). Body: {owners: [str]}.
+    Empty list resets to the static OWNERS const."""
+    raw = payload.get("owners") or []
+    if not isinstance(raw, list):
+        raise HTTPException(400, "owners must be a list of names")
+    cleaned = [str(x).strip() for x in raw if str(x).strip()]
+    if len(cleaned) > 20:
+        raise HTTPException(400, "Maximum 20 owners")
+    await db.replenishment_config.update_one(
+        {"_id": "default"},
         {"$set": {
-            "key": key,
-            "date_from": df_str, "date_to": dt_str,
-            "pos_location": pos, "barcode": bc,
-            "replenished": state,
+            "owners": cleaned,
             "updated_by": user.email if user else None,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc),
         }},
         upsert=True,
     )
-    return {"ok": True, "key": key, "replenished": state}
+    return {"ok": True, "owners": cleaned}
 
 
 @admin_router.post("/refresh-bins")

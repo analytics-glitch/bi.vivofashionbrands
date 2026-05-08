@@ -109,8 +109,8 @@ _VIEWER = ["overview", "locations", "footfall", "customers", "customer-details",
 #   - Exports (inventory-only restricted via the page itself, not here)
 #   - IBT (full)
 #   - Feedback (so they can submit issues)
-_STORE_MANAGER = ["locations", "ibt", "exports", "feedback"]
-_ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations"]
+_STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"]
+_ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"]
 _EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
 _ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback"]
 ROLE_PAGES = {
