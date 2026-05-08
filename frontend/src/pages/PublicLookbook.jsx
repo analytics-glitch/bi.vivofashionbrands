@@ -70,7 +70,9 @@ export default function PublicLookbook() {
             return (
               <div key={it.sku} className="bg-white border border-[var(--vivo-border)] overflow-hidden">
                 <div className="aspect-[3/4] bg-[var(--vivo-bg)]">
-                  <img src={it.image} alt="" className="w-full h-full object-cover" />
+                  {it.image ? (
+                    <img src={it.image} alt="" className="w-full h-full object-cover" />
+                  ) : null}
                 </div>
                 <div className="p-5">
                   <div className="font-display text-lg">{it.product_title}</div>

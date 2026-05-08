@@ -148,7 +148,11 @@ export default function LookbookBuilder() {
               <ul className="space-y-3" data-testid="lookbook-selected-list">
                 {items.map((it) => (
                   <li key={it.sku} className="flex items-center gap-3">
-                    <img src={it.image} alt="" className="h-12 w-12 object-cover rounded-sm" />
+                    {it.image ? (
+                      <img src={it.image} alt="" className="h-12 w-12 object-cover rounded-sm" />
+                    ) : (
+                      <div className="h-12 w-12 bg-[var(--vivo-bg)] rounded-sm" />
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">{it.product_title}</div>
                       <div className="text-xs text-[var(--vivo-muted)]">{formatKES(it.price)}</div>
