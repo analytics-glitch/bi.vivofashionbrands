@@ -72,6 +72,27 @@ _BI_CACHE: Dict[str, tuple[float, Any]] = {}
 _BI_TTL_SECONDS = 60.0
 
 
+# Vivo's product feed surfaces complimentary "Vivo shopping bags" lines (KES 0)
+# alongside paid-for garments. They skew per-customer style insight + NBA so we
+# strip them out of any product list returned by the BI proxy.
+_EXCLUDED_PRODUCT_TOKENS = ("shopping bag", "shopping bags")
+
+
+def _is_excluded_product(p: Dict[str, Any]) -> bool:
+    if not isinstance(p, dict):
+        return False
+    haystack = " ".join(
+        str(p.get(k) or "") for k in ("style_name", "product_title", "subcategory", "sku", "product_name")
+    ).lower()
+    return any(tok in haystack for tok in _EXCLUDED_PRODUCT_TOKENS)
+
+
+def _filter_products(items: Any) -> Any:
+    if isinstance(items, list):
+        return [p for p in items if not _is_excluded_product(p)]
+    return items
+
+
 async def bi_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     params = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
     cache_key = f"{path}?{sorted(params.items())}"
@@ -444,6 +465,7 @@ async def bi_customer_search(q: str = Query(..., min_length=1), _: User = Depend
 @api.get("/bi/customer/{customer_id}")
 async def bi_customer_profile(customer_id: str, user: User = Depends(get_current_user)):
     products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    products = _filter_products(products)
     # Profile fields don't live on /customer-products. Use the cache populated by
     # any prior /customer-search, /top-customers or /churned-customers call.
     cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
@@ -465,7 +487,7 @@ async def bi_customer_profile(customer_id: str, user: User = Depends(get_current
 
 @api.get("/bi/customer/{customer_id}/products")
 async def bi_customer_products(customer_id: str, _: User = Depends(get_current_user)):
-    return await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    return _filter_products(await bi_get("/customer-products", {"customer_id": customer_id}) or [])
 
 
 @api.get("/bi/churned-customers")
@@ -495,7 +517,7 @@ async def bi_inventory(location: Optional[str] = None, product: Optional[str] = 
 
 @api.get("/bi/top-skus")
 async def bi_top_skus(date_from: str, date_to: str, country: Optional[str] = None, channel: Optional[str] = None, limit: int = 30, _: User = Depends(get_current_user)):
-    return await bi_get("/top-skus", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": limit}) or []
+    return _filter_products(await bi_get("/top-skus", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": limit}) or [])
 
 
 @api.get("/bi/customer-frequency")
@@ -951,6 +973,8 @@ async def call_list(with_nba: bool = False, _: User = Depends(get_current_user))
     
     If with_nba=true, attaches cached AI urgency/action to each row (no fresh
     LLM calls — only reads nba_cache) and re-sorts each bucket by urgency rank.
+    Triggers a background precompute when cache is missing for any surfaced row,
+    so a quick poll will hydrate the badges.
     """
     today_md = now_utc().strftime("%m-%d")
     today_iso = now_utc().date().isoformat()
@@ -980,6 +1004,7 @@ async def call_list(with_nba: bool = False, _: User = Depends(get_current_user))
 
     buckets = {"anniversaries": anniversaries, "at_risk": at_risk, "vip_silent": vip_silent, "churned": churned}
 
+    pending_nba: List[str] = []
     if with_nba:
         URGENCY_RANK = {"high": 0, "medium": 1, "low": 2}
         for name, rows in buckets.items():
@@ -990,7 +1015,19 @@ async def call_list(with_nba: bool = False, _: User = Depends(get_current_user))
                     row["nba_action"] = r.get("action")
                     row["nba_urgency"] = r.get("urgency")
                     row["nba_why"] = r.get("why")
+                    row["nba_script"] = r.get("script")
+                else:
+                    pending_nba.append(row["customer_id"])
             rows.sort(key=lambda c: URGENCY_RANK.get(c.get("nba_urgency"), 3))
+
+        # Fire-and-forget background precompute for missing rows (cap at 12 to
+        # respect LLM budget). Subsequent polls will pick up cached results.
+        if pending_nba:
+            try:
+                import asyncio as _asyncio
+                _asyncio.create_task(_precompute_nba_for(pending_nba[:12]))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not schedule NBA precompute: %s", exc)
 
     return {
         "date": today_iso,
@@ -999,7 +1036,18 @@ async def call_list(with_nba: bool = False, _: User = Depends(get_current_user))
         "vip_silent": buckets["vip_silent"],
         "churned": buckets["churned"],
         "ai_enriched": with_nba,
+        "ai_pending": len(pending_nba) if with_nba else 0,
     }
+
+
+async def _precompute_nba_for(customer_ids: List[str]) -> None:
+    """Compute NBA for a list of customer IDs, populating nba_cache. Best-effort."""
+    sysuser = type("U", (), {"user_id": "system", "name": "system"})()  # type: ignore[arg-type]
+    for cid in customer_ids:
+        try:
+            await customer_nba(cid, user=sysuser)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("NBA precompute failed for %s: %s", cid, exc)
 
 
 @api.post("/dashboard/call-list/precompute-nba")
@@ -1041,34 +1089,140 @@ async def precompute_call_list_nba(_: User = Depends(require_manager)):
 @api.get("/social/facebook/status")
 async def facebook_status(_: User = Depends(require_manager)):
     """Tells the manager what's wired and what's still needed."""
+    pages = await db.facebook_pages.find({}, {"_id": 0, "page_access_token": 0}).to_list(50)
     return {
         "app_id_configured": bool(os.environ.get("FACEBOOK_APP_ID")),
         "app_secret_configured": bool(os.environ.get("FACEBOOK_APP_SECRET")),
         "client_token_configured": bool(os.environ.get("FACEBOOK_CLIENT_TOKEN")),
-        "page_id_configured": bool(os.environ.get("FACEBOOK_PAGE_ID")),
-        "page_access_token_configured": bool(os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")),
-        "ready_to_sync": bool(os.environ.get("FACEBOOK_PAGE_ID") and os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")),
+        "page_id_configured": bool(os.environ.get("FACEBOOK_PAGE_ID")) or len(pages) > 0,
+        "page_access_token_configured": bool(os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")) or len(pages) > 0,
+        "discovered_pages": pages,
+        "ready_to_sync": (bool(os.environ.get("FACEBOOK_PAGE_ID")) and bool(os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN"))) or len(pages) > 0,
         "missing": [
-            *([] if os.environ.get("FACEBOOK_PAGE_ID") else ["FACEBOOK_PAGE_ID"]),
-            *([] if os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN") else ["FACEBOOK_PAGE_ACCESS_TOKEN (long-lived Page Access Token from Graph API Explorer)"]),
+            *([] if (os.environ.get("FACEBOOK_PAGE_ID") or pages) else ["FACEBOOK_PAGE_ID (or run /api/social/facebook/discover with a User Access Token)"]),
+            *([] if (os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN") or pages) else ["FACEBOOK_PAGE_ACCESS_TOKEN"]),
         ],
         "instructions_url": "https://developers.facebook.com/tools/explorer/",
     }
 
 
+@api.post("/social/facebook/discover")
+async def facebook_discover(payload: Dict[str, str] = Body(...), request: Request = None, user: User = Depends(require_manager)):
+    """Discover Facebook Pages this user admins via /me/accounts.
+
+    Body: {user_access_token}
+    Get a User Access Token from https://developers.facebook.com/tools/explorer/
+    with these scopes selected: pages_show_list, pages_read_engagement,
+    pages_read_user_generated_content. Each returned Page comes with its own
+    long-lived Page Access Token which we store and use for /sync."""
+    user_token = (payload or {}).get("user_access_token", "").strip()
+    if not user_token:
+        raise HTTPException(status_code=400, detail="user_access_token required")
+
+    api_version = os.environ.get("FACEBOOK_API_VERSION", "v19.0")
+    url = f"https://graph.facebook.com/{api_version}/me/accounts"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(url, params={"access_token": user_token, "fields": "id,name,access_token,category,tasks", "limit": 100})
+        if r.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Facebook /me/accounts failed: {r.text[:300]}")
+        data = r.json()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Facebook call failed: {exc}")
+
+    discovered = []
+    for page in data.get("data", []):
+        if not page.get("access_token"):
+            continue  # need page-level token to read content
+        doc = {
+            "page_id": page["id"],
+            "page_name": page.get("name"),
+            "category": page.get("category"),
+            "page_access_token": page["access_token"],
+            "linked_by_user_id": user.user_id,
+            "linked_by_name": user.name,
+            "linked_at": iso(now_utc()),
+        }
+        await db.facebook_pages.update_one({"page_id": doc["page_id"]}, {"$set": doc}, upsert=True)
+        discovered.append({k: v for k, v in doc.items() if k != "page_access_token"})
+
+    await _audit(user, "facebook.discover", "system", str(len(discovered)), request)
+    return {"discovered": len(discovered), "pages": discovered}
+
+
+@api.get("/social/facebook/pages")
+async def facebook_pages(_: User = Depends(require_manager)):
+    """List Facebook Pages we've discovered and stored tokens for."""
+    pages = await db.facebook_pages.find({}, {"_id": 0, "page_access_token": 0}).to_list(50)
+    return pages
+
+
+@api.delete("/social/facebook/pages/{page_id}")
+async def facebook_remove_page(page_id: str, request: Request, user: User = Depends(require_manager)):
+    res = await db.facebook_pages.delete_one({"page_id": page_id})
+    await _audit(user, "facebook.page.remove", "page", page_id, request)
+    return {"deleted": res.deleted_count}
+
+
 @api.post("/social/facebook/sync")
 async def facebook_sync(request: Request, payload: Optional[Dict[str, str]] = Body(default=None), user: User = Depends(require_manager)):
     """Pull Vivo Page content from Facebook into our social_posts + social_feedback
-    collections. Body can override env: {page_id, page_access_token}."""
+    collections.
+
+    Modes:
+    - body {page_id, page_access_token} → sync that page only.
+    - body {page_id} only → look up the stored page token from /discover.
+    - body empty/null → sync EVERY discovered page (or fall back to env vars)."""
     payload = payload or {}
-    page_id = payload.get("page_id") or os.environ.get("FACEBOOK_PAGE_ID", "")
-    page_token = payload.get("page_access_token") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
-    if not page_id or not page_token:
-        raise HTTPException(status_code=400, detail="page_id + page_access_token required (env or body)")
+    page_id = payload.get("page_id")
+    page_token = payload.get("page_access_token")
     from facebook_sync import sync_facebook_page  # noqa: WPS433
-    result = await sync_facebook_page(db, page_id, page_token)
-    await _audit(user, "facebook.sync", "page", page_id, request)
-    return result
+
+    pages_to_sync: List[Dict[str, str]] = []
+    if page_id and page_token:
+        pages_to_sync = [{"page_id": page_id, "page_access_token": page_token}]
+    elif page_id:
+        stored = await db.facebook_pages.find_one({"page_id": page_id}, {"_id": 0})
+        if not stored or not stored.get("page_access_token"):
+            raise HTTPException(status_code=404, detail="Page token not found — run /api/social/facebook/discover first")
+        pages_to_sync = [{"page_id": stored["page_id"], "page_access_token": stored["page_access_token"], "page_name": stored.get("page_name")}]
+    else:
+        stored_all = await db.facebook_pages.find({}, {"_id": 0}).to_list(50)
+        if stored_all:
+            pages_to_sync = [
+                {"page_id": p["page_id"], "page_access_token": p["page_access_token"], "page_name": p.get("page_name")}
+                for p in stored_all if p.get("page_access_token")
+            ]
+        else:
+            env_id = os.environ.get("FACEBOOK_PAGE_ID", "")
+            env_token = os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+            if env_id and env_token:
+                pages_to_sync = [{"page_id": env_id, "page_access_token": env_token}]
+
+    if not pages_to_sync:
+        raise HTTPException(status_code=400, detail="No pages to sync. POST /api/social/facebook/discover with a user_access_token first, or set FACEBOOK_PAGE_ID + FACEBOOK_PAGE_ACCESS_TOKEN in env.")
+
+    aggregated = {"pages_synced": 0, "posts": 0, "comments": 0, "reviews": 0, "mentions": 0, "errors": [], "by_page": []}
+    for p in pages_to_sync:
+        result = await sync_facebook_page(db, p["page_id"], p["page_access_token"])
+        aggregated["pages_synced"] += 1
+        for key in ("posts", "comments", "reviews", "mentions"):
+            aggregated[key] += result.get(key, 0)
+        aggregated["errors"].extend(result.get("errors", []))
+        aggregated["by_page"].append({"page_id": p["page_id"], "page_name": p.get("page_name"), **{k: result.get(k, 0) for k in ("posts", "comments", "reviews", "mentions")}})
+        await _audit(user, "facebook.sync", "page", p["page_id"], request)
+
+    # Fire-and-forget classifier so the new content gets sentiment quickly
+    try:
+        from social import classify_pending  # noqa: WPS433
+        import asyncio as _asyncio
+        _asyncio.create_task(classify_pending(db, limit=200))
+    except Exception:  # noqa: BLE001
+        pass
+
+    return aggregated
 
 
 # --------------------------------------------------------------------------- #
@@ -1161,6 +1315,7 @@ async def customer_nba(customer_id: str, user: User = Depends(get_current_user))
     notes = await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).limit(3).to_list(3)
     msgs = await db.message_logs.find({"customer_id": customer_id}, {"_id": 0}).sort("sent_at", -1).limit(2).to_list(2)
     products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    products = _filter_products(products)
     prefs = await db.customer_preferences.find_one({"customer_id": customer_id}, {"_id": 0}) or {}
 
     context = {

@@ -32,18 +32,32 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    (async () => {
-      try {
-        const [meRes, clRes] = await Promise.all([
-          api.get("/dashboard/me"),
-          api.get("/dashboard/call-list", { params: { with_nba: true } }),
-        ]);
-        setMe(meRes.data);
-        setCallList(clRes.data);
-      } finally {
-        setLoading(false);
+    let mounted = true;
+    let pollTimer = null;
+    const fetchAll = async () => {
+      const [meRes, clRes] = await Promise.all([
+        api.get("/dashboard/me"),
+        api.get("/dashboard/call-list", { params: { with_nba: true } }),
+      ]);
+      if (!mounted) return;
+      setMe(meRes.data);
+      setCallList(clRes.data);
+      setLoading(false);
+      // If the backend kicked off background NBA precompute, poll once to hydrate badges.
+      if (clRes.data?.ai_pending > 0) {
+        pollTimer = setTimeout(async () => {
+          try {
+            const r = await api.get("/dashboard/call-list", { params: { with_nba: true } });
+            if (mounted) setCallList(r.data);
+          } catch { /* ignore */ }
+        }, 8000);
       }
-    })();
+    };
+    fetchAll().catch(() => mounted && setLoading(false));
+    return () => {
+      mounted = false;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
   }, []);
 
   return (

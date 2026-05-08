@@ -12,14 +12,27 @@ export default function Login() {
 
   return (
     <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-2 bg-[var(--vivo-bg)]" data-testid="login-page">
-      {/* Left: editorial image */}
+      {/* Left: editorial image — sourced from vivofashiongroup.com */}
       <div className="relative hidden lg:block">
         <img
-          src="https://images.unsplash.com/photo-1770061072353-32cc5837c28d?crop=entropy&cs=srgb&fm=jpg&q=85"
-          alt=""
+          src="https://vivofashiongroup.com/cdn/shop/files/April_New_Styles_AD_1920.jpg?v=1775813786"
+          alt="Vivo Fashion editorial campaign"
           className="absolute inset-0 w-full h-full object-cover"
+          referrerPolicy="no-referrer"
+          data-testid="login-hero-image"
         />
-        <div className="absolute inset-0 bg-[#0F4D31]/55" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0F4D31]/35 via-[#0F4D31]/45 to-[#0F4D31]/75" />
+        <div className="absolute top-10 left-12 right-12 text-white/90">
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              "https://vivofashiongroup.com/cdn/shop/files/April_New_styles_Web.jpg?v=1775812820",
+              "https://vivofashiongroup.com/cdn/shop/files/Dress_to_Impress_Website_SZ.jpg?v=1777361803",
+              "https://vivofashiongroup.com/cdn/shop/files/N_January_Dresses_vivo.jpg?v=1770994218",
+            ].map((src, i) => (
+              <img key={i} src={src} alt="" referrerPolicy="no-referrer" className="h-20 w-full object-cover rounded-sm ring-1 ring-white/30 shadow-lg" />
+            ))}
+          </div>
+        </div>
         <div className="absolute bottom-12 left-12 right-12 text-white">
           <div className="eyebrow text-[var(--vivo-gold)] mb-3">VIVO · CLIENTELING</div>
           <h2 className="font-display text-4xl xl:text-5xl leading-tight max-w-lg">

@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Facebook, Link as LinkIcon, RefreshCw, Trash2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
 
@@ -395,6 +395,8 @@ function SocialTab({ period }) {
 
   return (
     <div className="space-y-6">
+      <FacebookConnectCard />
+
       {/* Quality auto-tasks strip */}
       <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[var(--vivo-gold)]" data-testid="quality-strip">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -552,5 +554,173 @@ function SocialTab({ period }) {
         </ul>
       </Card>
     </div>
+  );
+}
+
+
+function FacebookConnectCard() {
+  const [status, setStatus] = useState(null);
+  const [token, setToken] = useState("");
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+
+  const refresh = async () => {
+    try {
+      const r = await api.get("/social/facebook/status");
+      setStatus(r.data);
+    } catch {
+      /* manager-only; ignore */
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const discover = async () => {
+    if (!token.trim()) {
+      toast.error("Paste a User Access Token first");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.post("/social/facebook/discover", { user_access_token: token.trim() });
+      toast.success(`Linked ${r.data.discovered} Page${r.data.discovered === 1 ? "" : "s"}`);
+      setToken("");
+      setOpen(false);
+      await refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not discover pages");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sync = async (page_id) => {
+    setBusy(true);
+    setSyncResult(null);
+    try {
+      const r = await api.post("/social/facebook/sync", page_id ? { page_id } : {});
+      setSyncResult(r.data);
+      const total = (r.data.posts || 0) + (r.data.comments || 0) + (r.data.reviews || 0);
+      toast.success(`Pulled ${total} item${total === 1 ? "" : "s"} from ${r.data.pages_synced} page${r.data.pages_synced === 1 ? "" : "s"}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Sync failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removePage = async (page_id) => {
+    if (!confirm("Remove this Page link? You can re-discover it later.")) return;
+    try {
+      await api.delete(`/social/facebook/pages/${page_id}`);
+      toast.success("Page unlinked");
+      await refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not unlink");
+    }
+  };
+
+  if (!status) return null;
+  const ready = status.ready_to_sync;
+
+  return (
+    <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[#1877F2]" data-testid="facebook-connect-card">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-start gap-3 min-w-0">
+          <div className="h-10 w-10 rounded-sm bg-[#1877F2] text-white flex items-center justify-center shrink-0">
+            <Facebook className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="eyebrow">Facebook · live data</div>
+            <h3 className="font-display text-xl mt-1">
+              {ready ? `${(status.discovered_pages || []).length} Page${(status.discovered_pages || []).length === 1 ? "" : "s"} linked` : "Connect a Facebook Page"}
+            </h3>
+            <p className="text-sm text-[var(--vivo-muted)] mt-1 max-w-xl">
+              {ready
+                ? "Real Facebook posts, comments and reviews flow into the inbox + classifier when you sync."
+                : "Paste a Facebook User Access Token (with Page admin scopes) and we'll auto-discover every Page you manage."}
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          {ready && (
+            <Button onClick={() => sync()} disabled={busy} className="rounded-sm bg-[#1877F2] hover:bg-[#1565d8] text-white h-11" data-testid="fb-sync-all">
+              <RefreshCw className={`mr-2 h-4 w-4 ${busy ? "animate-spin" : ""}`} /> {busy ? "Syncing…" : "Sync now"}
+            </Button>
+          )}
+          <Button onClick={() => setOpen((o) => !o)} variant="outline" className="rounded-sm h-11" data-testid="fb-connect-toggle">
+            <LinkIcon className="mr-2 h-4 w-4" /> {open ? "Cancel" : ready ? "Add another" : "Connect"}
+          </Button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="mt-5 p-4 bg-white border border-[var(--vivo-border)] rounded-sm space-y-3" data-testid="fb-connect-form">
+          <div className="text-sm">
+            <div className="font-medium mb-1">How to get a User Access Token</div>
+            <ol className="text-[var(--vivo-muted)] list-decimal pl-5 space-y-1">
+              <li>Open Graph API Explorer: <a className="text-[var(--vivo-navy)] underline inline-flex items-center gap-1" href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noreferrer">developers.facebook.com/tools/explorer <ExternalLink className="h-3 w-3" /></a></li>
+              <li>Pick the Vivo App, then click <strong>Generate Access Token</strong>.</li>
+              <li>Tick the scopes: <code className="text-xs bg-zinc-100 px-1.5 py-0.5 rounded">pages_show_list</code>, <code className="text-xs bg-zinc-100 px-1.5 py-0.5 rounded">pages_read_engagement</code>, <code className="text-xs bg-zinc-100 px-1.5 py-0.5 rounded">pages_read_user_generated_content</code>.</li>
+              <li>Copy the token and paste below.</li>
+            </ol>
+          </div>
+          <textarea
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="EAAB... (paste User Access Token here)"
+            rows={3}
+            className="w-full text-xs font-mono border border-[var(--vivo-border)] rounded-sm p-3 bg-[var(--vivo-bg)] focus:outline-none focus:ring-2 focus:ring-[var(--vivo-navy)]"
+            data-testid="fb-token-input"
+          />
+          <div className="flex justify-end">
+            <Button onClick={discover} disabled={busy || !token.trim()} className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white" data-testid="fb-discover-submit">
+              {busy ? "Discovering…" : "Discover Pages"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(status.discovered_pages || []).length > 0 && (
+        <div className="mt-5">
+          <div className="vivo-divider mb-3" />
+          <ul className="divide-y divide-[var(--vivo-border)]" data-testid="fb-pages-list">
+            {status.discovered_pages.map((p) => (
+              <li key={p.page_id} className="py-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{p.page_name || p.page_id}</div>
+                  <div className="text-xs text-[var(--vivo-muted)]">{p.category || "Page"} · linked by {p.linked_by_name} · {formatDate(p.linked_at)}</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button onClick={() => sync(p.page_id)} disabled={busy} variant="outline" className="rounded-sm h-9" data-testid={`fb-sync-${p.page_id}`}>
+                    <RefreshCw className={`mr-1.5 h-3 w-3 ${busy ? "animate-spin" : ""}`} /> Sync
+                  </Button>
+                  <button onClick={() => removePage(p.page_id)} className="text-[var(--vivo-muted)] hover:text-red-600 p-2" title="Unlink" data-testid={`fb-remove-${p.page_id}`}>
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {syncResult && (
+        <div className="mt-4 p-3 bg-[var(--vivo-bg)] border border-[var(--vivo-border)] rounded-sm text-xs" data-testid="fb-sync-result">
+          <div className="font-medium mb-1">Last sync · {syncResult.pages_synced} page{syncResult.pages_synced === 1 ? "" : "s"}</div>
+          <div className="text-[var(--vivo-muted)] flex flex-wrap gap-3">
+            <span>{syncResult.posts || 0} posts</span>
+            <span>{syncResult.comments || 0} comments</span>
+            <span>{syncResult.reviews || 0} reviews</span>
+            {(syncResult.errors || []).length > 0 && (
+              <span className="text-red-600">{syncResult.errors.length} error{syncResult.errors.length === 1 ? "" : "s"}</span>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

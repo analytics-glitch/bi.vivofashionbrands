@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 6 — full backend + frontend verification of (a) shopping-bag exclusion across BI endpoints, (b) Facebook Graph contract endpoints, (c) NBA enrichment in Daily Call List, (d) Vivo editorial login hero, and (e) Manager Social tab Facebook connect card. Backend pytest 19/19 PASS. Frontend smoke 100% PASS for all required testids. NO regressions in existing /api/social/* endpoints (8/8).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter6.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1494 lines — past the 700-line guideline. Recommend splitting Facebook routes (status/discover/pages/sync) into a dedicated facebook_router.py and the NBA/call-list block into a dashboard_router.py (mirrors the existing social.py / facebook_sync.py pattern).",
+    "_filter_products is applied at four call-sites by name; consider moving it into a single response post-processor (decorator or response_model wrapper) so future BI endpoints can never ship without the bag filter again.",
+    "Dashboard call list rows render 'AI · HIGH/MEDIUM' urgency chips with [data-testid='nba-urgency-{id}'] but the inline 'call'/'message' action text has no matching [data-testid='nba-action-{id}']. Spec only required nba-urgency, so this is non-blocking, but for parity (and to allow per-row action assertions) consider adding it on the same span."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6.py (new pytest suite for iteration 6 — 19 tests)"
+  ],
+  "success_rate": {"backend": "100% (19/19 pytest)", "frontend": "100% (login hero, FB connect card + form, dashboard NBA urgency badges all verified)"},
+  "test_credentials": "Bearer test_session_vivo_mgr_1778250692444 (manager) / test_session_vivo_assoc_1778250692444 (associate) — seeded sessions still valid.",
+  "seed_data_creation": "None new. Reused Janet Masinde (3846911099035) for all read-only checks. NBA precompute populated background cache for ~25 customers across the 4 call-list buckets.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All iteration-6 acceptance criteria met. Shopping-bag filter: Janet's product list dropped from 10 -> 8 (assert <=9, 0 bags). FB endpoints: status returns app/secret/client_token=true; discover with bogus token -> 400 'Invalid OAuth access token'; discover requires manager (assoc -> 403); pages list returns []; sync with no pages -> 400. Call-list: ai_pending=0 by 2nd hit (precompute is fast — <5s for 25 rows on Sonnet 4.5), all 25 rows enriched with nba_action/nba_urgency/nba_why/nba_script. Dashboard UI: 18 urgency badges visible immediately on first render (cached). Login hero src=https://vivofashiongroup.com/cdn/shop/files/April_New_Styles_AD_1920.jpg. Manager /manager Social tab → facebook-connect-card + fb-connect-toggle reveals fb-token-input + fb-discover-submit. Real Facebook Graph end-to-end sync NOT testable (no real user token); only contract-tested.",
+  "rca_of_the_issue": "N/A — no defects this iteration."
+}
