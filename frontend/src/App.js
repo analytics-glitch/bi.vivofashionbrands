@@ -1,29 +1,35 @@
-import React, { useEffect, useRef } from "react";
+import React, { Suspense, useEffect, useRef } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import TopNav from "@/components/Sidebar";
 import FilterBar from "@/components/FilterBar";
-import Overview from "@/pages/Overview";
-import Locations from "@/pages/Locations";
-import Products from "@/pages/Products";
-import Inventory from "@/pages/Inventory";
-import Exports from "@/pages/Exports";
-import Customers from "@/pages/Customers";
-import CustomerDetails from "@/pages/CustomerDetails";
-import Footfall from "@/pages/Footfall";
-import CEOReport from "@/pages/CEOReport";
-import TargetsTracker from "@/pages/TargetsTracker";
-import ReOrder from "@/pages/ReOrder";
-import IBT from "@/pages/IBT";
-import Pricing from "@/pages/Pricing";
-import DataQuality from "@/pages/DataQuality";
 import Login from "@/pages/Login";
 import AuthCallback from "@/pages/AuthCallback";
-import Users from "@/pages/Users";
-import ActivityLogs from "@/pages/ActivityLogs";
-import Feedback from "@/pages/Feedback";
-import AdminFeedback from "@/pages/AdminFeedback";
-import Allocations from "@/pages/Allocations";
+import { Loading } from "@/components/common";
+
+// Code-split every authed page so the initial JS bundle is lean and
+// the first paint after login is fast — critical when the upstream BI
+// API is degraded and we're waiting on data anyway.
+const Overview = React.lazy(() => import("@/pages/Overview"));
+const Locations = React.lazy(() => import("@/pages/Locations"));
+const Products = React.lazy(() => import("@/pages/Products"));
+const Inventory = React.lazy(() => import("@/pages/Inventory"));
+const Exports = React.lazy(() => import("@/pages/Exports"));
+const Customers = React.lazy(() => import("@/pages/Customers"));
+const CustomerDetails = React.lazy(() => import("@/pages/CustomerDetails"));
+const Footfall = React.lazy(() => import("@/pages/Footfall"));
+const CEOReport = React.lazy(() => import("@/pages/CEOReport"));
+const TargetsTracker = React.lazy(() => import("@/pages/TargetsTracker"));
+const ReOrder = React.lazy(() => import("@/pages/ReOrder"));
+const IBT = React.lazy(() => import("@/pages/IBT"));
+const Pricing = React.lazy(() => import("@/pages/Pricing"));
+const DataQuality = React.lazy(() => import("@/pages/DataQuality"));
+const Users = React.lazy(() => import("@/pages/Users"));
+const ActivityLogs = React.lazy(() => import("@/pages/ActivityLogs"));
+const Feedback = React.lazy(() => import("@/pages/Feedback"));
+const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
+const Allocations = React.lazy(() => import("@/pages/Allocations"));
+
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
@@ -57,7 +63,9 @@ const Shell = ({ children }) => {
         <FilterBar />
       </div>
       <main className="px-3 sm:px-5 lg:px-10 pt-4 pb-6 max-w-[1600px] mx-auto w-full">
-        {children}
+        <Suspense fallback={<div className="py-10"><Loading label="Loading…" /></div>}>
+          {children}
+        </Suspense>
       </main>
       <ChatWidget />
       <GlobalSearch />

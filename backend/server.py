@@ -530,17 +530,39 @@ async def root():
 
 @api_router.get("/locations")
 async def get_locations():
-    data = await fetch("/locations") or []
-    # Merge in known-but-unlisted inventory locations so the filter can select them.
-    existing = {(loc.get("channel"), loc.get("country")) for loc in data}
-    for extra in EXTRA_INVENTORY_LOCATIONS:
-        if (extra["channel"], extra["country"]) not in existing:
-            data.append({
-                "channel": extra["channel"],
-                "pos_location_name": extra["channel"],
-                "country": extra["country"],
-            })
-    return data
+    # /locations is essentially static (a store list — changes ≤ once a
+    # month). We persist a long-lived stale copy so the dashboard never
+    # surfaces "circuit-breaker OPEN" on the IBT/filter UIs even if the
+    # upstream is degraded for hours.
+    cache_key = ("/locations",)
+    try:
+        data = await fetch("/locations") or []
+        # Merge in known-but-unlisted inventory locations so the filter can select them.
+        existing = {(loc.get("channel"), loc.get("country")) for loc in data}
+        for extra in EXTRA_INVENTORY_LOCATIONS:
+            if (extra["channel"], extra["country"]) not in existing:
+                data.append({
+                    "channel": extra["channel"],
+                    "pos_location_name": extra["channel"],
+                    "country": extra["country"],
+                })
+        _kpi_stale_cache[cache_key] = (time.time(), data)
+        asyncio.create_task(_kpi_stale_save_async())
+        return data
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached:
+            logger.warning(
+                f"/locations upstream {e.status_code} — serving stale "
+                f"(age={int(time.time()-cached[0])}s, {len(cached[1])} locations)"
+            )
+            return cached[1]
+        # Last-resort: synthesize from EXTRA_INVENTORY_LOCATIONS so the UI
+        # at least has SOMETHING to render (filter dropdown won't be empty).
+        return [
+            {"channel": x["channel"], "pos_location_name": x["channel"], "country": x["country"]}
+            for x in EXTRA_INVENTORY_LOCATIONS
+        ]
 
 
 @api_router.get("/country-summary")

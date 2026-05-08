@@ -65,6 +65,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 - **Allocations page** (`/allocations`): velocity + low-stock blended scoring with size-pack distribution.
 - **Store-Manager role tightened**: now sees ONLY Locations + Exports + IBT + Feedback.
 
+### Recent (Feb 2026 — Iter 59)
+- **Performance pass — production resilience under degraded upstream**:
+  - **Frontend `_respCache` persists to `sessionStorage`**: cache survives page navigation, BFCache restore, and hard refresh within a tab. Hydrated on app boot. Wiped on logout. Debounced flush (250ms) so a request burst pays one stringify.
+  - **Frontend cache TTL bumped 60s → 5min** for the long-tail (KPIs, sales, inventory) — these refresh on the order of minutes upstream. Hot endpoints (notifications, ibt/late-count, data-freshness) keep a tight 30s window via a `FAST_TTL_PATHS` allow-list.
+  - **All 19 authed pages now lazy-loaded via `React.lazy`** in `App.js` — initial JS bundle shrinks dramatically; first paint after login is much faster. Each page's chunk loads only when the user navigates to it. Suspense fallback shows the existing `Loading` spinner.
+  - **Backend `/locations` stale fallback**: when upstream `/locations` circuit-breaker is OPEN (caused the production "circuit-breaker OPEN — failing fast" banner the user reported), the endpoint now serves the last-known list from `_kpi_stale_cache` (24h disk-persisted). Last-resort: synthesize from `EXTRA_INVENTORY_LOCATIONS` so the filter dropdown is never empty.
+
 ### Recent (Feb 2026 — Iter 58)
 - **Regression sweep** (test_iteration_58_regression.py, 27/28 PASS): smoke endpoints, Two-Stage Allocations (calculate / save / save-warehouse / runs), IBT mark-as-done + late-count + completed audit, Auth approval flow (/auth/me + /auth/me/status), Feedback CRUD, Monthly Targets, role gating all green. No critical regressions. One UX polish: `MonthlyTargetsTracker` now exposes `data-testid="monthly-targets-tracker"` even during loading/error/empty states for cold-cache resilience and stable automation.
 

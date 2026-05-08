@@ -38,14 +38,72 @@ export const api = axios.create({ baseURL: API, timeout: 120000 });
 // are LIVE business numbers, not static.
 const _inflight = new Map();   // key -> Promise<resp>
 const _respCache = new Map();  // key -> { ts, data }
-// 60 s — dashboard reads are 99% idempotent (BI numbers refresh on the
-// order of minutes, not seconds). A 60 s cache means navigating between
-// pages re-uses identical KPI/sales/inventory payloads instead of paying
-// the upstream cost every time, which dramatically smooths perceived
-// performance on cold-cache scenarios. Refresh button still bumps
-// `dataVersion` which forces a fresh fetch.
-const RESP_TTL_MS = 60_000;
-const RESP_CACHE_MAX = 300;
+// 5 minutes — dashboard reads are 99% idempotent (BI numbers refresh on
+// the order of minutes, not seconds). A 5-minute cache means navigating
+// between pages re-uses identical KPI/sales/inventory payloads instead
+// of paying the upstream cost every time, which dramatically smooths
+// perceived performance even when upstream is degraded. Refresh button
+// still bumps `dataVersion` which forces a fresh fetch.
+const RESP_TTL_MS = 5 * 60_000;
+const RESP_CACHE_MAX = 600;
+// Hot endpoints whose values change every few seconds (notification
+// counts, late-transfer pings, freshness pulses) should bypass the long
+// 5-min cache — they get a tighter 30s window so the UI stays fresh.
+const FAST_TTL_PATHS = [
+  "/notifications/unread-count",
+  "/ibt/late-count",
+  "/data-freshness",
+];
+const _ttlFor = (url) =>
+  FAST_TTL_PATHS.some((p) => url.includes(p)) ? 30_000 : RESP_TTL_MS;
+
+// sessionStorage persistence — survives page navigations, BFCache
+// restores, and (critically) hard refreshes within the same tab. Keyed
+// per logged-in user via a salt that's set on login. Wiped on logout.
+const SS_KEY = "_vivo_respcache_v2";
+const _safeSS = () => {
+  try { return typeof window !== "undefined" ? window.sessionStorage : null; }
+  catch { return null; }
+};
+const _hydrateFromSS = () => {
+  const ss = _safeSS();
+  if (!ss) return;
+  try {
+    const raw = ss.getItem(SS_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    const now = Date.now();
+    for (const [k, v] of arr) {
+      // Skip entries already past their (per-key) TTL on rehydrate.
+      if (v && v.ts && (now - v.ts) < RESP_TTL_MS) {
+        _respCache.set(k, v);
+      }
+    }
+  } catch { /* corrupted blob — ignore */ }
+};
+let _ssFlushTimer = null;
+const _scheduleSSFlush = () => {
+  const ss = _safeSS();
+  if (!ss) return;
+  if (_ssFlushTimer) return;
+  // Debounce so a burst of cache writes only pays one stringify cost.
+  _ssFlushTimer = setTimeout(() => {
+    _ssFlushTimer = null;
+    try {
+      const arr = [..._respCache.entries()];
+      ss.setItem(SS_KEY, JSON.stringify(arr));
+    } catch (e) {
+      // QuotaExceeded — drop the oldest 20% and retry once.
+      try {
+        const sorted = [..._respCache.entries()].sort((a, b) => a[1].ts - b[1].ts);
+        const drop = Math.ceil(sorted.length * 0.2);
+        for (let i = 0; i < drop; i++) _respCache.delete(sorted[i][0]);
+        ss.setItem(SS_KEY, JSON.stringify([..._respCache.entries()]));
+      } catch { ss.removeItem(SS_KEY); }
+    }
+  }, 250);
+};
+_hydrateFromSS();
 
 const _cacheKey = (url, params) => {
   const p = { ...(params || {}) };
@@ -74,7 +132,7 @@ api.get = (url, config = {}) => {
   const key = _cacheKey(url, params);
 
   const cached = _respCache.get(key);
-  if (cached && (Date.now() - cached.ts) < RESP_TTL_MS) {
+  if (cached && (Date.now() - cached.ts) < _ttlFor(url)) {
     return Promise.resolve({
       data: cached.data,
       status: 200,
@@ -96,6 +154,7 @@ api.get = (url, config = {}) => {
           .slice(0, _respCache.size - RESP_CACHE_MAX);
         for (const [k] of oldest) _respCache.delete(k);
       }
+      _scheduleSSFlush();
       return resp;
     })
     .finally(() => {
@@ -110,6 +169,8 @@ api.get = (url, config = {}) => {
 export const clearApiCache = () => {
   _inflight.clear();
   _respCache.clear();
+  const ss = _safeSS();
+  if (ss) { try { ss.removeItem(SS_KEY); } catch { /* ignore */ } }
 };
 
 // --- formatters ---
