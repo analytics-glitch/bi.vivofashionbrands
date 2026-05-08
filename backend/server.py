@@ -2579,9 +2579,14 @@ async def analytics_ibt_sku_breakdown(
         )
         from_rows = [r for r in (all_inv or []) if is_warehouse_location(r.get("location_name"))]
     else:
-        from_rows, to_rows = await asyncio.gather(
+        from_rows, to_rows, all_inv = await asyncio.gather(
             fetch_all_inventory(location=from_store),
             fetch_all_inventory(location=to_store),
+            # Cached after the first call — used as a global SKU→barcode
+            # fallback when the per-store rows lack the barcode field
+            # (some POS exports omit barcode on rows where the store
+            # doesn't physically carry the SKU yet).
+            fetch_all_inventory(),
         )
 
     def _is_match(r: Dict[str, Any]) -> bool:
@@ -2589,6 +2594,18 @@ async def analytics_ibt_sku_breakdown(
 
     from_skus = [r for r in (from_rows or []) if _is_match(r)]
     to_skus = [r for r in (to_rows or []) if _is_match(r)]
+
+    # Build a global SKU → barcode fallback map from the full inventory
+    # snapshot. Keep first non-empty barcode per SKU. Used as a fill-in
+    # for any SKU whose per-store row was missing the barcode field.
+    sku_to_barcode_fallback: Dict[str, str] = {}
+    for r in (all_inv or []):
+        if (r.get("style_name") or "").strip() != style_name.strip():
+            continue
+        sku = r.get("sku") or ""
+        bc = (r.get("barcode") or "").strip()
+        if sku and bc and sku not in sku_to_barcode_fallback:
+            sku_to_barcode_fallback[sku] = bc
 
     # Index by SKU code.
     sku_idx: Dict[str, Dict[str, Any]] = {}
@@ -2624,6 +2641,14 @@ async def analytics_ibt_sku_breakdown(
             sku_idx[sku]["barcode"] = r.get("barcode")
 
     rows = list(sku_idx.values())
+
+    # Fill in any missing barcodes from the global inventory fallback
+    # so the warehouse picker always sees a barcode if it exists
+    # anywhere in the catalogue (even when the per-store rows didn't
+    # carry it).
+    for r in rows:
+        if not r.get("barcode") and r.get("sku") in sku_to_barcode_fallback:
+            r["barcode"] = sku_to_barcode_fallback[r["sku"]]
 
     # Allocation: greedy fill — fix shortages at TO first (TO=0 then TO=1 …),
     # using SKUs with the largest excess at FROM. Use a 1-unit safety buffer

@@ -73,7 +73,7 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
   - **Tablet-friendly**: sticky Style column, 36px input height, py-2 buttons, horizontal scroll only when needed (`min-w-max`). Clean on iPad portrait + landscape.
   - Mark-as-Done is now SKU-granular: marking one SKU done no longer suppresses sibling SKUs of the same parent suggestion. Backend `/api/ibt/completed/keys` returns both legacy parent keys and new `sku_keys`; frontend filters per-row by `<style>||<to_store>||<sku>`.
   - `/api/ibt/complete` body and `CompletedMove` response now accept/persist optional `sku`, `color`, `size`, `barcode` fields.
-  - `/api/analytics/ibt-sku-breakdown` enriched to include `barcode` per SKU (sourced from inventory snapshot).
+  - `/api/analytics/ibt-sku-breakdown` enriched to include `barcode` per SKU; **global SKU→barcode fallback** added so barcodes that are missing on the per-store rows (POS exports sometimes omit barcode for non-carrying stores) get filled from the full inventory snapshot. Verified: Vivo Meru → Vivo Sarit now returns barcodes for all 6 SKUs (was all blank); Vivo Dua Wide Leg Pants WH→Kigali now returns barcodes for all 5 SKUs.
 
 ### Recent (Feb 2026 — Iter 59)
 - **Performance pass — production resilience under degraded upstream**:
