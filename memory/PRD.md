@@ -55,6 +55,28 @@ Brief explicitly scopes v1 to a **clienteling app** (not a full CRM): tablet-fir
   - **Login page imagery** sourced from `vivofashiongroup.com/cdn/shop/files/...` — full-bleed campaign hero + 3-thumbnail strip, all real brand photography.
   - **Shopping-bag exclusion** — every BI products endpoint (`/bi/customer/{id}`, `/bi/customer/{id}/products`, `/bi/top-skus`) plus the NBA context-builder strips items whose `style_name`/`subcategory`/`product_title` contains "shopping bag(s)". KES-0 promotional bag lines no longer skew style insight or AI recommendations.
   - **Tests**: 19/19 backend pytest (iter6) green; frontend smoke 100%. No regressions in existing 80/80 suite.
+
+- ✅ **Iteration 7 — Cohort analytics + 10 CRM features + Studio→CRM rename (Feb 2026 v1.5)**:
+  - **Brand rename**: "Vivo Studio" → "Vivo CRM" everywhere (browser tab, AppShell sidebar/topbar, Manager heading, Customer DPA copy).
+  - **Cohort analytics** — new `/api/insights/cohorts/*` endpoints + Manager → Cohorts tab:
+    - `/cohorts/retention` — acquisition retention triangle (M1/M3/M6/M12 + avg LTV per cohort), heatmapped.
+    - `/cohorts/tier-flow` — stacked-bar of how each cohort sits across RFM tiers today.
+    - `/cohorts/by-channel` — per-city/country cohort comparison (size, 180d active %, avg LTV).
+    - `/cohorts/triangle?months=12` — full per-month retention from real BI `/orders`, cached 24h.
+  - **Operations tab** (Manager) — composite of:
+    - **Daily brief** — yesterday's KPIs + today's anniversaries/at-risk/VIP-silent + top 3 quality issues + top performers.
+    - **Associate leaderboard** (week/month) ranked by clienteling-attributed conversions.
+    - **LTV-top** — Claude-anchored 12-month LTV forecast across the cached customer base.
+    - **Smart reorder** — customers whose typical buying cadence is up.
+    - **Upcoming life events** — birthdays + key dates from the next 30 days.
+  - **Customer Profile additions**:
+    - **Wishlist** tab with CRUD + 30-day expiry + fulfilled flag.
+    - **Look-alikes** tab — finds customers with same RFM tier, similar spend bracket and matching size signature; scored 0–100.
+    - **Life events** card on Preferences — captures DOB and key dates (`MM-DD` or `YYYY-MM-DD`).
+  - **Dashboard "Live floor"** — Walk-in check-in widget: type a name → BI search → pick → log; "Mark served" closes the loop. Foundation for v2 real-time floor mode.
+  - **Inbox AI reply suggestion** — Claude Sonnet 4.5 drafts a brand-tone reply for any feedback item, prefilled into the reply dialog.
+  - All routes mounted from a new `/app/backend/insights.py` (router pattern, keeps `server.py` from growing further).
+  - **Tests**: 24/24 backend pytest (iter7) green; 30+ frontend testids verified. Zero defects, zero regressions.
 - ✅ 28/28 v1 + 25/25 social + 13/13 auto-task + 14/14 world-class backend tests = **80/80 backend tests green**. Frontend regression-tested across all 13 surfaces.
 
 ## Backlog (P0 → P2)
