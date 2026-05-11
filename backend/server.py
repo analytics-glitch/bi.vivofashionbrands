@@ -1,6 +1,7 @@
 import asyncio
 import json
 import pymongo
+import re
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Body, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -4734,6 +4735,38 @@ _l10_cache: Dict[str, tuple] = {}
 _L10_TTL = 30 * 60  # seconds
 
 
+# ───── Style-number extraction ─────
+#
+# Upstream POS exports do NOT return a separate `style_number` field —
+# the only stable per-style identifier exposed is the SKU, which encodes
+# colour + size as a suffix. Example SKUs and the style numbers they
+# encode:
+#
+#     V1025022PR3F   → V1025022  (Vivo Liora, colour PR3, size F)
+#     S1125019BLAM   → S1125019  (Safari Zehra, colour BLA, size M)
+#     0121066BURXL   → 0121066   (Vivo Basic, colour BUR, size XL)
+#     S0424064HGN1X/2X → S0424064 (Safari Bush, colour HGN, size 1X/2X)
+#
+# Pattern: an optional leading uppercase brand letter (V / S / Z / etc.)
+# followed by 7 digits. The colour + size suffix is everything after
+# that. We deliberately do NOT try to parse the colour/size suffix —
+# upstream is too inconsistent — we just snip the 7-digit style prefix.
+# Falls back to the raw SKU if the pattern doesn't match (accessories,
+# legacy items, custom orders).
+_STYLE_NUMBER_RE = re.compile(r"^([A-Z]?\d{7})")
+
+
+def extract_style_number(sku: Optional[str]) -> str:
+    """Return the style-number prefix of a SKU. Empty string when sku
+    is falsy. Returns the full sku unchanged when no match — preserves
+    backward compatibility for non-conforming SKUs."""
+    if not sku:
+        return ""
+    s = str(sku).strip().upper()
+    m = _STYLE_NUMBER_RE.match(s)
+    return m.group(1) if m else s
+
+
 @api_router.get("/analytics/sor-new-styles-l10")
 async def analytics_sor_new_styles_l10(
     country: Optional[str] = None,
@@ -4850,6 +4883,13 @@ async def analytics_sor_new_styles_l10(
         if s not in sku_for_style and r.get("sku"):
             sku_for_style[s] = r["sku"]
 
+    # Harvest SKU from sales rows too for new styles that may have
+    # already sold-out before the inventory snapshot.
+    for r in (band_skus or []) + (six_m_skus or []) + (three_w_skus or []):
+        s = r.get("style_name")
+        if s and s in candidates and s not in sku_for_style and r.get("sku"):
+            sku_for_style[s] = r["sku"]
+
     # Launch date + last-sale date — chunk /orders by ~7-day windows over
     # the [launch_from, today] span. Upstream caps at 5000 rows/call so
     # weekly chunks should fit comfortably.
@@ -4951,7 +4991,7 @@ async def analytics_sor_new_styles_l10(
             "brand": sm.get("brand"),
             "collection": sm.get("collection"),
             "subcategory": sm.get("product_type"),
-            "style_number": sku_for_style.get(s, ""),
+            "style_number": extract_style_number(sku_for_style.get(s, "")),
             "sales_6m": round(sales_6m, 2),
             "units_6m": int(units_6m),
             "units_3w": int(units_3w),
@@ -5228,6 +5268,18 @@ async def analytics_sor_all_styles(
         if s not in sku_for_style and r.get("sku"):
             sku_for_style[s] = r["sku"]
 
+    # Stock-out styles have no inventory row → harvest their SKU from
+    # the lifetime top-skus pull so the style_number column is never
+    # empty for a style that has ever sold.
+    for r in lifetime_skus or []:
+        s = r.get("style_name")
+        if s and s in candidates and s not in sku_for_style and r.get("sku"):
+            sku_for_style[s] = r["sku"]
+    for r in six_m_skus or []:
+        s = r.get("style_name")
+        if s and s in candidates and s not in sku_for_style and r.get("sku"):
+            sku_for_style[s] = r["sku"]
+
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
     # age + launch_date; older styles fall back to the legacy "≥26 wks"
@@ -5304,7 +5356,7 @@ async def analytics_sor_all_styles(
             "collection": sm.get("collection"),
             "category": category_of(sm.get("product_type")),
             "subcategory": sm.get("product_type"),
-            "style_number": sku_for_style.get(s, ""),
+            "style_number": extract_style_number(sku_for_style.get(s, "")),
             "sales_6m": round(sales_6m, 2),
             "units_6m": int(units_6m),
             "units_3w": int(units_3w),
