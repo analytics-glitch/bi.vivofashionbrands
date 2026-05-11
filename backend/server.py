@@ -195,6 +195,20 @@ class InterestIn(BaseModel):
 
 EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
+# Email-domain allowlist for sign-in. Comma-separated env override; defaults to
+# Vivo Fashion Group corporate domains.
+ALLOWED_EMAIL_DOMAINS = {
+    d.strip().lower()
+    for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "vivofashiongroup.com,shopzetu.com").split(",")
+    if d.strip()
+}
+
+
+def _email_domain_allowed(email: str) -> bool:
+    if not ALLOWED_EMAIL_DOMAINS:
+        return True  # disabled when env is explicitly empty
+    return email.lower().rsplit("@", 1)[-1] in ALLOWED_EMAIL_DOMAINS
+
 
 async def _audit(actor: User, action: str, target: str = "", target_id: str = "", request: Optional[Request] = None) -> None:
     try:
@@ -289,6 +303,14 @@ async def auth_session(request: Request, response: Response, payload: Dict[str, 
         raise HTTPException(status_code=401, detail="Invalid session_id")
     data = r.json()
     email = data["email"].lower()
+
+    # Domain allowlist — only @vivofashiongroup.com / @shopzetu.com staff can sign in.
+    if not _email_domain_allowed(email):
+        allowed = ", ".join(sorted(ALLOWED_EMAIL_DOMAINS))
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access restricted to Vivo Fashion Group staff. Sign in with your @{allowed.split(', ')[0]} or @{allowed.split(', ')[-1]} account.",
+        )
 
     user_doc = await db.users.find_one({"email": email}, {"_id": 0})
     if not user_doc:

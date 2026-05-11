@@ -36,7 +36,14 @@ export default function AuthCallback() {
         navigate("/dashboard", { replace: true });
       } catch (e) {
         console.error("Auth exchange failed", e);
-        navigate("/login", { replace: true });
+        // Surface the 403 domain-block message back to the login page.
+        const detail = e?.response?.data?.detail;
+        const reason = e?.response?.status === 403 && detail ? detail : null;
+        if (reason) {
+          navigate(`/login?error=${encodeURIComponent(reason)}`, { replace: true });
+        } else {
+          navigate("/login", { replace: true });
+        }
       }
     })();
   }, [navigate, setUser, refresh]);

@@ -1,0 +1,43 @@
+{
+  "summary": "Iter11 — verified domain allowlist for Emergent Google sign-in. Backend: 13/13 pytest green covering _email_domain_allowed pure-function cases (vivofashiongroup, SHOPZETU caps, gmail blocked, evil-shopzetu.com.x blocked, outlook blocked), ALLOWED_EMAIL_DOMAINS env override (custom domains + empty disables), regression on invalid session_id -> 401 and missing -> 400, plus seeded manager+associate sessions still authenticate /api/auth/me with roles preserved. Frontend: /login renders cleanly with no banner; /login?error=... renders data-testid='login-error-banner' (red palette rgb(254,242,242)) with 'Sign-in blocked' heading + the detail message. Regression: manager seeded session still loads /dashboard with full sidebar (Today/Overview/Customers/Inbox/Lookbooks/Insights/Cohorts/Operations/Templates/Audit), Hello Test header, KPI strip, call list — no behaviour change.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_acceptance_criteria": [
+    "_email_domain_allowed('x@vivofashiongroup.com') == True. PASS.",
+    "_email_domain_allowed('SHOP@SHOPZETU.COM') == True (case-insensitive). PASS.",
+    "_email_domain_allowed('attacker@gmail.com') == False. PASS.",
+    "_email_domain_allowed('a@evil-shopzetu.com.x') == False (lookalike not whitelisted). PASS.",
+    "ALLOWED_EMAIL_DOMAINS env override -> set('example.com','foo.io') correctly honoured; empty string disables allowlist (returns True for anything). PASS.",
+    "Default ALLOWED_EMAIL_DOMAINS == {'vivofashiongroup.com','shopzetu.com'}. PASS.",
+    "POST /api/auth/session with bad session_id still returns 401 'Invalid session_id'. PASS.",
+    "POST /api/auth/session with no session_id returns 400. PASS.",
+    "Seeded manager token (test_session_vivo_mgr_1778250692444) -> /api/auth/me 200, role='manager'. PASS.",
+    "Seeded associate token (test_session_vivo_assoc_1778250692444) -> /api/auth/me 200, role='associate'. PASS.",
+    "/api/auth/me with no token -> 401. PASS.",
+    "/login (no query) renders data-testid='login-page' without data-testid='login-error-banner'. PASS.",
+    "/login?error=<msg> renders data-testid='login-error-banner' with 'Sign-in blocked' heading + the message text in a red banner (red-50 bg, red-200 border, red-800 text, ShieldAlert icon). PASS.",
+    "AuthCallback.jsx code path verified by inspection: catch block reads e.response.status===403 + e.response.data.detail and navigates with navigate(`/login?error=${encodeURIComponent(reason)}`). End-to-end 403 reproduction skipped (requires a real non-allowed Emergent session — out of test reach), per agent-to-agent context note.",
+    "Regression — manager seeded session loads /dashboard with full sidebar + dashboard content (Test Manager MANAGER badge, KPI strip, call list)."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_domain_allowlist.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: in /api/auth/session error message construction (server.py L309-313) the f-string assumes the sorted ALLOWED_EMAIL_DOMAINS set yields exactly the two intended domains in [first,last] order; with the default set this becomes 'shopzetu.com or vivofashiongroup.com' (alphabetical sort). Renders correctly today but if a 3rd domain is added the message will skip the middle one. Consider joining all domains with ' or ' instead of split[0]/[-1].",
+    "Minor: server.py is already 1500+ lines (well past the 700-line guideline) — domain allowlist + auth could split cleanly into /app/backend/auth.py for maintainability.",
+    "Nit: FastAPI @app.on_event('startup'/'shutdown') triggers DeprecationWarnings (use lifespan handlers). Not introduced by this change, pre-existing."
+  ],
+  "updated_files": ["/app/backend/tests/test_domain_allowlist.py"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (all banner/regression cases)"},
+  "test_credentials": "Used seeded Bearer tokens from /app/memory/test_credentials.md (manager + associate). No new credentials needed.",
+  "seed_data_creation": "None — only read-only assertions against pre-seeded users + sessions.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Domain allowlist feature shipped & verified. Next agents can rely on test_domain_allowlist.py as regression. End-to-end 403 with a real Google sign-in is not reproducible from inside the testing harness — only unit + login-page error rendering paths can be tested. AuthCallback 403->redirect path is verified by code inspection (Login.jsx + AuthCallback.jsx)."
+}

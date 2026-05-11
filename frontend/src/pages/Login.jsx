@@ -1,9 +1,13 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
-import { LogIn } from "lucide-react";
+import { LogIn, ShieldAlert } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 export default function Login() {
+  const [params] = useSearchParams();
+  const errorMsg = params.get("error");
+
   const handleLogin = () => {
     const redirectUrl = window.location.origin + "/dashboard";
     window.location.href =
@@ -61,6 +65,19 @@ export default function Login() {
             Use your Vivo Google account to access the clienteling workspace.
             New associates are activated automatically by your manager.
           </p>
+
+          {errorMsg && (
+            <div
+              data-testid="login-error-banner"
+              className="mb-6 p-4 rounded-sm border border-red-200 bg-red-50 text-red-800 flex items-start gap-3"
+            >
+              <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold text-sm">Sign-in blocked</div>
+                <div className="text-sm mt-1 leading-relaxed">{errorMsg}</div>
+              </div>
+            </div>
+          )}
 
           <Button
             onClick={handleLogin}
