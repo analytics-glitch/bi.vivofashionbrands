@@ -54,6 +54,23 @@ const FAST_TTL_PATHS = [
   "/ibt/late-count",
   "/data-freshness",
 ];
+// Auth endpoints MUST NEVER be cached. When an admin flips a user's
+// role, status (pending → active), or `active` flag, the next read of
+// /auth/me must reflect the change immediately — otherwise the affected
+// user keeps the stale role / "awaiting approval" screen for up to the
+// full RESP_TTL_MS window (5 min) even across hard refresh, because the
+// sessionStorage rehydrate restores the stale payload on page load.
+// Listed here so both the cache short-circuit AND the persistence layer
+// skip them in lockstep.
+const NO_CACHE_PATHS = [
+  "/auth/me",
+  "/auth/me/status",
+  "/auth/login",
+  "/auth/logout",
+  "/auth/google/callback",
+];
+const _shouldSkipCache = (url) =>
+  NO_CACHE_PATHS.some((p) => url.includes(p));
 const _ttlFor = (url) =>
   FAST_TTL_PATHS.some((p) => url.includes(p)) ? 30_000 : RESP_TTL_MS;
 
@@ -74,6 +91,12 @@ const _hydrateFromSS = () => {
     const arr = JSON.parse(raw);
     const now = Date.now();
     for (const [k, v] of arr) {
+      // Defensively drop any auth payloads that may have leaked into
+      // the persisted blob from older builds — these endpoints are now
+      // strictly bypass-cache (see NO_CACHE_PATHS). Without this guard
+      // a long-running tab can still serve a stale role/status from
+      // session storage on the next refresh.
+      if (NO_CACHE_PATHS.some((p) => k.includes(p))) continue;
       // Skip entries already past their (per-key) TTL on rehydrate.
       if (v && v.ts && (now - v.ts) < RESP_TTL_MS) {
         _respCache.set(k, v);
@@ -130,6 +153,12 @@ const _origGet = api.get.bind(api);
 api.get = (url, config = {}) => {
   const params = (config && config.params) || {};
   const key = _cacheKey(url, params);
+  // Auth endpoints bypass the response cache entirely. See NO_CACHE_PATHS
+  // — role / status / active changes must be picked up on the next read,
+  // not in 5 minutes.
+  if (_shouldSkipCache(url)) {
+    return _origGet(url, config);
+  }
   // Caller can force-bypass the response cache by passing
   // `forceFresh: true` in config. Used when an action just mutated
   // server state and we need the next read to actually hit the wire

@@ -114,6 +114,34 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, [checkAuth]);
 
+  // Periodic auth re-validation. Without this, an admin who flips a
+  // user's role / status / active flag has to wait until the user
+  // manually refreshes (worst case: until their browser tab is
+  // closed) for the change to take effect. We re-check every 30 s
+  // when the tab is visible and once on every focus event, so any
+  // change made in the Users admin propagates within seconds.
+  // The /auth/me endpoint is exempt from the response cache (see
+  // NO_CACHE_PATHS in api.js) so each poll always hits the wire.
+  useEffect(() => {
+    if (!user || user === false) return;
+    let cancelled = false;
+    const safeCheck = () => {
+      if (cancelled || document.hidden) return;
+      checkAuth();
+    };
+    const id = setInterval(safeCheck, 30000);
+    const onFocus = () => safeCheck();
+    const onVisibility = () => { if (!document.hidden) safeCheck(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [user, checkAuth]);
+
   const loginWithPassword = useCallback(async (email, password) => {
     const r = await api.post("/auth/login", { email, password });
     setStoredToken(r.data.token);
