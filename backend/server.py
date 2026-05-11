@@ -5040,6 +5040,12 @@ _CURVE_TTL = 60 * 30  # 30 minutes — same fan-out cost as sor-all-styles
 # Key: f"{country}|{channel}". Value: (ts, {style_name: (first_iso, last_iso)}).
 _style_dates_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
 _STYLE_DATES_TTL = 60 * 30  # 30 minutes
+# Side cache populated by `_get_style_first_last_sale` — gives every
+# downstream caller (sor-all-styles, sor-new-styles-l10) a reliable
+# style_name → representative_sku lookup harvested from /orders, so the
+# style_number column is correct even for styles that no longer hold
+# stock (no inventory row to pull a SKU from).
+_style_sku_cache: Dict[str, Tuple[float, Dict[str, str]]] = {}
 
 
 async def _get_style_first_last_sale(
@@ -5100,6 +5106,7 @@ async def _get_style_first_last_sale(
             continue
         rows = (payload or {}).get("rows") or []
         out: Dict[str, Tuple[str, str]] = {}
+        sku_out: Dict[str, str] = {}
         for row in rows:
             s = row.get("style_name")
             first = row.get("first_sale")
@@ -5116,8 +5123,11 @@ async def _get_style_first_last_sale(
                     if ws and ws > last_iso:
                         last_iso = ws
             out[s] = (first, last_iso)
+            if row.get("sku"):
+                sku_out[s] = row["sku"]
         _style_dates_cache[cache_key] = (_time.time(), out)
-        logger.info(f"[style-dates] hydrated {len(out)} styles from curve cache (key={ck})")
+        _style_sku_cache[cache_key] = (_time.time(), sku_out)
+        logger.info(f"[style-dates] hydrated {len(out)} styles from curve cache (key={ck}); skus={len(sku_out)}")
         return out
 
     # ── Path 2: cold fan-out (rare — only if curve hasn't warmed) ──
@@ -5145,6 +5155,7 @@ async def _get_style_first_last_sale(
         return_exceptions=True,
     )
     out: Dict[str, Tuple[str, str]] = {}
+    sku_out: Dict[str, str] = {}
     for chunk in chunk_results:
         if isinstance(chunk, Exception):
             logger.warning("[style-dates] chunk failed: %s", chunk)
@@ -5166,8 +5177,11 @@ async def _get_style_first_last_sale(
                 if d_iso > last:
                     last = d_iso
                 out[s] = (first, last)
+            if s not in sku_out and r.get("sku"):
+                sku_out[s] = r["sku"]
     _style_dates_cache[cache_key] = (_time.time(), out)
-    logger.info(f"[style-dates] cold fan-out → {len(out)} styles ({len(chunks)} chunks)")
+    _style_sku_cache[cache_key] = (_time.time(), sku_out)
+    logger.info(f"[style-dates] cold fan-out → {len(out)} styles ({len(chunks)} chunks); skus={len(sku_out)}")
     return out
 
 
@@ -5279,6 +5293,23 @@ async def analytics_sor_all_styles(
         s = r.get("style_name")
         if s and s in candidates and s not in sku_for_style and r.get("sku"):
             sku_for_style[s] = r["sku"]
+
+    # Final fallback: pull from the /orders-derived `_style_sku_cache`
+    # populated as a side-effect of `_get_style_first_last_sale`. This
+    # covers styles where /top-skus didn't echo a sku field AND there
+    # is no current inventory (sold-through stock-outs) — historically
+    # ~35% of the All-Styles catalog landed here with a blank
+    # style_number column before this fallback was added.
+    cs2 = _split_csv(country)
+    chs2 = _split_csv(channel)
+    only_country = cs2[0] if len(cs2) == 1 else None
+    only_channel = chs2[0] if len(chs2) == 1 else None
+    sku_cache_key = f"{only_country or ''}|{only_channel or ''}|180"
+    sku_cached = _style_sku_cache.get(sku_cache_key)
+    if sku_cached:
+        for s, sk in (sku_cached[1] or {}).items():
+            if s in candidates and s not in sku_for_style and sk:
+                sku_for_style[s] = sk
 
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
@@ -6144,9 +6175,16 @@ async def analytics_new_styles_curve(
             "weekly": {},
             "total_units": 0,
             "total_sales": 0.0,
+            "sku": None,
         })
         if d_iso < b["first_sale"]:
             b["first_sale"] = d_iso
+        # Harvest the first non-empty SKU we see for this style. /orders
+        # rows always carry a sku (line-level) so this gives downstream
+        # endpoints a reliable style_number fallback for styles with 0
+        # current SOH (no inventory record).
+        if not b["sku"] and r.get("sku"):
+            b["sku"] = r["sku"]
         units = int(r.get("quantity") or 0)
         sales = float(r.get("total_sales_kes") or 0)
         b["total_units"] += units
@@ -6190,6 +6228,7 @@ async def analytics_new_styles_curve(
             trend = "declining"
         out.append({
             **{k: b[k] for k in ("style_name", "brand", "subcategory", "first_sale", "total_units")},
+            "sku": b.get("sku"),
             "total_sales": round(b["total_sales"], 2),
             "weeks_since_launch": (today - first).days // 7,
             "weekly": [{**w, "sales": round(w["sales"], 2)} for w in weekly_list],

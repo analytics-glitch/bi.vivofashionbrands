@@ -483,15 +483,20 @@ async def analytics_total_sales_summary(
 
     target_by_ch = {r.get("channel"): float(r.get("sales_target") or 0)
                     for r in (targets_raw or []) if r.get("channel")}
-    mtd_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
+    # MTD aligned with Overview / Monthly Targets daily tracker: both use
+    # `total_sales` (gross of returns) so a single MTD number flows
+    # consistently across the dashboard. Previously this card used
+    # `net_sales` which subtracted returns and looked artificially low
+    # (e.g. 26.8M vs Overview's 31.3M for May 2026 MTD).
+    mtd_by_ch = {r.get("channel"): float(r.get("total_sales") or 0)
                  for r in (ss_curr_mtd or []) if r.get("channel")}
-    prev_full_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
+    prev_full_by_ch = {r.get("channel"): float(r.get("total_sales") or 0)
                        for r in (ss_prev_full or []) if r.get("channel")}
-    prev_y_full_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
+    prev_y_full_by_ch = {r.get("channel"): float(r.get("total_sales") or 0)
                          for r in (ss_prev_y_full or []) if r.get("channel")}
-    prev_window_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
+    prev_window_by_ch = {r.get("channel"): float(r.get("total_sales") or 0)
                          for r in (ss_prev_window or []) if r.get("channel")}
-    prev_y_window_by_ch = {r.get("channel"): float(r.get("net_sales") or 0)
+    prev_y_window_by_ch = {r.get("channel"): float(r.get("total_sales") or 0)
                            for r in (ss_prev_y_window or []) if r.get("channel")}
 
     # Map channel → country (from upstream /sales-summary so we don't

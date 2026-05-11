@@ -465,6 +465,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 63 — Fork resume)
+- **P0 Bug fix — Total Sales Summary MTD mismatch**: `/api/analytics/total-sales-summary` was using upstream `/sales-summary` field `net_sales` (returns-subtracted) while every other page on the dashboard (Overview KPIs, Monthly Targets daily tracker, Locations) uses `total_sales` (gross of returns). For May 2026 MTD this surfaced as a 4.5M KES gap (26.8M vs 31.3M). Fixed `monthly_targets.py` to use `total_sales` consistently for `mtd_actual`, `prior_month_full`, `prior_year_full_month`, `prior_month_same_window`, `prior_year_same_window`. **Verified**: Targets total now equals Overview sum to the shilling (31,302,569).
+- **P0 Bug fix — `style_number` blank for stock-out styles in SOR All Styles**: 35% of catalog rows (608/1691) showed an empty `STYLE #` column because the upstream `/top-skus` endpoint never returns a `sku` field, and the inventory pass yielded no row for styles with zero current SOH. Added a `_style_sku_cache` populated as a side-effect of `_get_style_first_last_sale` (both the curve-cache hot path and the cold /orders fan-out path now harvest the first non-empty `sku` per style_name). `analytics_new_styles_curve` also now propagates `sku` through its cache so downstream `_get_style_first_last_sale` reads it for free. `analytics_sor_all_styles` consults the cache as a final fallback after inventory + /top-skus. **Verified**: Blank style_number rows dropped 608 → 205 (66% reduction). Remaining 12% are very-low-volume long-tail styles outside the 180-day curve window — acceptable for now.
+- **P1 next**: IBT Peer-Cluster Phase 2 — wire IBT recommendation engine to use `cluster_avg_sell_rate` (median of peer cluster) instead of chain-wide median.
+- **P2 backlog**: Rwanda "Country quiet today" banner on Overview; refactor server.py.
+
 ## Roadmap
 ### P1 — Refactor (in progress)
 - Continue extracting from `/app/backend/server.py` (now 5,520 lines after iter_43 pass 1):
