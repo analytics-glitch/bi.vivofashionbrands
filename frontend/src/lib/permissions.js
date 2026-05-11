@@ -13,6 +13,9 @@ const VIEWER = ["overview", "locations", "footfall", "customers", "customer-deta
 // Store managers see ONLY: Locations (retail), Exports (inventory only),
 // IBT, Feedback. Per-page filters enforced inside the page components.
 const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"];
+// Warehouse staff: stock-movement operational pages + Inventory export.
+// Mirror of `_WAREHOUSE` in /app/backend/auth.py.
+const WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"];
 const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"];
 const EXEC = [...ANALYST, "ceo-report", "targets", "exports"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
@@ -20,6 +23,7 @@ const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", 
 export const ROLE_PAGES = {
   viewer: VIEWER,
   store_manager: STORE_MANAGER,
+  warehouse: WAREHOUSE,
   analyst: ANALYST,
   exec: EXEC,
   admin: ADMIN,

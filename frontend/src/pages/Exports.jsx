@@ -667,20 +667,22 @@ const SalesExport = () => {
 // Parent wrapper with Sales / Inventory tab switcher.
 const Exports = () => {
   const { user } = useAuth();
-  const isStoreManager = user?.role === "store_manager";
-  // Store managers can only see the Inventory tab — leadership rule
-  // so they don't get sales-side data outside their permission scope.
-  const [tab, setTab] = useState(isStoreManager ? "inventory" : "sales");
+  // Inventory-only roles see ONLY the Inventory tab. store_manager and
+  // warehouse both fall in this bucket — store managers don't have
+  // sales-side permission scope; warehouse staff don't need it for
+  // their stock-movement workflow.
+  const isInventoryOnly = user?.role === "store_manager" || user?.role === "warehouse";
+  const [tab, setTab] = useState(isInventoryOnly ? "inventory" : "sales");
   return (
     <div className="space-y-5" data-testid="exports-page">
       <div>
         <div className="eyebrow">Dashboard · Exports</div>
         <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
-          {isStoreManager ? "Exports (Inventory)" : "Exports (Sales, Inventory)"}
+          {isInventoryOnly ? "Exports (Inventory)" : "Exports (Sales, Inventory)"}
         </h1>
       </div>
       <div className="inline-flex flex-wrap rounded-xl bg-panel p-1 border border-border" data-testid="exports-tabs">
-        {!isStoreManager && (
+        {!isInventoryOnly && (
           <button
             type="button"
             onClick={() => setTab("sales")}
@@ -702,7 +704,7 @@ const Exports = () => {
         >
           Inventory
         </button>
-        {!isStoreManager && (
+        {!isInventoryOnly && (
         <>
         <button
           type="button"
@@ -747,12 +749,12 @@ const Exports = () => {
         </>
         )}
       </div>
-      {!isStoreManager && tab === "sales" && <SalesExport />}
+      {!isInventoryOnly && tab === "sales" && <SalesExport />}
       {tab === "inventory" && <InventoryExport />}
-      {!isStoreManager && tab === "kpis" && <StoreKpisExport />}
-      {!isStoreManager && tab === "period" && <PeriodPerformanceExport />}
-      {!isStoreManager && tab === "stock" && <StockRebalancingExport />}
-      {!isStoreManager && tab === "sor" && <SORReportExport />}
+      {!isInventoryOnly && tab === "kpis" && <StoreKpisExport />}
+      {!isInventoryOnly && tab === "period" && <PeriodPerformanceExport />}
+      {!isInventoryOnly && tab === "stock" && <StockRebalancingExport />}
+      {!isInventoryOnly && tab === "sor" && <SORReportExport />}
     </div>
   );
 };

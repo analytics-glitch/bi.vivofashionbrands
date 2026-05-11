@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # --- role helpers ------------------------------------------------------------
 
 # Ordered lowest → highest. "admin" grants everything.
-_ROLE_RANK = {"viewer": 0, "store_manager": 1, "analyst": 2, "exec": 3, "admin": 4}
+_ROLE_RANK = {"viewer": 0, "store_manager": 1, "warehouse": 1, "analyst": 2, "exec": 3, "admin": 4}
 
 VALID_ROLES = set(_ROLE_RANK.keys())
 

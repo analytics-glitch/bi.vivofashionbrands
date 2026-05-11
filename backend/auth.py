@@ -57,7 +57,7 @@ class User(BaseModel):
     email: str
     name: Optional[str] = None
     picture: Optional[str] = None
-    role: str = "viewer"  # admin | exec | analyst | store_manager | viewer
+    role: str = "viewer"  # admin | exec | analyst | store_manager | warehouse | viewer
     active: bool = True
     # New users from Google self-sign-up land in "pending" until an
     # admin approves. Existing accounts default to "active" so they
@@ -110,12 +110,18 @@ _VIEWER = ["overview", "locations", "footfall", "customers", "customer-details",
 #   - IBT (full)
 #   - Feedback (so they can submit issues)
 _STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"]
+# Warehouse staff handle stock movement & fulfilment. They get the
+# operational pages they need to pick / pack / route stock, plus the
+# Exports tab (inventory-only — the page-level guard in Exports.jsx
+# hides every non-inventory tab for this role).
+_WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"]
 _ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"]
 _EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
 _ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"]
 ROLE_PAGES = {
     "viewer": _VIEWER,
     "store_manager": _STORE_MANAGER,
+    "warehouse": _WAREHOUSE,
     "analyst": _ANALYST,
     "exec": _EXEC,
     "admin": _ADMIN,

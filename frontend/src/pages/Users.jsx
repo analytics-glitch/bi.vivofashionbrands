@@ -102,6 +102,7 @@ const Users = () => {
             onChange={(e) => setForm({ ...form, role: e.target.value })} data-testid="create-user-role">
             <option value="viewer">Viewer — PII masked</option>
             <option value="store_manager">Store Manager — names visible</option>
+            <option value="warehouse">Warehouse — stock ops + inventory export</option>
             <option value="analyst">Analyst — full PII (logged)</option>
             <option value="exec">Exec — full PII (logged)</option>
             <option value="admin">Admin — full access</option>
@@ -187,6 +188,7 @@ const Users = () => {
                     : r.role === "exec" ? "pill-green"
                     : r.role === "analyst" ? "pill-amber"
                     : r.role === "store_manager" ? "pill-amber"
+                    : r.role === "warehouse" ? "pill-amber"
                     : "pill-neutral";
                   const icon = (r.role === "admin" || r.role === "exec") ? <ShieldCheck size={11} /> : <Eye size={11} />;
                   return (
@@ -227,6 +229,7 @@ const Users = () => {
                     >
                       <option value="viewer">Viewer</option>
                       <option value="store_manager">Store Manager</option>
+                      <option value="warehouse">Warehouse</option>
                       <option value="analyst">Analyst</option>
                       <option value="exec">Exec</option>
                       <option value="admin">Admin</option>

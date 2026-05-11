@@ -776,6 +776,48 @@ const Customers = () => {
                     higherIsBetter={false}
                     showDelta={false}
                   />
+                  {/* Reactivation Rate — % of historically-churned customers
+                      who came back inside the selected window. Pairs with
+                      Churn Rate to give the full retention picture: high
+                      churn + high reactivation = a noisy but recoverable
+                      base; low churn + low reactivation = stable + cold. */}
+                  {(() => {
+                    const unchurnedCount = Array.isArray(unchurned) ? unchurned.length : 0;
+                    const totalChurned = Number(cust.churned_last_90d || cust.churned_customers || 0);
+                    // Denominator = current churned + the ones who reactivated
+                    // in-window (because those were previously in the churned
+                    // pool). This is the textbook "win-back rate" definition
+                    // used in CRM: reactivations / (reactivations + still-churned).
+                    const denom = totalChurned + unchurnedCount;
+                    const rate = denom > 0 ? (unchurnedCount / denom) * 100 : null;
+                    return (
+                      <KPICard
+                        testId="kpi-reactivation-rate"
+                        label="Reactivation Rate"
+                        sub={
+                          unchurnedLoading || cust.churn_source === "computing"
+                            ? "computing…"
+                            : `${fmtNum(unchurnedCount)} reactivated · ${unchurnedDays}-day gap`
+                        }
+                        formula={
+                          `Reactivation Rate = unchurned ÷ (unchurned + total_churned) × 100.\n\n` +
+                          `"Unchurned" = identified customers whose latest visit falls in the selected ` +
+                          `window AND who had been silent for ≥ ${unchurnedDays} days before that visit ` +
+                          `(see Reactivation Opportunity slider below).\n\n` +
+                          `"Total Churned" = customers with no purchase in ${churnDays}+ days as of today.\n\n` +
+                          `Higher is better — it tells you how effective your win-back signals are.`
+                        }
+                        value={
+                          unchurnedLoading || cust.churn_source === "computing"
+                            ? "…"
+                            : rate == null ? "—" : fmtPct(rate, 1)
+                        }
+                        icon={UserPlus}
+                        higherIsBetter={true}
+                        showDelta={false}
+                      />
+                    );
+                  })()}
                 </>
               );
             })()}

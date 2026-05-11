@@ -150,10 +150,20 @@ const UserMenu = () => {
 const TopNav = () => {
   const { lastUpdated, refresh } = useFilters();
   const { user } = useAuth();
-  const visibleTabs = React.useMemo(
-    () => tabs.filter((t) => canAccessPage(user, t.id)),
-    [user]
-  );
+  const visibleTabs = React.useMemo(() => {
+    const role = (user?.role || "").toLowerCase();
+    // store_manager + warehouse roles can only see the Inventory tab on
+    // Exports, so the side-nav label is shortened to match what they'll
+    // actually find on the page.
+    const inventoryOnly = role === "store_manager" || role === "warehouse";
+    return tabs
+      .filter((t) => canAccessPage(user, t.id))
+      .map((t) =>
+        t.id === "exports" && inventoryOnly
+          ? { ...t, label: "Exports (Inventory)" }
+          : t,
+      );
+  }, [user]);
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
   const [, setTick] = React.useState(0);
