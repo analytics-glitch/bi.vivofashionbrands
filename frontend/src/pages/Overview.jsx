@@ -646,7 +646,7 @@ const Overview = () => {
         )}
       </div>
 
-      {(loading || kpisLoading) && <Loading label="Aggregating group KPIs…" />}
+      {(loading || kpisLoading) && !kpis && <Loading label="Aggregating group KPIs…" />}
       {error && <ErrorBox message={error} />}
       {degradedMessage && (
         <div
@@ -674,7 +674,7 @@ const Overview = () => {
         </div>
       )}
 
-      {!loading && !kpisLoading && !error && kpis && (
+      {!kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} icon={CurrencyCircleDollar}
