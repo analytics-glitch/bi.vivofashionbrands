@@ -227,14 +227,9 @@ async def _audit(actor: User, action: str, target: str = "", target_id: str = ""
         logger.warning("audit log failed: %s", exc)
 
 
-async def _resolve_role(email: str) -> str:
-    if email.lower() in MANAGER_EMAILS:
-        return "manager"
-    # Bootstrap: first ever user becomes manager so the demo can showcase the manager view.
-    has_manager = await db.users.find_one({"role": "manager"}, {"_id": 0})
-    if has_manager is None:
-        return "manager"
-    return "associate"
+async def _resolve_role(email: str) -> str:  # noqa: ARG001 — email reserved for future role mapping
+    # Vivo policy (Feb 2026): every authenticated user is granted manager rights.
+    return "manager"
 
 
 async def get_current_user(
@@ -325,8 +320,8 @@ async def auth_session(request: Request, response: Response, payload: Dict[str, 
         }
         await db.users.insert_one(dict(user_doc))
     else:
-        # Refresh role allowlist if env changed
-        if email in MANAGER_EMAILS and user_doc.get("role") != "manager":
+        # Upgrade everyone to manager per current policy.
+        if user_doc.get("role") != "manager":
             await db.users.update_one({"email": email}, {"$set": {"role": "manager"}})
             user_doc["role"] = "manager"
 
