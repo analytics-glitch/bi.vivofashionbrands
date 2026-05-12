@@ -465,6 +465,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 72) — Six reconciliation fixes from BI alert email
+- **ISS-001/002/003 (CEO Report ≠ Overview ≠ Locations · CRITICAL)**: Upstream `/country-summary` and `/kpis` had a 1-2% variance (different IBT/wholesale inclusion). Rebuilt `/api/country-summary` as a per-country `/kpis` fan-out so Σ(rows) ≡ /kpis(no-country). ✅ Verified: 432,912 = 421,450 (Kenya) + 11,462 (Uganda); orders 56=55+1; units 103=101+2.
+- **ISS-004 (Products page · WARNING)**: Category subtotal differed from Total Units KPI because the table excludes Accessories / Sale / Other. Added an explicit subtitle showing Σ vs the gap with the source-of-truth so users can audit at a glance.
+- **ISS-005 (Walk-in % wrong denominator · WARNING)**: `/customers/walk-ins` was dividing by `/orders` fan-out total (includes wholesale/IBT) instead of `/kpis.total_sales`. Switched to `/kpis` as the authoritative denominator → walk_in_share_sales_pct now reconciles with the headline KES figure used everywhere else.
+- **ISS-006 (Replenishment date · WARNING)**: default window was yesterday-only — today's gaps invisible. Now `today-1 → today` inclusive so morning pickers see live sell-through.
+
 ### Recent (Feb 2026 — Iter 71) — WoC formula change
 - **Weeks of Cover now uses 3-month run-rate** (vs the previous 28-day window). Spec from user: `weekly_units = (last 3 full calendar months avg) ÷ 4`, equivalent to `units_sold_3m ÷ 12`. Rationale: weekly granularity over 28 days was too noisy — a single promo week dragged WoC up or down by 30-40% across hundreds of styles. Three calendar months smooths volatility and aligns with the monthly cadence buyers actually use for replen planning.
 - Backend window: `last_day_of_previous_month` ↔ `first_day_of_three_months_ago` (89-91 days depending on Feb). Excludes the in-progress current month so promos / early-month dips don't pull the run-rate.

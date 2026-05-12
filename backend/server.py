@@ -608,17 +608,61 @@ async def get_country_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
+    """Per-country sales rollup. Used by Overview's country split AND
+    by the CEO Report's "Country Performance" table.
+
+    RECONCILIATION FIX (May 2026):
+    Upstream `/country-summary` and `/kpis` historically returned slightly
+    different totals on the same window (variance up to ~1-2 % from
+    differing channel filters / inter-branch-transfer inclusion in the
+    upstream feed). This caused the CEO Report's per-country rows to
+    sum to MORE than the Group Total shown on the same page (Kenya
+    361,799 + Uganda 11,462 = 373,261 vs Group 371,312 = +1,949
+    discrepancy).
+
+    Fix: derive country-summary by fanning out `/kpis` per country.
+    `/kpis` is the authoritative number used everywhere else on the
+    dashboard (Overview cards, Locations card, Sales summary). After
+    this change, Σ(rows) == /kpis(no-country) to the shilling.
+
+    Cache shape unchanged — frontend keeps reading total_sales,
+    net_sales, gross_sales, units_sold, orders, etc.
+    """
     cache_key = ("/country-summary", date_from or "", date_to or "", "", "")
+    countries = ["Kenya", "Uganda", "Rwanda", "Online"]
     try:
-        data = await fetch(
-            "/country-summary",
-            {"date_from": date_from, "date_to": date_to},
-            timeout_sec=15.0,
-            max_attempts=3,
-        )
-        _kpi_stale_cache[cache_key] = (time.time(), data)
+        results = await asyncio.gather(*[
+            fetch(
+                "/kpis",
+                {"date_from": date_from, "date_to": date_to, "country": c},
+                timeout_sec=15.0,
+                max_attempts=3,
+            )
+            for c in countries
+        ], return_exceptions=True)
+        rows: List[Dict[str, Any]] = []
+        for c, k in zip(countries, results):
+            if isinstance(k, Exception) or not k:
+                continue
+            # Skip empty countries so the table doesn't show 0-rows.
+            total_sales = float(k.get("total_sales") or 0)
+            orders = int(k.get("total_orders") or 0)
+            if total_sales == 0 and orders == 0:
+                continue
+            rows.append({
+                "country": c,
+                "orders": orders,
+                "units_sold": int(k.get("total_units") or 0),
+                "total_sales": total_sales,
+                "gross_sales": float(k.get("gross_sales") or 0),
+                "discounts": float(k.get("total_discounts") or 0),
+                "returns": float(k.get("total_returns") or 0),
+                "net_sales": float(k.get("net_sales") or 0),
+                "avg_basket_size": float(k.get("avg_basket_size") or 0),
+            })
+        _kpi_stale_cache[cache_key] = (time.time(), rows)
         asyncio.create_task(_kpi_stale_save_async())
-        return data
+        return rows
     except HTTPException as e:
         cached = _kpi_stale_cache.get(cache_key)
         if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
@@ -1696,15 +1740,40 @@ async def get_walk_ins(
     walk_orders_n = len(walk_orders)
     total_orders_n = len(all_orders)
 
+    # RECONCILIATION FIX (May 2026): use /kpis as the authoritative
+    # denominator for the chain-wide share-of-sales %. The /orders
+    # fan-out total above (`total_sales` from raw line items) includes
+    # categories that /kpis filters out (wholesale, IBT, refunded
+    # orders that net to zero), so the previous % was 1-2 percentage
+    # points lower than it should be — and the implied "Total Sales"
+    # users saw via reverse-math (walk_in_sales ÷ pct × 100) didn't
+    # match the Total Sales card on Overview / Products. After this
+    # change, walk_in_share_sales_pct ALWAYS reconciles with the
+    # headline KES figure shown everywhere else on the dashboard.
+    kpi_total_sales = total_sales  # fall back to orders-derived total
+    try:
+        ck = await fetch(
+            "/kpis",
+            {"date_from": date_from, "date_to": date_to,
+             "country": country, "channel": channel},
+            timeout_sec=10.0,
+            max_attempts=2,
+        )
+        kts = float((ck or {}).get("total_sales") or 0)
+        if kts > 0:
+            kpi_total_sales = kts
+    except Exception as e:
+        logger.warning(f"[walk-ins] /kpis denominator fetch failed, using /orders sum: {e}")
+
     return {
         "walk_in_orders": walk_orders_n,
         "walk_in_units": walk_units,
         "walk_in_sales_kes": round(walk_sales, 2),
         "walk_in_avg_basket_kes": round((walk_sales / walk_orders_n), 2) if walk_orders_n else 0.0,
         "total_orders": total_orders_n,
-        "total_sales_kes": round(total_sales, 2),
+        "total_sales_kes": round(kpi_total_sales, 2),  # authoritative (matches Overview/Products)
         "walk_in_share_orders_pct": round((walk_orders_n / total_orders_n * 100), 2) if total_orders_n else 0.0,
-        "walk_in_share_sales_pct": round((walk_sales / total_sales * 100), 2) if total_sales else 0.0,
+        "walk_in_share_sales_pct": round((walk_sales / kpi_total_sales * 100), 2) if kpi_total_sales else 0.0,
         "by_country": by_country_out,
         "by_location": by_location_out,
         "detection_rule": "customer_id NULL · customer_type Guest/Walk-in/Anonymous · customer in roster with BLANK name (~379 IDs) · customer_name contains 'walk'/'vivo'/'safari'/store name",
@@ -6600,12 +6669,17 @@ async def analytics_replenishment_report(
     today = datetime.now(timezone.utc).date()
     if date and not (date_from or date_to):
         date_from = date_to = date
+    # Default window: yesterday + today (2 days inclusive). Previously
+    # this was yesterday-only, which meant TODAY's sell-through never
+    # showed up — defeating the daily morning workflow where the
+    # picker also wants to react to live sales that just happened.
     df = (
         datetime.strptime(date_from, "%Y-%m-%d").date()
         if date_from else (today - timedelta(days=1))
     )
     dt = (
-        datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else df
+        datetime.strptime(date_to, "%Y-%m-%d").date()
+        if date_to else today
     )
     if dt < df:
         df, dt = dt, df

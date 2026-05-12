@@ -325,7 +325,15 @@ const Products = () => {
           <div className="card-white p-5" data-testid="sts-category-table">
             <SectionTitle
               title="Stock-to-Sales · by Category"
-              subtitle="Variance compares sales share vs stock share. Red = action needed (stockout or overstock risk). Green = healthy balance. Sorted by risk magnitude — biggest gaps at the top."
+              subtitle={(() => {
+                const catUnits = (filteredStsByCat || []).reduce((s, r) => s + (r.units_sold || 0), 0);
+                const kpiUnits = kpis?.total_units || 0;
+                const diff = kpiUnits - catUnits;
+                const note = diff !== 0
+                  ? ` · ${fmtNum(Math.abs(diff))} unit${Math.abs(diff) === 1 ? '' : 's'} in ${diff > 0 ? 'excluded categories (Accessories, Sale, Other)' : 'overlapping breakdown'}`
+                  : '';
+                return `Variance compares sales share vs stock share. Red = action needed; green = healthy. Σ here = ${fmtNum(catUnits)} units across categories${note}.`;
+              })()}
             />
             <SortableTable
               testId="sts-category"
