@@ -557,7 +557,10 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
   - **Row 1 — Avg Spend / Cust** (Overall · New · Returning) — weighted by customer count.
   - **Row 2 — ABV (per basket)** (Overall · New · Returning) — weighted by order count; matches the ABV tile on the Overview page (identified orders only — walk-ins excluded).
   - Overall tile in each row is mathematically the weighted average of the two segments, with a tooltip showing the exact formula. Resolves "Overall ABV doesn't match the New/Returning average" report.
-- **Page-title compaction.** Bulk-shrunk the page-title clamp from `clamp(18px,2.2vw,26px)` → `clamp(15px,1.5vw,19px)` across all 18 pages (`Overview`, `Customers`, `Footfall`, `Locations`, `Inventory`, `Products`, `ReOrder`, `IBT`, `Allocations`, `Replenishments`, `Pricing`, `Exports`, `CEOReport`, `Targets`, `CustomerDetails`, `ActivityLogs`, `Feedback`, `AdminFeedback`, `Users`). Page headers now occupy at most 2 rows on every viewport while keeping the eyebrow + title + date row hierarchy.
+- **Page-title compaction.** Bulk-shrunk the page-title clamp from `clamp(18px,2.2vw,26px)` → `clamp(15px,1.5vw,19px)` across all 18 pages.
+- **Top-nav restructured into 2 rows.** Previously at narrow widths (1024–1280px) the 17 page tabs flex-wrapped one-per-row because the middle flex column had limited width (brand + user-pills consumed both ends). Restructured `Sidebar.jsx` `<TopNav>` into:
+  - Row 1: brand (left) · utility pills `Search · Refresh · Bell · Recon · Cache · User` (right) — full viewport width.
+  - Row 2: all 17 page tabs flow with `justify-start flex-wrap` taking the full viewport width. Tightened per-tab padding/font so all tabs fit in a **single row** at ≥1100px and at most 2 rows below that.
 
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

@@ -248,9 +248,11 @@ const TopNav = () => {
   }, [user]);
   return (
     <nav
-      className="relative px-3 sm:px-5 lg:px-10 py-2.5 flex items-center justify-between gap-3 no-print bg-[#fed7aa] border-b border-border"
+      className="relative px-3 sm:px-5 lg:px-10 pt-2.5 pb-1.5 no-print bg-[#fed7aa] border-b border-border"
       data-testid="top-nav"
     >
+      {/* Row 1: brand · utility pills (full width) */}
+      <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
         <button
           type="button"
@@ -280,42 +282,6 @@ const TopNav = () => {
             BI · East Africa
           </div>
         </div>
-      </div>
-
-      <div className="hidden lg:flex items-center gap-1 flex-1 justify-center min-w-0 flex-wrap">
-        {visibleTabs.map((t) => (
-          <NavLink
-            key={t.id}
-            to={t.to}
-            end={t.to === "/"}
-            data-testid={`nav-${t.id}`}
-            onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
-            onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
-            className={({ isActive }) =>
-              `flex items-center gap-1.5 px-2 xl:px-3 py-1.5 rounded-lg text-[11.5px] xl:text-[12.5px] font-medium transition-colors whitespace-nowrap ${
-                isActive
-                  ? "bg-brand text-white shadow-sm"
-                  : "text-foreground/70 hover:bg-panel hover:text-foreground"
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <t.icon size={13} weight={isActive ? "fill" : "regular"} />
-                <span>{t.label}</span>
-                {t.id === "ibt" && lateCount > 0 && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
-                    title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
-                    data-testid="ibt-late-badge"
-                  >
-                    {lateCount > 99 ? "99+" : lateCount}
-                  </span>
-                )}
-              </>
-            )}
-          </NavLink>
-        ))}
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted">
@@ -349,6 +315,47 @@ const TopNav = () => {
         <ReconciliationStatusPill />
         <RedisStatusPill />
         <UserMenu />
+      </div>
+      </div>
+
+      {/* Row 2: page-name tabs (full viewport width, max 2 rows) */}
+      <div
+        className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
+        data-testid="top-nav-tabs"
+      >
+        {visibleTabs.map((t) => (
+          <NavLink
+            key={t.id}
+            to={t.to}
+            end={t.to === "/"}
+            data-testid={`nav-${t.id}`}
+            onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
+            onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
+            className={({ isActive }) =>
+              `flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap ${
+                isActive
+                  ? "bg-brand text-white shadow-sm"
+                  : "text-foreground/70 hover:bg-panel hover:text-foreground"
+              }`
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <t.icon size={13} weight={isActive ? "fill" : "regular"} />
+                <span>{t.label}</span>
+                {t.id === "ibt" && lateCount > 0 && (
+                  <span
+                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
+                    title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
+                    data-testid="ibt-late-badge"
+                  >
+                    {lateCount > 99 ? "99+" : lateCount}
+                  </span>
+                )}
+              </>
+            )}
+          </NavLink>
+        ))}
       </div>
 
       {mobileOpen && (
