@@ -2442,6 +2442,45 @@ async def analytics_ibt_suggestions(
     return final
 
 
+# ─── IBT dedup helper ─────────────────────────────────────────────────
+# Replenishment-report and ibt-warehouse-to-store should NOT recommend
+# a transfer for a (style, destination_store) pair that's already being
+# fulfilled by a store-to-store IBT — otherwise picking teams act on the
+# same demand twice and the destination ends up overstocked. Returns a
+# set of (style_name, to_store) tuples drawn from the LIVE IBT
+# suggestion list (default sensitivity bands). Cached for 60 s — both
+# downstream endpoints recompute their full reports every few minutes
+# but call this helper once per response, so a tight cache keeps the
+# dedup consistent within a single user's filter pass.
+_ibt_dedup_cache: Dict[str, Tuple[float, set]] = {}
+_IBT_DEDUP_TTL = 60.0  # seconds
+
+async def _ibt_destinations_for_dedup(
+    date_from: Optional[str], date_to: Optional[str], country: Optional[str]
+) -> set:
+    """Set of (style_name, to_store) pairs currently in the IBT recs.
+    Used by replenishment and warehouse-IBT endpoints to dedupe."""
+    ck = f"{date_from or ''}|{date_to or ''}|{country or ''}"
+    hit = _ibt_dedup_cache.get(ck)
+    if hit and (time.time() - hit[0]) < _IBT_DEDUP_TTL:
+        return hit[1]
+    try:
+        rows = await analytics_ibt_suggestions(
+            date_from=date_from, date_to=date_to, country=country,
+            min_move=2, limit=500, low_pct=20.0, high_pct=150.0,
+        )
+    except Exception as e:
+        logger.warning("[ibt-dedup] suggestion fetch failed: %s — empty dedup set", e)
+        rows = []
+    out = {
+        (r.get("style_name"), r.get("to_store"))
+        for r in (rows or [])
+        if r.get("style_name") and r.get("to_store")
+    }
+    _ibt_dedup_cache[ck] = (time.time(), out)
+    return out
+
+
 @api_router.get("/analytics/ibt-warehouse-to-store")
 async def analytics_ibt_warehouse_to_store(
     date_from: Optional[str] = None,
@@ -2538,6 +2577,12 @@ async def analytics_ibt_warehouse_to_store(
         sales_by_style_store[(style, store)] += float(r.get("quantity") or 0)
 
     suggestions: List[Dict[str, Any]] = []
+    # Dedup against store-to-store IBT — when a (style, destination) is
+    # already being fulfilled via an IBT recommendation, don't ALSO ask
+    # the warehouse to ship the same item or the floor ends up
+    # overstocked. IBT wins because it activates dead stock at the
+    # source store instead of draining the warehouse buffer.
+    ibt_dedup = await _ibt_destinations_for_dedup(date_from, date_to, country)
     # Online channels never receive physical inventory transfers — they
     # ship from the warehouse directly to customers. Surface only
     # bricks-and-mortar destinations so floor-replenishment teams aren't
@@ -2547,6 +2592,9 @@ async def analytics_ibt_warehouse_to_store(
         if units <= 0:
             continue
         if any(k in (store or "").lower() for k in _ONLINE_DEST_KEYS):
+            continue
+        # Skip if this (style, store) is already in the IBT recs.
+        if (style, store) in ibt_dedup:
             continue
         daily = units / window_days
         if daily < min_daily_velocity:
@@ -6441,6 +6489,10 @@ async def analytics_replenishment_report(
             sku_meta.setdefault(sku, {
                 "sku": sku,
                 "product_name": r.get("product_title") or r.get("product_name") or r.get("style_name") or "",
+                # `style_name` is captured separately so the IBT-dedup pass
+                # below can match against the store-to-store IBT recs
+                # (which are keyed by style_name, not SKU).
+                "style_name": r.get("style_name") or "",
                 "size": r.get("size") or "",
                 "barcode": "",  # filled from inventory in step 2
             })
@@ -6469,9 +6521,14 @@ async def analytics_replenishment_report(
         sku_meta.setdefault(sku, {
             "sku": sku,
             "product_name": r.get("product_name") or r.get("style_name") or "",
+            "style_name": r.get("style_name") or "",
             "size": r.get("size") or "",
             "barcode": "",
         })
+        # If meta exists but has no style_name (because the order row
+        # didn't carry one), backfill from inventory.
+        if not sku_meta[sku].get("style_name") and r.get("style_name"):
+            sku_meta[sku]["style_name"] = r.get("style_name")
         # Track POS country from inventory too — covers stores that haven't
         # had any orders in the window but may still appear via the
         # zero-stock-no-sale path (none today, but defensive).
@@ -6490,12 +6547,29 @@ async def analytics_replenishment_report(
     # 3) Build candidate replenishment lines. Per spec: ONLY emit rows where
     # the SKU sold AT LEAST ONE unit at that POS in the window AND current
     # shop-floor stock < 2.
+    # Dedup against store-to-store IBT — if a (style, destination) is
+    # already in the IBT rec list, picking from the warehouse on top
+    # would double-fill the destination. IBT wins (drains slow-mover
+    # stock at the source store first; warehouse buffer stays intact).
+    # Replenishment is SKU-level but IBT is style-level, so we hide ALL
+    # SKUs of the matched style for that destination.
+    # `date_from` here is the start of the replenishment window — pass
+    # to the dedup helper so the IBT view is computed over a comparable
+    # span. The helper itself caches for 60 s so this is cheap.
+    repl_country_for_ibt = country if country else None
+    ibt_dedup_pairs = await _ibt_destinations_for_dedup(
+        df.isoformat(), dt.isoformat(), repl_country_for_ibt,
+    )
     candidates: List[Dict[str, Any]] = []
     for (loc, sku), sold in sold_units.items():
         if sold <= 0:
             continue
         ps = pos_stock.get((loc, sku), 0.0)
         if ps >= REPL_TRIGGER:
+            continue
+        # Drop when (style, location) already in IBT recs.
+        style_for_sku = (sku_meta.get(sku) or {}).get("style_name") or ""
+        if style_for_sku and (style_for_sku, loc) in ibt_dedup_pairs:
             continue
         candidates.append({"loc": loc, "sku": sku, "pos": ps, "sold": sold})
 
