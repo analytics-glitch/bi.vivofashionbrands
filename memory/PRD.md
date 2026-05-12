@@ -465,6 +465,11 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 74) — Status pill: Reconciliation health in the top nav
+- `components/ReconciliationStatusPill.jsx` — admin-only pill in TopNav. Polls `/api/admin/reconciliation-check` every 90 s, shows traffic-light state (green ≤0 fail, amber 1-2, red 3+ or endpoint unreachable). Click → popover lists every check with expected/got/Δ and the middleware hint on failures.
+- Replaces the email-driven `[BI ALERT]` loop for ops: anomalies surface in real time on the dashboard itself, no inbox required.
+- **Verified live**: pill shows "Recon ✓" green; click → 6/6 PASS with all expected=got pairs visible. Source of truth (`/kpis · 2026-05-12 · KES 478,712`) shown at top of panel.
+
 ### Recent (Feb 2026 — Iter 73) — Self-healing /kpis + reconciliation health endpoint
 - **NEW endpoint `GET /api/admin/reconciliation-check`** (admin-only): one-shot health check that returns PASS/FAIL on every cross-page KPI reconciliation: country_summary_total_sales, country_summary_orders, country_summary_units, sales_summary_total_sales, walkins_denominator, footfall_orders_signal. Each FAIL includes a `hint` field pointing to the exact middleware function that drifted. Designed for the audit bot — single GET, no UI scraping, deterministic green/red status.
 - **`/api/kpis` now self-heals when upstream returns null** for live windows. Discovered while building the recon endpoint: Vivo BI's `/kpis` batch can return null/0 for today even while `/orders` has the raw rows. Added `_compute_kpis_from_orders` fallback — fans out per country, excludes wholesale/IBT/transfer rows to match upstream's filter contract, returns the same shape so downstream consumers don't need a branch. Triggered ONLY when (a) upstream returns null AND (b) window covers today/yesterday. Historical zeros still pass through unchanged.
