@@ -1205,28 +1205,37 @@ async def get_stock_to_sales(
         loc_set = {x.strip() for x in locs}
         rows = [r for r in rows if r.get("location") in loc_set]
 
-    # Enrich each row with a per-location Weeks-of-Cover calculated from the
-    # last-4-week sell-through (not the user-selected period).
-    #   weeks_of_cover = current_stock ÷ (units_sold_last_28d ÷ 4)
+    # Enrich each row with a per-location Weeks-of-Cover calculated from
+    # the last 3 FULL calendar months of sell-through (changed Feb 2026
+    # from a 28-day rolling window — too noisy on weekly granularity).
+    #   weeks_of_cover = current_stock ÷ (units_sold_3m ÷ 12)
+    #   (avg_monthly = units_3m ÷ 3, weekly = avg_monthly ÷ 4 ⇒ units_3m ÷ 12)
     try:
         from datetime import datetime, timedelta
-        woc_to = datetime.utcnow().date()
-        woc_from = woc_to - timedelta(days=28)
+        today = datetime.utcnow().date()
+        # End-of-previous-month boundary so the current in-progress
+        # month doesn't pollute the run-rate.
+        woc_to = today.replace(day=1) - timedelta(days=1)
+        first_of_to_month = woc_to.replace(day=1)
+        one_back = (first_of_to_month - timedelta(days=1)).replace(day=1)
+        woc_from = (one_back - timedelta(days=1)).replace(day=1)
         sor_base = {"date_from": woc_from.isoformat(), "date_to": woc_to.isoformat()}
         woc_cs = cs or [None]
         sor_results = await asyncio.gather(*[fetch("/stock-to-sales", {**sor_base, "country": c}) for c in woc_cs])
-        units_28_by_loc: Dict[str, float] = defaultdict(float)
+        units_3m_by_loc: Dict[str, float] = defaultdict(float)
         for g in sor_results:
             for r in g or []:
                 loc = r.get("location")
                 if loc:
-                    units_28_by_loc[loc] += float(r.get("units_sold") or 0)
+                    units_3m_by_loc[loc] += float(r.get("units_sold") or 0)
         for r in rows:
-            u28 = units_28_by_loc.get(r.get("location"), 0)
-            weekly = u28 / 4 if u28 else 0
+            u3m = units_3m_by_loc.get(r.get("location"), 0)
+            weekly = u3m / 12 if u3m else 0  # avg_monthly/4 = u3m/12
             stock = r.get("current_stock") or 0
             r["weeks_of_cover"] = (stock / weekly) if weekly else None
-            r["units_sold_28d"] = u28
+            r["units_sold_3m"] = u3m
+            # Legacy field kept for cached frontend payloads.
+            r["units_sold_28d"] = u3m
     except Exception:
         for r in rows:
             r.setdefault("weeks_of_cover", None)
@@ -4351,25 +4360,40 @@ async def analytics_weeks_of_cover(
     stock_scope: str = Query("stores", regex="^(stores|warehouse|combined)$"),
 ):
     """Weeks of Cover per style:
-       weeks = current_stock / (units_sold_last_28_days / 4)
+       weeks = current_stock / (avg_monthly_units_last_3_full_months / 4)
+             = current_stock / (units_sold_3m / 12)
 
     `stock_scope` controls WHICH inventory feeds `current_stock`:
       • "stores"    — POS / shop-floor only (default; sales happen here)
       • "warehouse" — only warehouse / wholesale / holding stock
       • "combined"  — stores + warehouse (total allocable units)
 
-    IMPORTANT: sales (units_sold_28d, avg_weekly_sales) ALWAYS come from
+    IMPORTANT: sales (units_sold_3m, avg_weekly_sales) ALWAYS come from
     store traffic regardless of `stock_scope` — warehouses don't sell.
     This matches the user's explicit requirement: switching to the
     warehouse-only view only changes the numerator of WOC, not the
     denominator, so you can see e.g. "there's 18w of cover sitting in
     the warehouse but store-floor has only 3w → move it out".
 
-    SOR data gives 28-day sell rate when we query the last 28 days.
+    Sales window changed Feb 2026: was last 28 days (too noisy — single
+    promo week distorted WoC across hundreds of styles). Now: last 3
+    FULL calendar months, smooths weekly volatility and aligns with the
+    monthly cadence buyers use for replen planning.
     """
     from datetime import datetime, timedelta
-    dt = datetime.utcnow().date()
-    df = dt - timedelta(days=28)
+    today = datetime.utcnow().date()
+    # Last 3 FULL calendar months ending at the last day of the previous
+    # month — current month-in-progress is intentionally excluded so an
+    # in-progress promo or early-month dip doesn't pull the run-rate
+    # down/up. Example: today=2026-05-12 → window = 2026-02-01 to
+    # 2026-04-30 (89-91 days depending on Feb).
+    dt = today.replace(day=1) - timedelta(days=1)  # last day of prev month
+    # Walk back 3 months: simplest correct way is to step the 1st of
+    # previous month back twice, then take its 1st-of-month.
+    first_of_dt_month = dt.replace(day=1)
+    one_back = (first_of_dt_month - timedelta(days=1)).replace(day=1)
+    df = (one_back - timedelta(days=1)).replace(day=1)
+    window_days = (dt - df).days + 1  # inclusive
 
     cs = _split_csv(country)
     chs = _split_csv(channel) or _split_csv(locations)
@@ -4415,18 +4439,19 @@ async def analytics_weeks_of_cover(
             continue
         if stock_scope == "warehouse" and not is_wh:
             continue
-        # Location filter is only meaningful for POS rows; warehouse rows
-        # are scoped group-wide.
         if locs and not is_wh and (r.get("location_name") not in set(locs)):
             continue
         stock_by_style[style] += float(r.get("available") or 0)
 
     out = []
     for r in rows:
-        units = r.get("units_sold") or 0
+        units_3m = r.get("units_sold") or 0  # /sor `units_sold` over our 3-month window
         style = r.get("style_name")
         stock = stock_by_style.get(style, 0)
-        weekly = units / 4 if units else 0
+        # weekly = monthly_avg / 4 = (units_3m / 3) / 4 = units_3m / 12.
+        # Using a fixed divisor of 12 keeps the math intuitive and
+        # tolerates the minor 89-vs-91-day Feb difference (<2 % drift).
+        weekly = units_3m / 12 if units_3m else 0
         weeks = (stock / weekly) if weekly else None
         out.append({
             "style_name": r.get("style_name"),
@@ -4434,7 +4459,12 @@ async def analytics_weeks_of_cover(
             "collection": r.get("collection"),
             "subcategory": r.get("product_type"),
             "current_stock": stock,
-            "units_sold_28d": units,
+            "units_sold_3m": units_3m,
+            "units_sold_3m_window_days": window_days,
+            # Keep the legacy `units_sold_28d` key populated so any
+            # cached frontend payloads from previous builds (or third-
+            # party consumers) don't break — same value, NEW window.
+            "units_sold_28d": units_3m,
             "avg_weekly_sales": weekly,
             "weeks_of_cover": weeks,
             "sor_percent": r.get("sor_percent") or 0,

@@ -342,8 +342,12 @@ const Inventory = () => {
   //             (dead money — IBT or clearance immediately)
   const bucketFor = (r) => {
     const stock = r.current_stock || 0;
-    const sold28 = r.units_sold_28d || 0;
-    if (stock >= 30 && sold28 === 0) return "phantom";
+    // Phantom = lots of stock but ZERO sales in the entire 3-month
+    // measurement window. Field is `units_sold_3m`; falls back to the
+    // legacy `units_sold_28d` for any cached row served before the
+    // Feb-2026 window change.
+    const sold3m = r.units_sold_3m ?? r.units_sold_28d ?? 0;
+    if (stock >= 30 && sold3m === 0) return "phantom";
     const w = r.weeks_of_cover;
     if (w == null) return "phantom"; // no sales but not enough stock to call phantom
     if (w < 4)  return "fresh";
@@ -1165,7 +1169,7 @@ const Inventory = () => {
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
                   { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
                   { key: "current_stock", label: "Stock", numeric: true, render: (r) => <span className="pill-red">{fmtNum(r.current_stock)}</span> },
-                  { key: "units_sold_28d", label: "Sold (28d)", numeric: true, render: (r) => <span className="text-muted num">{fmtNum(r.units_sold_28d)}</span> },
+                  { key: "units_sold_3m", label: "Sold (3 mo)", numeric: true, render: (r) => <span className="text-muted num">{fmtNum(r.units_sold_3m ?? r.units_sold_28d ?? 0)}</span> },
                   {
                     key: "_action", label: "Action", align: "left", sortable: false,
                     render: (r) => {

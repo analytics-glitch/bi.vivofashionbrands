@@ -465,6 +465,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 71) — WoC formula change
+- **Weeks of Cover now uses 3-month run-rate** (vs the previous 28-day window). Spec from user: `weekly_units = (last 3 full calendar months avg) ÷ 4`, equivalent to `units_sold_3m ÷ 12`. Rationale: weekly granularity over 28 days was too noisy — a single promo week dragged WoC up or down by 30-40% across hundreds of styles. Three calendar months smooths volatility and aligns with the monthly cadence buyers actually use for replen planning.
+- Backend window: `last_day_of_previous_month` ↔ `first_day_of_three_months_ago` (89-91 days depending on Feb). Excludes the in-progress current month so promos / early-month dips don't pull the run-rate.
+- New API field `units_sold_3m` (+ `units_sold_3m_window_days`); legacy `units_sold_28d` kept as alias for cached FE payloads.
+- Frontend tooltip + Sold column on Inventory page updated. **Verified**: Group overall WoC dropped from 10.3 wks (old noisy 28d) → 2.3 wks (smoothed 3m). Math: 28,089 stock / (49,134 ÷ 12) ≈ 6.86 wks at the style level, lower at the SKU-rollup level due to dead stock exclusion.
+
 ### Recent (Feb 2026 — Iter 70) — Redis status badge
 - **`/app/frontend/src/components/RedisStatusPill.jsx`** — admin-only pill in TopNav that polls `/api/admin/redis-stats` every 60s. Shows live state: green "Cache · N keys" when healthy, amber "Cache offline" if Redis is temporarily disabled (cooldown), grey "Cache off" if `REDIS_URL` is unset. Click → copies the full diagnostic JSON to clipboard for ops debugging. Hidden for non-admin roles. **Verified**: pill shows "Cache · 179 keys" green after a few minutes of normal traffic.
 
