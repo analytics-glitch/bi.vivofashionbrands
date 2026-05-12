@@ -170,7 +170,7 @@ export default function CustomerSearch() {
                   </div>
                   <div className="mt-3 text-xs text-[var(--vivo-muted)] flex items-center justify-between gap-2">
                     <span>Last buy {formatDate(c.last_purchase_date)}</span>
-                    {lc ? <span className="truncate" data-testid={`last-contact-${c.customer_id}`}>Last contact: {lc.sender_name} · {formatDate(lc.sent_at)}</span> : <span className="text-[var(--vivo-muted)]">Never contacted</span>}
+                    {lc ? <span className="truncate" data-testid={`last-contact-${c.customer_id}`}>Last contact: {lc.sender_name} · {formatDate(lc.sent_at)}</span> : <span className="text-[var(--vivo-muted)]" data-testid={`last-contact-${c.customer_id}`}>Never contacted</span>}
                   </div>
                 </Link>
               );

@@ -894,8 +894,7 @@ async def dashboard_me(user: User = Depends(get_current_user)):
 
 @api.put("/dashboard/me/goal")
 async def update_outreach_goal(payload: Dict[str, int] = Body(...), user: User = Depends(get_current_user)):
-    goal = int(payload.get("daily_goal") or 5)
-    goal = max(1, min(50, goal))
+    goal = max(1, min(50, int(payload.get("daily_goal", 5))))
     await db.outreach_goals.update_one(
         {"user_id": user.user_id},
         {"$set": {"user_id": user.user_id, "daily_goal": goal, "updated_at": iso(now_utc())}},

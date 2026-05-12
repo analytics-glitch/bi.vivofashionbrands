@@ -15,7 +15,8 @@ export function RfmBadge({ tier, className = "" }) {
   return (
     <span
       className={`text-[10px] uppercase tracking-[0.18em] px-2 py-0.5 rounded-md font-semibold tier-${tier} ${className}`}
-      data-testid={`rfm-badge-${tier}`}
+      data-testid={`rfm-badge`}
+      data-tier={tier}
     >
       {label}
     </span>
