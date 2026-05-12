@@ -176,6 +176,26 @@ class RedisCache:
         except Exception as e:
             self._on_op_failure("delete", e)
 
+    async def delete_prefix(self, key_prefix: str) -> int:
+        """Bulk-delete every key under `vivo:{key_prefix}*`. Used by the
+        admin /flush-kpi-cache endpoint to purge a poisoned /kpis blob
+        across all sibling pods. Returns the count deleted (0 on error
+        or when Redis is disabled).
+        """
+        client = await self._get_client()
+        if client is None:
+            return 0
+        deleted = 0
+        try:
+            pattern = _KEY_PREFIX + key_prefix + "*"
+            async for k in client.scan_iter(match=pattern, count=200):
+                await client.delete(k)
+                deleted += 1
+            return deleted
+        except Exception as e:
+            self._on_op_failure("delete_prefix", e)
+            return deleted
+
     def _on_op_failure(self, op: str, e: Exception) -> None:
         # Disable for a short window so a Redis hiccup doesn't make
         # every subsequent request pay the timeout. Re-enables auto.

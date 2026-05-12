@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { CheckCircle, Warning, WarningOctagon, Spinner } from "@phosphor-icons/react";
+import { CheckCircle, Warning, WarningOctagon, Spinner, ArrowsClockwise } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 /**
  * Admin-only reconciliation health pill.
@@ -25,6 +26,26 @@ const ReconciliationStatusPill = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [flushing, setFlushing] = useState(false);
+
+  const flushKpiCache = async () => {
+    if (flushing) return;
+    setFlushing(true);
+    try {
+      const { data: r } = await api.post("/admin/flush-kpi-cache");
+      const c = r?.cleared || {};
+      toast.success(
+        `KPI cache flushed — ${c.stale_cache_entries || 0} memory entries, ${c.redis_keys || 0} Redis keys removed. Refreshing…`,
+      );
+      // Bypass the frontend response-cache and force every page to
+      // re-fetch /kpis with fresh upstream data.
+      setTimeout(() => window.location.reload(), 700);
+    } catch (e) {
+      toast.error(`Flush failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setFlushing(false);
+    }
+  };
 
   useEffect(() => {
     if (!user || user.role !== "admin") return;
@@ -203,8 +224,25 @@ const ReconciliationStatusPill = () => {
             </div>
           )}
 
-          <div className="mt-3 pt-3 border-t border-border text-[10.5px] text-muted">
-            Polls every 90 s · click outside to close
+          <div className="mt-3 pt-3 border-t border-border flex items-center justify-between gap-2">
+            <span className="text-[10.5px] text-muted">
+              Polls every 90 s · click outside to close
+            </span>
+            <button
+              type="button"
+              onClick={flushKpiCache}
+              disabled={flushing}
+              data-testid="recon-flush-kpi-cache"
+              title="Hard-flush the /kpis stale cache (in-memory + disk + Redis). Use this when the dashboard is showing zeros despite the upstream BI being healthy."
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-semibold border transition-colors ${
+                flushing
+                  ? "bg-panel text-muted border-border cursor-wait"
+                  : "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 hover:border-rose-300"
+              }`}
+            >
+              <ArrowsClockwise size={11} weight="bold" className={flushing ? "animate-spin" : ""} />
+              {flushing ? "Flushing…" : "Force-flush KPI cache"}
+            </button>
           </div>
         </div>
       )}

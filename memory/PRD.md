@@ -562,5 +562,13 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
   - Row 1: brand (left) · utility pills `Search · Refresh · Bell · Recon · Cache · User` (right) — full viewport width.
   - Row 2: all 17 page tabs flow with `justify-start flex-wrap` taking the full viewport width. Tightened per-tab padding/font so all tabs fit in a **single row** at ≥1100px and at most 2 rows below that.
 
+### Recent (Feb 2026 — Iter 65)
+- **Poisoned-cache guard for `/api/kpis`.** Two defensive layers added against the failure mode where production showed all-zero KPIs even though the underlying upstream had recovered:
+  - **Write-side**: `_kpi_stale_cache` (in-memory + `/tmp/_kpi_stale_cache.json`) now REFUSES to persist an empty/zero response for a recent window (today/yesterday). Historical zeros (no traffic that day) still cache normally.
+  - **Read-side (error path)**: when upstream `/kpis` fails AND the stale cache only has a zero blob for a recent window, the endpoint runs the `/orders` rebuild instead of serving the stale zeros — and if that also returns 0, it RAISES (so the frontend renders a skeleton/error) rather than confidently surfacing fake "no sales today" data.
+  - **Boot-time rehydrate guard**: `_kpi_stale_load` drops any persisted `/kpis` entry whose payload is empty — so a poisoned blob can't outlive a pod restart.
+- **Admin endpoint `POST /api/admin/flush-kpi-cache`.** Hard-flushes the in-memory `_kpi_stale_cache`, deletes the disk-persisted blob, clears the in-process `_FETCH_CACHE`, and bulk-deletes every Redis L2 key under the `vivo:/kpis*` prefix via the new `RedisCache.delete_prefix()` helper. Returns counts cleared. Verified on preview: flushed 89 stale entries, next `/kpis` request immediately returned fresh `total_sales: 1,925,943`.
+- **UI hook in Recon panel.** Added a red **"⟳ Force-flush KPI cache"** button at the bottom of the `ReconciliationStatusPill` popover. One click → flushes server-side caches → toast confirms entries/keys cleared → page reloads with fresh data. Admins now have a one-click escape hatch when upstream BI poisons the cache.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

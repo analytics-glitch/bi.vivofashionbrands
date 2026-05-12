@@ -65,16 +65,34 @@ def _kpi_stale_load() -> None:
     Stored as a list of (key_tuple, ts, data) so a pod restart doesn't
     drop the user back to a Network Error banner. Reads silently fail —
     a missing/corrupt file just means we start cold.
+
+    POISONED-CACHE GUARD: also drops any entry whose `/kpis` payload is
+    empty/zero — a previous pod could have persisted a transient
+    zero-blob (e.g. during upstream BI batch lag) and we don't want it
+    to outlive the upstream recovery.
     """
     try:
         if not _KPI_STALE_PATH.exists():
             return
         import json as _json
         with _KPI_STALE_PATH.open() as fh:
+            kept = 0
+            dropped = 0
             for entry in _json.load(fh):
                 key = tuple(entry["key"])
-                _kpi_stale_cache[key] = (entry["ts"], entry["data"])
-        logger.info(f"[stale-cache] rehydrated {len(_kpi_stale_cache)} entries from disk")
+                data = entry["data"]
+                # Only screen `/kpis` entries — other endpoints (sales-summary,
+                # top-skus, ...) have richer shapes where "empty" is not a
+                # simple total_sales=0 test.
+                if key and key[0] == "/kpis" and _kpis_response_is_empty(data):
+                    dropped += 1
+                    continue
+                _kpi_stale_cache[key] = (entry["ts"], data)
+                kept += 1
+        logger.info(
+            "[stale-cache] rehydrated %d entries from disk (dropped %d empty /kpis entries)",
+            kept, dropped,
+        )
     except Exception as e:
         logger.warning(f"[stale-cache] rehydrate failed: {e}")
 
@@ -850,14 +868,52 @@ async def get_kpis(
                     data = {**rebuilt, "stale": False, "source": "orders-fallback"}
             except Exception as e:
                 logger.warning(f"[kpis] /orders fallback failed: {e}")
-        _kpi_stale_cache[cache_key] = (time.time(), data)
-        # Fire-and-forget disk flush so a pod restart preserves it.
-        asyncio.create_task(_kpi_stale_save_async())
+        # POISONED-CACHE GUARD (May 2026): never persist a zero/empty
+        # response into the stale cache for a recent window. A previously
+        # poisoned `_kpi_stale_cache.json` entry would otherwise survive
+        # pod restarts and keep serving zeros even after the upstream
+        # recovers. Historical-window zeros (no traffic that day) are
+        # legit and DO get cached.
+        if not (_kpis_response_is_empty(data) and _window_is_recent(date_from, date_to)):
+            _kpi_stale_cache[cache_key] = (time.time(), data)
+            # Fire-and-forget disk flush so a pod restart preserves it.
+            asyncio.create_task(_kpi_stale_save_async())
+        else:
+            logger.warning(
+                "[kpis] refusing to cache empty response for recent window "
+                "(%s → %s, country=%s, channel=%s) — leaving previous cache intact",
+                date_from, date_to, country, channel,
+            )
         return data
     except HTTPException as e:
         cached = _kpi_stale_cache.get(cache_key)
         if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
-            stale_data = {**cached[1], "stale": True, "stale_age_sec": int(time.time() - cached[0])}
+            cached_data = cached[1]
+            # POISONED-CACHE GUARD (read side): if the cached entry is
+            # itself empty for a recent window, don't serve it — try the
+            # /orders rebuild instead. Returning stale zeros is worse
+            # than a one-off upstream error because the dashboard then
+            # shows confidently-wrong "no sales today" for a live day.
+            if _kpis_response_is_empty(cached_data) and _window_is_recent(date_from, date_to):
+                logger.warning(
+                    "/kpis upstream %s AND stale cache is also empty — "
+                    "attempting /orders rebuild before surfacing zeros",
+                    e.status_code,
+                )
+                try:
+                    rebuilt = await _compute_kpis_from_orders(
+                        date_from=date_from, date_to=date_to,
+                        country=country, channel=channel,
+                    )
+                    if rebuilt and (rebuilt.get("total_sales") or 0) > 0:
+                        return {**rebuilt, "stale": False, "source": "orders-fallback-on-error"}
+                except Exception as ie:
+                    logger.warning(f"[kpis] error-path /orders rebuild failed: {ie}")
+                # Both upstream and rebuild failed/empty — raise so the
+                # frontend renders its skeleton/error state instead of
+                # zeros pretending to be real data.
+                raise
+            stale_data = {**cached_data, "stale": True, "stale_age_sec": int(time.time() - cached[0])}
             logger.warning(f"/kpis upstream {e.status_code} — serving stale cache (age={stale_data['stale_age_sec']}s)")
             return stale_data
         raise
@@ -1352,6 +1408,55 @@ async def admin_cache_clear():
     _churn_neg_cache.clear()
     _FETCH_CACHE.clear()
     return {"ok": True, "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache"]}
+
+
+@api_router.post("/admin/flush-kpi-cache")
+async def admin_flush_kpi_cache():
+    """Hard-flush the /kpis stale cache (in-memory + disk + Redis L2).
+
+    Use case: an upstream BI hiccup persisted a zero-blob into
+    `_kpi_stale_cache` AND the matching Redis key. Admins click this
+    from the Recon failure popup so the next /kpis request goes
+    straight to upstream (or the /orders rebuild) without consulting
+    the poisoned cache.
+
+    Safe to call at any time — worst case the user pays one extra
+    upstream round-trip on their next page load.
+    """
+    cleared_mem = len(_kpi_stale_cache)
+    _kpi_stale_cache.clear()
+    # Wipe the disk-persisted blob so the next pod restart doesn't
+    # rehydrate the poisoned entries.
+    try:
+        if _KPI_STALE_PATH.exists():
+            _KPI_STALE_PATH.unlink()
+    except Exception as e:
+        logger.warning("[flush-kpi-cache] disk unlink failed: %s", e)
+    # Also clear the in-process fetch cache (5-min response cache that
+    # sits in front of the upstream client) so the next /kpis call goes
+    # all the way upstream rather than serving its own zero hit.
+    _FETCH_CACHE.clear()
+    # Redis L2 — purge every key under the /kpis prefix so a sibling
+    # pod doesn't keep serving the bad value back to us.
+    redis_cleared = 0
+    try:
+        from redis_cache import rc
+        redis_cleared = await rc.delete_prefix("/kpis")
+    except Exception as e:
+        logger.warning("[flush-kpi-cache] redis prefix delete failed: %s", e)
+    logger.warning(
+        "[flush-kpi-cache] admin flush — cleared %d stale entries, %d redis keys",
+        cleared_mem, redis_cleared,
+    )
+    return {
+        "ok": True,
+        "cleared": {
+            "stale_cache_entries": cleared_mem,
+            "redis_keys": redis_cleared,
+            "fetch_cache": True,
+            "disk_blob_removed": True,
+        },
+    }
 
 
 @api_router.get("/stock-to-sales")
