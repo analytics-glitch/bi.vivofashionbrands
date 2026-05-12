@@ -49,6 +49,16 @@ _KPI_STALE_TTL = 86400  # 24 h — stale data beats a Network Error banner
 _KPI_STALE_PATH = Path("/tmp/_kpi_stale_cache.json")
 _kpi_stale_save_lock = asyncio.Lock()  # serialise concurrent disk flushes
 
+# Passive auto-recovery (May 2026): when the cross-page reconciliation
+# check has been failing for >10 minutes, a background coroutine
+# proactively flushes the poisoned `/kpis` cache and rebuilds from
+# `/orders`. Tracks WHEN recon first went red so a brief upstream
+# hiccup doesn't trigger an unnecessary rebuild.
+_recon_red_since: Optional[float] = None
+_AUTO_RECOVERY_SLEEP_SEC = 300  # 5 min — how often the watcher wakes
+_AUTO_RECOVERY_GRACE_SEC = 600  # 10 min — how long recon must be red
+_last_auto_recovery_at: float = 0.0
+
 
 async def _kpi_stale_save_async() -> None:
     """Coroutine variant of `_kpi_stale_save` that holds a lock so
@@ -8377,6 +8387,10 @@ async def startup():
     # a pod restart still has /kpis & friends to fall back on if upstream
     # is cold. Runs synchronously — it's a small JSON file.
     _kpi_stale_load()
+    # Passive auto-recovery watcher — proactively heals a poisoned
+    # /kpis cache when reconciliation has been red for ≥ 10 minutes.
+    # Runs forever as a background task. See _auto_recovery_loop docstring.
+    asyncio.create_task(_auto_recovery_loop())
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
     # only populate in-process caches, so we run them as background tasks.
@@ -8796,5 +8810,178 @@ async def admin_reconciliation_check(
             ]
             if isinstance(r, dict) and r.get("_error")
         ],
+        # Surface the auto-recovery state so the UI can show admins
+        # when the system is actively healing itself.
+        "auto_recovery": {
+            "watching": True,
+            "red_since": _recon_red_since,
+            "red_for_sec": int(time.time() - _recon_red_since) if _recon_red_since else 0,
+            "last_recovery_at": _last_auto_recovery_at or None,
+            "grace_sec": _AUTO_RECOVERY_GRACE_SEC,
+        },
     }
+
+
+async def _run_recon_internal() -> Dict[str, Any]:
+    """Internal helper for the auto-recovery loop — same logic as the
+    `/admin/reconciliation-check` endpoint but without the FastAPI
+    dependency wrapper (no auth, no Depends). Returns the same shape.
+    """
+    target = datetime.now(timezone.utc).date().isoformat()
+
+    async def _safe(coro):
+        try:
+            return await coro
+        except Exception as e:
+            return {"_error": str(e)}
+
+    kpis_r, country_r, sales_r, walk_r, foot_r = await asyncio.gather(
+        _safe(get_kpis(date_from=target, date_to=target)),
+        _safe(get_country_summary(date_from=target, date_to=target)),
+        _safe(get_sales_summary(date_from=target, date_to=target)),
+        _safe(get_walk_ins(date_from=target, date_to=target)),
+        _safe(get_footfall(date_from=target, date_to=target)),
+    )
+
+    kpi_total_sales = float((kpis_r or {}).get("total_sales") or 0)
+    kpi_orders = int((kpis_r or {}).get("total_orders") or 0)
+    kpi_units = int((kpis_r or {}).get("total_units") or 0)
+    cs_sum_sales = sum(float(r.get("total_sales") or 0) for r in (country_r or []) if isinstance(r, dict))
+    ss_sum_sales = sum(float(r.get("total_sales") or 0) for r in (sales_r or []) if isinstance(r, dict))
+    walk_denom = float((walk_r or {}).get("total_sales_kes") or 0)
+    foot_orders = sum(int(r.get("orders") or 0) for r in (foot_r or []) if isinstance(r, dict))
+
+    fails = 0
+    # KPI = 0 today is itself a red flag (every other endpoint relies
+    # on it). Counts as the FIRST failed check so the watcher reacts
+    # to the all-zero scenario the user reported.
+    if kpi_total_sales == 0 and (cs_sum_sales > 0 or ss_sum_sales > 0):
+        fails += 1
+    for expected, got in (
+        (kpi_total_sales, cs_sum_sales),
+        (kpi_total_sales, ss_sum_sales),
+        (kpi_total_sales, walk_denom),
+    ):
+        denom = abs(expected) if abs(expected) > 1e-9 else 1.0
+        if abs(got - expected) > 1.0 and abs((got - expected) / denom * 100) > 0.5:
+            fails += 1
+    if kpi_orders > 0 and foot_orders == 0:
+        fails += 1
+    return {
+        "fails": fails,
+        "kpi_total_sales": kpi_total_sales,
+        "kpi_orders": kpi_orders,
+        "kpi_units": kpi_units,
+    }
+
+
+async def _auto_recovery_loop() -> None:
+    """Background watcher that heals a poisoned `/kpis` cache without
+    requiring an admin to click the Force-Flush button.
+
+    Wakes every 5 minutes:
+      1. Runs the same reconciliation check as the admin endpoint.
+      2. If recon has failures, records `_recon_red_since` (idempotent
+         — only set on the FIRST red sweep).
+      3. Once recon has been red continuously for ≥ 10 minutes, flushes
+         the in-memory + disk + Redis `/kpis` caches and forces a
+         `/orders` rebuild for today's window. Caches are then
+         re-populated with the fresh result.
+      4. On a green sweep, clears `_recon_red_since` so the next red
+         window starts its grace counter from zero.
+
+    Self-rate-limited: never recovers more than once every 5 minutes.
+    """
+    global _recon_red_since, _last_auto_recovery_at
+    while True:
+        try:
+            await asyncio.sleep(_AUTO_RECOVERY_SLEEP_SEC)
+            result = await _run_recon_internal()
+            fails = result.get("fails", 0)
+            if fails == 0:
+                if _recon_red_since is not None:
+                    logger.info(
+                        "[auto-recovery] recon back to green after %ds — clearing red-since",
+                        int(time.time() - _recon_red_since),
+                    )
+                    _recon_red_since = None
+                continue
+            # Recon is red on this sweep.
+            now = time.time()
+            if _recon_red_since is None:
+                _recon_red_since = now
+                logger.warning(
+                    "[auto-recovery] recon went red (fails=%d) — starting %ds grace timer",
+                    fails, _AUTO_RECOVERY_GRACE_SEC,
+                )
+                continue
+            red_for = now - _recon_red_since
+            if red_for < _AUTO_RECOVERY_GRACE_SEC:
+                logger.info(
+                    "[auto-recovery] recon still red (fails=%d, %ds/%ds) — waiting",
+                    fails, int(red_for), _AUTO_RECOVERY_GRACE_SEC,
+                )
+                continue
+            # Grace window elapsed — recover.
+            if now - _last_auto_recovery_at < _AUTO_RECOVERY_SLEEP_SEC:
+                # Belt-and-braces — we already healed on the last sweep,
+                # don't hammer upstream until the next wake.
+                continue
+            logger.warning(
+                "[auto-recovery] recon red for %ds — flushing /kpis caches and rebuilding from /orders",
+                int(red_for),
+            )
+            # 1. Flush in-memory + disk + Redis L2 (same as the admin button).
+            kpi_keys = [k for k in list(_kpi_stale_cache.keys()) if k and k[0] == "/kpis"]
+            for k in kpi_keys:
+                _kpi_stale_cache.pop(k, None)
+            try:
+                if _KPI_STALE_PATH.exists():
+                    _KPI_STALE_PATH.unlink()
+            except Exception as e:
+                logger.warning("[auto-recovery] disk unlink failed: %s", e)
+            _FETCH_CACHE.clear()
+            redis_cleared = 0
+            try:
+                from redis_cache import rc as _rc
+                redis_cleared = await _rc.delete_prefix("/kpis")
+            except Exception as e:
+                logger.warning("[auto-recovery] redis prefix delete failed: %s", e)
+            # 2. Rebuild today's KPIs from /orders and stash into the cache
+            # so the next user request gets the fresh value immediately.
+            try:
+                today_iso = datetime.now(timezone.utc).date().isoformat()
+                rebuilt = await _compute_kpis_from_orders(
+                    date_from=today_iso, date_to=today_iso,
+                    country=None, channel=None,
+                )
+                if rebuilt and (rebuilt.get("total_sales") or 0) > 0:
+                    cache_key = ("/kpis", today_iso, today_iso, "", "")
+                    rebuilt_payload = {**rebuilt, "stale": False, "source": "auto-recovery"}
+                    _kpi_stale_cache[cache_key] = (time.time(), rebuilt_payload)
+                    asyncio.create_task(_kpi_stale_save_async())
+                    logger.warning(
+                        "[auto-recovery] rebuild succeeded — total_sales=%s, orders=%s "
+                        "(flushed %d mem + %d redis keys)",
+                        rebuilt.get("total_sales"), rebuilt.get("total_orders"),
+                        len(kpi_keys), redis_cleared,
+                    )
+                else:
+                    logger.warning(
+                        "[auto-recovery] /orders rebuild returned 0 — "
+                        "leaving cache flushed and letting next user "
+                        "request go to upstream",
+                    )
+            except Exception as e:
+                logger.warning("[auto-recovery] /orders rebuild failed: %s", e)
+            _last_auto_recovery_at = now
+            # Reset the timer so we don't immediately re-trigger on the
+            # next sweep — give the rebuild a chance to show green.
+            _recon_red_since = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[auto-recovery] loop iteration failed: %s", e)
+            # Sleep a bit before retrying to avoid tight error loops.
+            await asyncio.sleep(60)
 

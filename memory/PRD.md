@@ -570,5 +570,17 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Admin endpoint `POST /api/admin/flush-kpi-cache`.** Hard-flushes the in-memory `_kpi_stale_cache`, deletes the disk-persisted blob, clears the in-process `_FETCH_CACHE`, and bulk-deletes every Redis L2 key under the `vivo:/kpis*` prefix via the new `RedisCache.delete_prefix()` helper. Returns counts cleared. Verified on preview: flushed 89 stale entries, next `/kpis` request immediately returned fresh `total_sales: 1,925,943`.
 - **UI hook in Recon panel.** Added a red **"⟳ Force-flush KPI cache"** button at the bottom of the `ReconciliationStatusPill` popover. One click → flushes server-side caches → toast confirms entries/keys cleared → page reloads with fresh data. Admins now have a one-click escape hatch when upstream BI poisons the cache.
 
+### Recent (Feb 2026 — Iter 66)
+- **Passive auto-recovery watcher.** Background coroutine `_auto_recovery_loop()` starts at FastAPI boot and wakes every 5 minutes:
+  1. Runs the same cross-page reconciliation logic as `/admin/reconciliation-check`.
+  2. On the FIRST red sweep records `_recon_red_since` and starts a 10-minute grace timer.
+  3. Once recon has been red continuously for ≥ 10 minutes (default `_AUTO_RECOVERY_GRACE_SEC=600`), it transparently does the same thing the admin **Force-flush** button does: clears the in-memory `_kpi_stale_cache`, deletes the disk-persisted blob, clears `_FETCH_CACHE`, bulk-deletes the Redis `vivo:/kpis*` prefix, and rebuilds today's KPIs from `/orders` — stashing the result back into the cache so the very next user request gets the fresh value.
+  4. Rate-limited to one heal per 5-minute sweep; on a green sweep `_recon_red_since` is cleared.
+- **State surfaced on Recon panel.** `/admin/reconciliation-check` now includes an `auto_recovery` block (`watching`, `red_since`, `red_for_sec`, `last_recovery_at`, `grace_sec`). The `ReconciliationStatusPill` popover renders one of three statuses below the polling line:
+  - `⚡ Auto-recovery watcher: armed` (default, green) — system healthy and being watched.
+  - `⏱ Auto-recovery in Xm (red Ym)` (amber) — countdown while inside the grace window.
+  - `⚡ Auto-recovery ran Xm ago` (emerald) — for 30 minutes after the watcher heals.
+- **Boot-time validation.** First restart with the iter-65 poisoned-cache rehydrate guard already dropped 1 empty `/kpis` entry from the on-disk blob — validating the fix on real-world poisoned data.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

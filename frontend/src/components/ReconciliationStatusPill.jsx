@@ -225,9 +225,33 @@ const ReconciliationStatusPill = () => {
           )}
 
           <div className="mt-3 pt-3 border-t border-border flex items-center justify-between gap-2">
-            <span className="text-[10.5px] text-muted">
-              Polls every 90 s · click outside to close
-            </span>
+            <div className="text-[10.5px] text-muted leading-tight">
+              <div>Polls every 90 s · click outside to close</div>
+              {data.auto_recovery && (() => {
+                const ar = data.auto_recovery;
+                if (ar.last_recovery_at && Date.now() / 1000 - ar.last_recovery_at < 1800) {
+                  const ago = Math.round(Date.now() / 1000 - ar.last_recovery_at);
+                  return (
+                    <div className="mt-0.5 text-emerald-700 font-semibold" data-testid="auto-recovery-status">
+                      ⚡ Auto-recovery ran {ago < 60 ? `${ago}s` : `${Math.round(ago/60)}m`} ago
+                    </div>
+                  );
+                }
+                if (ar.red_since && ar.red_for_sec > 0 && ar.red_for_sec < ar.grace_sec) {
+                  const remain = ar.grace_sec - ar.red_for_sec;
+                  return (
+                    <div className="mt-0.5 text-amber-700 font-semibold" data-testid="auto-recovery-status">
+                      ⏱ Auto-recovery in {Math.round(remain / 60)}m (red {Math.round(ar.red_for_sec / 60)}m)
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-0.5 text-emerald-700/70">
+                    ⚡ Auto-recovery watcher: armed
+                  </div>
+                );
+              })()}
+            </div>
             <button
               type="button"
               onClick={flushKpiCache}
