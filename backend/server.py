@@ -658,7 +658,25 @@ async def put_prefs(customer_id: str, payload: PreferencesIn, request: Request, 
 @api.get("/templates")
 async def list_templates(_: User = Depends(get_current_user)):
     docs = await db.message_templates.find({}, {"_id": 0}).sort("name", 1).to_list(200)
+    # Backfill bsp_status for legacy templates so the UI never sees undefined.
+    for d in docs:
+        d.setdefault("bsp_status", "draft")
     return docs
+
+
+@api.put("/templates/{template_id}/bsp-status")
+async def update_template_bsp_status(template_id: str, payload: Dict[str, str] = Body(...), user: User = Depends(require_manager)):
+    """Flip the WhatsApp BSP approval state for a template (draft → pending → approved / rejected)."""
+    status = (payload or {}).get("bsp_status", "draft")
+    if status not in {"draft", "pending", "approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="bsp_status must be draft|pending|approved|rejected")
+    res = await db.message_templates.update_one(
+        {"template_id": template_id},
+        {"$set": {"bsp_status": status, "bsp_status_updated_at": iso(now_utc()), "bsp_status_updated_by": user.name}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"template_id": template_id, "bsp_status": status}
 
 
 @api.post("/templates")

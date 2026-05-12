@@ -66,7 +66,10 @@ export default function Templates() {
           <Card key={t.template_id} className="vivo-card p-6 rounded-sm">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">{t.channel}</div>
+                <div className="eyebrow flex items-center gap-2">
+                  <span>{t.channel}</span>
+                  <BspStatusPill t={t} onChange={load} />
+                </div>
                 <h3 className="font-display text-xl mt-1">{t.name}</h3>
               </div>
               <div className="flex gap-1">
@@ -110,5 +113,50 @@ export default function Templates() {
         </DialogContent>
       </Dialog>
     </div>
+
+const BSP_STYLE = {
+  draft: { bg: "bg-zinc-100", text: "text-zinc-700", label: "Draft" },
+  pending: { bg: "bg-amber-100", text: "text-amber-800", label: "BSP pending" },
+  approved: { bg: "bg-emerald-100", text: "text-emerald-800", label: "BSP approved" },
+  rejected: { bg: "bg-red-100", text: "text-red-700", label: "BSP rejected" },
+};
+
+function BspStatusPill({ t, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const status = t.bsp_status || "draft";
+  const style = BSP_STYLE[status] || BSP_STYLE.draft;
+  const update = async (next) => {
+    setOpen(false);
+    try {
+      await api.put(`/templates/${t.template_id}/bsp-status`, { bsp_status: next });
+      onChange?.();
+    } catch { /* ignore */ }
+  };
+  return (
+    <div className="relative inline-block" data-testid={`bsp-pill-${t.template_id}`}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${style.bg} ${style.text} hover:opacity-80`}
+      >
+        {style.label}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-[var(--vivo-border)] rounded-sm shadow-md py-1 min-w-[140px]">
+          {Object.entries(BSP_STYLE).map(([k, v]) => (
+            <button
+              key={k}
+              onClick={() => update(k)}
+              className={`block w-full text-left px-3 py-1 text-xs hover:bg-[var(--vivo-bg)] ${k === status ? "font-semibold" : ""}`}
+              data-testid={`bsp-pill-${t.template_id}-${k}`}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
   );
 }

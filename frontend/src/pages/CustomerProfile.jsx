@@ -986,12 +986,29 @@ export default function CustomerProfile() {
             <div>
               <Label>Message</Label>
               <Textarea rows={5} value={msgBody} onChange={(e) => setMsgBody(e.target.value)} className="mt-1" data-testid="msg-body" />
-              <p className="text-xs text-[var(--vivo-muted)] mt-2">Provider: <strong>mock</strong> for v1 — every send is logged. Plug a real BSP via env later.</p>
+              <p className="text-xs text-[var(--vivo-muted)] mt-2">Logs locally · BSP wires in via env once approved. Or hand off to WhatsApp app below.</p>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="flex-wrap gap-2">
             <Button variant="ghost" onClick={() => setMsgOpen(false)}>Cancel</Button>
-            <Button onClick={sendMessage} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="msg-send">Send</Button>
+            {profile?.phone && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const digits = String(profile.phone || "").replace(/[^\d]/g, "");
+                  const number = digits.startsWith("0") ? `254${digits.slice(1)}` : digits;
+                  const url = `https://wa.me/${number}?text=${encodeURIComponent(msgBody)}`;
+                  // Log the outreach locally so it counts toward today's goal even if sent via wa.me
+                  sendMessage();
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="rounded-sm"
+                data-testid="msg-send-wa"
+              >
+                Open in WhatsApp →
+              </Button>
+            )}
+            <Button onClick={sendMessage} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="msg-send">Log send</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
