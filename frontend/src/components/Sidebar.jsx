@@ -59,6 +59,58 @@ const relativeTime = (d) => {
   return `${Math.floor(diff / 3600)}h ago`;
 };
 
+// Per-route prefetch map — when the user HOVERS a nav item, we fire the
+// page's main API call ahead of time. By the time they actually click,
+// the response is already in the 5-min response cache so the page
+// renders instantly. Bandwidth-cheap (most calls share the same
+// `_FETCH_CACHE` upstream) and silently ignored if the user moves on.
+// `_already` guard prevents hammering the cache when a user hovers
+// repeatedly over the same item.
+const _alreadyPrefetched = new Set();
+const _resetPrefetchTokens = () => _alreadyPrefetched.clear();
+const prefetchForRoute = (routeId, filters) => {
+  const token = `${routeId}|${filters?.dateFrom}|${filters?.dateTo}|${(filters?.countries || []).join(",")}|${(filters?.channels || []).join(",")}`;
+  if (_alreadyPrefetched.has(token)) return;
+  _alreadyPrefetched.add(token);
+  // Reset after 60 s so users hovering an hour later still trigger a
+  // refresh (the response cache itself TTLs at 5 min, but the in-process
+  // hint should not be sticky for longer than that).
+  setTimeout(() => _alreadyPrefetched.delete(token), 60_000);
+  const df = filters?.dateFrom;
+  const dt = filters?.dateTo;
+  const ctry = (filters?.countries || []).join(",");
+  const channel = (filters?.channels || []).join(",");
+  const p = { date_from: df, date_to: dt, ...(ctry ? { country: ctry } : {}), ...(channel ? { channel } : {}) };
+  try {
+    if (routeId === "overview") {
+      api.get("/bootstrap/overview", { params: p }).catch(() => {});
+    } else if (routeId === "customers") {
+      api.get("/customers", { params: p }).catch(() => {});
+    } else if (routeId === "products") {
+      api.get("/analytics/sor-all-styles", { params: { country: ctry || undefined } }).catch(() => {});
+    } else if (routeId === "inventory") {
+      api.get("/inventory", { params: { country: ctry || undefined } }).catch(() => {});
+    } else if (routeId === "locations") {
+      api.get("/locations").catch(() => {});
+      api.get("/sales-summary", { params: p }).catch(() => {});
+    } else if (routeId === "footfall") {
+      api.get("/footfall", { params: p }).catch(() => {});
+    } else if (routeId === "ibt") {
+      api.get("/analytics/ibt-suggestions", { params: p }).catch(() => {});
+    } else if (routeId === "replenishments") {
+      api.get("/analytics/replenishment-report", { params: { country: ctry || undefined } }).catch(() => {});
+    } else if (routeId === "re-order") {
+      api.get("/analytics/re-order-list", { params: { country: ctry || undefined } }).catch(() => {});
+    } else if (routeId === "allocations") {
+      api.get("/analytics/allocations", { params: { country: ctry || undefined } }).catch(() => {});
+    } else if (routeId === "targets") {
+      api.get("/analytics/annual-targets").catch(() => {});
+    } else if (routeId === "ceo-report") {
+      api.get("/analytics/ceo-report", { params: p }).catch(() => {});
+    }
+  } catch { /* prefetch is best-effort */ }
+};
+
 const UserMenu = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -148,7 +200,11 @@ const UserMenu = () => {
 };
 
 const TopNav = () => {
-  const { lastUpdated, refresh } = useFilters();
+  const { lastUpdated, refresh, dateFrom, dateTo, countries, channels } = useFilters();
+  const prefetchFilters = React.useMemo(
+    () => ({ dateFrom, dateTo, countries, channels }),
+    [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels)],
+  );
   const { user } = useAuth();
   const visibleTabs = React.useMemo(() => {
     const role = (user?.role || "").toLowerCase();
@@ -231,6 +287,8 @@ const TopNav = () => {
             to={t.to}
             end={t.to === "/"}
             data-testid={`nav-${t.id}`}
+            onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
+            onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
             className={({ isActive }) =>
               `flex items-center gap-1.5 px-2 xl:px-3 py-1.5 rounded-lg text-[11.5px] xl:text-[12.5px] font-medium transition-colors whitespace-nowrap ${
                 isActive

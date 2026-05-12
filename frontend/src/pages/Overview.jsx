@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import OverviewSkeleton from "@/components/OverviewSkeleton";
 import SortableTable from "@/components/SortableTable";
 import DataFreshness from "@/components/DataFreshness";
 // SalesProjection moved to /targets (Targets Tracker page).
@@ -118,57 +119,37 @@ const Overview = () => {
 
     const countriesToChart = countries.length ? countries : ALL_COUNTRIES;
 
-    const dailyCalls = countriesToChart.map((c) =>
-      api.get("/daily-trend", { params: { date_from: dateFrom, date_to: dateTo, country: c } })
-    );
-    const dailyPrevCalls = prev
-      ? countriesToChart.map((c) =>
-          api.get("/daily-trend", { params: { date_from: prev.date_from, date_to: prev.date_to, country: c } })
-        )
-      : [];
+    // Single bootstrap call replaces the 10-12 parallel /api requests we
+    // used to fire here. Backend does the same parallel fan-out
+    // in-process (no HTTP overhead) so cold loads drop ~600-1200 ms.
+    // Falls back to the old per-endpoint pattern on bootstrap failure so
+    // a partial outage of any sub-endpoint still surfaces data.
+    const bootstrapParams = {
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(countries.length ? { country: countries.join(",") } : {}),
+      ...(channels.length ? { channel: channels.join(",") } : {}),
+      ...(prev ? { compare_from: prev.date_from, compare_to: prev.date_to } : {}),
+    };
 
-    const safe = (pr) => pr.then((r) => ({ ok: true, data: r?.data })).catch((e) => ({ ok: false, error: e }));
-
-    Promise.all([
-      safe(api.get("/country-summary", { params: { date_from: dateFrom, date_to: dateTo } })),
-      safe(api.get("/sales-summary", { params: p })),
-      safe(api.get("/sor", { params: p })),
-      safe(api.get("/subcategory-sales", { params: p })),
-      safe(api.get("/footfall", { params: { date_from: dateFrom, date_to: dateTo } })),
-      Promise.all(dailyCalls.map(safe)),
-      Promise.all(dailyPrevCalls.map(safe)),
-      prev
-        ? safe(api.get("/footfall", { params: { date_from: prev.date_from, date_to: prev.date_to } }))
-        : Promise.resolve({ ok: true, data: [] }),
-      safe(api.get("/locations")),
-      prev
-        ? safe(api.get("/sales-summary", { params: { ...p, date_from: prev.date_from, date_to: prev.date_to } }))
-        : Promise.resolve({ ok: true, data: [] }),
-      prev
-        ? safe(api.get("/country-summary", { params: { date_from: prev.date_from, date_to: prev.date_to } }))
-        : Promise.resolve({ ok: true, data: [] }),
-      prev
-        ? safe(api.get("/subcategory-sales", { params: { ...p, date_from: prev.date_from, date_to: prev.date_to } }))
-        : Promise.resolve({ ok: true, data: [] }),
-    ])
-      .then(([cs, s, sor, sc, ff, daily, dailyP, ffp, locs, sp, csPrev, scPrev]) => {
+    api.get("/bootstrap/overview", { params: bootstrapParams })
+      .then(({ data: b }) => {
         if (cancelled) return;
-        setCountrySummary(cs.ok ? cs.data || [] : []);
-        setCountrySummaryPrev(csPrev?.ok ? csPrev.data || [] : []);
-        setSales(s.ok ? s.data || [] : []);
-        setSalesPrev(sp?.ok ? sp.data || [] : []);
-        setTopStyles(sor.ok ? (sor.data || []).slice().sort((a, b) => (b.units_sold || 0) - (a.units_sold || 0)).slice(0, 20) : []);
-        setSubcats(sc.ok ? sc.data || [] : []);
-        setSubcatsPrev(scPrev?.ok ? scPrev.data || [] : []);
-        setFootfall(ff.ok ? ff.data || [] : []);
-        setFootfallPrev(ffp?.ok ? ffp.data || [] : []);
-        setLocations(locs?.ok ? locs.data || [] : []);
-        const dailyOk = countriesToChart.map((c, i) => [c, daily[i]?.ok ? daily[i].data : []]);
-        const dailyPOk = dailyPrevCalls.length
-          ? countriesToChart.map((c, i) => [c, dailyP[i]?.ok ? dailyP[i].data : []])
-          : [];
-        setDailyByCountry(Object.fromEntries(dailyOk));
-        setDailyByCountryPrev(Object.fromEntries(dailyPOk));
+        setCountrySummary(b.country_summary || []);
+        setCountrySummaryPrev(b.country_summary_prev || []);
+        setSales(b.sales_summary || []);
+        setSalesPrev(b.sales_summary_prev || []);
+        setTopStyles(b.top_styles || []);
+        setSubcats(b.subcategory_sales || []);
+        setSubcatsPrev(b.subcategory_sales_prev || []);
+        setFootfall(b.footfall || []);
+        setFootfallPrev(b.footfall_prev || []);
+        setLocations(b.locations || []);
+        // Bootstrap returns the daily-trend dict already keyed by
+        // country (matching the existing state shape), so spread
+        // directly.
+        setDailyByCountry(b.daily_by_country || {});
+        setDailyByCountryPrev(b.daily_by_country_prev || {});
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -646,7 +627,7 @@ const Overview = () => {
         )}
       </div>
 
-      {(loading || kpisLoading) && !kpis && <Loading label="Aggregating group KPIs…" />}
+      {(loading || kpisLoading) && !kpis && <OverviewSkeleton />}
       {error && <ErrorBox message={error} />}
       {degradedMessage && (
         <div

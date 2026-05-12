@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 63 — Phase 1 Overview optimization (/api/bootstrap/overview) tested end-to-end. Backend: 15/16 functional tests pass + 2 informational skips. Bootstrap endpoint is correct across all 3 filter combos (no filter, country=Kenya, compare window), top_styles correctly clipped to 20, *_prev fields populated only when compare requested, countries_for_chart reflects country filter, warm response <8s. Frontend: Overview loads cleanly via bootstrap with ZERO legacy parallel calls observed (vs the 10-12 before) — 56 KPI cards + 7 charts render, no console errors, sidebar hover-prefetch on 8 nav items causes no crashes. Auth (admin/warehouse/viewer) still works. Products page renders style column. ONE FAILURE: viewer role can still GET /api/analytics/replenishment-report and receives 200 (should be 403) — this is the same RBAC gap reported in iter 62 and is NOT yet fixed.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/analytics/replenishment-report", "issue": "Viewer role still receives 200 OK (should be 403). Carried over from iter 62 — Depends(get_current_user) instead of role check. Reproducible: login viewer@vivofashiongroup.com, GET this endpoint → 200 with payload.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/analytics/replenishment-report (cold path)", "issue": "Cold call from public preview ingress can exceed 120s and surface as 502 'preview not responding' before completing. Frontend axios retry will mask this for the user, but server-side cache warming should ideally include this endpoint."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Overview country filter", "issue": "Could not locate a country-selector data-testid to script-toggle in test. The dropdown exists in the page (Country: All countries) but lacks a stable testid for E2E. Bootstrap-by-country was already verified via backend test (countries_for_chart=['Kenya']). Recommend adding data-testid='overview-country-select' or similar.", "affected_selectors": ["country dropdown in Overview filter bar"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_63_bootstrap_overview.py",
+    "/app/test_reports/pytest/iter63.xml"
+  ],
+  "action_items": [
+    "Apply admin/role gating to GET /api/analytics/replenishment-report — viewer currently reads it (200). Use Depends(require_warehouse_or_admin) or equivalent allowed-roles check.",
+    "Add data-testid='overview-country-select' (and channel/date selectors) to the Overview filter bar to make country-filter regressions automatable.",
+    "Consider extending the 5-min cache-warmer to include /api/analytics/replenishment-report current-month so that cold ingress doesn't yield 502 for the first warehouse user of the morning."
+  ],
+  "critical_code_review_comments": [
+    "bootstrap_overview at server.py:857 fans out via direct function calls (good — inherits stale-cache + retry). Uses asyncio.gather with _safe wrapper that swallows ALL exceptions to None — debuggability suffers if one sub-call breaks. Recommend logging the exception with a structured key (sub_call=country_summary) so silent partial failures don't hide bugs.",
+    "Bootstrap endpoint has NO auth dependency (no Depends(get_current_user)). All other Overview-source endpoints in this file appear to also be unauthenticated, so this is consistent — but worth confirming this is intentional (BI dashboards typically gate everything behind require_login).",
+    "Frontend retry interceptor in lib/api.js correctly limits to GET + max 2 retries + transient-only (5xx, ECONNABORTED, ERR_NETWORK). Logic LGTM. NOTE: it skips retry for NO_CACHE_PATHS (auth) which is correct. No infinite-loop risk observed.",
+    "_OVERVIEW_COUNTRIES is hardcoded — when a new market is onboarded the bootstrap endpoint will silently exclude it from the chart. Pull this list from locations() result or a config table.",
+    "Replenishment-report cold path is >120s from preview ingress — backend appears CPU-bound on the join. Profile and consider materializing into a periodic refresh table instead of live aggregation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_63_bootstrap_overview.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "94% (15/16 functional; 1 known RBAC regression; 2 skipped due to endpoint name not located)",
+    "frontend": "100% functional (Overview bootstrap-only, no legacy calls, no errors, hover-prefetch crash-free, login works)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 ; warehouse@vivofashiongroup.com / Warehouse!2026 ; viewer@vivofashiongroup.com / Viewer!2026",
+  "seed_data_creation": "None — read-only tests against existing data.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bootstrap endpoint is solid and the frontend is fully migrated (verified via network spy: 0 calls to /api/country-summary, /api/sales-summary, /api/sor, /api/footfall, /api/locations, /api/subcategory-sales, /api/daily-trend when Overview is loaded — only /api/bootstrap/overview fires). The viewer-can-read-replenishment-report RBAC gap is unchanged from iter 62; once main agent gates it, just re-run test_iteration_63_bootstrap_overview.py::TestReplenishmentRBAC::test_viewer_cannot_access_report. The Customers/Targets pages need >10s on cold paint — fixture should sleep at least 12s before asserting KPI text. The 2 SKIPPED tests (Customers Reactivation KPI and Targets MTD) could not auto-discover the right endpoint name; if main agent shares the exact path (e.g. /api/customers/kpis vs /api/analytics/customers-overview), the tests will activate.",
+  "rca_of_the_issue": "Bootstrap regression: NONE — endpoint produces the expected aggregated shape across all filter combos and the frontend Overview useEffect (Overview.jsx:112) now issues exactly ONE GET to /api/bootstrap/overview instead of 10-12 parallel calls (verified by request-spy in Playwright: bootstrap_calls=2 due to React strict-mode double-mount in dev, legacy_calls=0). Viewer-read-replenishment-report: route declared with Depends(get_current_user) only; spec requires warehouse_or_admin. Same root cause as iter 62; main agent did not address."
+}

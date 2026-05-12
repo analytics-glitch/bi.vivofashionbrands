@@ -145,6 +145,37 @@ api.interceptors.request.use((cfg) => {
   return cfg;
 });
 
+// Response-side retry interceptor. Transient upstream wobbles (network
+// blip, 5xx, ECONNABORTED) used to surface as "failed refresh" toasts
+// even though a single retry would have succeeded. We now retry up to
+// 2 extra times with exponential backoff (500ms → 1500ms) before
+// bubbling the error to the caller. Idempotent paths only (GET) — POST
+// / PATCH / DELETE never auto-retry to avoid double-writes.
+const _RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+api.interceptors.response.use(undefined, async (error) => {
+  const cfg = error?.config;
+  if (!cfg) return Promise.reject(error);
+  const method = (cfg.method || "get").toLowerCase();
+  if (method !== "get") return Promise.reject(error);
+  // Don't retry auth — those are sensitive and the FE already polls.
+  if (NO_CACHE_PATHS.some((p) => (cfg.url || "").includes(p))) {
+    return Promise.reject(error);
+  }
+  const status = error?.response?.status;
+  const transient =
+    !error.response ||  // network error
+    status === undefined ||
+    _RETRYABLE_STATUS.has(status) ||
+    error.code === "ECONNABORTED" ||
+    error.code === "ERR_NETWORK";
+  if (!transient) return Promise.reject(error);
+  cfg.__retryCount = (cfg.__retryCount || 0) + 1;
+  if (cfg.__retryCount > 2) return Promise.reject(error);
+  const backoff = cfg.__retryCount === 1 ? 500 : 1500;
+  await new Promise((res) => setTimeout(res, backoff));
+  return _origGet ? _origGet(cfg.url, cfg) : api.request(cfg);
+});
+
 // Wrap api.get to provide inflight de-dup + a 5-s response cache. The
 // wrapper computes the key from (url, params), then short-circuits with
 // the cached value, attaches to an existing inflight Promise, or fires a
