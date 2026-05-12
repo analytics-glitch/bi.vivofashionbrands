@@ -5228,7 +5228,12 @@ async def analytics_sor_new_styles_l10(
 _all_styles_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _ALL_STYLES_TTL = 60 * 30  # 30 minutes
 _sku_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_SKU_BREAKDOWN_TTL = 60 * 30  # 30 minutes — heavy /orders chunked fetch
+# 6 h TTL — the underlying /orders + inventory data only meaningfully
+# changes once a day (sales batch on early-morning Odoo sync). 30 min
+# was too aggressive: any user clicking a SOR-Report row after the
+# startup warmup expired hit a 30-60 s cold scan and got the
+# "Still computing — try again in a minute" persistent banner.
+_SKU_BREAKDOWN_TTL = 60 * 60 * 6  # 6 hours
 _curve_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _CURVE_TTL = 60 * 30  # 30 minutes — same fan-out cost as sor-all-styles
 # Per-style first / last sale dates from the last 180 days. Shared between
@@ -5779,7 +5784,11 @@ async def _compute_style_breakdowns(
 # helper above can reference them. Python lookups happen at call time so
 # the order doesn't matter — these will resolve to the dicts below.
 _location_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_LOCATION_BREAKDOWN_TTL = 60 * 30  # 30 minutes
+# Match the SKU breakdown TTL — same underlying scan, same freshness
+# requirements. 30 min was the previous value but caused the SOR
+# Report "Where did it sell?" pane to flap into "Still computing"
+# state between user sessions or after a server restart.
+_LOCATION_BREAKDOWN_TTL = 60 * 60 * 6  # 6 hours
 
 
 # ---------------------------------------------------------------------------
@@ -8081,11 +8090,16 @@ async def startup():
     #      recovers (no user action required).
     #   2. EVERY 5 MIN regardless of health: kick a small re-warm of
     #      the most-trafficked /kpis windows so the in-process cache
-    #      never goes truly cold. Even on a healthy system this keeps
-    #      first-paint sub-second because users hit a warm path.
+    #      never goes truly cold.
+    #   3. EVERY 4 H: re-warm the SOR drill-down caches (SKU + location
+    #      breakdown across all styles). Heavy — runs once per shift,
+    #      not per request, but keeps the "Where did it sell?" pane
+    #      instant for the entire working day.
     async def _recovery_loop():
         last_proactive = 0.0
-        PROACTIVE_INTERVAL = 300  # 5 minutes
+        last_drilldown = 0.0
+        PROACTIVE_INTERVAL = 300        # 5 minutes
+        DRILLDOWN_INTERVAL = 60 * 60 * 4  # 4 hours
         while True:
             try:
                 await asyncio.sleep(60)
@@ -8126,6 +8140,31 @@ async def startup():
                         logger.info("[warmer] proactive 5-min re-warm complete")
                     except Exception as e:
                         logger.warning(f"[warmer] proactive re-warm failed: {e}")
+                # SOR DRILL-DOWN RE-WARM PATH — every 4 h, regenerate
+                # the /style-sku-breakdown + /style-location-breakdown
+                # caches for every style in the SOR All-Styles list so
+                # row clicks stay instant for the whole working day.
+                # Heavy (Python sweep over ~1700 styles + their order
+                # rows) but completes in <30 s on a warm /orders cache.
+                if (time.time() - last_drilldown) >= DRILLDOWN_INTERVAL:
+                    last_drilldown = time.time()
+                    try:
+                        _ck = "all|||"
+                        _hit = _all_styles_cache.get(_ck)
+                        sor_rows = _hit[1] if _hit else None
+                        if isinstance(sor_rows, list) and sor_rows:
+                            style_names = [r.get("style_name") for r in sor_rows if r.get("style_name")]
+                            CHUNK = 500
+                            for i in range(0, len(style_names), CHUNK):
+                                await analytics_style_sku_breakdown_bulk(
+                                    style_names=",".join(style_names[i:i + CHUNK]),
+                                )
+                            logger.info(
+                                "[warmer] SOR drill-down re-warm complete (%d styles)",
+                                len(style_names),
+                            )
+                    except Exception as e:
+                        logger.warning(f"[warmer] SOR drill-down re-warm failed: {e}")
                 # RECOVERY PATH — only when something is actually wrong.
                 if not breakers_open and stale_age < 300:
                     continue  # nothing to do — system is healthy
