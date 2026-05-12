@@ -761,40 +761,53 @@ async def get_sor(
         base["product"] = brand
     cs = _split_csv(country)
     chs = _split_csv(channel)
-    if len(cs) <= 1 and len(chs) <= 1:
-        cfc = cs[0] if cs else None
-        data = await fetch("/sor", {
-            **base, "country": cfc, "channel": chs[0] if chs else None,
-        })
-        return sorted(data or [], key=lambda r: r.get("sor_percent") or 0, reverse=True)
-    # Multi-country fan-out — merge per-style.
-    results = await asyncio.gather(*[
-        fetch("/sor", {
-            **base,
-            **({"country": c} if c else {}),
-            **({"channel": ch} if ch else {}),
-        })
-        for c in (cs or [None])
-        for ch in (chs or [None])
-    ])
-    merged: Dict[str, Dict[str, Any]] = {}
-    for g in results:
-        for row in (g or []):
-            style = row.get("style_name")
-            if not style:
-                continue
-            if style not in merged:
-                merged[style] = {**row}
-            else:
-                for f in ("units_sold", "total_sales", "gross_sales", "current_stock"):
-                    merged[style][f] = (merged[style].get(f) or 0) + (row.get(f) or 0)
-    rows = list(merged.values())
-    for r in rows:
-        u = r.get("units_sold") or 0
-        st = r.get("current_stock") or 0
-        r["sor_percent"] = (u / (u + st) * 100) if (u + st) else 0
-    rows.sort(key=lambda r: r.get("sor_percent") or 0, reverse=True)
-    return rows
+    cache_key = ("/sor", date_from or "", date_to or "", country or "", channel or "", brand or "")
+    try:
+        if len(cs) <= 1 and len(chs) <= 1:
+            cfc = cs[0] if cs else None
+            data = await fetch("/sor", {
+                **base, "country": cfc, "channel": chs[0] if chs else None,
+            }, timeout_sec=15.0, max_attempts=3)
+            out = sorted(data or [], key=lambda r: r.get("sor_percent") or 0, reverse=True)
+            _kpi_stale_cache[cache_key] = (time.time(), out)
+            asyncio.create_task(_kpi_stale_save_async())
+            return out
+        # Multi-country fan-out — merge per-style.
+        results = await asyncio.gather(*[
+            fetch("/sor", {
+                **base,
+                **({"country": c} if c else {}),
+                **({"channel": ch} if ch else {}),
+            }, timeout_sec=15.0, max_attempts=3)
+            for c in (cs or [None])
+            for ch in (chs or [None])
+        ])
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for row in (g or []):
+                style = row.get("style_name")
+                if not style:
+                    continue
+                if style not in merged:
+                    merged[style] = {**row}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales", "current_stock"):
+                        merged[style][f] = (merged[style].get(f) or 0) + (row.get(f) or 0)
+        rows = list(merged.values())
+        for r in rows:
+            u = r.get("units_sold") or 0
+            st = r.get("current_stock") or 0
+            r["sor_percent"] = (u / (u + st) * 100) if (u + st) else 0
+        rows.sort(key=lambda r: r.get("sor_percent") or 0, reverse=True)
+        _kpi_stale_cache[cache_key] = (time.time(), rows)
+        asyncio.create_task(_kpi_stale_save_async())
+        return rows
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/sor upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 @api_router.get("/daily-trend")
@@ -3022,34 +3035,48 @@ async def get_subcategory_sales(
     base = {"date_from": date_from, "date_to": date_to}
     cs = [_norm_country(c) for c in _split_csv(country)]
     chs = _split_csv(channel)
-    if len(cs) <= 1 and len(chs) <= 1:
-        cfc = cs[0] if cs else None
-        data = await fetch("/subcategory-sales", {
-            **base, "country": cfc, "channel": chs[0] if chs else None,
-        })
-        return data or []
-    # Multi-country fan-out — merge per-subcategory.
-    results = await asyncio.gather(*[
-        fetch("/subcategory-sales", {
-            **base,
-            **({"country": c} if c else {}),
-            **({"channel": ch} if ch else {}),
-        })
-        for c in (cs or [None])
-        for ch in (chs or [None])
-    ])
-    merged: Dict[str, Dict[str, Any]] = {}
-    for g in results:
-        for r in (g or []):
-            key = r.get("subcategory")
-            if not key:
-                continue
-            if key not in merged:
-                merged[key] = {**r}
-            else:
-                for f in ("units_sold", "total_sales", "gross_sales", "orders"):
-                    merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
-    return sorted(merged.values(), key=lambda r: r.get("total_sales") or 0, reverse=True)
+    cache_key = ("/subcategory-sales", date_from or "", date_to or "", country or "", channel or "")
+    try:
+        if len(cs) <= 1 and len(chs) <= 1:
+            cfc = cs[0] if cs else None
+            data = await fetch("/subcategory-sales", {
+                **base, "country": cfc, "channel": chs[0] if chs else None,
+            }, timeout_sec=15.0, max_attempts=3)
+            out = data or []
+            _kpi_stale_cache[cache_key] = (time.time(), out)
+            asyncio.create_task(_kpi_stale_save_async())
+            return out
+        # Multi-country fan-out — merge per-subcategory.
+        results = await asyncio.gather(*[
+            fetch("/subcategory-sales", {
+                **base,
+                **({"country": c} if c else {}),
+                **({"channel": ch} if ch else {}),
+            }, timeout_sec=15.0, max_attempts=3)
+            for c in (cs or [None])
+            for ch in (chs or [None])
+        ])
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in (g or []):
+                key = r.get("subcategory")
+                if not key:
+                    continue
+                if key not in merged:
+                    merged[key] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales", "orders"):
+                        merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
+        out = sorted(merged.values(), key=lambda r: r.get("total_sales") or 0, reverse=True)
+        _kpi_stale_cache[cache_key] = (time.time(), out)
+        asyncio.create_task(_kpi_stale_save_async())
+        return out
+    except HTTPException as e:
+        cached = _kpi_stale_cache.get(cache_key)
+        if cached and (time.time() - cached[0] < _KPI_STALE_TTL):
+            logger.warning(f"/subcategory-sales upstream {e.status_code} — serving stale (age={int(time.time()-cached[0])}s)")
+            return cached[1]
+        raise
 
 
 # Country buckets used by the Category × Country matrix. The upstream
