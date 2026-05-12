@@ -23,7 +23,7 @@ VIVO_API_BASE = os.environ.get(
 
 from auth import (  # noqa: E402
     auth_router, admin_router, ActivityLogMiddleware,
-    get_current_user, seed_admin, db, User, require_admin,
+    get_current_user, seed_admin, db, User, require_admin, require_page,
 )
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
@@ -6484,6 +6484,7 @@ async def analytics_replenishment_report(
     owners: Optional[str] = None,  # comma-separated names — if provided,
                                    # overrides the default OWNERS list and
                                    # distributes lines equally across them.
+    user: User = Depends(require_page("replenishments")),
 ):
     """Daily replenishment report — returns rows that need a top-up today.
 
@@ -6924,7 +6925,7 @@ async def _overlay_repl_state(payload: Dict[str, Any], df: date, dt: date):
 @api_router.post("/analytics/replenishment-report/mark")
 async def replenishment_mark(
     payload: Dict[str, Any] = Body(...),
-    user=Depends(get_current_user),
+    user=Depends(require_page("replenishments")),
 ):
     """Mark a single replenishment row as done (or not). Body:
     {date_from, date_to, pos_location, barcode, replenished,
@@ -8105,7 +8106,11 @@ async def startup():
                                        - timedelta(days=30)).isoformat()
                         # Cheap re-warm — only the windows users actually
                         # land on. /kpis is the busiest, then country
-                        # summary + sales summary.
+                        # summary + sales summary. Replenishment is also
+                        # included so the first warehouse-role user of
+                        # the morning doesn't hit a cold 60-90s scan
+                        # (the cold path goes through ingress with a
+                        # 120s limit that has timed out in past iters).
                         await asyncio.gather(
                             get_kpis(date_from=today, date_to=today),
                             get_kpis(date_from=mtd_from, date_to=today),
@@ -8115,6 +8120,7 @@ async def startup():
                             get_sales_summary(date_from=today, date_to=today),
                             get_sales_summary(date_from=mtd_from, date_to=today),
                             get_footfall(date_from=mtd_from, date_to=today),
+                            analytics_replenishment_report(),
                             return_exceptions=True,
                         )
                         logger.info("[warmer] proactive 5-min re-warm complete")

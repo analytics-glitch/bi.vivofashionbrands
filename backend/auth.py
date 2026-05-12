@@ -184,6 +184,23 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_page(page_id: str):
+    """Factory that returns a FastAPI dependency enforcing that the
+    current user has access to the given page (per ROLE_PAGES). Use
+    on any endpoint that surfaces page-scoped data so viewer/store-
+    manager roles can't bypass the FE nav and hit the API directly.
+    """
+    async def _dep(user: User = Depends(get_current_user)) -> User:
+        allowed = pages_for(user)
+        if page_id not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Role '{user.role}' does not have access to '{page_id}'",
+            )
+        return user
+    return _dep
+
+
 async def _create_session(user_id: str) -> str:
     token = uuid.uuid4().hex + uuid.uuid4().hex
     await db.user_sessions.insert_one({
