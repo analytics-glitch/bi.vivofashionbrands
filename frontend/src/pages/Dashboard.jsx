@@ -79,10 +79,14 @@ export default function Dashboard() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-10">
+      <DailyGoalCard me={me} loading={loading} />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-6">
         <KPI label="Customers contacted · 7d" value={loading ? "—" : formatNumber(me?.customers_contacted_this_week || 0)} testid="kpi-customers-contacted" />
         <KPI label="Messages sent · 7d" value={loading ? "—" : formatNumber(me?.messages_this_week || 0)} testid="kpi-messages" />
-        <KPI label="Open follow-ups" value={loading ? "—" : formatNumber(me?.open_tasks || 0)} sub={me?.overdue_tasks ? `${me.overdue_tasks} overdue` : "All on track"} testid="kpi-tasks" />
+        <Link to="/follow-ups" className="block" data-testid="kpi-tasks-link">
+          <KPI label="Open follow-ups" value={loading ? "—" : formatNumber(me?.open_tasks || 0)} sub={me?.overdue_tasks ? `${me.overdue_tasks} overdue · view` : "view all"} testid="kpi-tasks" />
+        </Link>
         <KPI label="Recent notes" value={loading ? "—" : formatNumber(me?.recent_notes?.length || 0)} testid="kpi-notes" />
       </div>
 
@@ -199,6 +203,74 @@ export default function Dashboard() {
         )}
       </Card>
     </div>
+  );
+}
+
+
+function DailyGoalCard({ me, loading }) {
+  const [editing, setEditing] = React.useState(false);
+  const [goalInput, setGoalInput] = React.useState(5);
+
+  React.useEffect(() => {
+    if (me?.daily_goal) setGoalInput(me.daily_goal);
+  }, [me?.daily_goal]);
+
+  const goal = me?.daily_goal || 5;
+  const done = me?.contacts_today || 0;
+  const pct = Math.min(100, Math.round((done / Math.max(1, goal)) * 100));
+
+  const save = async () => {
+    try {
+      const r = await api.put("/dashboard/me/goal", { daily_goal: parseInt(goalInput, 10) });
+      window.location.reload();
+      return r;
+    } catch { /* ignore */ }
+  };
+
+  return (
+    <Card className="vivo-card mt-10 p-6 rounded-sm border-l-4 border-l-[var(--vivo-orange,#ED7C2A)]" data-testid="daily-goal-card">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div className="eyebrow">Today's outreach goal</div>
+          <h3 className="font-display text-xl mt-1">
+            {loading ? "—" : <>{done} of {goal} customers contacted</>}
+            {!loading && done >= goal && <span className="ml-2 text-sm text-emerald-700 font-normal">🎉 goal met</span>}
+          </h3>
+        </div>
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={goalInput}
+                onChange={(e) => setGoalInput(e.target.value)}
+                className="w-20 h-10 px-3 border border-[var(--vivo-border)] rounded-sm font-mono-num text-right"
+                data-testid="daily-goal-input"
+              />
+              <Button onClick={save} className="h-10 rounded-sm bg-[var(--vivo-navy)] text-white" data-testid="daily-goal-save">Save</Button>
+              <Button onClick={() => setEditing(false)} variant="ghost" className="h-10 rounded-sm">Cancel</Button>
+            </>
+          ) : (
+            <Button onClick={() => setEditing(true)} variant="outline" className="h-10 rounded-sm" data-testid="daily-goal-edit">Adjust goal</Button>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 h-2 bg-[var(--vivo-bg)] rounded-full overflow-hidden">
+        <div
+          className="h-full transition-all"
+          style={{ width: `${pct}%`, backgroundColor: pct >= 100 ? "#0F4D31" : "#ED7C2A" }}
+          data-testid="daily-goal-progress"
+        />
+      </div>
+      {!loading && (me?.messages_this_week === 0 && me?.customers_contacted_this_week === 0) && (
+        <p className="mt-3 text-xs text-[var(--vivo-muted)]">
+          Counters show <strong>0</strong> because no outreach has been logged yet via Vivo CRM. They'll populate as soon as
+          associates send messages here — Shopify/Odoo purchase data is unaffected.
+        </p>
+      )}
+    </Card>
   );
 }
 

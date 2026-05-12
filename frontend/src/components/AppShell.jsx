@@ -28,6 +28,7 @@ const NAV = [
   { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true },
   { to: "/audit", label: "Audit", icon: ShieldCheck, testid: "nav-audit", manager: true },
+  { to: "/data-quality", label: "Data quality", icon: ShieldCheck, testid: "nav-data-quality", manager: true },
 ];
 
 export default function AppShell() {

@@ -150,6 +150,10 @@ class PreferencesIn(BaseModel):
     brands: Optional[List[str]] = None
     dob: Optional[str] = None  # YYYY-MM-DD or MM-DD
     key_dates: Optional[List[Dict[str, str]]] = None  # [{label, date or date_md}]
+    colour_palette: Optional[List[str]] = None  # e.g. ["mustard", "navy", "ivory"]
+    style_avoids: Optional[List[str]] = None  # e.g. ["short hemlines", "polyester"]
+    preferred_store: Optional[str] = None  # home branch
+    preferred_channel: Optional[str] = None  # whatsapp | sms | email | in-store
 
 
 class TemplateIn(BaseModel):
@@ -853,7 +857,7 @@ async def get_audit(limit: int = 100, _: User = Depends(require_manager)):
 @api.get("/dashboard/me")
 async def dashboard_me(user: User = Depends(get_current_user)):
     week_ago = (now_utc() - timedelta(days=7)).isoformat()
-    today = now_utc().date().isoformat()
+    today_iso_str = now_utc().date().isoformat()
     msgs_week = await db.message_logs.count_documents({"sender_user_id": user.user_id, "sent_at": {"$gte": week_ago}})
     customers_week = await db.message_logs.distinct("customer_id", {"sender_user_id": user.user_id, "sent_at": {"$gte": week_ago}})
     tasks_open = await db.customer_tasks.find(
@@ -864,7 +868,17 @@ async def dashboard_me(user: User = Depends(get_current_user)):
         {"author_user_id": user.user_id},
         {"_id": 0},
     ).sort("created_at", -1).to_list(10)
-    overdue = [t for t in tasks_open if t.get("due_date") and t["due_date"] < today]
+    overdue = [t for t in tasks_open if t.get("due_date") and t["due_date"] < today_iso_str]
+
+    # Daily outreach goal — per-user setting, default 5
+    goal_doc = await db.outreach_goals.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    daily_goal = int(goal_doc.get("daily_goal") or 5)
+    today_start = now_utc().date().isoformat()
+    contacts_today = len(await db.message_logs.distinct(
+        "customer_id",
+        {"sender_user_id": user.user_id, "sent_at": {"$gte": today_start}},
+    ))
+
     return {
         "messages_this_week": msgs_week,
         "customers_contacted_this_week": len(customers_week),
@@ -872,7 +886,22 @@ async def dashboard_me(user: User = Depends(get_current_user)):
         "overdue_tasks": len(overdue),
         "tasks": tasks_open,
         "recent_notes": notes_recent,
+        "daily_goal": daily_goal,
+        "contacts_today": contacts_today,
+        "goal_progress_pct": round(min(contacts_today, daily_goal) * 100.0 / daily_goal, 0) if daily_goal else 0,
     }
+
+
+@api.put("/dashboard/me/goal")
+async def update_outreach_goal(payload: Dict[str, int] = Body(...), user: User = Depends(get_current_user)):
+    goal = int(payload.get("daily_goal") or 5)
+    goal = max(1, min(50, goal))
+    await db.outreach_goals.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"user_id": user.user_id, "daily_goal": goal, "updated_at": iso(now_utc())}},
+        upsert=True,
+    )
+    return {"daily_goal": goal}
 
 
 @api.get("/dashboard/manager")
@@ -913,13 +942,14 @@ async def dashboard_manager(_: User = Depends(require_manager)):
 # --------------------------------------------------------------------------- #
 
 DEFAULT_TEMPLATES = [
+    # --- English (13) ---
     {
         "name": "Welcome - new visitor",
         "channel": "whatsapp",
         "body": "Hi {customer_name}, this is {associate_name} from Vivo. Lovely to meet you today — let me know if you'd like me to set anything aside for your next visit.",
     },
     {
-        "name": "New Arrival in your size",
+        "name": "New arrival in your size",
         "channel": "whatsapp",
         "body": "Hi {customer_name}, {associate_name} here from Vivo. We just received {item_name} in your size — would you like me to hold it for you?",
     },
@@ -929,28 +959,101 @@ DEFAULT_TEMPLATES = [
         "body": "Thank you for your purchase, {customer_name}! Reply STOP to opt out. — Vivo Fashion",
     },
     {
+        "name": "Post-purchase follow-up (7 days)",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, hope you're loving the {item_name}! Any feedback on the fit or styling? I'd love to hear how it's working out. — {associate_name}, Vivo",
+    },
+    {
         "name": "Win-back - 90 days lapsed",
         "channel": "whatsapp",
         "body": "Hi {customer_name}, we miss you at Vivo. Our new {collection} collection just landed — pop in and I'll show you the pieces I have in mind for you. — {associate_name}",
+    },
+    {
+        "name": "Birthday - milestone outreach",
+        "channel": "whatsapp",
+        "body": "Happy birthday, {customer_name}! Wishing you a wonderful year ahead. Drop into any Vivo store this month for a little birthday treat from us. — {associate_name}",
+    },
+    {
+        "name": "Restock alert",
+        "channel": "whatsapp",
+        "body": "Great news {customer_name} — {item_name} is back in stock in your size. I've held one aside for you for 48 hours, just say the word. — {associate_name}",
+    },
+    {
+        "name": "Lookbook share",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, I put together a few pieces I think you'll love based on what you've been wearing. Take a look: {lookbook_link} — {associate_name}, Vivo",
+    },
+    {
+        "name": "VIP exclusive preview",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, as one of our VIPs you get first look at {collection} — quietly, before it goes public. Want me to set aside your favourites? — {associate_name}",
+    },
+    {
+        "name": "Return / exchange follow-up",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, I wanted to follow up on the return — was everything sorted to your satisfaction? Happy to help find an alternative if useful. — {associate_name}",
+    },
+    {
+        "name": "Event invite - in-store",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, we're hosting a styling evening at {store} on {date}. Bubbly + first picks of the new collection — would love to see you there. RSVP just by replying. — {associate_name}",
+    },
+    {
+        "name": "Tier upgrade - new VIP",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, you're officially one of our top customers this year — thank you. We've moved you into the VIP circle: priority styling, advance previews, and a little surprise on your next visit. — {associate_name}, Vivo",
+    },
+    {
+        "name": "Referral request",
+        "channel": "whatsapp",
+        "body": "Hi {customer_name}, thanks again for being part of the Vivo family. If you've a friend who'd love what we do, send them our way — we'll look after them. — {associate_name}",
+    },
+
+    # --- Swahili variants for the top 5 ---
+    {
+        "name": "Karibu - mteja mpya (SW)",
+        "channel": "whatsapp",
+        "body": "Habari {customer_name}, mimi ni {associate_name} kutoka Vivo. Asante kwa kutembelea leo — nijulishe ikiwa ungependa nikuwekee chochote kabla ya ziara yako ijayo.",
+    },
+    {
+        "name": "Bidhaa mpya kwa saizi yako (SW)",
+        "channel": "whatsapp",
+        "body": "Habari {customer_name}, mimi {associate_name} kutoka Vivo. Tumeingiza {item_name} katika saizi yako — ungependa nikuwekee?",
+    },
+    {
+        "name": "Asante baada ya ununuzi (SW)",
+        "channel": "sms",
+        "body": "Asante kwa ununuzi wako, {customer_name}! Jibu STOP kuondoa. — Vivo Fashion",
+    },
+    {
+        "name": "Tumekukosa - siku 90 (SW)",
+        "channel": "whatsapp",
+        "body": "Habari {customer_name}, tumekukosa Vivo. Mkusanyiko mpya wa {collection} umewasili — tembelea na nitakuonyesha vipande nilivyofikiria kwako. — {associate_name}",
+    },
+    {
+        "name": "Siku ya kuzaliwa (SW)",
+        "channel": "whatsapp",
+        "body": "Heri ya siku ya kuzaliwa, {customer_name}! Tunakutakia mwaka mzuri sana. Tembelea Vivo wakati wa mwezi huu kwa zawadi ndogo. — {associate_name}",
     },
 ]
 
 
 @app.on_event("startup")
 async def startup():
-    if await db.message_templates.count_documents({}) == 0:
-        seeded = []
-        for t in DEFAULT_TEMPLATES:
-            seeded.append({
-                "template_id": new_id("tpl_"),
-                "name": t["name"],
-                "channel": t["channel"],
-                "body": t["body"],
-                "created_by": "system",
-                "created_at": iso(now_utc()),
-            })
+    # Idempotent template seed — only insert names that don't yet exist.
+    existing_names = set(await db.message_templates.distinct("name"))
+    to_seed = [t for t in DEFAULT_TEMPLATES if t["name"] not in existing_names]
+    if to_seed:
+        seeded = [{
+            "template_id": new_id("tpl_"),
+            "name": t["name"],
+            "channel": t["channel"],
+            "body": t["body"],
+            "created_by": "system",
+            "created_at": iso(now_utc()),
+        } for t in to_seed]
         await db.message_templates.insert_many([dict(d) for d in seeded])
-        logger.info("Seeded %d default message templates", len(seeded))
+        logger.info("Seeded %d new message templates", len(seeded))
 
     # Best-effort weekly auto-task run (only fires on Monday + idempotent per ISO week)
     try:
@@ -1345,13 +1448,6 @@ async def facebook_sync(request: Request, payload: Optional[Dict[str, str]] = Bo
     return aggregated
 
 
-# --------------------------------------------------------------------------- #
-# Mount router + middleware                                                   #
-# --------------------------------------------------------------------------- #
-
-app.include_router(api)
-
-
 @api.get("/dashboard/attribution")
 async def attribution(days: int = 30, _: User = Depends(require_manager)):
     """Crude clienteling-attribution KPI: customers messaged in window who
@@ -1592,6 +1688,307 @@ async def run_anniversaries(request: Request, user: User = Depends(require_manag
 
 
 # --------------------------------------------------------------------------- #
+# v2 — Vivo CRM Dev Feedback responses                                        #
+# --------------------------------------------------------------------------- #
+
+
+@api.get("/customers/{customer_id}/timeline")
+async def customer_timeline(customer_id: str, _: User = Depends(get_current_user)):
+    """Unified chronological feed across purchases, messages, notes, tasks and
+    social mentions for one customer. Newest first."""
+    events: List[Dict[str, Any]] = []
+
+    products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    products = _filter_products(products)
+    for p in products:
+        if p.get("last_bought"):
+            events.append({
+                "kind": "purchase",
+                "ts": str(p["last_bought"]),
+                "label": p.get("style_name") or p.get("product_title") or "Purchase",
+                "detail": f"KES {int(p.get('total_spend') or 0):,} · {p.get('units_bought') or 1} unit(s)",
+                "amount_kes": float(p.get("total_spend") or 0),
+            })
+
+    for m in await db.message_logs.find({"customer_id": customer_id}, {"_id": 0}).to_list(500):
+        events.append({
+            "kind": "message",
+            "ts": m.get("sent_at"),
+            "label": f"{(m.get('channel') or 'whatsapp').title()} · by {m.get('sender_name')}",
+            "detail": (m.get("body") or "")[:180],
+        })
+
+    for n in await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).to_list(500):
+        events.append({
+            "kind": "note",
+            "ts": n.get("created_at"),
+            "label": f"Note · {n.get('author_name')}",
+            "detail": (n.get("body") or "")[:300],
+        })
+
+    for t in await db.customer_tasks.find({"customer_id": customer_id}, {"_id": 0}).to_list(500):
+        events.append({
+            "kind": "task",
+            "ts": t.get("created_at"),
+            "label": f"Follow-up: {t.get('title')}" + (" · ✓ done" if t.get("completed") else ""),
+            "detail": (t.get("notes") or "") + (f" · due {t['due_date']}" if t.get("due_date") else ""),
+        })
+
+    for s in await db.social_feedback.find({"customer_id": customer_id}, {"_id": 0}).to_list(200):
+        events.append({
+            "kind": "social",
+            "ts": s.get("posted_at"),
+            "label": f"{(s.get('platform') or 'social').title()} · {s.get('sentiment') or 'neutral'}",
+            "detail": (s.get("body") or "")[:300],
+        })
+
+    events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    return {"customer_id": customer_id, "events": events[:200]}
+
+
+@api.get("/customers/{customer_id}/churn-reasoning")
+async def churn_reasoning(customer_id: str, _: User = Depends(get_current_user)):
+    """Plain-English reasoning behind the AI risk priority for one customer."""
+    cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0})
+    if not cached:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(str(s)[:10])
+        except Exception:
+            return None
+
+    first = _parse(cached.get("first_purchase_date"))
+    last = _parse(cached.get("last_purchase_date"))
+    orders = int(cached.get("total_orders") or 0)
+    tier = cached.get("rfm_tier") or "new"
+    now_dt = now_utc().replace(tzinfo=None)
+
+    days_since_last = (now_dt - last).days if last else None
+    avg_cadence = None
+    if first and last and orders >= 2:
+        avg_cadence = max(1, (last - first).days) / max(1, orders - 1)
+
+    score = 0.0
+    reasons: List[str] = []
+    if days_since_last is not None and days_since_last > 365:
+        score += 60
+        reasons.append(f"{days_since_last} days since last purchase")
+    elif days_since_last is not None and days_since_last > 180:
+        score += 40
+        reasons.append(f"{days_since_last} days since last purchase")
+    elif avg_cadence and days_since_last and days_since_last > avg_cadence * 1.5:
+        score += 30
+        reasons.append(f"{days_since_last}d since last, vs. typical {avg_cadence:.0f}d cadence")
+    if tier in ("at_risk", "churned"):
+        score += 20
+        reasons.append(f"RFM tier currently {tier.replace('_', ' ')}")
+    if orders == 1 and days_since_last and days_since_last > 60:
+        score += 15
+        reasons.append("never placed a 2nd order")
+    contacted_30 = await db.message_logs.count_documents({
+        "customer_id": customer_id,
+        "sent_at": {"$gte": (now_utc() - timedelta(days=30)).isoformat()},
+    })
+    if contacted_30 == 0:
+        score += 10
+        reasons.append("no outreach in the last 30 days")
+
+    score = max(0.0, min(100.0, score))
+    band = "high" if score >= 60 else "medium" if score >= 30 else "low"
+    return {
+        "customer_id": customer_id,
+        "risk_score": round(score, 1),
+        "risk_band": band,
+        "reasons": reasons,
+        "days_since_last_purchase": days_since_last,
+        "avg_cadence_days": round(avg_cadence, 0) if avg_cadence else None,
+        "rfm_tier": tier,
+    }
+
+
+def _slim_customer(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: r.get(k) for k in ("customer_id", "customer_name", "city", "rfm_tier", "total_sales", "total_orders", "last_purchase_date")}
+
+
+@api.get("/customers/duplicates")
+async def find_duplicates(_: User = Depends(require_manager)):
+    """Likely duplicate customers (same phone, or same normalised name)."""
+    rows = await db.customer_cache.find({}, {"_id": 0}).to_list(50000)
+    by_phone: Dict[str, List[Dict[str, Any]]] = {}
+    by_name: Dict[str, List[Dict[str, Any]]] = {}
+
+    for r in rows:
+        ph_digits = "".join(c for c in str(r.get("phone") or r.get("phone_number") or "") if c.isdigit())
+        ph = ph_digits[-9:] if len(ph_digits) >= 9 else ""
+        if ph:
+            by_phone.setdefault(ph, []).append(r)
+        nm = " ".join((str(r.get("customer_name") or "")).lower().split())
+        if nm and len(nm) > 4:
+            by_name.setdefault(nm, []).append(r)
+
+    groups: List[Dict[str, Any]] = []
+    seen_pairs: set = set()
+    for ph, lst in by_phone.items():
+        if len(lst) < 2:
+            continue
+        key = tuple(sorted(r.get("customer_id") for r in lst))
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        groups.append({"match_on": "phone", "value": ph, "customers": [_slim_customer(r) for r in lst]})
+    for nm, lst in by_name.items():
+        if len(lst) < 2:
+            continue
+        key = tuple(sorted(r.get("customer_id") for r in lst))
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        groups.append({"match_on": "name", "value": nm.title(), "customers": [_slim_customer(r) for r in lst]})
+
+    groups.sort(key=lambda g: -len(g["customers"]))
+    return {"groups": groups[:100], "potential_duplicates": sum(len(g["customers"]) for g in groups)}
+
+
+@api.get("/bi/upt")
+async def bi_upt(date_from: str, date_to: str, country: Optional[str] = None, channel: Optional[str] = None, _: User = Depends(require_manager)):
+    """Units per transaction across BI /orders."""
+    orders = await bi_get("/orders", {"date_from": date_from, "date_to": date_to, "country": country, "channel": channel, "limit": 10000}) or []
+    if not isinstance(orders, list) or not orders:
+        return {"upt": 0, "total_orders": 0, "total_units": 0}
+    total_units = sum(int(o.get("units") or o.get("quantity") or 1) for o in orders)
+    total_orders = len(orders)
+    return {"upt": round(total_units / total_orders, 2) if total_orders else 0, "total_orders": total_orders, "total_units": total_units}
+
+
+@api.get("/bi/return-rate-trend")
+async def bi_return_rate_trend(_: User = Depends(require_manager)):
+    """Return-rate buckets at 7d / 30d / 90d windows."""
+    today = now_utc().date()
+    out = []
+    for label, days in (("7d", 7), ("30d", 30), ("90d", 90)):
+        dfrom = (today - timedelta(days=days)).isoformat()
+        kpi = await bi_get("/kpis", {"date_from": dfrom, "date_to": today.isoformat()}) or {}
+        out.append({
+            "window": label,
+            "return_rate_pct": float(kpi.get("return_rate") or kpi.get("return_rate_pct") or 0),
+            "returns": int(kpi.get("returns") or 0),
+            "orders": int(kpi.get("total_orders") or 0),
+        })
+    return {"windows": out}
+
+
+@api.get("/bi/channel-attribution")
+async def bi_channel_attribution(days: int = 90, _: User = Depends(require_manager)):
+    """Acquisition-channel breakdown for first orders in the window."""
+    date_from = (now_utc().date() - timedelta(days=days)).isoformat()
+    orders = await bi_get("/orders", {"date_from": date_from, "date_to": now_utc().date().isoformat(), "limit": 5000}) or []
+    if not isinstance(orders, list):
+        orders = []
+    first_orders: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        cid = o.get("customer_id")
+        if not cid:
+            continue
+        existing = first_orders.get(cid)
+        if not existing or str(o.get("order_date") or "") < str(existing.get("order_date") or ""):
+            first_orders[cid] = o
+    from collections import defaultdict as _dd
+    by_channel: Dict[str, Dict[str, Any]] = _dd(lambda: {"customers": 0, "revenue_kes": 0.0})
+    for o in first_orders.values():
+        ch = (o.get("channel") or o.get("source") or o.get("sales_channel") or "Unspecified")
+        by_channel[ch]["customers"] += 1
+        by_channel[ch]["revenue_kes"] += float(o.get("net") or o.get("total") or 0)
+    rows = sorted(
+        [{"channel": k, **v, "revenue_kes": round(v["revenue_kes"], 0)} for k, v in by_channel.items()],
+        key=lambda r: -r["customers"],
+    )
+    return {"window_days": days, "rows": rows, "total_new_customers": len(first_orders)}
+
+
+@api.get("/templates/performance")
+async def template_performance(_: User = Depends(require_manager)):
+    """Per-template sent count + crude response rate (purchase within window after send)."""
+    tpls = await db.message_templates.find({}, {"_id": 0}).to_list(200)
+    if not tpls:
+        return {"templates": []}
+    cutoff_30d = (now_utc() - timedelta(days=30)).isoformat()
+    out = []
+    for tpl in tpls:
+        sent = await db.message_logs.find(
+            {"template_id": tpl.get("template_id"), "sent_at": {"$gte": cutoff_30d}},
+            {"_id": 0, "customer_id": 1, "sent_at": 1},
+        ).to_list(500)
+        responded = 0
+        for s in sent:
+            cached = await db.customer_cache.find_one({"customer_id": s.get("customer_id")}, {"_id": 0, "last_purchase_date": 1})
+            if cached and cached.get("last_purchase_date") and str(cached["last_purchase_date"])[:10] >= str(s.get("sent_at"))[:10]:
+                responded += 1
+        out.append({
+            "template_id": tpl.get("template_id"),
+            "name": tpl.get("name"),
+            "channel": tpl.get("channel"),
+            "sent_30d": len(sent),
+            "response_30d": responded,
+            "response_rate_pct": round(responded * 100.0 / len(sent), 1) if sent else 0.0,
+        })
+    out.sort(key=lambda r: -r["sent_30d"])
+    return {"templates": out}
+
+
+@api.post("/dropoff/winback-bulk")
+async def dropoff_winback_bulk(payload: Dict[str, Any] = Body(...), request: Request = None, user: User = Depends(require_manager)):
+    """Create personalised win-back follow-ups for HIGH-risk new customers."""
+    band = (payload.get("band") or "high").lower()
+    limit = int(payload.get("limit") or 25)
+    template_id = payload.get("template_id")
+    days = int(payload.get("days") or 90)
+    cutoff = (now_utc() - timedelta(days=days)).isoformat()
+    new_rows = await db.customer_cache.find({"first_purchase_date": {"$gte": cutoff}}, {"_id": 0}).to_list(10000)
+
+    tpl_body = ""
+    if template_id:
+        tpl = await db.message_templates.find_one({"template_id": template_id}, {"_id": 0})
+        if tpl:
+            tpl_body = tpl.get("body") or ""
+    if not tpl_body:
+        tpl_body = "Hi {customer_name}, missed seeing you at Vivo. I've some pieces I think you'd love — pop in this week and I'll set them aside. — {associate_name}"
+
+    created = 0
+    for r in new_rows[:limit]:
+        body = tpl_body.format(
+            customer_name=(r.get("customer_name") or "there").split()[0],
+            associate_name=user.name or "Vivo",
+            item_name="our new pieces",
+            collection="latest",
+            store=r.get("city") or "Vivo",
+            lookbook_link="",
+            date="",
+        )
+        await db.customer_tasks.insert_one({
+            "task_id": new_id(),
+            "customer_id": r.get("customer_id"),
+            "customer_name": r.get("customer_name"),
+            "assignee_user_id": user.user_id,
+            "assignee_name": user.name,
+            "title": f"Win-back outreach ({band})",
+            "notes": f"AI-suggested win-back. Draft script:\n\n{body}",
+            "due_date": (now_utc().date() + timedelta(days=2)).isoformat(),
+            "completed": False,
+            "completed_at": None,
+            "created_at": iso(now_utc()),
+            "auto_generated": True,
+            "auto_theme": "winback_bulk",
+        })
+        created += 1
+    await _audit(user, "winback.bulk", "band", band, request)
+    return {"created": created, "band": band}
+
+
+# --------------------------------------------------------------------------- #
 # Mount router + middleware                                                   #
 # --------------------------------------------------------------------------- #
 
@@ -1601,7 +1998,6 @@ app.include_router(api)
 from social import make_router as _social_router  # noqa: E402
 
 _social = _social_router(get_current_user, require_manager, db, _audit)
-# Mount with /api prefix
 app.include_router(_social, prefix="/api")
 
 # Insights: cohorts, LTV forecast, reorder, lookalikes, life-events, daily brief,

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { api, formatKES, formatNumber, formatDate } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RfmBadge } from "@/components/RfmBadge";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import {
   TrendingUp, TrendingDown, Users, UserPlus, AlertTriangle, Sparkles,
   Heart, MessageSquare, Repeat, ShieldAlert, Target,
@@ -74,21 +76,40 @@ export default function Overview() {
   const [nw, setNw] = useState(null);
   const [drop, setDrop] = useState(null);
   const [nwWindow, setNwWindow] = useState(30);
+  const [channel, setChannel] = useState(null);
+  const [returnTrend, setReturnTrend] = useState(null);
+  const [winbackBusy, setWinbackBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const [a, b, d] = await Promise.all([
+        const [a, b, d, ch, rt] = await Promise.all([
           api.get("/insights/overview"),
           api.get("/insights/purchase-frequency"),
           api.get("/insights/dropoff-forecast?days=90"),
+          api.get("/bi/channel-attribution?days=90").catch(() => ({ data: { rows: [] } })),
+          api.get("/bi/return-rate-trend").catch(() => ({ data: { windows: [] } })),
         ]);
         setOv(a.data);
         setFreq(b.data);
         setDrop(d.data);
+        setChannel(ch.data);
+        setReturnTrend(rt.data);
       } catch { /* ignore */ }
     })();
   }, []);
+
+  const runWinback = async () => {
+    setWinbackBusy(true);
+    try {
+      const r = await api.post("/dropoff/winback-bulk", { band: "high", days: 90, limit: 25 });
+      toast.success(`Created ${r.data.created} win-back follow-up${r.data.created === 1 ? "" : "s"}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    } finally {
+      setWinbackBusy(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -138,7 +159,7 @@ export default function Overview() {
         <Kpi label="VIPs" value={ov ? formatNumber(ov.kpis.vip_customers) : "—"} sub={ov ? `${ov.kpis.at_risk_customers} at risk` : "—"} icon={ShieldAlert} testid="kpi-vip" color="#C9A961" />
         <Kpi label="Avg basket" value={ov ? formatKES(ov.kpis.avg_basket_kes) : "—"} sub="active customers" icon={Target} testid="kpi-basket" color="#0F4D31" />
         <Kpi label="Messages · 30d" value={ov ? formatNumber(ov.kpis.messages_sent_30d) : "—"} delta={ov?.kpis.messages_delta_pct} sub="vs. prior 30d" icon={MessageSquare} testid="kpi-messages" color="#5B8A6E" />
-        <Kpi label="Social sentiment" value={ov ? `${ov.kpis.social_sentiment_net > 0 ? "+" : ""}${ov.kpis.social_sentiment_net}` : "—"} sub={ov ? `${ov.kpis.social_feedback_30d} posts (30d)` : "—"} icon={Sparkles} testid="kpi-sentiment" color={ov?.kpis.social_sentiment_net >= 0 ? "#0F4D31" : "#E47979"} />
+        <Kpi label="Social sentiment" value={ov ? `${ov.kpis.social_sentiment_net > 0 ? "+" : ""}${ov.kpis.social_sentiment_net}` : "—"} sub={ov ? `${ov.kpis.social_feedback_30d} posts · net +ve − −ve / total` : "—"} icon={Sparkles} testid="kpi-sentiment" color={ov?.kpis.social_sentiment_net >= 0 ? "#0F4D31" : "#E47979"} />
         <Kpi label="Projected churn · 30d" value={drop ? formatNumber(drop.projected_churn_next_30d) : "—"} sub={drop ? `of ${drop.evaluated} recent new customers` : "—"} icon={AlertTriangle} testid="kpi-churn" color="#E47979" />
       </div>
 
@@ -266,6 +287,43 @@ export default function Overview() {
         </div>
       </Card>
 
+      {/* Acquisition channels + return-rate trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+        <Card className="vivo-card p-6 rounded-sm" data-testid="channel-attribution-card">
+          <h3 className="font-display text-xl mb-1">Acquisition channels · 90d</h3>
+          <p className="text-sm text-[var(--vivo-muted)] mb-4">Where new customers came from on their first purchase.</p>
+          {(channel?.rows || []).length === 0 ? (
+            <div className="text-sm text-[var(--vivo-muted)]">No channel data — BI orders don't carry a channel field yet.</div>
+          ) : (
+            <ul className="divide-y divide-[var(--vivo-border)]">
+              {channel.rows.slice(0, 8).map((r) => (
+                <li key={r.channel} className="py-2.5 flex items-center justify-between gap-3">
+                  <div className="font-medium truncate">{r.channel}</div>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="font-mono-num">{formatNumber(r.customers)}</span>
+                    <span className="font-mono-num text-[var(--vivo-muted)]">{formatKES(r.revenue_kes)}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card className="vivo-card p-6 rounded-sm" data-testid="return-rate-card">
+          <h3 className="font-display text-xl mb-1">Return rate trend</h3>
+          <p className="text-sm text-[var(--vivo-muted)] mb-4">Rolling windows, sourced from BI /kpis.</p>
+          <div className="grid grid-cols-3 gap-3">
+            {(returnTrend?.windows || []).map((w) => (
+              <div key={w.window} className="bg-white border border-[var(--vivo-border)] rounded-sm p-4 text-center">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">{w.window}</div>
+                <div className="font-display text-2xl mt-1 font-mono-num">{w.return_rate_pct.toFixed(1)}%</div>
+                <div className="text-xs text-[var(--vivo-muted)] mt-1">{formatNumber(w.returns)} of {formatNumber(w.orders)}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
       {/* Drop-off forecast */}
       <Card className="vivo-card p-6 rounded-sm mt-6" data-testid="dropoff-card">
         <div className="flex items-start justify-between flex-wrap gap-3">
@@ -278,10 +336,20 @@ export default function Overview() {
             </p>
           </div>
           {drop && (
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center flex-wrap">
               <Badge variant="outline" className="rounded-sm bg-red-50 text-red-700 border-red-200">{drop.bands.high} high</Badge>
               <Badge variant="outline" className="rounded-sm bg-amber-50 text-amber-700 border-amber-200">{drop.bands.medium} medium</Badge>
               <Badge variant="outline" className="rounded-sm bg-emerald-50 text-emerald-700 border-emerald-200">{drop.bands.low} low</Badge>
+              {drop.bands.high > 0 && (
+                <Button
+                  onClick={runWinback}
+                  disabled={winbackBusy}
+                  className="rounded-sm h-9 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white ml-2"
+                  data-testid="dropoff-winback-bulk"
+                >
+                  {winbackBusy ? "Creating…" : `Win-back all HIGH (${drop.bands.high})`}
+                </Button>
+              )}
             </div>
           )}
         </div>

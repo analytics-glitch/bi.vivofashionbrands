@@ -1,0 +1,69 @@
+{
+  "summary": "Iter12 — full backend + frontend regression for Vivo CRM v2 (timeline, churn-reasoning, duplicates, UPT, return-rate trend, channel-attribution, templates performance + 18 templates incl. Swahili, daily-goal, winback-bulk, preferences extras, follow-ups page, data-quality page). Backend 17/17 passed (2 skipped due to pre-existing seed bug — associate session has role='manager' so 403 enforcement on /customers/duplicates + /dropoff/winback-bulk cannot be verified via that seed). Frontend: daily-goal-card + progress + edit + save all working, /follow-ups page renders with 3-tab strip + 35 open/3 overdue/2 done, customer profile timeline tab default with churn-reasoning-card + timeline-events, preferences tab gains colour_palette/style_avoids/preferred_store/preferred_channel (all 4 inputs + save present), customer book filters strip with 7 tier buttons + city + sort dropdown, Overview channel-attribution-card + return-rate-card render, sidebar nav-data-quality + /data-quality page with 88 dedup groups visible. No console errors beyond pre-existing Recharts width warnings. No 404s on any existing endpoints — confirms single include_router fix is healthy.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/dashboard/me/goal", "issue": "daily_goal=0 falls back to default 5 instead of clamping to 1 due to truthiness bug `int(payload.get('daily_goal') or 5)` on L897. Negative values would also fall back. Clamp first, then default. Bounds for >50 work correctly."},
+      {"endpoint": "GET /api/customers/duplicates & POST /api/dropoff/winback-bulk", "issue": "Cannot verify associate->403 — seeded associate session in test_credentials.md has role='manager' on /api/auth/me. Pre-existing seed-data bug, not introduced this iteration. require_manager dependency is wired correctly in code."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CustomerSearch (card)", "issue": "Last-contact info renders as visible text 'Never contacted' but the element is missing data-testid='last-contact-{customer_id}'. 0 of 24 cards expose the selector. Visual UX is fine — only test/automation hook missing.", "selector": "[data-testid='last-contact-3846911099035']", "priority": "MEDIUM"},
+      {"component": "CustomerProfile header", "issue": "RfmBadge visually rendered next to name (e.g. 'VIP' next to Janet Masinde) but element lacks data-testid='rfm-badge'. Review item explicitly calls for this testid.", "selector": "[data-testid='rfm-badge']", "priority": "LOW"},
+      {"component": "Overview > Drop-off forecast", "issue": "data-testid='dropoff-winback-bulk' button not rendered. May be correct (Projected Churn 30D shows 0 → button conditionally hidden when high===0 per spec). Cannot independently verify the click->task-creation+toast flow on UI because no high-band customers exist in the drop-off forecast right now. Backend POST /api/dropoff/winback-bulk works (Iter12 backend test passes).", "selector": "[data-testid='dropoff-winback-bulk']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview", "issues": ["Console: multiple Recharts 'width(-1) and height(-1)' warnings on initial mount — pre-existing, charts still render correctly after layout settles."]}
+    ]
+  },
+  "verified_acceptance_criteria": [
+    "GET /api/customers/3846911099035/timeline returns customer_id + events (kinds purchase/message/note/task/social) sorted newest-first. PASS.",
+    "GET /api/customers/3846911099035/churn-reasoning returns risk_score, risk_band, reasons[], days_since_last_purchase, avg_cadence_days, rfm_tier. PASS. 404 for unknown customer. PASS.",
+    "GET /api/customers/duplicates (manager) returns groups (>=1) with match_on+value+customers + potential_duplicates total = 87 groups, 186 records. PASS.",
+    "GET /api/bi/upt returns upt/total_orders/total_units. PASS.",
+    "GET /api/bi/return-rate-trend returns 3 windows 7d/30d/90d each with return_rate_pct+returns+orders. PASS.",
+    "GET /api/bi/channel-attribution?days=90 returns window_days+rows+total_new_customers. PASS.",
+    "GET /api/templates/performance returns templates sorted by sent_30d desc with template_id+name+channel+sent_30d+response_30d+response_rate_pct. PASS.",
+    "GET /api/templates returns >=18 templates including 5+ Swahili-named (Karibu / Habari / mteja / (SW)). PASS.",
+    "GET /api/dashboard/me returns daily_goal+contacts_today+goal_progress_pct. PASS.",
+    "PUT /api/dashboard/me/goal {daily_goal:10} -> 200, persisted on re-GET. Clamped to 50 for 999. (Note: 0 incorrectly falls back to 5.) PASS with caveat.",
+    "POST /api/dropoff/winback-bulk (manager) -> creates tasks, returns {created, band}. PASS.",
+    "PUT /api/preferences/3846911099035 with colour_palette/style_avoids (lists) + preferred_store/preferred_channel (strings) persists; re-GET reflects all 4. PASS.",
+    "Frontend /dashboard: daily-goal-card + daily-goal-progress + daily-goal-edit + kpi-tasks-link present; edit reveals input+save and persists after save. PASS.",
+    "Frontend /follow-ups: followups-page + 3 tab testids (open/overdue/done) + followups-list + per-row mark-done buttons all render. PASS.",
+    "Frontend /customers/3846911099035: timeline-all-tab default + churn-reasoning-card + timeline-events present. PASS. RfmBadge visually shown (missing data-testid='rfm-badge').",
+    "Frontend Preferences tab: pref-colour-palette, pref-style-avoids, pref-preferred-store, pref-preferred-channel + pref-save all present. PASS.",
+    "Frontend /customers: customer-filters + filter-tier (7 buttons confirmed) + filter-city + filter-sort all render. PASS. last-contact-{id} testid missing.",
+    "Frontend /overview: channel-attribution-card + return-rate-card render. dropoff-winback-bulk hidden (conditional — high band may be 0).",
+    "Frontend sidebar: nav-data-quality visible (manager). /data-quality renders data-quality-page with 88 dedup-groups. PASS.",
+    "Regression: no 404s on /api/auth/me, /api/dashboard/me, /api/templates, /api/bi/upt. Single include_router fix is healthy. PASS."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iter12.py",
+    "/app/test_reports/pytest/iter12_results.xml"
+  ],
+  "action_items": [
+    "Add data-testid='last-contact-{customer.customer_id}' to the 'Never contacted' / 'Last contact ...' span in CustomerSearch.jsx card row (review explicitly calls for this).",
+    "Add data-testid='rfm-badge' to the RfmBadge component used in CustomerProfile.jsx header next to the customer name.",
+    "Fix daily_goal=0 fallback bug in server.py L897 — replace `int(payload.get('daily_goal') or 5)` with `int(payload.get('daily_goal', 5))` so clamp() can take it down to 1.",
+    "Reseed associate session so /api/auth/me returns role='associate' (currently 'manager'). Without this, manager-only-route 403 tests cannot run for ANY future iteration. Pre-existing — not introduced here.",
+    "Optional: verify dropoff-winback-bulk visibility logic when drop-off forecast has 0 customers in the 'high' band — confirm spec is 'shown when high>0' (current behaviour) and not 'always shown disabled'."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~2017 lines (was 1500+ last iter, 2.8x past the 700-line guideline). The new v2 block (~1465-1690) is a good candidate to split into /app/backend/routes/v2.py or per-domain modules (timeline.py, dedup.py, bi.py).",
+    "PUT /api/dashboard/me/goal silently clamps out-of-bounds inputs instead of 422-ing. UX-friendly but hides client bugs. Consider returning 422 for goal<1 and >50, or at least include {clamped: true, requested: <n>} in the response so the UI can warn.",
+    "CustomerProfile.jsx is 1070 lines — also past 700-line guideline. Timeline tab, Preferences tab, and the AI script card could each be their own component.",
+    "Recharts width=-1 warnings on Overview mount are noisy in console — set explicit min-width on the ResponsiveContainer parent (or aspect ratio) to silence. Pre-existing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter12.py (new)"
+  ],
+  "success_rate": {"backend": "100% (17/17 executed, 2 skipped due to pre-existing seed-data bug — both targets verified manager-path works)", "frontend": "94% (3 missing data-testids out of ~30 assertions; all functional flows work end-to-end)"},
+  "test_credentials": "Used seeded Bearer tokens from /app/memory/test_credentials.md (manager: test_session_vivo_mgr_1778250692444). Associate seed has role='manager' bug noted above.",
+  "seed_data_creation": "test_winback_bulk_manager_creates_tasks creates real customer_tasks rows (auto_theme='winback_bulk', limit=5) in MongoDB. test_put_daily_goal_and_persistence upserts a row in outreach_goals for the manager user (final value restored to 5). test_preferences_extra_fields_persist writes 4 new fields onto customer 3846911099035 preferences.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iter12 features (timeline / churn-reasoning / duplicates / upt / return-rate / channel-attribution / templates+perf / daily-goal / winback-bulk / preferences-extras / follow-ups page / data-quality page / RfmBadge in profile header) are working end-to-end. Outstanding minor items are data-testid additions (last-contact, rfm-badge), the daily_goal=0 truthiness clamp, and the associate seed role bug. test_iter12.py is the reusable regression file. /api/bi/overview does NOT exist — do not test it. The dropoff-winback-bulk button only renders when drop-off forecast 'high' band > 0; today high=0 so UI hides it (cannot UI-test the bulk button click — backend endpoint works)."
+}

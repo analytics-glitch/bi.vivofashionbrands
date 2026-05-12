@@ -28,7 +28,7 @@ export default function CustomerProfile() {
   const [notes, setNotes] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [messages, setMessages] = useState([]);
-  const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [], dob: "", key_dates: [] });
+  const [prefs, setPrefs] = useState({ sizes: { top: "", bottom: "", shoes: "" }, fits: [], fabrics: [], occasions: [], brands: [], dob: "", key_dates: [], colour_palette: [], style_avoids: [], preferred_store: "", preferred_channel: "" });
   const [wishlist, setWishlist] = useState([]);
   const [wishOpen, setWishOpen] = useState(false);
   const [wishProduct, setWishProduct] = useState("");
@@ -40,6 +40,8 @@ export default function CustomerProfile() {
   const [socialFeedback, setSocialFeedback] = useState([]);
   const [nba, setNba] = useState(null);
   const [nbaLoading, setNbaLoading] = useState(false);
+  const [churn, setChurn] = useState(null);
+  const [timeline, setTimeline] = useState([]);
   const [forgetOpen, setForgetOpen] = useState(false);
   const [forgetConfirm, setForgetConfirm] = useState("");
 
@@ -58,7 +60,7 @@ export default function CustomerProfile() {
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl, social, wl] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -68,6 +70,8 @@ export default function CustomerProfile() {
         api.get(`/templates`),
         api.get(`/social/timeline/${id}`),
         api.get(`/insights/wishlists/${id}`),
+        api.get(`/customers/${id}/churn-reasoning`).catch(() => ({ data: null })),
+        api.get(`/customers/${id}/timeline`).catch(() => ({ data: { events: [] } })),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
@@ -82,12 +86,18 @@ export default function CustomerProfile() {
         brands: pr.data?.brands || [],
         dob: pr.data?.dob || "",
         key_dates: pr.data?.key_dates || [],
+        colour_palette: pr.data?.colour_palette || [],
+        style_avoids: pr.data?.style_avoids || [],
+        preferred_store: pr.data?.preferred_store || "",
+        preferred_channel: pr.data?.preferred_channel || "",
       });
       setConsent(c.data || []);
       setTemplates(tpl.data || []);
       setSocialHandles(social.data?.handles || []);
       setSocialFeedback(social.data?.items || []);
       setWishlist(wl.data || []);
+      setChurn(cr.data);
+      setTimeline(tl.data?.events || []);
     } finally {
       setLoading(false);
     }
@@ -251,11 +261,16 @@ export default function CustomerProfile() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="eyebrow">Customer · {profile.customer_id}</div>
-            <h1 className="font-display text-3xl md:text-4xl mt-1" data-testid="profile-name">{profile.customer_name}</h1>
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              <h1 className="font-display text-3xl md:text-4xl" data-testid="profile-name">{profile.customer_name}</h1>
+              {profile.rfm_tier && <RfmBadge tier={profile.rfm_tier} />}
+            </div>
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-[var(--vivo-muted)]">
               {profile.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5"/>{profile.phone}</span>}
               {profile.email && <span className="inline-flex items-center gap-1"><Mail className="h-3.5 w-3.5"/>{profile.email}</span>}
               {profile.customer_country && <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5"/>{profile.customer_country}</span>}
+              {prefs?.preferred_store && <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5"/>Home store: {prefs.preferred_store}</span>}
+              {prefs?.dob && <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5"/>DOB {formatDate(prefs.dob)}</span>}
               <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5"/>Customer since {formatDate(profile.first_purchase_date)}</span>
             </div>
           </div>
@@ -309,9 +324,10 @@ export default function CustomerProfile() {
       </Card>
 
       {/* Tabs */}
-      <Tabs defaultValue="purchases" className="mt-8">
+      <Tabs defaultValue="timeline_all" className="mt-8">
         <TabsList className="bg-transparent border-b border-[var(--vivo-border)] w-full justify-start rounded-none h-auto p-0 gap-6">
           {[
+            ["timeline_all", "Timeline", "profile-tab-timeline-all"],
             ["purchases", "Purchases", "profile-tab-purchases"],
             ["preferences", "Preferences", "profile-tab-preferences"],
             ["wishlist", "Wishlist", "profile-tab-wishlist"],
@@ -332,6 +348,56 @@ export default function CustomerProfile() {
             </TabsTrigger>
           ))}
         </TabsList>
+
+        <TabsContent value="timeline_all" className="mt-6" data-testid="timeline-all-tab">
+          {churn && churn.risk_band && (
+            <Card className={`p-4 rounded-sm mb-4 border-l-4 ${churn.risk_band === "high" ? "border-l-red-500 bg-red-50" : churn.risk_band === "medium" ? "border-l-amber-500 bg-amber-50" : "border-l-emerald-500 bg-emerald-50"}`} data-testid="churn-reasoning-card">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">AI risk reasoning</div>
+                  <div className="font-display text-lg mt-0.5">
+                    Risk score <span className="font-mono-num">{churn.risk_score}</span> · <span className="uppercase tracking-wider text-xs font-bold">{churn.risk_band}</span>
+                  </div>
+                </div>
+                <div className="text-xs text-[var(--vivo-muted)]">
+                  {churn.days_since_last_purchase !== null && <>{churn.days_since_last_purchase}d since last purchase</>}
+                  {churn.avg_cadence_days && <> · typical cadence {churn.avg_cadence_days}d</>}
+                </div>
+              </div>
+              {(churn.reasons || []).length > 0 && (
+                <ul className="mt-2 text-sm list-disc pl-5 space-y-0.5">
+                  {churn.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                </ul>
+              )}
+            </Card>
+          )}
+          <Card className="vivo-card divide-y divide-[var(--vivo-border)] rounded-sm" data-testid="timeline-events">
+            {timeline.length === 0 && <div className="p-6 text-sm text-[var(--vivo-muted)]">No activity yet.</div>}
+            {timeline.map((e, i) => {
+              const dot = {
+                purchase: "bg-[var(--vivo-navy)]",
+                message: "bg-[var(--vivo-orange,#ED7C2A)]",
+                note: "bg-[var(--vivo-gold)]",
+                task: "bg-emerald-600",
+                social: "bg-fuchsia-600",
+              }[e.kind] || "bg-zinc-400";
+              return (
+                <div key={i} className="p-4 flex gap-3" data-testid={`timeline-event-${e.kind}`}>
+                  <div className="flex flex-col items-center mt-1">
+                    <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-medium text-sm truncate">{e.label}</div>
+                      <div className="text-xs text-[var(--vivo-muted)] shrink-0">{formatDate(e.ts)}</div>
+                    </div>
+                    {e.detail && <div className="text-sm text-[var(--vivo-muted)] mt-1 whitespace-pre-wrap line-clamp-3">{e.detail}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+        </TabsContent>
 
         <TabsContent value="purchases" className="mt-6">
           <div className="vivo-card divide-y divide-[var(--vivo-border)]">
@@ -423,6 +489,56 @@ export default function CustomerProfile() {
                   }}
                   className="h-12 mt-1 rounded-sm"
                   data-testid="pref-key-dates"
+                />
+              </div>
+            </div>
+          </Card>
+
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-2">Colour palette</h3>
+            <p className="text-xs text-[var(--vivo-muted)] mb-3">Comma-separated. Drives "new arrival in your colours" outreach.</p>
+            <Input
+              value={(prefs.colour_palette || []).join(", ")}
+              onChange={(e) => setPrefs((p) => ({ ...p, colour_palette: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }))}
+              placeholder="mustard, navy, ivory, terracotta"
+              className="h-12 rounded-sm"
+              data-testid="pref-colour-palette"
+            />
+          </Card>
+
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-2">Style avoids</h3>
+            <p className="text-xs text-[var(--vivo-muted)] mb-3">Things this customer does not want. Prevents wrong recommendations.</p>
+            <Input
+              value={(prefs.style_avoids || []).join(", ")}
+              onChange={(e) => setPrefs((p) => ({ ...p, style_avoids: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }))}
+              placeholder="short hemlines, polyester, fluorescent colours"
+              className="h-12 rounded-sm"
+              data-testid="pref-style-avoids"
+            />
+          </Card>
+
+          <Card className="vivo-card p-6 rounded-sm">
+            <h3 className="font-display text-lg mb-2">Preferred store & channel</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label className="text-xs text-[var(--vivo-muted)]">Home store</Label>
+                <Input
+                  value={prefs.preferred_store || ""}
+                  onChange={(e) => setPrefs((p) => ({ ...p, preferred_store: e.target.value }))}
+                  placeholder="Vivo Sarit / Vivo Junction / Online…"
+                  className="h-12 mt-1 rounded-sm"
+                  data-testid="pref-preferred-store"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-[var(--vivo-muted)]">Preferred channel</Label>
+                <Input
+                  value={prefs.preferred_channel || ""}
+                  onChange={(e) => setPrefs((p) => ({ ...p, preferred_channel: e.target.value }))}
+                  placeholder="whatsapp / sms / email / in-store"
+                  className="h-12 mt-1 rounded-sm"
+                  data-testid="pref-preferred-channel"
                 />
               </div>
             </div>
