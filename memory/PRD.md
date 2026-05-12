@@ -465,6 +465,18 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 69 — Fork resume) — Redis (Phase 3) shipped
+- **Shared L2 cache** — `redis_cache.py` wraps Upstash Redis (TLS, 256 MB free tier) with a graceful-degrade wrapper that never raises. Failed connect / op auto-disables for 60 s so a Redis blip doesn't make every request pay timeout.
+- **Wired into `fetch()`** in `server.py`: L1 (in-process dict, 0ms) → L2 (Redis, 10-50ms) → upstream (500ms-5s). Writes fan out to BOTH L1 and L2 (fire-and-forget on the Redis side).
+- **Cross-pod warmth verified** — restarted backend twice; second restart's `/kpis`, `/country-summary`, `/sales-summary`, `/footfall`, `/subcategory-sales`, `/sor` all served in 200-730 ms from L2 (vs 3.5-8.5 s cold). **~17-38× speedup per endpoint after a pod restart**.
+- **Safeguards**:
+  - JSON encoding (handles every cache value shape we use)
+  - 4 MB per-key payload cap (`/orders` chunks skip Redis automatically — they're in-process only)
+  - `vivo:` namespace so a shared Upstash instance can host other apps without collision
+  - Auto-disable cooldown on failure
+- **NEW admin endpoint** `/api/admin/redis-stats` — top-paths breakdown + memory + key count for ops visibility.
+- **Future**: extend L2 to `_kpi_stale_cache`, `_sku_breakdown_cache`, `_location_breakdown_cache`, `_repl_cache` when needed. Current Phase 3 fix covers the 95th-percentile traffic (every analytics endpoint passes through `fetch()`).
+
 ### Recent (Feb 2026 — Iter 68 — Fork resume) — Phase 1 dashboard optimization
 - **NEW endpoint** `/api/bootstrap/overview` — single-call aggregator replacing the 10-12 parallel API requests Overview used to fan out. Backend dispatches internally (in-process, no HTTP overhead) and inherits per-endpoint stale-cache + retry. Frontend wired in `pages/Overview.jsx`. **Verified**: cold 6.4s, warm 180ms, top_styles clipped to 20 server-side. Saves 600-1200 ms cold paint, 50-150 ms warm.
 - **Skeleton loader** — new `components/OverviewSkeleton.jsx` replaces `<Loading>` spinner on Overview. KPI/country/chart/table placeholders mirror the real layout so users see structure immediately. Perceived speed boost without changing real load time.

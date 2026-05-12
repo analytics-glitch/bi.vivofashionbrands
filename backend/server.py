@@ -28,6 +28,7 @@ from auth import (  # noqa: E402
 from chat import chat_router  # noqa: E402
 from pii import mask_and_audit, mask_rows  # noqa: E402
 import bins_lookup  # noqa: E402
+from redis_cache import rc  # noqa: E402 — shared cross-pod cache (Upstash Redis)
 
 app = FastAPI(title="Vivo BI Dashboard API")
 # NB: all business endpoints live under this router and require auth.
@@ -119,6 +120,17 @@ _CHURN_NEG_TTL = 60  # seconds
 _FETCH_CACHE: Dict[tuple, tuple] = {}
 _FETCH_TTL = 120.0  # seconds
 _FETCH_CACHE_MAX = 2000  # entries
+
+
+def _evict_fetch_cache_if_needed() -> None:
+    """Bound the in-process fetch cache so a hot dashboard doesn't OOM
+    over a long-lived pod. Drops the 200 oldest entries when over
+    `_FETCH_CACHE_MAX`. Called from the L2 (Redis) cache-hit path
+    where we also write back into L1."""
+    if len(_FETCH_CACHE) > _FETCH_CACHE_MAX:
+        oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
+        for k, _ in oldest:
+            _FETCH_CACHE.pop(k, None)
 
 # Official Vivo merchandise taxonomy (supplied by merchandising team on
 # 2026-04-24). Map is `product_type` (= upstream `subcategory`) → category.
@@ -344,6 +356,26 @@ async def fetch(
         hit = _FETCH_CACHE.get(cache_key)
         if hit and (time.time() - hit[0]) < _FETCH_TTL:
             return hit[1]
+        # L2 — shared Redis cache. Lets a warm response from pod A serve
+        # pod B's traffic instantly instead of paying the cold upstream
+        # call N times across replicas. Failure is non-fatal (the
+        # wrapper graceful-degrades to None).
+        # Redis key shape: "fetch:<path>:<sorted-params-hash>". Hashing
+        # is cheap and bounds the key length.
+        try:
+            import hashlib as _hashlib
+            _rkey_params = "|".join(f"{k}={v}" for k, v in sorted(clean.items()))
+            _rkey = f"fetch:{path}:{_hashlib.md5(_rkey_params.encode()).hexdigest()}"
+        except Exception:
+            _rkey = None
+        if _rkey:
+            r_hit = await rc.get(_rkey)
+            if r_hit is not None:
+                # Populate the L1 dict so subsequent same-pod calls
+                # skip the Redis RTT.
+                _FETCH_CACHE[cache_key] = (time.time(), r_hit)
+                _evict_fetch_cache_if_needed()
+                return r_hit
         # In-flight de-dup. If another coroutine already kicked off this
         # exact upstream call, await its Future instead of duplicating the
         # request — collapses a burst of 5–10 concurrent /kpis hits during
@@ -400,6 +432,10 @@ async def fetch(
                     oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
                     for k, _ in oldest:
                         _FETCH_CACHE.pop(k, None)
+                # Mirror to Redis so sibling pods skip the cold upstream
+                # call. Fire-and-forget — never block the hot path.
+                if _rkey:
+                    asyncio.create_task(rc.set(_rkey, data, int(_FETCH_TTL)))
             _cb_record_success(path)
             if my_future is not None and not my_future.done():
                 my_future.set_result(data)
@@ -8210,3 +8246,39 @@ async def shutdown():
     if _client is not None:
         await _client.aclose()
         _client = None
+    # Release the Redis connection pool too. Graceful — never raises.
+    await rc.close()
+
+
+@app.get("/api/admin/redis-stats")
+async def admin_redis_stats(_: User = Depends(require_admin)):
+    """Light diagnostic view of the shared cache. Admin-only — exposes
+    key count, memory usage, and a top-paths breakdown so ops can spot
+    a hot or runaway namespace at a glance."""
+    if not rc.enabled:
+        return {"enabled": False, "reason": "REDIS_URL unset or unreachable"}
+    client = await rc._get_client()
+    if client is None:
+        return {"enabled": False, "reason": "redis temporarily disabled (recent op failure)"}
+    try:
+        info_mem = await client.info("memory")
+        info_clients = await client.info("clients")
+        keys: List[str] = []
+        async for k in client.scan_iter("vivo:*", count=1000):
+            keys.append(k.decode() if isinstance(k, (bytes, bytearray)) else k)
+        buckets: Dict[str, int] = {}
+        for k in keys:
+            parts = k.split(":", 3)
+            if len(parts) >= 3:
+                buckets[parts[2]] = buckets.get(parts[2], 0) + 1
+        top = sorted(buckets.items(), key=lambda kv: -kv[1])[:20]
+        return {
+            "enabled": True,
+            "total_keys": len(keys),
+            "used_memory_human": info_mem.get("used_memory_human"),
+            "connected_clients": info_clients.get("connected_clients"),
+            "top_paths": [{"path": p, "count": n} for p, n in top],
+        }
+    except Exception as e:
+        return {"enabled": False, "reason": f"info call failed: {e}"}
+
