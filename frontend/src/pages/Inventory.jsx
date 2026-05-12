@@ -46,6 +46,10 @@ const Inventory = () => {
   const [subcatSS, setSubcatSS] = useState([]);
   const [stsByCat, setStsByCat] = useState([]);
   const [weeksOfCover, setWeeksOfCover] = useState([]);
+  // Chain-wide WoC summary returned alongside the per-style rows.
+  // Use this (not a roll-up over `rows`) for the KPI card so the
+  // denominator covers EVERY style, not just /sor's top-200 slice.
+  const [weeksOfCoverSummary, setWeeksOfCoverSummary] = useState(null);
   const [sellThrough, setSellThrough] = useState([]);
   // Style-level sales (units + KES) for the configured date range —
   // sourced from /top-skus. Used when the products search filter is
@@ -111,7 +115,17 @@ const Inventory = () => {
         setSts(st.data || []);
         setSubcatSS(sc.data || []);
         setStsByCat(cat.data || []);
-        setWeeksOfCover(woc.data || []);
+        // /analytics/weeks-of-cover now returns { rows, _summary }; fall
+        // back to the legacy array shape so a stale Redis hit doesn't
+        // crash during rollout.
+        const wocPayload = woc.data;
+        if (Array.isArray(wocPayload)) {
+          setWeeksOfCover(wocPayload);
+          setWeeksOfCoverSummary(null);
+        } else {
+          setWeeksOfCover(wocPayload?.rows || []);
+          setWeeksOfCoverSummary(wocPayload?._summary || null);
+        }
         setSellThrough(str.data || []);
         setTopSkus(tsk.data || []);
         touchLastUpdated();
@@ -612,12 +626,23 @@ const Inventory = () => {
               action={{ label: "Plan distribution", to: "/ibt" }}
             />
             {(() => {
-              // Overall Weeks of Cover = Σ(current_stock) ÷ Σ(weekly units sold).
-              // Weekly units = Σ(units_sold_28d) ÷ 4. Computed across the
-              // current scope (filters apply via filteredWeeksOfCover).
-              const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);
-              const totalWeekly = filteredWeeksOfCover.reduce((s, r) => s + (r.units_sold_28d || 0), 0) / 4;
-              const woc = totalWeekly > 0 ? totalStock / totalWeekly : null;
+              // Overall Weeks of Cover. Use the chain-wide summary from
+              // the API (covers every style, not just /sor's top-200
+              // slice) so the denominator matches the visible
+              // Stock-in-Stores / Stock-in-Warehouse tiles. Falls back
+              // to a rows-rollup if the summary is missing (older cache
+              // hits during rollout).
+              let woc;
+              if (weeksOfCoverSummary && weeksOfCoverSummary.weeks_of_cover != null) {
+                woc = weeksOfCoverSummary.weeks_of_cover;
+              } else {
+                const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);
+                const totalWeekly = filteredWeeksOfCover.reduce(
+                  (s, r) => s + (r.units_sold_3m ?? r.units_sold_28d ?? 0),
+                  0,
+                ) / 12;
+                woc = totalWeekly > 0 ? totalStock / totalWeekly : null;
+              }
               const sub = woc == null
                 ? "Not enough sales history"
                 : woc < 4 ? "Healthy — stock is moving"
@@ -630,8 +655,10 @@ const Inventory = () => {
                   label="Overall Weeks of Cover"
                   sub={sub}
                   formula={
-                    "Overall WoC = Σ current_stock ÷ Σ weekly_units_sold.\n" +
-                    "Weekly units = units_sold_28d ÷ 4. Lower is better — high WoC means stock is sitting too long."
+                    "Overall WoC = total chain stock ÷ chain weekly units sold.\n" +
+                    "Weekly units = (last 3 full calendar months avg) ÷ 4  ≡  total_units_3m ÷ 12.\n" +
+                    "Numerator covers EVERY style (matches the Stock-in-Stores tile), not just the top-200 SOR slice.\n" +
+                    "Lower is better — high WoC means stock is sitting too long."
                   }
                   value={woc == null ? "—" : `${woc.toFixed(1)} wks`}
                   icon={Gauge}

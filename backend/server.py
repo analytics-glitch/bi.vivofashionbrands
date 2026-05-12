@@ -4359,37 +4359,36 @@ async def analytics_weeks_of_cover(
     locations: Optional[str] = None,
     stock_scope: str = Query("stores", regex="^(stores|warehouse|combined)$"),
 ):
-    """Weeks of Cover per style:
-       weeks = current_stock / (avg_monthly_units_last_3_full_months / 4)
-             = current_stock / (units_sold_3m / 12)
+    """Weeks of Cover per style + a chain-wide summary block.
 
-    `stock_scope` controls WHICH inventory feeds `current_stock`:
-      • "stores"    — POS / shop-floor only (default; sales happen here)
-      • "warehouse" — only warehouse / wholesale / holding stock
-      • "combined"  — stores + warehouse (total allocable units)
+    Per-style:
+        weeks = current_stock / (units_sold_3m / 12)
 
-    IMPORTANT: sales (units_sold_3m, avg_weekly_sales) ALWAYS come from
-    store traffic regardless of `stock_scope` — warehouses don't sell.
-    This matches the user's explicit requirement: switching to the
-    warehouse-only view only changes the numerator of WOC, not the
-    denominator, so you can see e.g. "there's 18w of cover sitting in
-    the warehouse but store-floor has only 3w → move it out".
+    Chain summary (returned in `_summary` block):
+        total_stock          — Σ current_stock across the WHOLE filtered
+                               inventory (not just the top-N /sor styles)
+        total_units_3m       — chain-wide units sold in the last 3 FULL
+                               calendar months pulled from /sales-summary
+                               so it covers EVERY style, not the top 200
+        weeks_of_cover       — total_stock / (total_units_3m / 12)
+                               — this is what the Inventory page KPI card
+                               consumes; matches the visible Stock-in-
+                               Stores tile to the unit.
 
-    Sales window changed Feb 2026: was last 28 days (too noisy — single
-    promo week distorted WoC across hundreds of styles). Now: last 3
-    FULL calendar months, smooths weekly volatility and aligns with the
-    monthly cadence buyers use for replen planning.
+    Why this shape: previously the FE computed group WoC by summing
+    over `rows`, which is at most 200 styles from /sor. With ~1,700
+    active styles, that under-counted both stock AND sales but the
+    NET error was a 50-60% understated WoC because the long tail has
+    proportionally less sales (so the 200 cap kept high-velocity styles
+    only — biasing the denominator up). Returning a backend-computed
+    summary fixes the slice mismatch and aligns with the
+    Stock-In-Stores card.
+
+    `stock_scope` still controls which inventory is in scope.
     """
     from datetime import datetime, timedelta
     today = datetime.utcnow().date()
-    # Last 3 FULL calendar months ending at the last day of the previous
-    # month — current month-in-progress is intentionally excluded so an
-    # in-progress promo or early-month dip doesn't pull the run-rate
-    # down/up. Example: today=2026-05-12 → window = 2026-02-01 to
-    # 2026-04-30 (89-91 days depending on Feb).
     dt = today.replace(day=1) - timedelta(days=1)  # last day of prev month
-    # Walk back 3 months: simplest correct way is to step the 1st of
-    # previous month back twice, then take its 1st-of-month.
     first_of_dt_month = dt.replace(day=1)
     one_back = (first_of_dt_month - timedelta(days=1)).replace(day=1)
     df = (one_back - timedelta(days=1)).replace(day=1)
@@ -4421,15 +4420,10 @@ async def analytics_weeks_of_cover(
                         merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
         rows = list(merged.values())
 
-    # Recompute current_stock per style according to `stock_scope`. We
-    # ALWAYS walk the inventory cache (not just when `locations` is set)
-    # so "warehouse"/"combined" actually pull warehouse rows. The
-    # `channel`/`locations` param further narrows POS inventory for
-    # "stores"/"combined" modes — sales aggregates (units_sold) stay
-    # from /sor and are therefore always store-sourced.
     inv = await fetch_all_inventory(country=country) or []
     locs = _split_csv(locations) or _split_csv(channel)
     stock_by_style: Dict[str, float] = defaultdict(float)
+    chain_total_stock = 0.0  # full denominator (not just top-200)
     for r in inv:
         style = r.get("style_name") or r.get("product_name")
         if not style:
@@ -4441,16 +4435,15 @@ async def analytics_weeks_of_cover(
             continue
         if locs and not is_wh and (r.get("location_name") not in set(locs)):
             continue
-        stock_by_style[style] += float(r.get("available") or 0)
+        avail = float(r.get("available") or 0)
+        stock_by_style[style] += avail
+        chain_total_stock += avail
 
     out = []
     for r in rows:
-        units_3m = r.get("units_sold") or 0  # /sor `units_sold` over our 3-month window
+        units_3m = r.get("units_sold") or 0
         style = r.get("style_name")
         stock = stock_by_style.get(style, 0)
-        # weekly = monthly_avg / 4 = (units_3m / 3) / 4 = units_3m / 12.
-        # Using a fixed divisor of 12 keeps the math intuitive and
-        # tolerates the minor 89-vs-91-day Feb difference (<2 % drift).
         weekly = units_3m / 12 if units_3m else 0
         weeks = (stock / weekly) if weekly else None
         out.append({
@@ -4461,15 +4454,48 @@ async def analytics_weeks_of_cover(
             "current_stock": stock,
             "units_sold_3m": units_3m,
             "units_sold_3m_window_days": window_days,
-            # Keep the legacy `units_sold_28d` key populated so any
-            # cached frontend payloads from previous builds (or third-
-            # party consumers) don't break — same value, NEW window.
-            "units_sold_28d": units_3m,
+            "units_sold_28d": units_3m,  # legacy alias
             "avg_weekly_sales": weekly,
             "weeks_of_cover": weeks,
             "sor_percent": r.get("sor_percent") or 0,
         })
-    return out
+
+    # Chain-wide units-sold for the same 3-month window. /sales-summary
+    # gives one row per (country, channel) with `total_units` for the
+    # whole period — no top-N cap, so this is the correct denominator.
+    chain_total_units_3m = 0.0
+    try:
+        ss_rows = await get_sales_summary(
+            date_from=df.isoformat(), date_to=dt.isoformat(),
+            country=country, channel=channel,
+        )
+        for s in ss_rows or []:
+            # /sales-summary uses `units_sold` for the per-location
+            # quantity field (not `total_units`). Other dashboards
+            # alias them — keep both for safety.
+            chain_total_units_3m += float(
+                s.get("units_sold") or s.get("total_units") or 0
+            )
+    except Exception as e:
+        logger.warning(f"[weeks-of-cover] /sales-summary failed: {e}")
+
+    chain_weekly = chain_total_units_3m / 12 if chain_total_units_3m else 0
+    chain_woc = (chain_total_stock / chain_weekly) if chain_weekly else None
+
+    return {
+        "rows": out,
+        "_summary": {
+            "total_stock": chain_total_stock,
+            "total_units_3m": chain_total_units_3m,
+            "weekly_units": chain_weekly,
+            "weeks_of_cover": chain_woc,
+            "window_from": df.isoformat(),
+            "window_to": dt.isoformat(),
+            "window_days": window_days,
+            "stock_scope": stock_scope,
+            "rows_returned": len(out),
+        },
+    }
 
 
 # ----- End analytics extensions -----
