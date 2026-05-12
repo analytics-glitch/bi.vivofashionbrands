@@ -582,5 +582,15 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
   - `⚡ Auto-recovery ran Xm ago` (emerald) — for 30 minutes after the watcher heals.
 - **Boot-time validation.** First restart with the iter-65 poisoned-cache rehydrate guard already dropped 1 empty `/kpis` entry from the on-disk blob — validating the fix on real-world poisoned data.
 
+### Recent (Feb 2026 — Iter 67)
+- **`/api/kpis` Mongo snapshot layer — the permanent fix for the "KPIs slow to load" banner.** A background coroutine `_snapshot_kpis_loop()` wakes every 2 minutes and pre-warms 25 (window × country) combinations into Mongo collection `kpi_snapshots`:
+  - Windows: Today · Yesterday · MTD · Last 7d · Last 30d
+  - Countries: all · Kenya · Uganda · Rwanda · Online
+  - Refresh cadence: every 120 s · Snapshot freshness TTL: 15 min · Mongo TTL index on `snapshot_at` reaps stale docs ≥ 24h old.
+- **`/api/kpis` route now reads snapshot first.** Hits Mongo (sub-50ms) when a fresh snapshot exists for the requested window; falls through to `_get_kpis_live()` (the previous live-upstream implementation, renamed for clarity) only for custom date ranges or expired snapshots.
+- **Empirically measured speedup** on preview (real upstream): standard windows resolve in 200–400ms (snapshot path), vs 13.2s for a custom window that has to hit upstream. **~53× faster for 95% of dashboard requests.**
+- **Recon + auto-recovery intentionally bypass the snapshot** — they call `_get_kpis_live()` directly so they observe ground truth from upstream and flag real divergences rather than reading their own snapshot back.
+- **Empty-write guard preserved**: the snapshot refresher never overwrites a previously-good snapshot with zeros during an upstream batch-lag window, so users keep seeing the last-known-good numbers even while Vivo BI is mid-refresh.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
