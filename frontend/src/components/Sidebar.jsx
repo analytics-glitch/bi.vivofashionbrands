@@ -29,6 +29,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
+import RedisStatusPill from "@/components/RedisStatusPill";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
@@ -344,6 +345,7 @@ const TopNav = () => {
           <ArrowClockwise size={15} weight="bold" />
         </button>
         <NotificationBell />
+        <RedisStatusPill />
         <UserMenu />
       </div>
 

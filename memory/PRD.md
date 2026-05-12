@@ -465,6 +465,9 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **"Previous month"** restored as a Compare option (between Yesterday and Previous year).
 - **Top-row KPI grid** is now 6-tile (Total Sales / Net Sales / Total Orders / Total Units Sold / Total Footfall / Conversion Rate) — the redundant Footfall row that appeared after the sub-KPIs has been removed.
 
+### Recent (Feb 2026 — Iter 70) — Redis status badge
+- **`/app/frontend/src/components/RedisStatusPill.jsx`** — admin-only pill in TopNav that polls `/api/admin/redis-stats` every 60s. Shows live state: green "Cache · N keys" when healthy, amber "Cache offline" if Redis is temporarily disabled (cooldown), grey "Cache off" if `REDIS_URL` is unset. Click → copies the full diagnostic JSON to clipboard for ops debugging. Hidden for non-admin roles. **Verified**: pill shows "Cache · 179 keys" green after a few minutes of normal traffic.
+
 ### Recent (Feb 2026 — Iter 69 — Fork resume) — Redis (Phase 3) shipped
 - **Shared L2 cache** — `redis_cache.py` wraps Upstash Redis (TLS, 256 MB free tier) with a graceful-degrade wrapper that never raises. Failed connect / op auto-disables for 60 s so a Redis blip doesn't make every request pay timeout.
 - **Wired into `fetch()`** in `server.py`: L1 (in-process dict, 0ms) → L2 (Redis, 10-50ms) → upstream (500ms-5s). Writes fan out to BOTH L1 and L2 (fire-and-forget on the Redis side).
