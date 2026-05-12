@@ -250,7 +250,8 @@ async def analytics_customer_retention(
 # ─── /analytics/avg-spend-by-customer-type ────────────────────────────
 def _empty_spend_bucket() -> Dict[str, Any]:
     return {"customers": 0, "orders": 0, "total_spend_kes": 0,
-            "avg_spend_per_customer_kes": 0, "avg_orders_per_customer": 0}
+            "avg_spend_per_customer_kes": 0, "avg_orders_per_customer": 0,
+            "avg_basket_value_kes": 0}
 
 
 @api_router.get("/analytics/avg-spend-by-customer-type")
@@ -320,6 +321,8 @@ async def analytics_avg_spend_by_customer_type(
             "total_spend_kes": round(spend, 2),
             "avg_spend_per_customer_kes": round(spend / count, 2) if count else 0,
             "avg_orders_per_customer": round(orders / count, 2) if count else 0,
+            # Avg Basket Value = spend per order (matches the ABV tile on /overview)
+            "avg_basket_value_kes": round(spend / orders, 2) if orders else 0,
         }
 
     return {"new": _bucket(new_spend, new_count, new_orders),

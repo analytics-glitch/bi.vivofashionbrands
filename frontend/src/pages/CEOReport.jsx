@@ -286,7 +286,7 @@ const CEOReport = () => {
       <div className="flex items-center justify-between pb-4 border-b border-border no-print mb-4">
         <div>
           <div className="eyebrow">Dashboard · Executive</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.4vw,26px)]">
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
             CEO Report
           </h1>
         </div>
@@ -311,7 +311,7 @@ const CEOReport = () => {
           <div className="flex items-start justify-between gap-6 pb-5 border-b border-border">
             <div>
               <div className="eyebrow text-brand-deep">Vivo Fashion Group</div>
-              <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.4vw,26px)]">
+              <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
                 Executive Sales Report
               </h1>
               <div className="text-[12.5px] text-muted mt-2 flex items-center gap-3">

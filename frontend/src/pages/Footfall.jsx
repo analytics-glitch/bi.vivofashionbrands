@@ -277,7 +277,7 @@ const Footfall = () => {
     <div className="space-y-6" data-testid="footfall-page">
       <div>
         <div className="eyebrow">Dashboard · Footfall Analysis</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">Footfall Analysis</h1>
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">Footfall Analysis</h1>
         <p className="text-muted text-[13px] mt-0.5">
           {fmtDate(dateFrom)} → {fmtDate(dateTo)} · all locations included
         </p>

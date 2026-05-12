@@ -319,7 +319,7 @@ const Allocations = () => {
     <div className="space-y-6" data-testid="allocations-page">
       <div>
         <div className="eyebrow">Dashboard · Allocations</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)] inline-flex items-center gap-2">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)] inline-flex items-center gap-2">
           <Stack size={22} weight="duotone" className="text-[#1a5c38]" />
           Allocation Planner
         </h1>

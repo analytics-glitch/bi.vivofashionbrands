@@ -552,5 +552,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - Wire L-10 SOR action choices `{Reorder · Markdown · IBT · Hold}` into `recommendations_state`
 - In-memory caches (`_kpi_stale_cache`, `_churn_full_cache`) → migrate to Mongo / Redis if multi-replica deploy is planned (currently single-replica safe)
 
+### Recent (Feb 2026 — Iter 64)
+- **Customers page — ABV reconciliation row added.** Backend `/api/analytics/avg-spend-by-customer-type` now returns `avg_basket_value_kes` (= spend ÷ orders) per New/Returning bucket. Frontend Customers page now shows TWO reconciliation rows in the Customer Loyalty section:
+  - **Row 1 — Avg Spend / Cust** (Overall · New · Returning) — weighted by customer count.
+  - **Row 2 — ABV (per basket)** (Overall · New · Returning) — weighted by order count; matches the ABV tile on the Overview page (identified orders only — walk-ins excluded).
+  - Overall tile in each row is mathematically the weighted average of the two segments, with a tooltip showing the exact formula. Resolves "Overall ABV doesn't match the New/Returning average" report.
+- **Page-title compaction.** Bulk-shrunk the page-title clamp from `clamp(18px,2.2vw,26px)` → `clamp(15px,1.5vw,19px)` across all 18 pages (`Overview`, `Customers`, `Footfall`, `Locations`, `Inventory`, `Products`, `ReOrder`, `IBT`, `Allocations`, `Replenishments`, `Pricing`, `Exports`, `CEOReport`, `Targets`, `CustomerDetails`, `ActivityLogs`, `Feedback`, `AdminFeedback`, `Users`). Page headers now occupy at most 2 rows on every viewport while keeping the eyebrow + title + date row hierarchy.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

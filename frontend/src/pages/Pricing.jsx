@@ -154,7 +154,7 @@ const Pricing = () => {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="eyebrow">Dashboard · Pricing Changes</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
             Pricing Changes
           </h1>
           <p className="text-muted text-[13px] mt-1 max-w-3xl">

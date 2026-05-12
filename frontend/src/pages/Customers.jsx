@@ -380,7 +380,7 @@ const Customers = () => {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="eyebrow">Dashboard · Customers</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
+          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
             Customers
           </h1>
         </div>
@@ -1258,14 +1258,49 @@ const Customers = () => {
                       </div>
                     </div>
 
-                    {/* ---- Avg spend per customer split (New vs Returning) ---- */}
-                    {spendByType && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4" data-testid="spend-by-type">
+                    {/* ---- Avg spend per customer split (Overall + New vs Returning) ---- */}
+                    {spendByType && (() => {
+                      const nCust = spendByType.new.customers || 0;
+                      const rCust = spendByType.returning.customers || 0;
+                      const nSpend = spendByType.new.total_spend_kes || 0;
+                      const rSpend = spendByType.returning.total_spend_kes || 0;
+                      const nOrders = spendByType.new.orders || 0;
+                      const rOrders = spendByType.returning.orders || 0;
+                      const totalCust = nCust + rCust;
+                      const totalSpend = nSpend + rSpend;
+                      const totalOrders = nOrders + rOrders;
+                      const overallAvgSpend = totalCust ? totalSpend / totalCust : 0;
+                      const overallOrders = totalCust ? totalOrders / totalCust : 0;
+                      // Avg Basket Value = spend per order (matches the ABV tile on /overview).
+                      const nABV = spendByType.new.avg_basket_value_kes || 0;
+                      const rABV = spendByType.returning.avg_basket_value_kes || 0;
+                      const overallABV = totalOrders ? totalSpend / totalOrders : 0;
+                      return (
+                      <>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3" data-testid="spend-by-type">
+                        <div
+                          className="rounded-xl border-2 border-brand/40 bg-brand/5 p-3"
+                          title={`Overall Avg Spend = (New spend + Returning spend) ÷ (New + Returning customers)\n= (${fmtKES(nSpend)} + ${fmtKES(rSpend)}) ÷ (${fmtNum(nCust)} + ${fmtNum(rCust)})\n= ${fmtKES(totalSpend)} ÷ ${fmtNum(totalCust)}\n= ${fmtKES(overallAvgSpend)}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-brand-deep">Overall · Avg Spend / Cust</div>
+                            <span className="text-[10px] font-bold uppercase bg-brand/15 text-brand-deep px-1.5 py-0.5 rounded-full">
+                              {fmtNum(totalCust)} customers
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-brand-deep" data-testid="kpi-spend-overall">
+                            {fmtKES(overallAvgSpend)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            weighted · {overallOrders.toFixed(2)} orders / cust
+                            · {fmtKES(totalSpend)} total
+                          </div>
+                        </div>
                         <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3">
                           <div className="flex items-center justify-between">
                             <div className="eyebrow text-emerald-800">New customers</div>
                             <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(spendByType.new.customers)} customers
+                              {fmtNum(nCust)} customers
                             </span>
                           </div>
                           <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-spend-new">
@@ -1273,14 +1308,14 @@ const Customers = () => {
                           </div>
                           <div className="text-[11px] text-muted mt-0.5">
                             avg spend · {spendByType.new.avg_orders_per_customer.toFixed(2)} orders / cust
-                            · {fmtKES(spendByType.new.total_spend_kes)} total
+                            · {fmtKES(nSpend)} total
                           </div>
                         </div>
                         <div className="rounded-xl border border-blue-300 bg-blue-50/40 p-3">
                           <div className="flex items-center justify-between">
                             <div className="eyebrow text-blue-800">Returning customers</div>
                             <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(spendByType.returning.customers)} customers
+                              {fmtNum(rCust)} customers
                             </span>
                           </div>
                           <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-spend-returning">
@@ -1288,11 +1323,65 @@ const Customers = () => {
                           </div>
                           <div className="text-[11px] text-muted mt-0.5">
                             avg spend · {spendByType.returning.avg_orders_per_customer.toFixed(2)} orders / cust
-                            · {fmtKES(spendByType.returning.total_spend_kes)} total
+                            · {fmtKES(rSpend)} total
                           </div>
                         </div>
                       </div>
-                    )}
+
+                      {/* ---- ABV (per-basket) reconciliation row ----
+                          Matches the ABV tile on the Overview page.
+                          Overall ABV = (New spend + Returning spend) ÷ (New orders + Returning orders)
+                          = orders-weighted average of New ABV and Returning ABV. */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" data-testid="abv-by-type">
+                        <div
+                          className="rounded-xl border-2 border-amber-400 bg-amber-50/50 p-3"
+                          title={`Overall ABV = total identified spend ÷ total identified orders\n= ${fmtKES(totalSpend)} ÷ ${fmtNum(totalOrders)} orders\n= ${fmtKES(overallABV)}\n\nThis is the orders-weighted average of New ABV (${fmtKES(nABV)}) and Returning ABV (${fmtKES(rABV)}). It matches the ABV tile on the Overview page (identified orders only — walk-ins excluded).`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-amber-900">Overall · ABV (per basket)</div>
+                            <span className="text-[10px] font-bold uppercase bg-amber-200/70 text-amber-900 px-1.5 py-0.5 rounded-full">
+                              {fmtNum(totalOrders)} orders
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-amber-900" data-testid="kpi-abv-overall">
+                            {fmtKES(overallABV)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            spend ÷ orders · matches Overview ABV
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-emerald-800">New · ABV</div>
+                            <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
+                              {fmtNum(nOrders)} orders
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-abv-new">
+                            {fmtKES(nABV)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            avg basket · {fmtKES(nSpend)} ÷ {fmtNum(nOrders)} orders
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-blue-300 bg-blue-50/40 p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="eyebrow text-blue-800">Returning · ABV</div>
+                            <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
+                              {fmtNum(rOrders)} orders
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-abv-returning">
+                            {fmtKES(rABV)}
+                          </div>
+                          <div className="text-[11px] text-muted mt-0.5">
+                            avg basket · {fmtKES(rSpend)} ÷ {fmtNum(rOrders)} orders
+                          </div>
+                        </div>
+                      </div>
+                      </>
+                      );
+                    })()}
 
                     {/* ---- Grouped / single bar chart ---- */}
                     <div style={{ width: "100%", height: 320 }}>

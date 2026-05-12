@@ -59,7 +59,7 @@ const Feedback = () => {
     <div className="space-y-6" data-testid="feedback-page">
       <div>
         <div className="eyebrow">Dashboard · Feedback</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)]">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
           Send feedback
         </h1>
         <p className="text-muted text-[13px] mt-1 max-w-2xl">

@@ -62,7 +62,7 @@ const AdminFeedback = () => {
     <div className="space-y-6" data-testid="admin-feedback-page">
       <div>
         <div className="eyebrow">Admin · Feedback Inbox</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(18px,2.2vw,26px)] inline-flex items-center gap-2">
+        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)] inline-flex items-center gap-2">
           <ChatCircleDots size={22} weight="duotone" className="text-[#1a5c38]" />
           Feedback Inbox
         </h1>
