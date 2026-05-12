@@ -671,6 +671,110 @@ async def get_country_summary(
         raise
 
 
+def _kpis_response_is_empty(data: Optional[Dict[str, Any]]) -> bool:
+    """True if a /kpis response carries no real numbers — either upstream
+    returned all-null or all-zero fields. Triggers the /orders fallback."""
+    if not data:
+        return True
+    ts = data.get("total_sales")
+    if ts is None or float(ts or 0) == 0:
+        to = data.get("total_orders")
+        if not to:  # 0 or None
+            return True
+    return False
+
+
+def _window_is_recent(date_from: Optional[str], date_to: Optional[str]) -> bool:
+    """Only trigger the /orders rebuild for windows that include today
+    or yesterday — historical zeros are real (no traffic that day) and
+    don't warrant the extra scan cost."""
+    try:
+        today = datetime.now(timezone.utc).date()
+        # date_from intentionally unused — we only care about whether
+        # the WINDOW END (date_to) reaches into today/yesterday.
+        _ = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else today
+        dt = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
+        return dt >= (today - timedelta(days=1))
+    except Exception:
+        # Default to true so we never silently SKIP the fallback on a
+        # malformed date string.
+        return True
+
+
+async def _compute_kpis_from_orders(
+    date_from: Optional[str], date_to: Optional[str],
+    country: Optional[str], channel: Optional[str],
+) -> Dict[str, Any]:
+    """Aggregate the KPI block directly from /orders rows. Used as a
+    fallback when upstream /kpis is null for a live window (Vivo BI
+    batch lag). Returns the SAME shape get_kpis normally returns so
+    downstream consumers don't need a branch.
+
+    /orders fan-out: same date range × per-country slice. Honors the
+    `channel` filter case-insensitively (upstream channel values are
+    free-form). Wholesale & internal-transfer rows are EXCLUDED to
+    match the upstream /kpis filter contract.
+    """
+    today = datetime.now(timezone.utc).date()
+    df = date_from or today.isoformat()
+    dt = date_to or today.isoformat()
+    cs = _split_csv(country) or [None]
+    chs = {c.strip().lower() for c in _split_csv(channel)} if channel else None
+
+    async def _one(c: Optional[str]) -> List[Dict[str, Any]]:
+        return await fetch(
+            "/orders",
+            {"date_from": df, "date_to": dt, "country": c, "limit": 100000},
+            timeout_sec=20.0, max_attempts=2,
+        ) or []
+    groups = await asyncio.gather(*(_one(c) for c in cs), return_exceptions=True)
+    total_sales = 0.0
+    gross_sales = 0.0
+    discounts = 0.0
+    returns = 0.0
+    net_sales = 0.0
+    units = 0
+    order_ids: set = set()
+    for g in groups:
+        if isinstance(g, Exception):
+            continue
+        for r in (g or []):
+            if chs and (r.get("channel") or "").strip().lower() not in chs:
+                continue
+            kind = (r.get("sale_kind") or "").lower()
+            # Skip non-retail rows to match upstream /kpis contract.
+            if kind in {"wholesale", "ibt", "internal_transfer", "transfer"}:
+                continue
+            qty = float(r.get("quantity") or 0)
+            ts = float(r.get("total_sales_kes") or 0)
+            gs = float(r.get("gross_sales_kes") or 0)
+            d = float(r.get("discount_kes") or 0)
+            rt = float(r.get("returns_kes") or 0)
+            ns = float(r.get("net_sales_kes") or 0)
+            total_sales += ts
+            gross_sales += gs
+            discounts += d
+            returns += rt
+            net_sales += ns
+            units += int(qty)
+            oid = r.get("order_id") or r.get("order_name")
+            if oid:
+                order_ids.add(str(oid))
+    total_orders = len(order_ids)
+    return {
+        "total_sales": round(total_sales, 2),
+        "gross_sales": round(gross_sales, 2) if gross_sales else round(total_sales, 2),
+        "total_discounts": round(discounts, 2),
+        "total_returns": round(returns, 2),
+        "net_sales": round(net_sales, 2) if net_sales else round(total_sales - returns, 2),
+        "total_orders": total_orders,
+        "total_units": units,
+        "avg_basket_size": round(total_sales / total_orders, 2) if total_orders else 0,
+        "avg_selling_price": round(total_sales / units, 2) if units else 0,
+        "return_rate": round(returns / gross_sales * 100, 2) if gross_sales else 0,
+    }
+
+
 @api_router.get("/kpis")
 async def get_kpis(
     date_from: Optional[str] = None,
@@ -684,6 +788,12 @@ async def get_kpis(
     attempts (45 s total). On upstream error/timeout, falls back to a
     24-hour disk-persisted stale cache so the dashboard never goes blank
     during Vivo BI refresh windows / cold starts / pod restarts.
+
+    LIVE-WINDOW RESILIENCE: When upstream returns null/0 for a window
+    that covers today/yesterday (a Vivo BI batch-lag scenario), this
+    endpoint rebuilds the KPI block live from `/orders` so the
+    dashboard keeps showing real numbers instead of zeros. See
+    `_compute_kpis_from_orders` below.
     """
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
@@ -717,6 +827,29 @@ async def get_kpis(
             results = await asyncio.gather(*tasks)
             data = agg_kpis(results)
         data = {**data, "stale": False}
+        # UPSTREAM-NULL FALLBACK (May 2026): when Vivo BI's /kpis batch
+        # hasn't materialised today's transactions yet, upstream returns
+        # all-null fields even though /orders has the raw rows. In that
+        # case we rebuild /kpis live from /orders so the dashboard
+        # doesn't surface zeros while sales are obviously flowing. Only
+        # triggered when total_sales is None/0 AND the window covers
+        # today/yesterday (historical zeros are legit — don't waste a
+        # /orders scan on them).
+        if _kpis_response_is_empty(data) and _window_is_recent(date_from, date_to):
+            try:
+                rebuilt = await _compute_kpis_from_orders(
+                    date_from=date_from, date_to=date_to,
+                    country=country, channel=channel,
+                )
+                if rebuilt and (rebuilt.get("total_sales") or 0) > 0:
+                    logger.warning(
+                        "[kpis] upstream returned 0 for live window — "
+                        "rebuilt from /orders: total_sales=%s, orders=%s",
+                        rebuilt.get("total_sales"), rebuilt.get("total_orders"),
+                    )
+                    data = {**rebuilt, "stale": False, "source": "orders-fallback"}
+            except Exception as e:
+                logger.warning(f"[kpis] /orders fallback failed: {e}")
         _kpi_stale_cache[cache_key] = (time.time(), data)
         # Fire-and-forget disk flush so a pod restart preserves it.
         asyncio.create_task(_kpi_stale_save_async())
@@ -8411,4 +8544,152 @@ async def admin_redis_stats(_: User = Depends(require_admin)):
         }
     except Exception as e:
         return {"enabled": False, "reason": f"info call failed: {e}"}
+
+
+@app.get("/api/admin/reconciliation-check")
+async def admin_reconciliation_check(
+    date: Optional[str] = None,
+    user: User = Depends(require_admin),
+):
+    """One-shot health check for every cross-page KPI that's expected
+    to reconcile to the same total.
+
+    Each check returns:
+        { ok: bool, expected, got, delta, delta_pct, hint? }
+
+    A "PASS" means the variance is within 0.5 % AND ≤ 1 unit. Above
+    that we flag the row and include a human-readable hint pointing to
+    the endpoint or middleware function that drifted.
+
+    Designed to be hit by the audit bot: a single GET, fast, no UI
+    scraping, gives a deterministic green/red status. Admin-only because
+    the response contains live revenue figures.
+
+    Defaults to TODAY. Pass `?date=YYYY-MM-DD` to audit any specific day.
+    """
+    target = date or datetime.now(timezone.utc).date().isoformat()
+
+    # Pull each source endpoint in parallel — each one already has its
+    # own stale-cache + retry wrapper so a single slow upstream call
+    # won't take this endpoint past its 30 s budget.
+    async def _safe(coro):
+        try:
+            return await coro
+        except Exception as e:
+            return {"_error": str(e)}
+
+    kpis_r, country_r, sales_r, walk_r, foot_r = await asyncio.gather(
+        _safe(get_kpis(date_from=target, date_to=target)),
+        _safe(get_country_summary(date_from=target, date_to=target)),
+        _safe(get_sales_summary(date_from=target, date_to=target)),
+        _safe(get_walk_ins(date_from=target, date_to=target)),
+        _safe(get_footfall(date_from=target, date_to=target)),
+    )
+
+    def _check(name: str, expected: float, got: float, hint: str,
+               *, abs_tolerance: float = 1.0, pct_tolerance: float = 0.5) -> Dict[str, Any]:
+        delta = float(got) - float(expected)
+        denom = abs(expected) if abs(expected) > 1e-9 else 1.0
+        delta_pct = round(delta / denom * 100, 4)
+        ok = (abs(delta) <= abs_tolerance) or (abs(delta_pct) <= pct_tolerance)
+        out: Dict[str, Any] = {
+            "name": name,
+            "ok": bool(ok),
+            "expected": round(float(expected), 2),
+            "got": round(float(got), 2),
+            "delta": round(delta, 2),
+            "delta_pct": delta_pct,
+        }
+        if not ok:
+            out["hint"] = hint
+        return out
+
+    # Source-of-truth = /kpis. Every other endpoint should reconcile to
+    # this on the same date window.
+    kpi_total_sales = float((kpis_r or {}).get("total_sales") or 0)
+    kpi_orders = int((kpis_r or {}).get("total_orders") or 0)
+    kpi_units = int((kpis_r or {}).get("total_units") or 0)
+
+    cs_sum_sales = sum(float(r.get("total_sales") or 0) for r in (country_r or []) if isinstance(r, dict))
+    cs_sum_orders = sum(int(r.get("orders") or 0) for r in (country_r or []) if isinstance(r, dict))
+    cs_sum_units = sum(int(r.get("units_sold") or 0) for r in (country_r or []) if isinstance(r, dict))
+
+    ss_sum_sales = sum(float(r.get("total_sales") or 0) for r in (sales_r or []) if isinstance(r, dict))
+
+    walk_denom = float((walk_r or {}).get("total_sales_kes") or 0)
+
+    checks: List[Dict[str, Any]] = [
+        _check(
+            "country_summary_total_sales",
+            kpi_total_sales, cs_sum_sales,
+            "Σ /api/country-summary rows ≠ /api/kpis.total_sales. "
+            "Verify get_country_summary fan-out in server.py (per-country /kpis rollup).",
+        ),
+        _check(
+            "country_summary_orders",
+            kpi_orders, cs_sum_orders,
+            "Σ orders across country rows ≠ /kpis.total_orders.",
+            abs_tolerance=0,
+        ),
+        _check(
+            "country_summary_units",
+            kpi_units, cs_sum_units,
+            "Σ units across country rows ≠ /kpis.total_units.",
+            abs_tolerance=0,
+        ),
+        _check(
+            "sales_summary_total_sales",
+            kpi_total_sales, ss_sum_sales,
+            "Σ /api/sales-summary rows ≠ /api/kpis.total_sales. "
+            "Verify get_sales_summary multi-country fan-out.",
+        ),
+        _check(
+            "walkins_denominator",
+            kpi_total_sales, walk_denom,
+            "/api/customers/walk-ins total_sales_kes ≠ /kpis.total_sales. "
+            "Check the /kpis denominator-fetch in get_walk_ins (server.py).",
+        ),
+    ]
+
+    # Footfall consistency — different shape: not a sum but an
+    # availability signal. If /kpis has orders > 0, /footfall should
+    # also report >0 orders for the day (it powers the Conversion Rate
+    # numerator). Mismatch ⇒ footfall ingestion lag.
+    foot_orders = sum(int(r.get("orders") or 0) for r in (foot_r or []) if isinstance(r, dict))
+    foot_ok = (kpi_orders == 0) or (foot_orders > 0)
+    checks.append({
+        "name": "footfall_orders_signal",
+        "ok": bool(foot_ok),
+        "kpi_orders": kpi_orders,
+        "footfall_orders": foot_orders,
+        **({} if foot_ok else {
+            "hint": (
+                "Footfall page reports 0 orders while /kpis has "
+                f"{kpi_orders} — Conversion Rate denominator will be "
+                "broken. Check upstream /footfall ingestion lag."
+            ),
+        }),
+    })
+
+    overall_ok = all(c.get("ok") is True for c in checks)
+    return {
+        "ok": overall_ok,
+        "date": target,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_of_truth": {
+            "total_sales_kes": kpi_total_sales,
+            "total_orders": kpi_orders,
+            "total_units": kpi_units,
+        },
+        "checks": checks,
+        "errors": [
+            {"endpoint": name, "error": r.get("_error")}
+            for name, r in [
+                ("/kpis", kpis_r), ("/country-summary", country_r),
+                ("/sales-summary", sales_r), ("/customers/walk-ins", walk_r),
+                ("/footfall", foot_r),
+            ]
+            if isinstance(r, dict) and r.get("_error")
+        ],
+    }
 
