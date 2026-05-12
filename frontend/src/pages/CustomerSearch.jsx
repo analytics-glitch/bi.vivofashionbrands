@@ -23,6 +23,8 @@ export default function CustomerSearch() {
   const [tier, setTier] = useState("all");
   const [city, setCity] = useState("");
   const [sortBy, setSortBy] = useState("spend");
+  const [mine, setMine] = useState(false);
+  const [myCustomers, setMyCustomers] = useState([]);
   const [lastContact, setLastContact] = useState({}); // { customer_id: { sent_at, sender_name } }
 
   useEffect(() => {
@@ -33,6 +35,16 @@ export default function CustomerSearch() {
       } catch { /* ignore */ }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!mine) return;
+    (async () => {
+      try {
+        const r = await api.get("/my-customers");
+        setMyCustomers(r.data || []);
+      } catch { /* ignore */ }
+    })();
+  }, [mine]);
 
   const search = async (e) => {
     e?.preventDefault?.();
@@ -48,7 +60,7 @@ export default function CustomerSearch() {
     }
   };
 
-  const baseList = hasSearched ? results : top;
+  const baseList = mine ? myCustomers : (hasSearched ? results : top);
 
   // After list is set, fetch last-contact info for visible customers (best-effort, capped).
   useEffect(() => {
@@ -107,6 +119,13 @@ export default function CustomerSearch() {
       {/* Filters */}
       <div className="mt-6 p-4 bg-white border border-[var(--vivo-border)] rounded-sm flex flex-wrap gap-4 items-end" data-testid="customer-filters">
         <SlidersHorizontal className="h-4 w-4 text-[var(--vivo-muted)] mt-3" />
+        <button
+          onClick={() => setMine((m) => !m)}
+          className={`h-9 px-4 rounded-sm text-sm uppercase tracking-wider border ${mine ? "bg-[var(--vivo-navy)] text-white border-[var(--vivo-navy)]" : "bg-white text-[var(--vivo-navy)] border-[var(--vivo-border)]"}`}
+          data-testid="filter-mine"
+        >
+          {mine ? "✓ My customers" : "My customers"}
+        </button>
         <div>
           <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--vivo-muted)] mb-1.5">Tier</div>
           <div className="flex bg-white border border-[var(--vivo-border)] rounded-sm overflow-hidden" data-testid="filter-tier">
@@ -131,7 +150,7 @@ export default function CustomerSearch() {
       </div>
 
       <div className="mt-6">
-        <h2 className="font-display text-xl">{hasSearched ? `Results (${list.length})` : "Top customers · 60d"}</h2>
+        <h2 className="font-display text-xl">{mine ? `My customers (${list.length})` : (hasSearched ? `Results (${list.length})` : "Top customers · 60d")}</h2>
         <div className="vivo-divider mt-3 mb-5" />
 
         {loading ? (

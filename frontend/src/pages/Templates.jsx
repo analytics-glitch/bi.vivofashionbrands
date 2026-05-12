@@ -113,6 +113,8 @@ export default function Templates() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
 
 const BSP_STYLE = {
   draft: { bg: "bg-zinc-100", text: "text-zinc-700", label: "Draft" },
@@ -155,8 +157,5 @@ function BspStatusPill({ t, onChange }) {
         </div>
       )}
     </div>
-  );
-}
-
   );
 }

@@ -42,6 +42,9 @@ export default function CustomerProfile() {
   const [nbaLoading, setNbaLoading] = useState(false);
   const [churn, setChurn] = useState(null);
   const [timeline, setTimeline] = useState([]);
+  const [assignment, setAssignment] = useState({ assignee_user_id: null, assignee_name: null });
+  const [users, setUsers] = useState([]);
+  const [assignOpen, setAssignOpen] = useState(false);
   const [forgetOpen, setForgetOpen] = useState(false);
   const [forgetConfirm, setForgetConfirm] = useState("");
 
@@ -60,7 +63,7 @@ export default function CustomerProfile() {
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl, asg, us] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -72,6 +75,8 @@ export default function CustomerProfile() {
         api.get(`/insights/wishlists/${id}`),
         api.get(`/customers/${id}/churn-reasoning`).catch(() => ({ data: null })),
         api.get(`/customers/${id}/timeline`).catch(() => ({ data: { events: [] } })),
+        api.get(`/customers/${id}/assignment`).catch(() => ({ data: {} })),
+        api.get(`/users`).catch(() => ({ data: [] })),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
@@ -98,6 +103,8 @@ export default function CustomerProfile() {
       setWishlist(wl.data || []);
       setChurn(cr.data);
       setTimeline(tl.data?.events || []);
+      setAssignment(asg.data || {});
+      setUsers(us.data || []);
     } finally {
       setLoading(false);
     }
@@ -264,6 +271,14 @@ export default function CustomerProfile() {
             <div className="flex items-center gap-3 mt-1 flex-wrap">
               <h1 className="font-display text-3xl md:text-4xl" data-testid="profile-name">{profile.customer_name}</h1>
               {profile.rfm_tier && <RfmBadge tier={profile.rfm_tier} />}
+              <button
+                onClick={() => setAssignOpen(true)}
+                className={`text-xs px-2.5 py-1 rounded-sm border ${assignment.assignee_user_id ? "border-[var(--vivo-navy)] text-[var(--vivo-navy)] bg-white" : "border-dashed border-[var(--vivo-muted)] text-[var(--vivo-muted)]"}`}
+                data-testid="assignment-chip"
+                title="Click to assign or reassign"
+              >
+                {assignment.assignee_user_id ? <>Assigned: <strong className="font-semibold">{assignment.assignee_name}</strong></> : "Unassigned · claim"}
+              </button>
             </div>
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-[var(--vivo-muted)]">
               {profile.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5"/>{profile.phone}</span>}
@@ -942,6 +957,52 @@ export default function CustomerProfile() {
               Add
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* Assignment dialog */}
+      <Dialog open={assignOpen} onOpenChange={setAssignOpen}>
+        <DialogContent className="rounded-sm max-w-md">
+          <DialogHeader><DialogTitle className="font-display">Assign customer</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--vivo-muted)]">
+              Pick the associate who owns this relationship. Only the assigned associate (or a manager) can change it later.
+            </p>
+            <div className="space-y-1.5 max-h-64 overflow-y-auto" data-testid="assignment-list">
+              {users.map((u) => (
+                <button
+                  key={u.user_id}
+                  onClick={async () => {
+                    await api.put(`/customers/${id}/assignment`, { assignee_user_id: u.user_id, assignee_name: u.name });
+                    setAssignment({ assignee_user_id: u.user_id, assignee_name: u.name });
+                    setAssignOpen(false);
+                    toast.success(`Assigned to ${u.name}`);
+                  }}
+                  className={`w-full text-left px-3 py-2 border rounded-sm hover:bg-[var(--vivo-bg)] ${assignment.assignee_user_id === u.user_id ? "border-[var(--vivo-navy)] bg-[var(--vivo-bg)]" : "border-[var(--vivo-border)]"}`}
+                  data-testid={`assign-pick-${u.user_id}`}
+                >
+                  <div className="font-medium text-sm">{u.name}</div>
+                  <div className="text-xs text-[var(--vivo-muted)] uppercase tracking-wider">{u.role}</div>
+                </button>
+              ))}
+            </div>
+            {assignment.assignee_user_id && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  await api.put(`/customers/${id}/assignment`, { assignee_user_id: null });
+                  setAssignment({ assignee_user_id: null, assignee_name: null });
+                  setAssignOpen(false);
+                  toast.success("Unassigned");
+                }}
+                className="rounded-sm w-full text-red-700 border-red-200 hover:bg-red-50"
+                data-testid="assign-clear"
+              >
+                Remove assignment
+              </Button>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

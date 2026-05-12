@@ -8,14 +8,37 @@ export const api = axios.create({
   withCredentials: true,
 });
 
-// Convenience date helpers
+// Convenience date helpers — all timezone-aware for Africa/Nairobi (UTC+3).
+function nairobiNow() {
+  // Returns a Date object whose UTC components reflect Nairobi local time.
+  const offsetMs = 3 * 60 * 60 * 1000;
+  return new Date(Date.now() + offsetMs);
+}
+
 export function today() {
-  return new Date().toISOString().slice(0, 10);
+  return nairobiNow().toISOString().slice(0, 10);
 }
 export function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
+  const d = nairobiNow();
+  d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
+}
+export function mtdStart() {
+  const d = nairobiNow();
+  d.setUTCDate(1);
+  return d.toISOString().slice(0, 10);
+}
+export function ytdStart() {
+  const d = nairobiNow();
+  return `${d.getUTCFullYear()}-01-01`;
+}
+export function prevMonthRange() {
+  const d = nairobiNow();
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();  // 0-indexed; previous month = m-1
+  const firstPrev = new Date(Date.UTC(y, m - 1, 1));
+  const lastPrev = new Date(Date.UTC(y, m, 0));  // day 0 = last day prev
+  return { from: firstPrev.toISOString().slice(0, 10), to: lastPrev.toISOString().slice(0, 10) };
 }
 
 export function formatKES(n) {

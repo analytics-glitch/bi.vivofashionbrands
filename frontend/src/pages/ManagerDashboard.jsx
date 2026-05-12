@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, daysAgo, today, formatKES, formatNumber, formatDate } from "@/lib/api";
+import { api, daysAgo, today, mtdStart, ytdStart, prevMonthRange, formatKES, formatNumber, formatDate } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -86,7 +86,7 @@ const NAVY = "#1F3864";
 const GOLD = "#C9A961";
 
 export default function ManagerDashboard() {
-  const [period, setPeriod] = useState({ from: daysAgo(30), to: today() });
+  const [period, setPeriod] = useState({ from: mtdStart(), to: today(), label: "MTD" });
   const [kpis, setKpis] = useState(null);
   const [byCountry, setByCountry] = useState([]);
   const [byChannel, setByChannel] = useState([]);
@@ -123,7 +123,12 @@ export default function ManagerDashboard() {
     })();
   }, [period]);
 
-  const setRange = (days) => setPeriod({ from: daysAgo(days), to: today() });
+  const setRange = (key) => {
+    if (key === "MTD") setPeriod({ from: mtdStart(), to: today(), label: "MTD" });
+    else if (key === "YTD") setPeriod({ from: ytdStart(), to: today(), label: "YTD" });
+    else if (key === "LASTM") setPeriod({ ...prevMonthRange(), label: "Last month" });
+    else if (typeof key === "number") setPeriod({ from: daysAgo(key), to: today(), label: `${key}d` });
+  };
 
   return (
     <div className="p-6 md:p-10 max-w-[1500px] mx-auto" data-testid="manager-dashboard-page">
@@ -132,18 +137,24 @@ export default function ManagerDashboard() {
           <div className="eyebrow">Insights</div>
           <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Manager CRM</h1>
           <div className="gold-rule mt-4" />
+          <div className="text-xs text-[var(--vivo-muted)] mt-3" data-testid="period-source">
+            Source: BI <code className="text-[var(--vivo-text)]">{period.from} → {period.to}</code> · Africa/Nairobi
+          </div>
         </div>
         <div className="flex bg-white border border-[var(--vivo-border)] rounded-sm overflow-hidden" data-testid="period-toggle">
           {[
+            ["MTD", "MTD"],
+            ["LASTM", "Last month"],
+            ["YTD", "YTD"],
             [7, "7d"],
             [30, "30d"],
             [90, "90d"],
-          ].map(([d, l]) => (
+          ].map(([k, l]) => (
             <button
-              key={d}
-              onClick={() => setRange(d)}
-              className={`h-11 px-4 text-sm ${period.from === daysAgo(d) ? "bg-[var(--vivo-navy)] text-white" : "text-[var(--vivo-muted)]"}`}
-              data-testid={`period-${d}`}
+              key={k}
+              onClick={() => setRange(k)}
+              className={`h-11 px-4 text-sm ${period.label === l ? "bg-[var(--vivo-navy)] text-white" : "text-[var(--vivo-muted)]"}`}
+              data-testid={`period-${k}`}
             >
               {l}
             </button>
@@ -152,7 +163,7 @@ export default function ManagerDashboard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
-        <KPI label="Net sales" value={loading ? "—" : formatKES(kpis?.net_sales)} testid="manager-kpi-sales" />
+        <KPI label={`Net sales · ${period.label}`} value={loading ? "—" : formatKES(kpis?.net_sales)} testid="manager-kpi-sales" />
         <KPI label="Orders" value={loading ? "—" : formatNumber(kpis?.total_orders)} />
         <KPI label="Avg basket" value={loading ? "—" : formatKES(kpis?.avg_basket_size)} />
         <KPI label="Return rate" value={loading ? "—" : `${(kpis?.return_rate || 0).toFixed(1)}%`} />

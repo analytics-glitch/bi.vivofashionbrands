@@ -2006,6 +2006,74 @@ async def dropoff_winback_bulk(payload: Dict[str, Any] = Body(...), request: Req
 
 
 # --------------------------------------------------------------------------- #
+# Customer ↔ associate assignment                                             #
+# --------------------------------------------------------------------------- #
+
+
+@api.get("/users")
+async def list_users(_: User = Depends(get_current_user)):
+    """Lightweight roster for assignment dropdowns. Email/picture excluded."""
+    docs = await db.users.find({}, {"_id": 0, "user_id": 1, "name": 1, "role": 1}).sort("name", 1).to_list(200)
+    return docs
+
+
+@api.get("/customers/{customer_id}/assignment")
+async def get_assignment(customer_id: str, _: User = Depends(get_current_user)):
+    doc = await db.customer_assignments.find_one({"customer_id": customer_id}, {"_id": 0})
+    return doc or {"customer_id": customer_id, "assignee_user_id": None, "assignee_name": None}
+
+
+@api.put("/customers/{customer_id}/assignment")
+async def set_assignment(customer_id: str, payload: Dict[str, Optional[str]] = Body(...), request: Request = None, user: User = Depends(get_current_user)):
+    """Anyone can claim an unassigned customer. Reassigning requires manager."""
+    new_user_id = payload.get("assignee_user_id") or None
+    new_name = payload.get("assignee_name") or None
+    existing = await db.customer_assignments.find_one({"customer_id": customer_id}, {"_id": 0})
+    if existing and existing.get("assignee_user_id") and existing["assignee_user_id"] != user.user_id and user.role != "manager":
+        raise HTTPException(status_code=403, detail="Only the assigned associate or a manager can reassign.")
+
+    if new_user_id:
+        # Resolve name from users collection if not given
+        if not new_name:
+            u = await db.users.find_one({"user_id": new_user_id}, {"_id": 0, "name": 1})
+            new_name = (u or {}).get("name") or new_user_id
+        doc = {
+            "customer_id": customer_id,
+            "assignee_user_id": new_user_id,
+            "assignee_name": new_name,
+            "assigned_at": iso(now_utc()),
+            "assigned_by": user.name,
+        }
+        await db.customer_assignments.update_one({"customer_id": customer_id}, {"$set": doc}, upsert=True)
+        await _audit(user, "customer.assign", "customer", customer_id, request)
+        return doc
+    else:
+        await db.customer_assignments.delete_one({"customer_id": customer_id})
+        await _audit(user, "customer.unassign", "customer", customer_id, request)
+        return {"customer_id": customer_id, "assignee_user_id": None, "assignee_name": None}
+
+
+@api.get("/my-customers")
+async def my_customers(user: User = Depends(get_current_user)):
+    """Customers assigned to the current user, enriched with cache data."""
+    rows = await db.customer_assignments.find({"assignee_user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    customer_ids = [r["customer_id"] for r in rows]
+    if not customer_ids:
+        return []
+    cached = await db.customer_cache.find({"customer_id": {"$in": customer_ids}}, {"_id": 0}).to_list(2000)
+    by_id = {c["customer_id"]: c for c in cached}
+    out = []
+    for r in rows:
+        c = by_id.get(r["customer_id"], {})
+        out.append({
+            **c,
+            "assigned_at": r.get("assigned_at"),
+            "assigned_by": r.get("assigned_by"),
+        })
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Mount router + middleware                                                   #
 # --------------------------------------------------------------------------- #
 
