@@ -1628,15 +1628,28 @@ async def admin_flush_kpi_cache():
         redis_cleared = await rc.delete_prefix("/kpis")
     except Exception as e:
         logger.warning("[flush-kpi-cache] redis prefix delete failed: %s", e)
+    # Mongo `kpi_snapshots` — the "permanent fast" layer added in iter 67.
+    # If the snapshotter wrote a zero-blob (e.g. upstream returning empty
+    # during an outage when there was no previously-good snapshot to
+    # preserve), the in-memory + Redis flushes above won't help because
+    # the route reads from Mongo FIRST. Drop every doc — the next user
+    # request goes to upstream which re-populates within seconds.
+    mongo_snaps_cleared = 0
+    try:
+        res = await db[_SNAPSHOT_COLL].delete_many({})
+        mongo_snaps_cleared = res.deleted_count if hasattr(res, "deleted_count") else 0
+    except Exception as e:
+        logger.warning("[flush-kpi-cache] mongo snapshot delete failed: %s", e)
     logger.warning(
-        "[flush-kpi-cache] admin flush — cleared %d stale entries, %d redis keys",
-        cleared_mem, redis_cleared,
+        "[flush-kpi-cache] admin flush — cleared %d stale entries, %d redis keys, %d mongo snapshots",
+        cleared_mem, redis_cleared, mongo_snaps_cleared,
     )
     return {
         "ok": True,
         "cleared": {
             "stale_cache_entries": cleared_mem,
             "redis_keys": redis_cleared,
+            "mongo_snapshots": mongo_snaps_cleared,
             "fetch_cache": True,
             "disk_blob_removed": True,
         },
