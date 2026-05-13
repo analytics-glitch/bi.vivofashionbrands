@@ -6286,7 +6286,15 @@ async def _compute_style_breakdowns(
             b["sales_6m"] += sales
             if order_date and order_date >= three_w_from.isoformat():
                 b["units_3w"] += qty
-            loc = r.get("channel") or r.get("pos_location_name") or "—"
+            # IMPORTANT: bucket sales by the STORE NAME (`pos_location_name`),
+            # NOT the channel-type (`channel` = Retail / Online / Wholesale).
+            # The inventory walk below indexes SOH by `location_name`
+            # (= store name); if we used `channel` here the two indexes
+            # would have disjoint keys, the set-union output would
+            # show SOH rows with `units_6m: 0` everywhere and the
+            # "Where did it sell?" panel would report 0 units · KES 0
+            # despite the row clearly selling thousands. Fix: May 2026.
+            loc = r.get("pos_location_name") or r.get("channel") or "—"
             lb = per_loc_sales.setdefault(loc, {"location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0})
             lb["units_6m"] += qty
             lb["sales_6m"] += sales
@@ -6561,7 +6569,9 @@ async def _filter_locations_by_color(
         order_date = (r.get("order_date") or "")[:10]
         qty = int(r.get("quantity") or 0)
         sales = float(r.get("total_sales_kes") or 0)
-        loc = r.get("channel") or r.get("pos_location_name") or "—"
+        # See May-2026 fix note above — must match the inventory walk's
+        # `location_name` key, not the channel-type.
+        loc = r.get("pos_location_name") or r.get("channel") or "—"
         b = per_loc_sales.setdefault(loc, {
             "location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
         })
@@ -6683,7 +6693,10 @@ async def analytics_style_sku_breakdown_bulk(
         is_recent = order_date and order_date >= three_w_iso
         if is_recent:
             b["units_3w"] += qty
-        loc = r.get("channel") or r.get("pos_location_name") or "—"
+        # See May-2026 fix note in `_run_single_style_scan` — bucket by
+        # store name, not channel-type, so this matches the inventory
+        # walk's `location_name` key.
+        loc = r.get("pos_location_name") or r.get("channel") or "—"
         lb = per_style_loc_sales[sn].setdefault(loc, {
             "location": loc, "units_6m": 0, "units_3w": 0, "sales_6m": 0.0,
         })
