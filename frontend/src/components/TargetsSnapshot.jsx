@@ -175,23 +175,12 @@ const TargetsSnapshot = ({ quarterLabel, daysLeft, rows, overall, onClose }) => 
           data-snapshot-capture
           className="rounded-2xl bg-[#f5f1ea] p-4 border border-border"
         >
-          {/* Top row: quarter pill + days-remaining */}
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-orange-100 text-orange-900 text-[10px] font-bold uppercase tracking-wider">
-              {quarterLabel} Performance Update
-            </span>
-            <span className="text-[11px] font-semibold text-muted tabular-nums">
-              {daysLeft} days remaining
-            </span>
-          </div>
-
-          {/* Title — single heading row (per CEO feedback "no need for two heading rows") */}
+          {/* Title — single heading row; the quarter is part of the title
+              so we omit the top pill + days-remaining + subtitle per
+              May 2026 CEO feedback. */}
           <h1 className="font-serif font-extrabold text-[26px] leading-[1.05] text-foreground tracking-tight">
-            Group Quarterly Performance
+            {quarterLabel} Performance Update
           </h1>
-          <p className="text-muted text-[11px] mt-1.5">
-            Consolidated view across all markets · Target period {quarterLabel}
-          </p>
 
           {/* Hero card */}
           <div className="mt-4 rounded-2xl bg-[#1a5c38] p-4 text-white">
