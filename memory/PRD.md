@@ -599,5 +599,9 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 ### Recent (Feb 2026 — Iter 69)
 - **Bug fix · "Where did it sell?" panel showed 0 units everywhere.** Three call-sites in the SOR per-style location aggregator (`_run_single_style_scan` L6289, `_filter_locations_by_color` L6564, the bulk multi-style scanner L6686) were bucketing sales rows by `r["channel"]` (the coarse `Retail/Online/Wholesale` label) while the inventory walk indexed SOH by `location_name` (the store name like `Vivo Sarit`). The set-union of the two had disjoint keys → every panel row got SOH but `units_6m: 0` even though the parent SOR table correctly showed `units_6m: 1,022`. Fix: swap precedence so `pos_location_name` wins, with `channel` only as fallback. Verified with `Vivo Waridi Pencil Skirt`: 29 locations · 28 non-zero · total 1,022 units matches the main row exactly.
 
+### Recent (Feb 2026 — Iter 70)
+- **Warehouse-IBT dedup against rolling 3-day replenishments.** When the daily replenishment report has flagged a (style, destination_store) pair within the last 3 calendar days the warehouse-to-store IBT recommender now SKIPS that pair — the picking team is already shipping that style there and adding it to a second list would queue duplicate stock and overstock the floor. Implementation reads `_repl_cache` directly (READ-ONLY; never triggers an upstream fan-out) to avoid amplifying load on the rate-limited Vivo BI API. Window-overlap + country-scope filters applied to the cache scan. Pickups logged at INFO. 3 regression tests added at `/app/backend/tests/test_iteration_70_ibt_repl_dedup.py`.
+- **`/api/analytics/replenishment-report` rows now carry `style_name`** alongside `product_name` — needed for the dedup join with the warehouse-IBT (which keys off `style_name`). Falls back to `product_name` for older inventory snapshots that didn't carry the field.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

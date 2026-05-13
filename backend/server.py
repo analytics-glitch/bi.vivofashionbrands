@@ -3113,6 +3113,79 @@ async def analytics_ibt_suggestions(
 _ibt_dedup_cache: Dict[str, Tuple[float, set]] = {}
 _IBT_DEDUP_TTL = 60.0  # seconds
 
+# Replenishment-dedup for the warehouse-IBT recommender.
+# When a (style, destination_store) has appeared in ANY daily
+# replenishment recommendation in the last 3 calendar days the picking
+# team is already shipping that style from the warehouse — adding it to
+# the IBT-from-warehouse list would queue a SECOND wave of stock onto
+# the same shop floor and over-stock the destination. Cached for 5 min
+# because the underlying /analytics/replenishment-report 3-day window
+# is a heavy fan-out that we don't want to re-run on every warehouse-IBT
+# request.
+_repl_dedup_cache: Dict[str, Tuple[float, set]] = {}
+_REPL_DEDUP_TTL = 300.0  # 5 min
+
+async def _replenishment_pairs_for_dedup(country: Optional[str]) -> set:
+    """Return a set of (style_name, pos_location) pairs that the daily
+    replenishment report has surfaced over the last 3 calendar days.
+    Used to dedupe the warehouse → store IBT recommender so the same
+    (style, destination) isn't queued from two different pickers.
+
+    READ-ONLY against the existing `_repl_cache` — we never trigger a
+    fresh fan-out from this code path. Why: the replenishment report
+    issues ~9-21 simultaneous `/orders` calls plus a full `/inventory`
+    walk; running it from inside the warehouse-IBT route (which itself
+    fans out SOR + /orders + /inventory) tipped the upstream into 429
+    rate-limiting. The morning replenishment workflow naturally warms
+    this cache by 9 AM; if the cache is cold (rare; only between
+    midnight cache-eviction and the first morning click) the dedup
+    degrades gracefully to "no matches" and pickers catch any duplicate
+    visually — strictly better than the 429-storm alternative.
+    """
+    ck = f"{country or ''}"
+    hit = _repl_dedup_cache.get(ck)
+    if hit and (time.time() - hit[0]) < _REPL_DEDUP_TTL:
+        return hit[1]
+    out: set = set()
+    try:
+        today = datetime.now(timezone.utc).date()
+        # Scan every entry in the live replenishment cache; keep any
+        # whose date window OVERLAPS the last 3 calendar days (today
+        # and the 2 prior). The cache key is "df|dt|country|owners";
+        # entries are stored by the exact (date_from, date_to) the user
+        # requested. Treating them as a rolling window means we catch
+        # the morning report regardless of whether ops viewed it for
+        # "today only" or "yesterday + today".
+        threshold = today - timedelta(days=2)
+        for cache_key, (_, payload) in list(_repl_cache.items()):
+            try:
+                parts = cache_key.split("|")
+                df_str, dt_str = parts[0], parts[1]
+                ck_country = parts[2] if len(parts) > 2 else ""
+                df_ck = datetime.strptime(df_str, "%Y-%m-%d").date()
+                dt_ck = datetime.strptime(dt_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            # Country gate — only apply same-country dedup. An empty
+            # `country` filter on the IBT route matches ALL replenishment
+            # entries regardless of their country.
+            if country and ck_country and ck_country != country:
+                continue
+            # Window must overlap [today-2, today].
+            if dt_ck < threshold or df_ck > today:
+                continue
+            for r in (payload or {}).get("rows", []) or []:
+                style = (r.get("style_name") or r.get("product_name") or "").strip()
+                store = (r.get("pos_location") or "").strip()
+                if style and store:
+                    out.add((style, store))
+    except Exception as e:
+        logger.warning("[ibt-wh] replenishment dedup scan failed: %s — empty set", e)
+        out = set()
+    _repl_dedup_cache[ck] = (time.time(), out)
+    return out
+
+
 async def _ibt_destinations_for_dedup(
     date_from: Optional[str], date_to: Optional[str], country: Optional[str]
 ) -> set:
@@ -3241,6 +3314,15 @@ async def analytics_ibt_warehouse_to_store(
     # overstocked. IBT wins because it activates dead stock at the
     # source store instead of draining the warehouse buffer.
     ibt_dedup = await _ibt_destinations_for_dedup(date_from, date_to, country)
+    # Dedup against the rolling 3-day daily-replenishment list — when a
+    # (style, destination) has been on the picking team's
+    # replenishment sheet within the last 3 days the warehouse is
+    # ALREADY shipping that style there. Adding the same pair to the
+    # warehouse-IBT recommendation would queue a second wave of stock
+    # and overstock the destination. Per-store request from the ops
+    # team (May 2026).
+    repl_dedup = await _replenishment_pairs_for_dedup(country)
+    skipped_via_repl = 0
     # Online channels never receive physical inventory transfers — they
     # ship from the warehouse directly to customers. Surface only
     # bricks-and-mortar destinations so floor-replenishment teams aren't
@@ -3253,6 +3335,11 @@ async def analytics_ibt_warehouse_to_store(
             continue
         # Skip if this (style, store) is already in the IBT recs.
         if (style, store) in ibt_dedup:
+            continue
+        # Skip if the daily replenishment has flagged the same pair in
+        # the last 3 days — the warehouse is already pushing it.
+        if (style, store) in repl_dedup:
+            skipped_via_repl += 1
             continue
         daily = units / window_days
         if daily < min_daily_velocity:
@@ -3291,6 +3378,11 @@ async def analytics_ibt_warehouse_to_store(
         })
     suggestions.sort(key=lambda r: r["missed_sales_risk"], reverse=True)
     final_wh = suggestions[: int(limit)]
+    if skipped_via_repl:
+        logger.info(
+            "[ibt-wh] dedup against last-3-day replenishments skipped %d (style,store) pairs",
+            skipped_via_repl,
+        )
     # Track first-seen for warehouse → store too (from_store is always
     # the central warehouse so we tag it explicitly).
     try:
@@ -7376,6 +7468,11 @@ async def analytics_replenishment_report(
             "pos_location": c["loc"],
             "country": loc_country.get(c["loc"], ""),
             "product_name": meta.get("product_name") or "",
+            # `style_name` is what the warehouse-IBT dedup keys off — same
+            # field used by the SOR + ibt-warehouse-to-store pipelines.
+            # Falls back to product_name when the inventory snapshot for
+            # this SKU didn't carry a style_name (rare; older imports).
+            "style_name": meta.get("style_name") or meta.get("product_name") or "",
             "size": meta.get("size") or "",
             "barcode": meta.get("barcode") or "",
             "sku": sku,
