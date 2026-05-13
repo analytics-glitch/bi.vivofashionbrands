@@ -46,7 +46,7 @@ const Tile = ({ label, flag, pct, achieved, target, projected, isTop }) => (
       </div>
     ) : (
       <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-900 text-[9.5px] font-bold uppercase tracking-wider">
-        proj.
+        projection
       </div>
     )}
     <div className="mt-2 space-y-1 text-[10.5px] leading-tight">
@@ -84,15 +84,17 @@ const Ring = ({ pct }) => {
       <div
         className="absolute inset-0 rounded-full"
         style={{
-          background: `conic-gradient(#ffffff ${clamped}%, rgba(255,255,255,0.25) ${clamped}% 100%)`,
+          // Orange progress arc on a translucent track — matches the
+          // PROJ. pill colour family on the country tiles below.
+          background: `conic-gradient(#f97316 ${clamped}%, rgba(255,255,255,0.25) ${clamped}% 100%)`,
         }}
       />
       <div className="absolute inset-[6px] rounded-full bg-[#1a5c38] flex flex-col items-center justify-center">
-        <div className="text-[18px] font-extrabold text-white leading-none tabular-nums">
+        <div className="text-[16px] font-extrabold text-white leading-none tabular-nums">
           {pct.toFixed(0)}%
         </div>
-        <div className="text-[8px] font-bold uppercase tracking-wider text-white/80 leading-none mt-1">
-          proj.
+        <div className="text-[7px] font-bold uppercase tracking-wider text-white/80 leading-none mt-1">
+          projection
         </div>
       </div>
     </div>
@@ -178,7 +180,7 @@ const TargetsSnapshot = ({ quarterLabel, daysLeft, rows, overall, onClose }) => 
           {/* Title — single heading row; the quarter is part of the title
               so we omit the top pill + days-remaining + subtitle per
               May 2026 CEO feedback. */}
-          <h1 className="font-serif font-extrabold text-[26px] leading-[1.05] text-foreground tracking-tight">
+          <h1 className="font-serif font-extrabold text-[26px] leading-[1.05] tracking-tight text-orange-600">
             {quarterLabel} Performance Update
           </h1>
 
