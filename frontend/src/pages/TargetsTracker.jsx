@@ -5,7 +5,8 @@ import AnnualTargetsCard from "@/components/AnnualTargetsCard";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import TotalSalesSummary from "@/components/TotalSalesSummary";
 import CustomProjectionCard from "@/components/CustomProjectionCard";
-import { Target, TrendUp, CalendarBlank } from "@phosphor-icons/react";
+import TargetsSnapshot from "@/components/TargetsSnapshot";
+import { Target, TrendUp, CalendarBlank, DeviceMobile } from "@phosphor-icons/react";
 
 /**
  * Targets Tracker page.
@@ -313,6 +314,7 @@ export default function TargetsTracker() {
   const [data, setData] = useState(null);
   const [priorYearData, setPriorYearData] = useState(null);
   const [error, setError] = useState(null);
+  const [snapshot, setSnapshot] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,9 +434,39 @@ export default function TargetsTracker() {
     </div>
   );
 
+  // Snapshot view — full-screen overlay, single-screen mobile-friendly
+  // card the CEO can screenshot or save as a PNG to share. Sources
+  // exactly the same data as the Current Quarter tile grid so the
+  // snapshot is always a faithful mirror of what's on screen.
+  if (snapshot && cards.current) {
+    return (
+      <TargetsSnapshot
+        quarterLabel={cards.cqLabel}
+        daysLeft={cards.current.daysLeft}
+        rows={cards.current.rows}
+        overall={cards.current.overall}
+        onClose={() => setSnapshot(false)}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6" data-testid="targets-tracker-page">
-      <Header />
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <Header />
+        {cards.current && (
+          <button
+            type="button"
+            onClick={() => setSnapshot(true)}
+            data-testid="targets-open-snapshot"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold border border-border bg-white hover:border-brand/60 hover:text-brand transition-colors shrink-0"
+            title="Compact mobile-friendly view of the current-quarter target — perfect for one screenshot"
+          >
+            <DeviceMobile size={13} weight="bold" />
+            Mobile snapshot
+          </button>
+        )}
+      </div>
 
       {/* Annual */}
       <TargetsCardShell

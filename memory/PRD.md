@@ -592,5 +592,9 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Recon + auto-recovery intentionally bypass the snapshot** — they call `_get_kpis_live()` directly so they observe ground truth from upstream and flag real divergences rather than reading their own snapshot back.
 - **Empty-write guard preserved**: the snapshot refresher never overwrites a previously-good snapshot with zeros during an upstream batch-lag window, so users keep seeing the last-known-good numbers even while Vivo BI is mid-refresh.
 
+### Recent (Feb 2026 — Iter 68)
+- **Targets · Mobile snapshot.** New `TargetsSnapshot` component renders a one-screen shareable card mirroring the CEO mock: Q2 pill + days-remaining, single "Group Quarterly Performance" heading, green hero card with conic-gradient progress ring + KES achieved / target / projected, 2×2 country grid (Kenya · Rwanda · Uganda · Online) with `Achieved / Target / Projected` rows and a progress bar per tile. Top-performing country (highest projected / target ratio) gets an orange-border highlight + ★ TOP PERFORMER pill. "Save image" button uses `html2canvas` to export a high-DPI PNG. New `Mobile snapshot` pill on the Targets page header opens the overlay.
+- **CEO feedback addressed** in the snapshot vs. the legacy mock: removed the long KEY MESSAGE paragraph, dropped the duplicate heading row, every row of numbers is labelled (`Achieved · Target · Projected`), and the percentage headline is contextualised by a `PROJ.` pill + a "X% of quarterly target" subtitle in the hero card.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
