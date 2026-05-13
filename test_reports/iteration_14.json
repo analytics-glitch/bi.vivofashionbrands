@@ -1,0 +1,35 @@
+{
+  "summary": "Training proxy backend + Training page frontend verified. 17/17 pytest tests pass; UI renders with live data and the lateness −3h shift is correctly applied.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Training", "issues": ["Recharts logs minor 'width(-1) height(-1)' warnings during initial mount before chart container measures. Cosmetic only — charts render correctly afterwards (verified via screenshot)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_training.py",
+    "/app/test_reports/pytest/iter14_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Associate role behaviour: per current Vivo policy in server.py (_resolve_role + the upgrade-on-login block in /auth/session), every user is bumped to role='manager'. The seeded associate session therefore returns 200 on /training endpoints, not 403. This is expected per the request note. If 403 needs to be enforced for true associates, the upgrade block in /auth/session needs removal.",
+    "training.py uses Depends(require_manager) consistently — auth gating implementation is correct; the 'fail-open' is purely due to the policy described above.",
+    "_shift_lateness correctly walks dict/list and floors at 0; verified Quality Standards raw 10.45 → 7.45 and Odoo raw 10.54 → 7.54.",
+    "Frontend Training.jsx (~350 lines) is fine size-wise. The recharts warnings on first render could be suppressed by setting minWidth/minHeight on the chart containers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_training.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "manager session_token: test_session_vivo_mgr_1778250692444; associate session_token: test_session_vivo_assoc_1778250692444 (but role='manager' due to policy).",
+  "seed_data_creation": "None — used pre-existing seeded sessions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Training proxy lives in /app/backend/training.py mounted from server.py line ~2096. Lateness offset is env-driven (TRAINING_LATENESS_OFFSET_H, default 3). Frontend page at /app/frontend/src/pages/Training.jsx, nav entry in AppShell.jsx. Pytest suite at /app/backend/tests/test_training.py — re-run with `pytest /app/backend/tests/test_training.py -v`.",
+  "rca of the issue": "Bug 'attendance/lateness 3h ahead' caused by upstream computing (check_in_utc − training_start_local). Fixed in proxy via _shift_lateness recursively subtracting LATENESS_OFFSET_HOURS (default 3, clamped at 0) from any key containing 'lateness'. Verified end-to-end."
+}
