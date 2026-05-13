@@ -14,7 +14,6 @@ import {
   Layers,
   ClipboardList,
   Compass,
-  GraduationCap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -27,7 +26,6 @@ const NAV = [
   { to: "/manager", label: "Insights", icon: BarChart3, testid: "nav-manager", manager: true },
   { to: "/cohorts", label: "Cohorts", icon: Layers, testid: "nav-cohorts", manager: true },
   { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true },
-  { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true },
   { to: "/audit", label: "Audit", icon: ShieldCheck, testid: "nav-audit", manager: true },
   { to: "/data-quality", label: "Data quality", icon: ShieldCheck, testid: "nav-data-quality", manager: true },
