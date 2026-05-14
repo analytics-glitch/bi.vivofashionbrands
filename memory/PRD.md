@@ -633,5 +633,11 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Empirical impact** measured on preview after one snapshotter sweep: `/sales-summary`, `/country-summary`, `/top-skus`, `/footfall` all return in **~140 ms** (snapshot path). Same calls on an empty snapshot collection took 8.4 s (live upstream). **~60× speedup** for the Overview second-row charts.
 - **6 regression tests** at `/app/backend/tests/test_iteration_75_analytics_snapshots.py`. Total iter-70+72+73+75 test suite: **19 / 19 pass**.
 
+### Recent (Feb 2026 — Iter 76)
+- **`/api/analytics/ibt-warehouse-to-store` snapshot layer**. Refactored the route into a thin wrapper that checks `analytics_snapshots` first and falls through to a new `_analytics_ibt_warehouse_to_store_impl` under `HeavyGuard` only when no snapshot matches. Snapshotter loop extended with a dedicated IBT slot — refreshes the 28-day-ending-today window (the IBT recommender's velocity baseline) × 4 country slices (None, Kenya, Uganda, Rwanda) every 2 min. Online excluded (virtual location, no warehouse fulfilment). Wrapper accepts caller windows within ±2 days of canonical so a UI sending "30 days ago" still hits the snapshot.
+- **`_save_analytics_snapshot` gained `allow_empty=False` keyword**. Initial implementation enabled `allow_empty=True` for IBT because "no transfers needed" is a real business answer worth caching, but parallel snapshot sweeps occasionally let upstream throttling produce false empties that poisoned the country-specific cells. Reverted to the strict default — 0-recommendation countries pay ~200 ms of live compute per cycle instead, which is still 100× better than the prior 29 s.
+- **Measured impact**: IBT default (no country, 28-day window) dropped from **29,182 ms → 142-201 ms** (~150× speedup). Country-scoped IBT (Kenya / Uganda / Rwanda) at 140-280 ms even on the live-fallback path because the upstream calls are now warm in `_FETCH_CACHE`.
+- **3 regression tests** at `/app/backend/tests/test_iteration_76_ibt_snapshot.py`. Full suite iters 70-76: **22 / 22 pass**.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

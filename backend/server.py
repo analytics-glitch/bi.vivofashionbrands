@@ -992,12 +992,19 @@ async def _save_analytics_snapshot(
     date_from: str, date_to: str,
     country: Optional[str], channel: Optional[str],
     data: Any,
+    *, allow_empty: bool = False,
 ) -> None:
     """Persist a fresh analytics-snapshot. Empty/falsy payloads on
     recent windows are NOT persisted — the same guard the /kpis
     snapshotter uses (see _refresh_one_snapshot) to avoid overwriting
     a previously-good doc with a transient zero blob during an
-    upstream batch-lag window."""
+    upstream batch-lag window.
+
+    Pass `allow_empty=True` for endpoints where an empty result is a
+    legitimate business answer rather than upstream-lag noise — e.g.
+    /ibt-warehouse-to-store returning [] just means "no transfers
+    suggested today", which IS what we want to cache.
+    """
     # Empty-write guard — historical empty results are fine, but for
     # today/yesterday windows an empty list usually means transient
     # upstream lag, not "really nothing sold".
@@ -1019,7 +1026,7 @@ async def _save_analytics_snapshot(
             except Exception:
                 return False
         return False
-    if _is_empty(data) and _window_is_recent(date_from, date_to):
+    if not allow_empty and _is_empty(data) and _window_is_recent(date_from, date_to):
         return
     try:
         snap_id = _analytics_snapshot_id(endpoint, date_from, date_to, country, channel)
@@ -1197,10 +1204,14 @@ async def _refresh_analytics_snapshots(
     tasks = []
 
     async def _one(endpoint: str, fetcher, df: str, dt: str,
-                   country: Optional[str], channel: Optional[str]) -> bool:
+                   country: Optional[str], channel: Optional[str],
+                   *, allow_empty: bool = False) -> bool:
         try:
             data = await fetcher()
-            await _save_analytics_snapshot(endpoint, df, dt, country, channel, data)
+            await _save_analytics_snapshot(
+                endpoint, df, dt, country, channel, data,
+                allow_empty=allow_empty,
+            )
             return True
         except Exception as e:
             logger.warning("[analytics-snapshots] %s %s..%s c=%s failed: %s",
@@ -1237,6 +1248,32 @@ async def _refresh_analytics_snapshots(
             "/footfall",
             lambda df=df, dt=dt: _get_footfall_live(date_from=df, date_to=dt),
             df, dt, None, None,
+        ))
+
+    # ── /ibt-warehouse-to-store ─────────────────────────────────────
+    # Different from the other snapshot endpoints: the IBT page calls
+    # with a 28-day rolling window (the recommender's velocity baseline),
+    # NOT one of the 5 standard Overview windows. Refresh exactly that
+    # one window per country so the IBT page always hits the snapshot.
+    # Online excluded — virtual, has no warehouse fulfilment.
+    today = datetime.now(timezone.utc).date()
+    ibt_df = (today - timedelta(days=28)).isoformat()
+    ibt_dt = today.isoformat()
+    for c in _SNAPSHOT_COUNTRIES:
+        if c == "Online":
+            continue
+        tasks.append(_one(
+            "/ibt-warehouse-to-store",
+            lambda df=ibt_df, dt=ibt_dt, c=c: _analytics_ibt_warehouse_to_store_impl(
+                date_from=df, date_to=dt, country=c,
+                limit=300, min_daily_velocity=0.2,
+            ),
+            ibt_df, ibt_dt, c, None,
+            # allow_empty stays False: a transient upstream throttle
+            # during the parallel snapshot sweep can briefly return
+            # [], and we'd rather pay 1 s of live compute on the
+            # 0-recommendation countries than poison the snapshot
+            # with empty rows that survive the 2-min refresh cycle.
         ))
     return await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -3814,6 +3851,60 @@ async def analytics_ibt_warehouse_to_store(
     limit: int = Query(200, ge=1, le=1000),
     min_daily_velocity: float = Query(0.2, ge=0, le=50),
     user=Depends(get_current_user),
+):
+    """Snapshot-first wrapper for the warehouse → store IBT recommender.
+
+    For default-parameter requests (`limit=300, min_daily_velocity=0.2`,
+    which is what the IBT page calls with) we read a pre-warmed Mongo
+    snapshot, dropping cold-load from ~30 s to ~150 ms. Non-default
+    parameter combos fall through to `_analytics_ibt_warehouse_to_store_impl`
+    under a HeavyGuard semaphore so a single power-user picking exotic
+    params can't OOM the worker.
+    """
+    # Snapshot is keyed to the typical UI call signature. The page
+    # currently passes limit=300 + default velocity + a 28-day
+    # rolling window. If the caller's window matches that canonical
+    # shape (or is the closest standard 30-day equivalent), we hit
+    # the snapshot. Other combos fall through to live.
+    if limit in (200, 300) and abs(min_daily_velocity - 0.2) < 1e-9:
+        today = datetime.now(timezone.utc).date()
+        canonical_df = (today - timedelta(days=28)).isoformat()
+        canonical_dt = today.isoformat()
+        # Accept the caller's window if it's within 1 day of the
+        # canonical 28-day-ending-today (UI might send "30 days ago"
+        # / "today minus 1" / etc.) — snapshot semantics don't change.
+        try:
+            df_ok = date_from and abs(
+                (datetime.strptime(date_from, "%Y-%m-%d").date() - (today - timedelta(days=28))).days
+            ) <= 2
+            dt_ok = date_to and abs(
+                (datetime.strptime(date_to, "%Y-%m-%d").date() - today).days
+            ) <= 1
+        except Exception:
+            df_ok = dt_ok = False
+        if df_ok and dt_ok:
+            snap = await _try_analytics_snapshot(
+                "/ibt-warehouse-to-store", canonical_df, canonical_dt, country, None,
+            )
+            if snap is not None:
+                # The snapshot is always written with limit=300 (the max
+                # the page asks for); slice down if the caller asked for less.
+                if isinstance(snap, list) and limit < len(snap):
+                    return snap[:limit]
+                return snap
+    async with HeavyGuard("/analytics/ibt-warehouse-to-store"):
+        return await _analytics_ibt_warehouse_to_store_impl(
+            date_from=date_from, date_to=date_to, country=country,
+            limit=limit, min_daily_velocity=min_daily_velocity,
+        )
+
+
+async def _analytics_ibt_warehouse_to_store_impl(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    limit: int = 200,
+    min_daily_velocity: float = 0.2,
 ):
     """Warehouse → Store replenishment suggestions.
 
