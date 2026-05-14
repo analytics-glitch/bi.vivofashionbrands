@@ -445,39 +445,66 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
         if breached:
             issues_found += 1
             if "cache_hit_rate_critical" in breached:
-                # No good auto-fix — flushing makes hit-rate worse temporarily.
-                # Wait 60 s for natural warmup, then re-measure.
-                await asyncio.sleep(60)
+                # Iter 82 — Surgical fix: call /admin/warm-snapshots-now
+                # to POPULATE the snapshot layer (the previous "wait 60s"
+                # approach didn't actually do anything). Flushing is the
+                # wrong tool — it makes the hit rate WORSE.
+                #
+                # The warm endpoint runs in the background (fire-and-
+                # forget) so we don't trip the ingress 60s timeout.
+                # We then wait 90 s for the sweep to finish + new requests
+                # to start hitting the warm snapshots before re-measuring.
+                wstatus, _, wbody = await _time_post(
+                    client, f"{base_url}/api/admin/warm-snapshots-now",
+                    headers, timeout=15,
+                )
+                warm_msg = (
+                    f"sweep queued (~120s)"
+                    if wstatus == 200 and (wbody or {}).get("queued")
+                    else f"warm endpoint returned {wstatus}"
+                )
+                await asyncio.sleep(90)
                 sys_h2, breached2 = await _check_system_health(client, base_url, headers)
                 if "cache_hit_rate_critical" not in breached2:
                     issues_auto_fixed += 1
                     fix_details.append({
                         "issue": f"Cache hit rate critically low ({sys_h['cache_hit_rate']}%)",
-                        "attempt_1": "Wait 60s for natural request-driven warmup",
+                        "attempt_1": f"/admin/warm-snapshots-now → {warm_msg}",
                         "attempt_1_result": f"success — hit rate now {sys_h2['cache_hit_rate']}%",
                         "resolved": True, "escalated": False,
                     })
                     sys_h = sys_h2
                 else:
                     issues_escalated += 1
-                    critical_msgs.append(f"Cache hit rate stuck at {sys_h2['cache_hit_rate']}% after 60s")
+                    critical_msgs.append(f"Cache hit rate stuck at {sys_h2['cache_hit_rate']}% after snapshot warm")
                     fix_details.append({
                         "issue": "Cache hit rate critically low",
-                        "attempt_1": "Wait 60s", "attempt_1_result": f"failed — {sys_h2['cache_hit_rate']}%",
+                        "attempt_1": f"/admin/warm-snapshots-now → {warm_msg}",
+                        "attempt_1_result": f"failed — hit rate still {sys_h2['cache_hit_rate']}%",
                         "resolved": False, "escalated": True,
                     })
                     sys_h = sys_h2
             if "rss_critical" in breached:
-                # Attempt 1: trim _FETCH_CACHE (no destructive endpoint
-                # exists today — we flush which is a superset).
-                await _trim_fetch_cache(client, base_url, headers)
-                await asyncio.sleep(10)
+                # Iter 82 — Surgical fix: call /admin/trim-memory which
+                # clears the BIG drill-down caches (repl, styles, curves)
+                # but PRESERVES the snapshot caches so hit-rate stays up.
+                # Then forces GC. Returns rss_before/rss_after for the log.
+                tstatus, _, tbody = await _time_post(
+                    client, f"{base_url}/api/admin/trim-memory",
+                    headers, timeout=30,
+                )
+                trim_msg = (
+                    f"freed {(tbody or {}).get('rss_delta_mb', 0)}MB "
+                    f"({(tbody or {}).get('cleared_entries', 0)} entries, "
+                    f"{(tbody or {}).get('gc_freed', 0)} objs)"
+                ) if tstatus == 200 else f"trim endpoint returned {tstatus}"
+                await asyncio.sleep(5)
                 sys_h3, breached3 = await _check_system_health(client, base_url, headers)
                 if "rss_critical" not in breached3:
                     issues_auto_fixed += 1
                     fix_details.append({
                         "issue": f"RSS memory critically high ({sys_h['rss_mb']}MB)",
-                        "attempt_1": "Trim _FETCH_CACHE via flush + 10s",
+                        "attempt_1": f"/admin/trim-memory → {trim_msg}",
                         "attempt_1_result": f"success — RSS now {sys_h3['rss_mb']}MB",
                         "resolved": True, "escalated": False,
                     })
@@ -487,8 +514,8 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                     critical_msgs.append(f"RSS still {sys_h3['rss_mb']}MB after trim — pod restart may be required")
                     fix_details.append({
                         "issue": "RSS memory critically high",
-                        "attempt_1": "Trim _FETCH_CACHE + 10s",
-                        "attempt_1_result": f"failed — {sys_h3['rss_mb']}MB",
+                        "attempt_1": f"/admin/trim-memory → {trim_msg}",
+                        "attempt_1_result": f"failed — RSS still {sys_h3['rss_mb']}MB",
                         "resolved": False, "escalated": True,
                     })
                     sys_h = sys_h3

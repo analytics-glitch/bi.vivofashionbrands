@@ -3019,6 +3019,145 @@ async def trigger_audit(secret: str = "", mode: str = "scheduled"):
     return {"ok": True, "queued": True, "mode": mode, "queued_at": datetime.now(timezone.utc).isoformat()}
 
 
+@api_router.post("/admin/warm-snapshots-now")
+async def admin_warm_snapshots_now(
+    sync: bool = Query(False),
+    _: User = Depends(require_admin),
+):
+    """Iter 82 — Triggers ONE snapshot sweep on demand.
+
+    Default mode (sync=false, ~50 ms response): schedules the sweep
+    as a background task and returns immediately — fits inside the
+    60 s ingress timeout that browsers / cron services impose.
+    The audit service uses this mode.
+
+    `sync=true` blocks for the full sweep (2-3 min) and returns the
+    counters — used by tests/pytest where the caller can wait.
+
+    Surgical fix for the "cache hit rate critically low" audit
+    failure. Hitting `/admin/flush-kpi-cache` would destroy the
+    snapshot layer (making hit rate worse); this endpoint POPULATES
+    the snapshot cache so the next user requests resolve at <50 ms.
+    """
+    async def _sweep() -> Dict[str, Any]:
+        started = time.perf_counter()
+        windows = _standard_snapshot_windows()
+        kpi_tasks = []
+        for df, dt in windows:
+            for c in _SNAPSHOT_COUNTRIES:
+                kpi_tasks.append(_refresh_one_snapshot(df, dt, c, None))
+        kpi_results = await asyncio.gather(*kpi_tasks, return_exceptions=True)
+        kpi_ok = sum(1 for r in kpi_results if r is True)
+        try:
+            analytics_results = await _refresh_analytics_snapshots(windows)
+            analytics_ok = sum(1 for r in analytics_results if r is True)
+            analytics_total = len(analytics_results)
+        except Exception as e:
+            analytics_ok = 0
+            analytics_total = 0
+            logger.warning("[warm-snapshots-now] analytics sweep failed: %s", e)
+        duration = round(time.perf_counter() - started, 2)
+        return {
+            "ok": True,
+            "kpi_written": int(kpi_ok),
+            "kpi_total": len(kpi_results),
+            "analytics_written": int(analytics_ok),
+            "analytics_total": int(analytics_total),
+            "duration_sec": duration,
+        }
+
+    if sync:
+        return await _sweep()
+    # Fire-and-forget — schedule and ack immediately.
+    asyncio.create_task(_sweep())
+    return {
+        "ok": True,
+        "queued": True,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "expected_completion_sec": 120,
+    }
+
+
+@api_router.post("/admin/trim-memory")
+async def admin_trim_memory(_: User = Depends(require_admin)):
+    """Iter 82 — Non-destructive memory trim for the "RSS critical"
+    audit failure.
+
+    Clears the BIG drill-down caches that grow unbounded over a day
+    (repl, styles, curves, location breakdowns) but preserves the
+    snapshot caches that keep the hit rate up. Then forces a Python
+    GC pass to reclaim the memory immediately so the next audit
+    sample sees the drop.
+
+    Returns rss_before_mb, rss_after_mb, gc_freed_objects.
+    Used by the 2-hour audit's auto-recovery and by the admin's
+    "Trim memory" button.
+    """
+    import gc
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process()
+        rss_before = int(proc.memory_info().rss / (1024 * 1024))
+    except Exception:
+        rss_before = -1
+
+    # Clear the heavy drill-down caches but PRESERVE _kpi_stale_cache
+    # and the Mongo snapshots so hit-rate doesn't tank.
+    cleared_entries = 0
+    drill_caches = [
+        ("_repl_cache", _repl_cache),
+        ("_repl_inflight", _repl_inflight),
+        ("_all_styles_cache", _all_styles_cache),
+        ("_sku_breakdown_cache", _sku_breakdown_cache),
+        ("_curve_cache", _curve_cache),
+        ("_style_dates_cache", _style_dates_cache),
+        ("_style_sku_cache", _style_sku_cache),
+        ("_location_breakdown_cache", _location_breakdown_cache),
+        ("_location_color_cache", _location_color_cache),
+        ("_sts_by_attr_cache", _sts_by_attr_cache),
+        ("_weekday_pattern_cache", _weekday_pattern_cache),
+        ("_perf_rank_cache", _perf_rank_cache),
+        ("_churn_full_cache", _churn_full_cache),
+        ("_churn_neg_cache", _churn_neg_cache),
+        ("_ibt_dedup_cache", _ibt_dedup_cache),
+        ("_repl_dedup_cache", _repl_dedup_cache),
+    ]
+    cleared_names: List[str] = []
+    for name, cache in drill_caches:
+        try:
+            if hasattr(cache, "__len__"):
+                cleared_entries += len(cache)
+            if hasattr(cache, "clear"):
+                cache.clear()
+                cleared_names.append(name)
+        except Exception as e:
+            logger.warning("[trim-memory] clear %s failed: %s", name, e)
+
+    # Force GC twice — the first pass marks unreachable, the second
+    # collects generational survivors. Returns object count freed.
+    gc.collect()
+    gc_freed = gc.collect()
+
+    try:
+        rss_after = int(psutil.Process().memory_info().rss / (1024 * 1024))
+    except Exception:
+        rss_after = -1
+
+    logger.warning(
+        "[trim-memory] RSS %dMB → %dMB (freed %d objs, cleared %d entries across %d caches)",
+        rss_before, rss_after, gc_freed, cleared_entries, len(cleared_names),
+    )
+    return {
+        "ok": True,
+        "rss_before_mb": rss_before,
+        "rss_after_mb": rss_after,
+        "rss_delta_mb": (rss_before - rss_after) if (rss_before > 0 and rss_after > 0) else None,
+        "gc_freed": int(gc_freed),
+        "cleared_entries": int(cleared_entries),
+        "cleared_caches": cleared_names,
+    }
+
+
 @api_router.post("/admin/run-audit-now")
 async def admin_run_audit_now(_: User = Depends(require_admin)):
     """Iter 82 — Admin-authenticated manual trigger for the 2-hour audit.

@@ -733,5 +733,15 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **3 new regression tests** (`/app/backend/tests/test_iteration_82_fanout_tripwire.py`): tripwire serves from snapshot in <2 s, alert is persisted to Mongo, self-heal endpoint is idempotent. **3/3 pass**, **12/12 across iters 80/81/82**.
 - **Validated end-to-end**: 10-channel mixed-CSV request that previously would have triggered 40 upstream calls now resolves in **193 ms** with `_fanout_protected=true` + snapshot data + alert logged + self-heal rebuilt 3 snapshots automatically.
 
+### Recent (Feb 2026 — Iter 82b) — Surgical self-fix for cache-hit-rate & RSS-critical
+- **User reported real email alert**: tripwire RESOLVED ✓ but two pre-existing checks still ESCALATED — `Cache hit rate stuck at 40.4%` (auto-fix was a no-op "wait 60s") and `RSS still 1277MB after trim` (auto-fix called `/flush-kpi-cache` which DESTROYS the snapshot layer and made hit rate worse, never lower RSS by enough).
+- **New surgical endpoints** (admin-only):
+  - `POST /api/admin/warm-snapshots-now?sync=false` — schedules ONE full snapshot sweep (25 /kpis + 115 analytics combinations) in the background, acks in <50 ms (so it doesn't trip ingress 60s timeout). `sync=true` blocks for the full sweep (2-3 min) and returns kpi/analytics counters.
+  - `POST /api/admin/trim-memory` — clears ~16 heavy drill-down caches (`_repl_cache`, `_all_styles_cache`, `_curve_cache`, etc.) while **preserving** snapshot caches (so hit rate stays up), then forces two-pass `gc.collect()`. Returns `rss_before_mb / rss_after_mb / rss_delta_mb / gc_freed / cleared_entries`.
+- **Audit auto-fix rewired**:
+  - Cache hit rate critical → calls `warm-snapshots-now` (queued) + 90s wait + re-measure. Hit rate climbs because snapshots are now present.
+  - RSS critical → calls `trim-memory` + 5s wait + re-measure. Captures rss_delta in the fix_details so the audit log shows exactly how much was freed.
+- **4 new regression tests** (`test_iteration_82b_surgical_self_fix.py`): async ack, sync counters, trim-memory shape + idempotency, viewer role 403. **All 4 pass + 16/16 across iters 80/81/82/82b**.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
