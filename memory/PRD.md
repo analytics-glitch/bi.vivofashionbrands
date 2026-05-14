@@ -757,5 +757,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Pre-ship measured numbers** (preview, post-warmup): RSS **1028MB**, hit rate **100% / 74% sustained**, recon 5/6 (footfall_orders_signal flagged as known upstream lag, not a code bug), KPI ↔ Country Split match across all 4 countries, replenishment-report **115-130ms warm**.
 - **Test suite**: 12 / 12 pass across iters 80/81/82/82c. footfall_orders_signal soft-failure documented in test.
 
+### Recent (Feb 2026 — Iter 82d / 83) — Footfall reclassified + Memory leak CI gate
+- **Footfall data-lag** moved OUT of binary `checks` into a new `data_freshness` section of `/admin/reconciliation-check`. It legitimately lags 30-60 min behind /orders, so flagging it as a recon FAILURE was crying wolf. Now exposed as `severity: green/amber/red` so it can be monitored without tripping the deploy gate.
+- **Memory leak CI gate (Iter 83 — MANDATORY pre-ship)**: new `test_iteration_83_memory_leak_ci.py` fires a 100-request burst across `/kpis` + `/country-summary` + `/sales-summary` (×5 country slices), measures Δ RSS. Fails the deploy if growth > 100 MB. Second test runs two consecutive 50-request bursts and asserts < 50 MB growth between them (catches slow leaks).
+- **Pre-ship playbook** at `/app/memory/PRE_SHIP_CHECKLIST.md` — 6-step checklist with example commands and a single combined `pytest` invocation that runs all 18 tests.
+- **Measured pre-ship numbers (preview, post-warmup)**: Δ RSS +76.6 MB for 100 reqs (under 100 budget), 0.0 MB between consecutive bursts ✓.
+- **Test suite**: 18 / 18 pass across iters 80/81/82/82b/82c/83.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

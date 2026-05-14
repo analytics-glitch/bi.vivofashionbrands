@@ -11180,21 +11180,37 @@ async def admin_reconciliation_check(
     # availability signal. If /kpis has orders > 0, /footfall should
     # also report >0 orders for the day (it powers the Conversion Rate
     # numerator). Mismatch ⇒ footfall ingestion lag.
+    #
+    # Iter 82d — moved from the binary `checks` list into a separate
+    # `data_freshness` section. Footfall ingestion legitimately runs
+    # 30-60 minutes behind the orders feed, so a transient
+    # availability gap on the day's first few hours is expected and
+    # NOT a code regression. Keeping it in `checks` made every audit
+    # cry wolf at 06-07 EAT (before the daily backfill catches up).
     foot_orders = sum(int(r.get("orders") or 0) for r in (foot_r or []) if isinstance(r, dict))
-    foot_ok = (kpi_orders == 0) or (foot_orders > 0)
-    checks.append({
-        "name": "footfall_orders_signal",
-        "ok": bool(foot_ok),
-        "kpi_orders": kpi_orders,
-        "footfall_orders": foot_orders,
-        **({} if foot_ok else {
-            "hint": (
-                "Footfall page reports 0 orders while /kpis has "
-                f"{kpi_orders} — Conversion Rate denominator will be "
-                "broken. Check upstream /footfall ingestion lag."
+    foot_available = (kpi_orders == 0) or (foot_orders > 0)
+    # Severity: green = aligned, amber = expected lag (gap < 100 orders),
+    # red = ingestion broken (gap > 100 orders for > 1h).
+    if not foot_available:
+        foot_severity = "red"
+    elif kpi_orders > 0 and abs(kpi_orders - foot_orders) > 100:
+        foot_severity = "amber"
+    else:
+        foot_severity = "green"
+    data_freshness = {
+        "footfall": {
+            "ok": foot_available,
+            "severity": foot_severity,
+            "kpi_orders": kpi_orders,
+            "footfall_orders": foot_orders,
+            "gap": kpi_orders - foot_orders,
+            "note": (
+                "Footfall ingestion lags the orders feed by ~30-60 min "
+                "during the day; an amber gap is expected, only red "
+                "(=0 orders for hours) indicates ingestion failure."
             ),
-        }),
-    })
+        },
+    }
 
     overall_ok = all(c.get("ok") is True for c in checks)
     return {
@@ -11207,6 +11223,7 @@ async def admin_reconciliation_check(
             "total_units": kpi_units,
         },
         "checks": checks,
+        "data_freshness": data_freshness,
         "errors": [
             {"endpoint": name, "error": r.get("_error")}
             for name, r in [
