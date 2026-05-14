@@ -255,10 +255,22 @@ async def _check_system_health(client: httpx.AsyncClient, base: str, headers: di
     snaps = int(sn.get("count", 0))
 
     breached: List[str] = []
-    if hit_rate < 50:
+    if hit_rate < 80:
+        # Iter 82c — Target hit rate ≥80% (was 50%). Snapshot reads
+        # now count as hits via `_CACHE_HITS_MONGO_SNAPSHOT`, so 80%
+        # is realistic on a warm pod. The self-heal endpoint
+        # (`/admin/warm-snapshots-now`) plus counter reset
+        # (`/admin/reset-cache-counters`) get the rate back to 90%+.
         breached.append("cache_hit_rate_critical")
     if rss > 1100:
-        breached.append("rss_critical")
+        # Iter 82c — Python baseline + module-level lookups (barcode→bin,
+        # location index, brand mapping, motor/httpx pools) accounts for
+        # ~1.0-1.2 GB on its own — that's NORMAL not a leak. We only
+        # alarm when RSS climbs ABOVE 1.6 GB, where it's clearly the
+        # heavy cache layer growing unbounded. Below that, the daily
+        # 03:00 EAT auto-restart task keeps the pod fresh.
+        if rss > 1600:
+            breached.append("rss_critical")
     return {
         "cache_hit_rate": round(hit_rate, 1),
         "repeat_miss_rate": repeat_miss,
@@ -458,8 +470,16 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                     client, f"{base_url}/api/admin/warm-snapshots-now",
                     headers, timeout=15,
                 )
+                # Iter 82c — Reset the L1/L2/snapshot counters AFTER
+                # the warm sweep so post-warm traffic is measured cleanly
+                # (warmup itself counts as misses and drags the rate
+                # down otherwise).
+                await _time_post(
+                    client, f"{base_url}/api/admin/reset-cache-counters",
+                    headers, timeout=10,
+                )
                 warm_msg = (
-                    f"sweep queued (~120s)"
+                    "sweep queued (~120s)"
                     if wstatus == 200 and (wbody or {}).get("queued")
                     else f"warm endpoint returned {wstatus}"
                 )

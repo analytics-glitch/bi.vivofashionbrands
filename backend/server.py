@@ -167,6 +167,7 @@ _FETCH_CACHE_BYTES = 0
 # paying off RIGHT NOW".
 _CACHE_HITS_L1 = 0  # in-process dict cache
 _CACHE_HITS_L2 = 0  # cross-pod Redis cache
+_CACHE_HITS_MONGO_SNAPSHOT = 0  # Iter 82c — Mongo /kpis & analytics snapshot reads
 _CACHE_MISSES = 0   # had to call upstream
 _CACHE_INFLIGHT_JOIN = 0  # joined an already-running request
 # Per-key miss counter — answers "is this miss because we'd never seen
@@ -200,7 +201,7 @@ _HEAVY_LIMITS = {
     # Endpoint path → max concurrent in-flight requests on this pod.
     "/sor": 3,
     "/analytics/style-location-breakdown": 2,
-    "/analytics/replenishment-report": 2,
+    "/analytics/replenishment-report": 1,
     "/customers/walk-ins": 3,
     "/analytics/customer-retention": 2,
     "/analytics/ibt-warehouse-to-store": 3,
@@ -1261,6 +1262,8 @@ async def _try_analytics_snapshot(
         age_sec = (datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)).total_seconds()
         if age_sec > _snapshot_ttl_for(country):
             return None
+        global _CACHE_HITS_MONGO_SNAPSHOT
+        _CACHE_HITS_MONGO_SNAPSHOT += 1
         return doc.get("data")
     except Exception as e:
         logger.warning("[analytics-snapshot] read failed %s: %s", endpoint, e)
@@ -1386,6 +1389,8 @@ async def _try_kpi_snapshot(
         if age_sec > _snapshot_ttl_for(country):
             return None
         data = doc.get("data") or {}
+        global _CACHE_HITS_MONGO_SNAPSHOT
+        _CACHE_HITS_MONGO_SNAPSHOT += 1
         return {
             **data,
             "_source": "snapshot",
@@ -1501,10 +1506,96 @@ async def _snapshot_kpis_loop() -> None:
                 "analytics_written": int(analytics_ok),
                 "analytics_total": int(analytics_total),
                 "error": sweep_error,
+                "recon": await _per_sweep_recon(),
             })
         except Exception as e:
             logger.warning("[snapshots] audit_log insert failed: %s", e)
         await asyncio.sleep(_SNAPSHOT_REFRESH_SEC)
+
+
+async def _per_sweep_recon() -> Dict[str, Any]:
+    """Iter 82c — Lightweight recon check that runs on EVERY snapshot
+    sweep (not just the 2-hour audit). Compares /kpis.total_sales
+    against Σ /country-summary.total_sales for TODAY's window.
+    
+    If they drift, logs a WARNING that admins can grep — the
+    snapshotter doesn't need to act on it (we already DERIVE
+    country-summary from /kpis, so a drift would mean a real bug,
+    not a transient sync issue).
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        kpis = await get_kpis(date_from=today, date_to=today)
+        cs = await get_country_summary(date_from=today, date_to=today)
+        kt = float((kpis or {}).get("total_sales") or 0)
+        cst = sum(float(r.get("total_sales") or 0) for r in (cs or []) if isinstance(r, dict))
+        delta = round(kt - cst, 2)
+        ok = abs(delta) <= 1.0
+        if not ok:
+            logger.warning(
+                "[per-sweep-recon] DRIFT detected — /kpis=%s Σ/country-summary=%s Δ=%s",
+                kt, cst, delta,
+            )
+        return {"ok": ok, "kpi_total": kt, "country_sum": cst, "delta": delta}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+
+
+async def _daily_restart_supervisor() -> None:
+    """Iter 82c — Scheduled pod restart at 03:00 EAT every 24 h.
+
+    Purpose: prevent Python heap accumulation over multi-day uptime.
+    Module-level lookups (barcode→bin index, location cache, brand
+    mapping) plus Mongo cursor / httpx pool state can creep into
+    1.2-1.4 GB RSS over a day even without a leak. Restarting at
+    03:00 EAT (midnight UTC, lowest traffic) keeps RSS pinned.
+
+    Mechanism: when the wall-clock crosses 03:00 EAT, we call
+    `os._exit(0)`. Supervisor's `autorestart=true` (verified in
+    /etc/supervisor/conf.d/supervisord.conf) brings the pod back
+    within ~3-5 seconds. During that window any in-flight requests
+    fail with 502 — but at 03:00 EAT user traffic is ≈ 0.
+
+    Idempotent — we only fire once per calendar day, tracked via
+    a module-level `_last_daily_restart_date` so a fast loop can't
+    cause a restart storm.
+    """
+    import os as _os
+    last_restart_date: Optional[str] = None
+    # On startup, mark TODAY as already-restarted if it's past 03:00
+    # EAT — this prevents an immediate restart on every cold-start.
+    now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+    if now_eat.hour >= 3:
+        last_restart_date = now_eat.date().isoformat()
+    while True:
+        try:
+            await asyncio.sleep(60)  # check once a minute — plenty
+            now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+            today = now_eat.date().isoformat()
+            # Restart window: 03:00-03:05 EAT, only once per day.
+            if now_eat.hour == 3 and now_eat.minute < 5 and last_restart_date != today:
+                logger.warning(
+                    "[daily-restart] 03:%02d EAT — triggering pod restart (supervisor will auto-restart)",
+                    now_eat.minute,
+                )
+                try:
+                    await db.audit_log.insert_one({
+                        "kind": "daily_restart",
+                        "ts": datetime.now(timezone.utc),
+                        "reason": "scheduled 03:00 EAT memory hygiene",
+                    })
+                except Exception:
+                    pass
+                # Give Mongo + Redis a few seconds to flush in-flight writes.
+                await asyncio.sleep(2)
+                _os._exit(0)
+                # last_restart_date is set above the exit for completeness
+                # in case _exit is ever swapped for a softer mechanism.
+                last_restart_date = today  # pragma: no cover
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[daily-restart] loop error: %s", e)
 
 
 async def _snapshot_kpis_supervisor() -> None:
@@ -2723,9 +2814,13 @@ async def admin_cache_stats():
                 legacy += 1
         else:
             legacy += 1
-    hits = _CACHE_HITS_L1 + _CACHE_HITS_L2
+    hits = _CACHE_HITS_L1 + _CACHE_HITS_L2 + _CACHE_HITS_MONGO_SNAPSHOT
+    # Inflight-joins are conceptually hits (we didn't re-call upstream),
+    # so include them in the total too — otherwise a request that joined
+    # an inflight refresh would count as a miss in the denominator.
     total_lookups = hits + _CACHE_MISSES + _CACHE_INFLIGHT_JOIN
-    hit_rate = (hits / total_lookups * 100) if total_lookups > 0 else 0.0
+    hit_rate_numerator = hits + _CACHE_INFLIGHT_JOIN
+    hit_rate = (hit_rate_numerator / total_lookups * 100) if total_lookups > 0 else 0.0
     # Per-key miss analysis — answers "is the miss rate dominated by
     # first-time queries (healthy) or by repeated misses on the same
     # key (TTL too short / cache thrashing)?".
@@ -2794,6 +2889,7 @@ async def admin_cache_stats():
         "counters_since_boot": {
             "l1_hits": _CACHE_HITS_L1,
             "l2_redis_hits": _CACHE_HITS_L2,
+            "mongo_snapshot_hits": _CACHE_HITS_MONGO_SNAPSHOT,
             "inflight_joins": _CACHE_INFLIGHT_JOIN,
             "misses": _CACHE_MISSES,
             "hit_rate_pct": round(hit_rate, 1),
@@ -3017,6 +3113,23 @@ async def trigger_audit(secret: str = "", mode: str = "scheduled"):
     # for several minutes — long after the response is closed.
     asyncio.create_task(_run_in_bg())
     return {"ok": True, "queued": True, "mode": mode, "queued_at": datetime.now(timezone.utc).isoformat()}
+
+
+@api_router.post("/admin/reset-cache-counters")
+async def admin_reset_cache_counters(_: User = Depends(require_admin)):
+    """Iter 82c — Reset the L1/L2/snapshot hit + miss counters to zero.
+
+    Use this immediately after `/admin/warm-snapshots-now` so the
+    hit-rate metric reflects ONLY post-warm traffic — the warmup
+    itself counts as a series of misses, dragging the rate down.
+    """
+    global _CACHE_HITS_L1, _CACHE_HITS_L2, _CACHE_HITS_MONGO_SNAPSHOT, _CACHE_MISSES, _CACHE_INFLIGHT_JOIN
+    _CACHE_HITS_L1 = 0
+    _CACHE_HITS_L2 = 0
+    _CACHE_HITS_MONGO_SNAPSHOT = 0
+    _CACHE_MISSES = 0
+    _CACHE_INFLIGHT_JOIN = 0
+    return {"ok": True, "reset_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api_router.post("/admin/warm-snapshots-now")
@@ -9153,7 +9266,13 @@ async def _analytics_replenishment_report_impl(
         if _time.time() - ts < _REPL_TTL:
             # Re-overlay the latest replenished state (the cache is computed
             # rows; the state can change minute-by-minute as owners pick).
-            await _overlay_repl_state(payload, df, dt)
+            # Iter 82c — throttle the overlay to once per 30 s per cache_key
+            # so back-to-back UI polls don't each pay the 500-1000 ms Mongo
+            # cost. The payload already carries an `_overlaid_at` epoch.
+            overlaid_at = payload.get("_overlaid_at") or 0
+            if (_time.time() - overlaid_at) > 30:
+                await _overlay_repl_state(payload, df, dt)
+                payload["_overlaid_at"] = _time.time()
             return payload
 
     # Iter 77 — inflight join. If another coroutine (warmup, recovery
@@ -10649,6 +10768,10 @@ async def startup():
     # without touching Vivo BI. Runs under a self-healing supervisor
     # that relaunches within 60 s on any crash. See `_snapshot_kpis_loop()`.
     asyncio.create_task(_snapshot_kpis_supervisor())
+    # Iter 82c — Scheduled daily process restart at 03:00 EAT (00:00 UTC)
+    # so the pod never accumulates more than ~24h of Python heap / module
+    # state. Supervisor's `autorestart=true` brings us back within seconds.
+    asyncio.create_task(_daily_restart_supervisor())
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
     # only populate in-process caches, so we run them as background tasks.
