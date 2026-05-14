@@ -625,5 +625,13 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **UI surface in the pill.** New "Miss analysis" section in the panel shows the breakdown plus a green/amber verdict banner: <30 % repeat-miss = "Healthy. TTL well-matched to usage", >30 % = "Investigate. TTL shorter than user request cadence on some keys" with the top-5 offending keys listed by miss count.
 - **Empirical reading on preview**: after 20 mixed requests across 5 endpoints, the system showed 92.3 % hit rate / 2 misses / **0 repeat misses (0 %)** — confirms TTL policy from iter 72 is correctly sized for the current usage pattern.
 
+### Recent (Feb 2026 — Iter 75)
+- **#1 · Mongo snapshot layer extended to the four next-busiest Overview endpoints**: `/sales-summary`, `/country-summary`, `/top-skus`, `/footfall`. New `analytics_snapshots` Mongo collection (kept separate from `kpi_snapshots` to avoid `_id` collisions). Composite `_id = "{endpoint}|{date_from}|{date_to}|{country}|{channel}"`. Same 5-min freshness TTL + 24 h Mongo TTL index. Each endpoint refactored into a thin wrapper (`get_X` checks snapshot first → falls through to renamed `_get_X_live`).
+- **`_snapshot_kpis_loop()` extended** with `_refresh_analytics_snapshots(windows)` — every 2-min sweep now also refreshes 60 (window × country) combinations for the 4 endpoints in parallel. Same empty-write guard reused (zero payloads on recent windows never overwrite a previously-good doc).
+- **#2 · Startup pre-warm of cross-pod snapshots**. The existing `_warm()` startup task already populated in-process + Redis caches; now also issues an explicit `_refresh_analytics_snapshots(warm_ranges)` call so sibling pods (or fresh post-deploy pods) get sub-200ms first-load without waiting for their own snapshotter to spin up. ~2 s of work, all reads come from already-warmed in-process cache.
+- **Admin `flush-kpi-cache` extended** — now also drops every doc in `analytics_snapshots`. Response field `cleared.analytics_snapshots` reports count.
+- **Empirical impact** measured on preview after one snapshotter sweep: `/sales-summary`, `/country-summary`, `/top-skus`, `/footfall` all return in **~140 ms** (snapshot path). Same calls on an empty snapshot collection took 8.4 s (live upstream). **~60× speedup** for the Overview second-row charts.
+- **6 regression tests** at `/app/backend/tests/test_iteration_75_analytics_snapshots.py`. Total iter-70+72+73+75 test suite: **19 / 19 pass**.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

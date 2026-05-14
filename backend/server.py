@@ -805,6 +805,24 @@ async def get_country_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
+    """Snapshot-first wrapper — see `_get_country_summary_live` for
+    the actual aggregation logic. Snapshot serves when fresh (< 5 min);
+    otherwise we fall through to live. Multi-country fan-out paths
+    bypass the snapshot via the country=None / single-value gate in
+    `_try_analytics_snapshot`.
+    """
+    snap = await _try_analytics_snapshot(
+        "/country-summary", date_from, date_to, None, None,
+    )
+    if snap is not None:
+        return snap
+    return await _get_country_summary_live(date_from=date_from, date_to=date_to)
+
+
+async def _get_country_summary_live(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     """Per-country sales rollup. Used by Overview's country split AND
     by the CEO Report's "Country Performance" table.
 
@@ -910,6 +928,117 @@ _SNAPSHOT_REFRESH_SEC = 120  # 2 min — how often the snapshotter wakes
 _SNAPSHOT_FRESH_TTL_SEC = 300  # 5 min — beyond this we ignore the snapshot
 # (upstream itself caches 5 min, so anything older means a refresh sweep failed)
 _SNAPSHOT_COUNTRIES: List[Optional[str]] = [None, "Kenya", "Uganda", "Rwanda", "Online"]
+
+# Iter 75 — Generic analytics-snapshot layer that covers the FOUR
+# next-busiest Overview-page endpoints beyond /kpis:
+#   /api/sales-summary · /api/country-summary · /api/top-skus · /api/footfall
+# Stored in a separate Mongo collection so /kpis snapshot keys (which
+# use a different `_id` shape) don't collide. Same 2-min refresh
+# cadence and 5-min freshness TTL as the /kpis snapshotter.
+_ANALYTICS_SNAPSHOT_COLL = "analytics_snapshots"
+
+
+def _analytics_snapshot_id(endpoint: str, date_from: str, date_to: str,
+                            country: Optional[str], channel: Optional[str]) -> str:
+    """Composite `_id` for the analytics_snapshots collection.
+
+    Includes the endpoint so one collection can hold snapshots for all
+    four endpoints without key collisions. Empty-string for None
+    country/channel keeps the doc id deterministic and human-readable.
+    """
+    return f"{endpoint}|{date_from}|{date_to}|{country or ''}|{channel or ''}"
+
+
+async def _try_analytics_snapshot(
+    endpoint: str,
+    date_from: Optional[str], date_to: Optional[str],
+    country: Optional[str], channel: Optional[str],
+) -> Optional[Any]:
+    """Read-path equivalent of `_try_kpi_snapshot` for the four
+    Overview-page analytics endpoints. Returns the cached payload (with
+    an `_age_sec` field tacked on for the cache-stats pill) when a
+    snapshot < 5 min old exists, else None to fall through to live.
+    """
+    if not date_from or not date_to:
+        return None
+    # Multi-country / multi-channel fan-out goes through live so the
+    # aggregation logic in the route stays authoritative.
+    if country and "," in country:
+        return None
+    if channel and "," in channel:
+        return None
+    try:
+        snap_id = _analytics_snapshot_id(endpoint, date_from, date_to, country, channel)
+        doc = await db[_ANALYTICS_SNAPSHOT_COLL].find_one(
+            {"_id": snap_id},
+            {"_id": 0, "data": 1, "snapshot_at": 1},
+        )
+        if not doc:
+            return None
+        ts = doc.get("snapshot_at")
+        if not ts:
+            return None
+        age_sec = (datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)).total_seconds()
+        if age_sec > _SNAPSHOT_FRESH_TTL_SEC:
+            return None
+        return doc.get("data")
+    except Exception as e:
+        logger.warning("[analytics-snapshot] read failed %s: %s", endpoint, e)
+        return None
+
+
+async def _save_analytics_snapshot(
+    endpoint: str,
+    date_from: str, date_to: str,
+    country: Optional[str], channel: Optional[str],
+    data: Any,
+) -> None:
+    """Persist a fresh analytics-snapshot. Empty/falsy payloads on
+    recent windows are NOT persisted — the same guard the /kpis
+    snapshotter uses (see _refresh_one_snapshot) to avoid overwriting
+    a previously-good doc with a transient zero blob during an
+    upstream batch-lag window."""
+    # Empty-write guard — historical empty results are fine, but for
+    # today/yesterday windows an empty list usually means transient
+    # upstream lag, not "really nothing sold".
+    def _is_empty(d: Any) -> bool:
+        if d is None:
+            return True
+        if isinstance(d, list) and len(d) == 0:
+            return True
+        if isinstance(d, dict):
+            # Heuristic — treat all-zero numeric values as empty.
+            if not d:
+                return True
+            try:
+                return all(
+                    (v is None) or (isinstance(v, (int, float)) and v == 0)
+                    for k, v in d.items()
+                    if not k.startswith("_") and not isinstance(v, (list, dict, str))
+                )
+            except Exception:
+                return False
+        return False
+    if _is_empty(data) and _window_is_recent(date_from, date_to):
+        return
+    try:
+        snap_id = _analytics_snapshot_id(endpoint, date_from, date_to, country, channel)
+        await db[_ANALYTICS_SNAPSHOT_COLL].replace_one(
+            {"_id": snap_id},
+            {
+                "_id": snap_id,
+                "endpoint": endpoint,
+                "date_from": date_from,
+                "date_to": date_to,
+                "country": country,
+                "channel": channel,
+                "data": data,
+                "snapshot_at": datetime.now(timezone.utc),
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("[analytics-snapshot] write failed %s: %s", endpoint, e)
 
 
 def _snapshot_id(date_from: str, date_to: str, country: Optional[str], channel: Optional[str]) -> str:
@@ -1040,9 +1169,76 @@ async def _snapshot_kpis_loop() -> None:
                 "[snapshots] refresh sweep — %d/%d combinations written",
                 ok, len(results),
             )
+            # Iter 75 — also refresh the four next-busiest Overview
+            # endpoints in one extended sweep so cold first-load on
+            # those tiles drops from 1-3 s to 50-100 ms.
+            try:
+                analytics_results = await _refresh_analytics_snapshots(windows)
+                logger.info(
+                    "[analytics-snapshots] refresh sweep — %d/%d combinations written",
+                    sum(1 for r in analytics_results if r is True),
+                    len(analytics_results),
+                )
+            except Exception as e:
+                logger.warning("[analytics-snapshots] sweep error: %s", e)
         except Exception as e:
             logger.warning("[snapshots] sweep error: %s", e)
         await asyncio.sleep(_SNAPSHOT_REFRESH_SEC)
+
+
+async def _refresh_analytics_snapshots(
+    windows: List[Tuple[str, str]],
+) -> List[Any]:
+    """Refresh the four extra-endpoint snapshots for every standard
+    window × country. Called from the main snapshotter loop. Each
+    endpoint's live aggregator is invoked once per (window × country)
+    so the snapshot reflects the EXACT shape the route returns.
+    """
+    tasks = []
+
+    async def _one(endpoint: str, fetcher, df: str, dt: str,
+                   country: Optional[str], channel: Optional[str]) -> bool:
+        try:
+            data = await fetcher()
+            await _save_analytics_snapshot(endpoint, df, dt, country, channel, data)
+            return True
+        except Exception as e:
+            logger.warning("[analytics-snapshots] %s %s..%s c=%s failed: %s",
+                           endpoint, df, dt, country, e)
+            return False
+
+    for df, dt in windows:
+        # /country-summary — no country dimension (the route IS the
+        # country roll-up); one snapshot per window.
+        tasks.append(_one(
+            "/country-summary",
+            lambda df=df, dt=dt: _get_country_summary_live(date_from=df, date_to=dt),
+            df, dt, None, None,
+        ))
+        for c in _SNAPSHOT_COUNTRIES:
+            # /sales-summary — per (window, country).
+            tasks.append(_one(
+                "/sales-summary",
+                lambda df=df, dt=dt, c=c: _get_sales_summary_live(
+                    date_from=df, date_to=dt, country=c,
+                ),
+                df, dt, c, None,
+            ))
+            # /top-skus — default limit=20.
+            tasks.append(_one(
+                "/top-skus",
+                lambda df=df, dt=dt, c=c: _get_top_skus_live(
+                    date_from=df, date_to=dt, country=c, limit=20,
+                ),
+                df, dt, c, None,
+            ))
+        # /footfall — no country dimension; just per (window, channel=None).
+        tasks.append(_one(
+            "/footfall",
+            lambda df=df, dt=dt: _get_footfall_live(date_from=df, date_to=dt),
+            df, dt, None, None,
+        ))
+    return await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _compute_kpis_from_orders(
@@ -1280,6 +1476,23 @@ async def get_sales_summary(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    snap = await _try_analytics_snapshot(
+        "/sales-summary", date_from, date_to, country, channel,
+    )
+    if snap is not None:
+        return snap
+    return await _get_sales_summary_live(
+        date_from=date_from, date_to=date_to,
+        country=country, channel=channel,
+    )
+
+
+async def _get_sales_summary_live(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
     cs = _split_csv(country)
     chs = _split_csv(channel)
     cache_key = ("/sales-summary", date_from or "", date_to or "", country or "", channel or "")
@@ -1328,6 +1541,28 @@ async def get_top_skus(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
     limit: int = Query(20, ge=1, le=10000),
+):
+    # Only snapshot the default (no brand, default limit) case — non-
+    # default queries are too varied to be worth pre-warming.
+    if not brand and limit == 20:
+        snap = await _try_analytics_snapshot(
+            "/top-skus", date_from, date_to, country, channel,
+        )
+        if snap is not None:
+            return snap
+    return await _get_top_skus_live(
+        date_from=date_from, date_to=date_to,
+        country=country, channel=channel, brand=brand, limit=limit,
+    )
+
+
+async def _get_top_skus_live(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    brand: Optional[str] = None,
+    limit: int = 20,
 ):
     base = {"date_from": date_from, "date_to": date_to, "limit": max(limit, 50)}
     if brand:
@@ -1824,9 +2059,17 @@ async def admin_flush_kpi_cache():
         mongo_snaps_cleared = res.deleted_count if hasattr(res, "deleted_count") else 0
     except Exception as e:
         logger.warning("[flush-kpi-cache] mongo snapshot delete failed: %s", e)
+    # Iter 75 — also clear the analytics_snapshots collection (sales-
+    # summary, country-summary, top-skus, footfall pre-warm).
+    analytics_snaps_cleared = 0
+    try:
+        res2 = await db[_ANALYTICS_SNAPSHOT_COLL].delete_many({})
+        analytics_snaps_cleared = res2.deleted_count if hasattr(res2, "deleted_count") else 0
+    except Exception as e:
+        logger.warning("[flush-kpi-cache] analytics snapshot delete failed: %s", e)
     logger.warning(
-        "[flush-kpi-cache] admin flush — cleared %d stale entries, %d redis keys, %d mongo snapshots",
-        cleared_mem, redis_cleared, mongo_snaps_cleared,
+        "[flush-kpi-cache] admin flush — cleared %d stale entries, %d redis keys, %d kpi snaps, %d analytics snaps",
+        cleared_mem, redis_cleared, mongo_snaps_cleared, analytics_snaps_cleared,
     )
     return {
         "ok": True,
@@ -1834,6 +2077,7 @@ async def admin_flush_kpi_cache():
             "stale_cache_entries": cleared_mem,
             "redis_keys": redis_cleared,
             "mongo_snapshots": mongo_snaps_cleared,
+            "analytics_snapshots": analytics_snaps_cleared,
             "fetch_cache": True,
             "disk_blob_removed": True,
         },
@@ -3969,8 +4213,22 @@ async def analytics_customer_crosswalk(
 
 
 @api_router.get("/footfall")
-@api_router.get("/footfall")
 async def get_footfall(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    snap = await _try_analytics_snapshot(
+        "/footfall", date_from, date_to, None, channel,
+    )
+    if snap is not None:
+        return snap
+    return await _get_footfall_live(
+        date_from=date_from, date_to=date_to, channel=channel,
+    )
+
+
+async def _get_footfall_live(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     channel: Optional[str] = None,
@@ -9050,6 +9308,11 @@ async def startup():
             await db.kpi_snapshots.create_index(
                 "snapshot_at", expireAfterSeconds=86400, background=True,
             )
+            # Iter 75 — same TTL on the new analytics_snapshots
+            # collection so stale docs reap themselves at 24 h.
+            await db.analytics_snapshots.create_index(
+                "snapshot_at", expireAfterSeconds=86400, background=True,
+            )
             logger.info("[indexes] Mongo index audit complete")
         except Exception as e:
             logger.warning(f"[indexes] ensure_indexes failed: {e}")
@@ -9176,6 +9439,22 @@ async def startup():
             # finishes inside ~30 s even with hundreds of warm targets.
             await asyncio.gather(*warm_tasks, return_exceptions=True)
             logger.info(f"[warmup] Overview hot-path pre-warmed ({len(warm_tasks)} targets across {len(warm_ranges)} ranges)")
+            # Iter 75 — explicit cross-pod Mongo snapshot write for the
+            # four new analytics endpoints. The in-process + Redis
+            # caches above are pod-scoped; this guarantees a SIBLING
+            # pod (or a fresh pod after a deploy) gets fast first-load
+            # without waiting for its own snapshotter loop's first
+            # iteration. ~2 s of work, all reads come from the
+            # already-warmed in-process cache.
+            try:
+                snap_results = await _refresh_analytics_snapshots(warm_ranges)
+                ok = sum(1 for r in snap_results if r is True)
+                logger.info(
+                    "[warmup] analytics_snapshots seeded — %d/%d combos persisted to Mongo",
+                    ok, len(snap_results),
+                )
+            except Exception as e:
+                logger.warning("[warmup] analytics snapshot seed failed: %s", e)
         except Exception as e:
             logger.warning("[warmup] failed: %s", e)
     asyncio.create_task(_warm())
