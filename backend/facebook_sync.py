@@ -68,6 +68,7 @@ async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int =
     if not page_id or not page_token:
         return {**summary, "errors": ["page_id and page_token required"]}
     comments_blocked = False  # Set once after first scope error — silences spam.
+    started_at = now_utc()
 
     # Posts
     try:
@@ -183,5 +184,17 @@ async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int =
         # 400s on /ratings are normal for apparel pages — log but don't fail.
         if "400" not in str(exc):
             summary["errors"].append(f"reviews: {exc}")
+
+    # Record last-sync metadata on the page document.
+    await db.facebook_pages.update_one(
+        {"page_id": page_id},
+        {"$set": {
+            "last_synced_at": iso(now_utc()),
+            "last_sync_duration_ms": int((now_utc() - started_at).total_seconds() * 1000),
+            "last_sync_posts": summary["posts"],
+            "last_sync_comments": summary["comments"],
+            "last_sync_scopes_missing": summary["scopes_missing"],
+        }},
+    )
 
     return summary

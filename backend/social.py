@@ -145,6 +145,7 @@ def _seed_posts() -> List[Dict[str, Any]]:
             "comments_count": comments,
             "shares": shares,
             "reach": reach,
+            "is_mock": True,
         })
     return posts
 
@@ -188,6 +189,7 @@ def _seed_feedback(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "classified_at": None,
             "replied_at": None,
             "reply_body": None,
+            "is_mock": True,
         })
     return feedback
 
@@ -525,6 +527,7 @@ def make_router(get_current_user, require_manager, db, audit_fn):
         customer_id: Optional[str] = None,
         unmatched: bool = False,
         q: Optional[str] = None,
+        hide_mock: bool = False,
         limit: int = 100,
         _: Any = Depends(get_current_user),
     ):
@@ -544,6 +547,8 @@ def make_router(get_current_user, require_manager, db, audit_fn):
             query["customer_id"] = customer_id
         if unmatched:
             query["customer_id"] = None
+        if hide_mock:
+            query["is_mock"] = {"$ne": True}
         if q:
             query["body"] = {"$regex": re.escape(q), "$options": "i"}
         cursor = db.social_feedback.find(query, {"_id": 0}).sort("posted_at", -1).limit(limit)

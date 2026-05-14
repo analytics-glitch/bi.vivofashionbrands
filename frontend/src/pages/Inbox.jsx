@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw } from "lucide-react";
+import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "whatsapp"];
@@ -27,12 +27,15 @@ export default function Inbox() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ platform: "all", type: "all", sentiment: "all", q: "" });
+  const [hideMock, setHideMock] = useState(false);
   const [selected, setSelected] = useState(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyBody, setReplyBody] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searchQ, setSearchQ] = useState("");
+  const [fbStatus, setFbStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   const navigate = useNavigate();
 
@@ -43,6 +46,7 @@ export default function Inbox() {
     if (filters.type !== "all") params.type = filters.type;
     if (filters.sentiment !== "all") params.sentiment = filters.sentiment;
     if (filters.q) params.q = filters.q;
+    if (hideMock) params.hide_mock = true;
     try {
       const r = await api.get("/social/feedback", { params });
       setItems(r.data || []);
@@ -52,10 +56,41 @@ export default function Inbox() {
     }
   };
 
+  const loadFbStatus = async () => {
+    try {
+      const r = await api.get("/social/facebook/status");
+      setFbStatus(r.data);
+    } catch { /* ignore */ }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const r = await api.post("/social/facebook/sync", {});
+      const d = r.data || {};
+      toast.success(`Synced ${d.pages_synced || 0} page(s): ${d.posts || 0} posts, ${d.comments || 0} comments`);
+      if ((d.scopes_missing || []).length) {
+        toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — comments cannot be pulled until added.`);
+      }
+      await loadFbStatus();
+      await load();
+    } catch (e) {
+      toast.error("Sync failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.platform, filters.type, filters.sentiment]);
+  }, [filters.platform, filters.type, filters.sentiment, hideMock]);
+
+  useEffect(() => {
+    loadFbStatus();
+    const id = setInterval(loadFbStatus, 60000); // refresh freshness every 60s
+    return () => clearInterval(id);
+  }, []);
 
   const reclassify = async () => {
     toast.message("Running classifier…");
@@ -114,10 +149,19 @@ export default function Inbox() {
           <h1 className="font-display text-4xl md:text-5xl tracking-tight mt-2">Social inbox</h1>
           <div className="gold-rule mt-4" />
         </div>
-        <Button variant="outline" onClick={reclassify} className="rounded-sm h-11" data-testid="reclassify-button">
-          <RefreshCw className="mr-2 h-4 w-4" /> Re-run sentiment
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={reclassify} className="rounded-sm h-11" data-testid="reclassify-button">
+            <RefreshCw className="mr-2 h-4 w-4" /> Re-run sentiment
+          </Button>
+          <Button onClick={syncNow} disabled={syncing} className="rounded-sm h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy)]/90 text-white" data-testid="sync-now-button">
+            <Facebook className={`mr-2 h-4 w-4 ${syncing ? "animate-pulse" : ""}`} />
+            {syncing ? "Syncing…" : "Sync from Facebook"}
+          </Button>
+        </div>
       </div>
+
+      {/* Facebook live-data banner */}
+      <FacebookStatusStrip status={fbStatus} />
 
       {/* counts */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-6">
@@ -134,6 +178,13 @@ export default function Inbox() {
         <Selector label="Platform" value={filters.platform} options={PLATFORMS} onChange={(v) => setFilters({ ...filters, platform: v })} testid="filter-platform" />
         <Selector label="Type" value={filters.type} options={TYPES} onChange={(v) => setFilters({ ...filters, type: v })} testid="filter-type" />
         <Selector label="Sentiment" value={filters.sentiment} options={SENTIMENTS} onChange={(v) => setFilters({ ...filters, sentiment: v })} testid="filter-sentiment" />
+          <button
+            onClick={() => setHideMock((v) => !v)}
+            data-testid="toggle-hide-mock"
+            className={`text-xs rounded-sm border h-9 px-3 transition ${hideMock ? "bg-[var(--vivo-navy)] text-white border-[var(--vivo-navy)]" : "bg-white border-[var(--vivo-border)] text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)]"}`}
+          >
+            {hideMock ? "✓ Live only" : "Show demo data"}
+          </button>
         <div className="relative ml-auto w-full md:w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--vivo-muted)]" />
           <Input
@@ -327,6 +378,96 @@ function Pill({ label, v, tone, testid }) {
     <div className="vivo-card px-4 py-3" data-testid={testid}>
       <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">{label}</div>
       <div className={`font-display text-2xl mt-1 font-mono-num ${cls}`}>{v}</div>
+    </div>
+  );
+}
+
+function FacebookStatusStrip({ status }) {
+  if (!status) return null;
+  const pages = status.discovered_pages || [];
+  const lastSynced = status.last_synced_at;
+  const minutes = status.auto_sync_minutes ?? 15;
+  const counts = status.counts || {};
+  const scopesMissing = new Set();
+  pages.forEach((p) => (p.last_sync_scopes_missing || []).forEach((s) => scopesMissing.add(s)));
+  const ago = lastSynced
+    ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
+    : null;
+
+  if (pages.length === 0) {
+    return (
+      <div className="mt-6 vivo-card p-4 rounded-sm border-l-2 border-amber-400 flex items-start gap-3" data-testid="fb-status-strip">
+        <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+        <div className="text-sm">
+          <div className="font-medium">Facebook not connected.</div>
+          <div className="text-xs text-[var(--vivo-muted)] mt-1">
+            Showing demo data only. A manager needs to run the discovery flow with a Graph API user token to pull live posts and comments.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const hasIssues = scopesMissing.size > 0;
+  return (
+    <div className="mt-6 vivo-card p-4 rounded-sm" data-testid="fb-status-strip">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <Facebook className="h-4 w-4 text-[#1877F2]" />
+          <span className="text-sm font-medium">{pages.length} Facebook page{pages.length === 1 ? "" : "s"} live</span>
+          {hasIssues ? (
+            <span className="text-[10px] uppercase tracking-[0.15em] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-sm">
+              Limited
+            </span>
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          )}
+        </div>
+        <div className="text-xs text-[var(--vivo-muted)] flex items-center gap-3 flex-wrap" data-testid="fb-freshness">
+          <span>
+            Last synced:{" "}
+            <span className="text-[var(--vivo-text)] font-medium">
+              {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+            </span>
+          </span>
+          <span>Auto-sync every {minutes} min</span>
+          <span>
+            {counts.real_posts ?? 0} live posts ·{" "}
+            {counts.real_feedback ?? 0} live comments
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+        {pages.map((p) => {
+          const missing = (p.last_sync_scopes_missing || []).length > 0;
+          return (
+            <div
+              key={p.page_id}
+              className={`text-xs border rounded-sm p-2 ${missing ? "border-amber-200 bg-amber-50/40" : "border-[var(--vivo-border)] bg-white"}`}
+              data-testid={`fb-page-${p.page_id}`}
+            >
+              <div className="font-medium truncate" title={p.page_name}>{p.page_name}</div>
+              <div className="text-[10px] text-[var(--vivo-muted)] mt-0.5">
+                {p.last_sync_posts ?? 0} posts · {p.last_sync_comments ?? 0} comments
+              </div>
+              {missing && (
+                <div className="text-[10px] text-amber-700 mt-0.5 truncate" title={(p.last_sync_scopes_missing || []).join(", ")}>
+                  ⚠ scope: {p.last_sync_scopes_missing[0]?.replace("pages_", "")}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {hasIssues && (
+        <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm" data-testid="fb-scope-warn">
+          <strong>Comments locked.</strong> Missing scope:{" "}
+          <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
+          Enable it in your Meta App → Use Cases → "Manage everything on your Page", then regenerate the user token via Graph Explorer and re-run discovery.
+        </div>
+      )}
     </div>
   );
 }

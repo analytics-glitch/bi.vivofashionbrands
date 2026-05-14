@@ -1072,6 +1072,21 @@ async def startup():
         await db.message_templates.insert_many([dict(d) for d in seeded])
         logger.info("Seeded %d new message templates", len(seeded))
 
+    # One-time backfill: mark older seeded mock social items so the UI can hide them.
+    try:
+        r1 = await db.social_posts.update_many(
+            {"post_id": {"$regex": "^post_"}, "is_mock": {"$exists": False}},
+            {"$set": {"is_mock": True}},
+        )
+        r2 = await db.social_feedback.update_many(
+            {"feedback_id": {"$regex": "^fb_[0-9]{5}$"}, "is_mock": {"$exists": False}},
+            {"$set": {"is_mock": True}},
+        )
+        if r1.modified_count or r2.modified_count:
+            logger.info("Backfilled is_mock on %d posts + %d feedback", r1.modified_count, r2.modified_count)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Mock backfill failed: %s", exc)
+
     # Best-effort weekly auto-task run (only fires on Monday + idempotent per ISO week)
     try:
         from social import maybe_run_weekly  # noqa: WPS433
@@ -1091,9 +1106,44 @@ async def startup():
         except Exception as exc:  # noqa: BLE001
             logger.warning("Customer cache warm failed: %s", exc)
 
+    # Background Facebook sync (every N minutes, default 15) — only starts if pages are linked.
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: WPS433
+        from facebook_sync import sync_facebook_page  # noqa: WPS433
+        global _fb_scheduler
+        interval_min = int(os.environ.get("FACEBOOK_SYNC_INTERVAL_MIN", "15"))
+
+        async def _job():
+            pages = await db.facebook_pages.find({}, {"_id": 0}).to_list(50)
+            if not pages:
+                return
+            for p in pages:
+                try:
+                    await sync_facebook_page(db, p["page_id"], p["page_access_token"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Auto-sync failed for %s: %s", p.get("page_name"), exc)
+            try:
+                from social import classify_pending  # noqa: WPS433
+                await classify_pending(db, limit=200)
+            except Exception:  # noqa: BLE001
+                pass
+
+        _fb_scheduler = AsyncIOScheduler(timezone="UTC")
+        _fb_scheduler.add_job(_job, "interval", minutes=interval_min, id="fb_sync", next_run_time=now_utc() + timedelta(seconds=20))
+        _fb_scheduler.start()
+        logger.info("Facebook auto-sync scheduler started: every %d min", interval_min)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("FB scheduler startup failed: %s", exc)
+
 
 @app.on_event("shutdown")
 async def shutdown():
+    try:
+        sched = globals().get("_fb_scheduler")
+        if sched and getattr(sched, "running", False):
+            sched.shutdown(wait=False)
+    except Exception:  # noqa: BLE001
+        pass
     mongo_client.close()
 
 
@@ -1229,6 +1279,25 @@ async def precompute_call_list_nba(_: User = Depends(require_manager)):
 async def facebook_status(_: User = Depends(require_manager)):
     """Tells the manager what's wired and what's still needed."""
     pages = await db.facebook_pages.find({}, {"_id": 0, "page_access_token": 0}).to_list(50)
+    # Aggregate freshness
+    last_synced_at = None
+    for p in pages:
+        ts = p.get("last_synced_at")
+        if ts and (last_synced_at is None or ts > last_synced_at):
+            last_synced_at = ts
+    # Real-vs-mock counts so the UI can show "X live items / Y mock"
+    real_posts = await db.social_posts.count_documents({"source": "facebook_graph"})
+    real_feedback = await db.social_feedback.count_documents({"source": "facebook_graph"})
+    mock_posts = await db.social_posts.count_documents({"is_mock": True})
+    mock_feedback = await db.social_feedback.count_documents({"is_mock": True})
+    # Scheduler status
+    sched = globals().get("_fb_scheduler")
+    next_run = None
+    if sched and getattr(sched, "running", False):
+        jobs = sched.get_jobs()
+        if jobs:
+            nr = jobs[0].next_run_time
+            next_run = nr.isoformat() if nr else None
     return {
         "app_id_configured": bool(os.environ.get("FACEBOOK_APP_ID")),
         "app_secret_configured": bool(os.environ.get("FACEBOOK_APP_SECRET")),
@@ -1242,6 +1311,15 @@ async def facebook_status(_: User = Depends(require_manager)):
             *([] if (os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN") or pages) else ["FACEBOOK_PAGE_ACCESS_TOKEN"]),
         ],
         "instructions_url": "https://developers.facebook.com/tools/explorer/",
+        "last_synced_at": last_synced_at,
+        "auto_sync_minutes": int(os.environ.get("FACEBOOK_SYNC_INTERVAL_MIN", "15")),
+        "next_run_at": next_run,
+        "counts": {
+            "real_posts": real_posts,
+            "real_feedback": real_feedback,
+            "mock_posts": mock_posts,
+            "mock_feedback": mock_feedback,
+        },
     }
 
 
