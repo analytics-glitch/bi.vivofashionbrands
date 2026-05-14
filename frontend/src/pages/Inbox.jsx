@@ -36,6 +36,9 @@ export default function Inbox() {
   const [searchQ, setSearchQ] = useState("");
   const [fbStatus, setFbStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [connecting, setConnecting] = useState(false);
 
   const navigate = useNavigate();
 
@@ -78,6 +81,28 @@ export default function Inbox() {
       toast.error("Sync failed: " + (e?.response?.data?.detail || e.message));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const connectFacebook = async () => {
+    const token = tokenInput.trim();
+    if (!token) {
+      toast.error("Paste a Facebook user access token first.");
+      return;
+    }
+    setConnecting(true);
+    try {
+      const d = await api.post("/social/facebook/discover", { user_access_token: token });
+      toast.success(`Connected ${d.data?.discovered || 0} page(s). Starting first sync…`);
+      setConnectOpen(false);
+      setTokenInput("");
+      await loadFbStatus();
+      // Auto-trigger first sync right after discover
+      await syncNow();
+    } catch (e) {
+      toast.error("Connect failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setConnecting(false);
     }
   };
 
@@ -153,10 +178,16 @@ export default function Inbox() {
           <Button variant="outline" onClick={reclassify} className="rounded-sm h-11" data-testid="reclassify-button">
             <RefreshCw className="mr-2 h-4 w-4" /> Re-run sentiment
           </Button>
-          <Button onClick={syncNow} disabled={syncing} className="rounded-sm h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy)]/90 text-white" data-testid="sync-now-button">
-            <Facebook className={`mr-2 h-4 w-4 ${syncing ? "animate-pulse" : ""}`} />
-            {syncing ? "Syncing…" : "Sync from Facebook"}
-          </Button>
+          {(fbStatus?.discovered_pages?.length || 0) === 0 ? (
+            <Button onClick={() => setConnectOpen(true)} className="rounded-sm h-11 bg-[#1877F2] hover:bg-[#1877F2]/90 text-white" data-testid="connect-fb-button">
+              <Facebook className="mr-2 h-4 w-4" /> Connect Facebook
+            </Button>
+          ) : (
+            <Button onClick={syncNow} disabled={syncing} className="rounded-sm h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy)]/90 text-white" data-testid="sync-now-button">
+              <Facebook className={`mr-2 h-4 w-4 ${syncing ? "animate-pulse" : ""}`} />
+              {syncing ? "Syncing…" : "Sync from Facebook"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -368,6 +399,55 @@ export default function Inbox() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Connect Facebook dialog */}
+      <Dialog open={connectOpen} onOpenChange={setConnectOpen}>
+        <DialogContent data-testid="connect-fb-dialog" className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="font-display flex items-center gap-2">
+              <Facebook className="h-5 w-5 text-[#1877F2]" /> Connect Facebook
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <div className="bg-[var(--vivo-bg)] border border-[var(--vivo-border)] p-3 rounded-sm text-xs space-y-2">
+              <div className="font-medium text-[var(--vivo-text)]">How to get your access token (~90 seconds):</div>
+              <ol className="list-decimal pl-4 space-y-1 text-[var(--vivo-muted)]">
+                <li>Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noreferrer" className="underline text-[var(--vivo-navy)]">Graph API Explorer</a></li>
+                <li>Top-right → select app <strong>Vivo_Power_Bi_Extraction</strong></li>
+                <li>Click <strong>Get User Access Token</strong></li>
+                <li>Tick: <code className="text-[10px] bg-white px-1 rounded">pages_show_list</code>, <code className="text-[10px] bg-white px-1 rounded">pages_read_engagement</code>, <code className="text-[10px] bg-white px-1 rounded">pages_read_user_content</code>, <code className="text-[10px] bg-white px-1 rounded">pages_manage_metadata</code></li>
+                <li>On the FB pop-up, tick <strong>all Vivo pages</strong> (Vivo Woman, Shop Zetu, Safari by vivo, AMAYA, Vivo Fashion Group)</li>
+                <li>Copy the token and paste below</li>
+              </ol>
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">User access token</label>
+              <Textarea
+                rows={4}
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="EAATz... (paste the full token)"
+                className="mt-1 rounded-sm font-mono text-xs"
+                data-testid="fb-token-input"
+              />
+              <div className="text-[10px] text-[var(--vivo-muted)] mt-1">
+                Token stays on Vivo's servers — never leaves your infrastructure. Long-lived Page tokens (~60 days) are generated automatically.
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConnectOpen(false)}>Cancel</Button>
+            <Button
+              onClick={connectFacebook}
+              disabled={connecting || !tokenInput.trim()}
+              className="rounded-sm bg-[#1877F2] hover:bg-[#1877F2]/90 text-white"
+              data-testid="fb-connect-submit"
+            >
+              {connecting ? "Connecting…" : "Connect & Sync"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -396,12 +476,14 @@ function FacebookStatusStrip({ status }) {
 
   if (pages.length === 0) {
     return (
-      <div className="mt-6 vivo-card p-4 rounded-sm border-l-2 border-amber-400 flex items-start gap-3" data-testid="fb-status-strip">
-        <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
-        <div className="text-sm">
-          <div className="font-medium">Facebook not connected.</div>
-          <div className="text-xs text-[var(--vivo-muted)] mt-1">
-            Showing demo data only. A manager needs to run the discovery flow with a Graph API user token to pull live posts and comments.
+      <div className="mt-6 vivo-card p-5 rounded-sm border-l-2 border-amber-400" data-testid="fb-status-strip">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">Facebook is not connected yet.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              You're seeing <strong>demo data</strong>. Click <strong>"Connect Facebook"</strong> above to link your Vivo pages and start pulling real-time posts &amp; comments. The auto-sync scheduler will then keep your inbox fresh every {minutes} minutes, 24/7.
+            </div>
           </div>
         </div>
       </div>
