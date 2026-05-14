@@ -2363,27 +2363,44 @@ from audit_service import send_daily_summary as _send_daily_summary  # noqa: E40
 from email_alert import email_configured as _email_configured  # noqa: E402
 
 
-@api_router.post("/run-audit")
+@app.post("/api/run-audit")
 async def trigger_audit(secret: str = "", mode: str = "scheduled"):
     """Iter 79 — Externally-scheduled audit trigger.
 
     External cron service (cron-job.org by default) POSTs to this
     endpoint every 2 hours. The shared secret in `AUDIT_TRIGGER_SECRET`
-    must match. `mode` controls the daily-summary kick:
-      • scheduled (default) — runs the full 2-hour audit + writes record.
-      • daily   — additionally sends the 07:00 daily-summary email.
+    must match.
+
+    Returns 202 immediately and runs the audit as a background task.
+    The audit takes 1-5 minutes (cold/warm × 6 endpoints + up to two
+    30-second auto-fix waits) which exceeds the platform ingress
+    timeout. Cron services hate hanging requests, so we ack right
+    away and persist the record to the `audit_log` collection when
+    done — admin UI pulls it from there.
+
+    Mounted on `app` (not `api_router`) because the api_router has a
+    global `Depends(get_current_user)` and this endpoint must be
+    callable by an external cron service that has no JWT — only the
+    shared secret.
     """
     expected = os.environ.get("AUDIT_TRIGGER_SECRET", "")
     if not expected or secret != expected:
         raise HTTPException(status_code=401, detail="invalid_or_missing_secret")
-    base = os.environ.get("DASHBOARD_URL", "https://bi.vivofashionbrands.com")
-    # The audit script logs in via SEED_ADMIN_* — it needs to call the
-    # SAME app it's auditing, so we point it at our public URL.
-    record = await _run_audit(base, db, mode=mode)
-    extra = {}
-    if mode == "daily":
-        extra["daily_summary"] = await _send_daily_summary(db)
-    return {"ok": True, "record": record, **extra}
+    base = os.environ.get("AUDIT_TARGET_URL") or "http://localhost:8001"
+
+    async def _run_in_bg():
+        try:
+            await _run_audit(base, db, mode=mode)
+            if mode == "daily":
+                await _send_daily_summary(db)
+        except Exception as e:
+            logger.exception("[run-audit] background task failed: %s", e)
+
+    # We use asyncio.create_task instead of BackgroundTasks because the
+    # latter is tied to the response lifecycle and the audit might run
+    # for several minutes — long after the response is closed.
+    asyncio.create_task(_run_in_bg())
+    return {"ok": True, "queued": True, "mode": mode, "queued_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api_router.get("/admin/audit-log")

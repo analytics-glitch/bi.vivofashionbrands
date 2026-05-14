@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Database, X, ArrowsClockwise } from "@phosphor-icons/react";
+import AuditHistoryPanel from "@/components/AuditHistoryPanel";
 
 /**
  * CacheStatsPill — admin-only topbar pill that exposes live cache
@@ -255,6 +256,14 @@ const CacheStatsPill = () => {
                   </div>
                   <Stat label="RSS memory" value={data.process.rss_mb != null ? `${data.process.rss_mb} MB` : "n/a"} />
                   <Stat label="Uptime" value={`${Math.floor(data.process.uptime_sec / 60)}m`} />
+                </div>
+
+                {/* Iter 79 — 2-hour audit history. Sits below the
+                    existing cache stats per CEO request. Pulls from
+                    `/api/admin/audit-log` (its own endpoint) so this
+                    panel can refresh independently. */}
+                <div className="pt-3 border-t border-border">
+                  <AuditHistoryPanel />
                 </div>
               </>
             )}
