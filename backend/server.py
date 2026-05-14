@@ -146,8 +146,35 @@ _CHURN_NEG_TTL = 60  # seconds
 # warm-cache path while still respecting freshness. Bounded to keep memory
 # predictable on long-running workers.
 _FETCH_CACHE: Dict[tuple, tuple] = {}
-_FETCH_TTL = 120.0  # seconds
+_FETCH_TTL = 120.0  # seconds — default "today" window (overridden per-entry via _smart_ttl)
 _FETCH_CACHE_MAX = 2000  # entries
+
+
+def _smart_ttl(clean: Dict[str, Any]) -> float:
+    """Per-entry cache TTL based on how 'live' the requested window is.
+
+    Vivo BI's materialized tables refresh every 5 min so today's data
+    SHOULD turn over at minute granularity. Yesterday's data is already
+    settled — only edits to historical orders move it, which is rare.
+    Historical data (date_to < yesterday) is immutable for our purposes
+    and can be cached for an hour with zero correctness risk.
+
+    Falls back to the default 120 s when `date_to` is missing or
+    unparseable.
+    """
+    dt = clean.get("date_to")
+    if not isinstance(dt, str) or len(dt) != 10:
+        return _FETCH_TTL
+    try:
+        target = datetime.strptime(dt, "%Y-%m-%d").date()
+    except Exception:
+        return _FETCH_TTL
+    today = datetime.now(timezone.utc).date()
+    if target >= today:
+        return 120.0  # 2 min — covers the live "today" window
+    if target >= (today - timedelta(days=1)):
+        return 600.0  # 10 min — yesterday is settled but recently-edited
+    return 3600.0  # 1 h — historical, immutable for dashboard purposes
 
 
 def _evict_fetch_cache_if_needed() -> None:
@@ -380,10 +407,19 @@ async def fetch(
         else:
             clean["country"] = v.lower() if wants_lower else _norm_country(v)
     cache_key = (path, tuple(sorted(clean.items()))) if cache else None
+    # Compute the per-entry TTL once — used for both L1 freshness check
+    # and the Redis TTL on write.
+    entry_ttl = _smart_ttl(clean) if cache_key is not None else _FETCH_TTL
     if cache_key is not None:
         hit = _FETCH_CACHE.get(cache_key)
-        if hit and (time.time() - hit[0]) < _FETCH_TTL:
-            return hit[1]
+        if hit:
+            # Tuple shape is (ts, data) for legacy entries and
+            # (ts, data, ttl) for smart-TTL entries. Use the stored TTL
+            # when present so a historical 1 h entry doesn't get treated
+            # as a 120 s "today" entry on read.
+            hit_ttl = hit[2] if len(hit) >= 3 else _FETCH_TTL
+            if (time.time() - hit[0]) < hit_ttl:
+                return hit[1]
         # L2 — shared Redis cache. Lets a warm response from pod A serve
         # pod B's traffic instantly instead of paying the cold upstream
         # call N times across replicas. Failure is non-fatal (the
@@ -400,8 +436,9 @@ async def fetch(
             r_hit = await rc.get(_rkey)
             if r_hit is not None:
                 # Populate the L1 dict so subsequent same-pod calls
-                # skip the Redis RTT.
-                _FETCH_CACHE[cache_key] = (time.time(), r_hit)
+                # skip the Redis RTT. Use the smart TTL so we don't
+                # over-cache a today-window value lifted from Redis.
+                _FETCH_CACHE[cache_key] = (time.time(), r_hit, entry_ttl)
                 _evict_fetch_cache_if_needed()
                 return r_hit
         # In-flight de-dup. If another coroutine already kicked off this
@@ -453,7 +490,7 @@ async def fetch(
                                path, resp.status_code, len(resp.content or b""), str(je)[:80])
                 data = []
             if cache_key is not None:
-                _FETCH_CACHE[cache_key] = (time.time(), data)
+                _FETCH_CACHE[cache_key] = (time.time(), data, entry_ttl)
                 # Bound cache size to avoid unbounded growth (LRU-ish eviction).
                 if len(_FETCH_CACHE) > _FETCH_CACHE_MAX:
                     # Drop the 200 oldest entries.
@@ -462,8 +499,10 @@ async def fetch(
                         _FETCH_CACHE.pop(k, None)
                 # Mirror to Redis so sibling pods skip the cold upstream
                 # call. Fire-and-forget — never block the hot path.
+                # Use the SAME smart TTL on Redis so historical entries
+                # survive an hour and today's entries turn over fast.
                 if _rkey:
-                    asyncio.create_task(rc.set(_rkey, data, int(_FETCH_TTL)))
+                    asyncio.create_task(rc.set(_rkey, data, int(entry_ttl)))
             _cb_record_success(path)
             if my_future is not None and not my_future.done():
                 my_future.set_result(data)
@@ -738,7 +777,8 @@ def _window_is_recent(date_from: Optional[str], date_to: Optional[str]) -> bool:
 # requests resolve in <50 ms without ever touching Vivo BI.
 _SNAPSHOT_COLL = "kpi_snapshots"
 _SNAPSHOT_REFRESH_SEC = 120  # 2 min — how often the snapshotter wakes
-_SNAPSHOT_FRESH_TTL_SEC = 900  # 15 min — beyond this we ignore the snapshot
+_SNAPSHOT_FRESH_TTL_SEC = 300  # 5 min — beyond this we ignore the snapshot
+# (upstream itself caches 5 min, so anything older means a refresh sweep failed)
 _SNAPSHOT_COUNTRIES: List[Optional[str]] = [None, "Kenya", "Uganda", "Rwanda", "Online"]
 
 
