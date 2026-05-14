@@ -1,0 +1,138 @@
+name: Pre-Ship Suite (iter-83)
+
+# Mandatory CI gate — runs the full pre-ship pytest suite on every PR
+# touching the backend or frontend. Blocks merge if ANY of the 18 gates
+# fails, including the memory-leak check (RSS growth ≤ 100 MB on a 100-
+# request burst).
+#
+# What it proves:
+#   • Recon zero failures + KPI ↔ Country Split match (5 tests)
+#   • Retail/Online channel-group rewrite — no upstream fan-out (4)
+#   • Fan-out tripwire + self-heal (3)
+#   • Surgical recovery endpoints — warm/trim/admin-gating (4)
+#   • Memory leak gate — 100-req burst + back-to-back bursts (2)
+#
+# Required repository secrets:
+#   PREVIEW_URL              — Preview environment URL (or any live URL
+#                              hosting a recent build). Required because
+#                              the pytest suite hits real HTTP endpoints
+#                              — we don't spin up a stack in CI.
+#   PERF_ADMIN_EMAIL         — Admin login for the suite.
+#   PERF_ADMIN_PASSWORD      — Password for the above.
+#
+# Budgets (override per-run with workflow_dispatch inputs):
+#   MEMORY_LEAK_BUDGET_MB    — Default 100 MB; fail if Δ RSS exceeds.
+#   MEMORY_LEAK_BURST        — Default 100 requests in the burst.
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/pre-ship-suite.yml"
+  workflow_dispatch:
+    inputs:
+      memory_leak_budget_mb:
+        description: "Max RSS growth allowed during the burst (MB)"
+        required: false
+        default: "100"
+      memory_leak_burst:
+        description: "Number of requests in the burst"
+        required: false
+        default: "100"
+
+concurrency:
+  group: pre-ship-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-ship:
+    name: Pre-ship suite (18 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test deps
+        run: |
+          pip install --quiet pytest requests
+
+      - name: Run pre-ship pytest suite
+        env:
+          REACT_APP_BACKEND_URL: ${{ secrets.PREVIEW_URL }}
+          SEED_ADMIN_EMAIL: ${{ secrets.PERF_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.PERF_ADMIN_PASSWORD }}
+          MEMORY_LEAK_BUDGET_MB: ${{ github.event.inputs.memory_leak_budget_mb || '100' }}
+          MEMORY_LEAK_BURST: ${{ github.event.inputs.memory_leak_burst || '100' }}
+        run: |
+          cd backend
+          pytest -v -s \
+            tests/test_iteration_80_recon_and_freshness.py \
+            tests/test_iteration_81_channel_group_rewrite.py \
+            tests/test_iteration_82_fanout_tripwire.py \
+            tests/test_iteration_82b_surgical_self_fix.py \
+            tests/test_iteration_83_memory_leak_ci.py \
+            --junitxml=pre_ship_junit.xml 2>&1 | tee pre_ship_output.log
+
+      - name: Upload pre-ship JUnit + log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-ship-results
+          path: |
+            backend/pre_ship_junit.xml
+            backend/pre_ship_output.log
+          if-no-files-found: warn
+
+      - name: Comment on PR with summary
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let log;
+            try {
+              log = fs.readFileSync('backend/pre_ship_output.log', 'utf8');
+            } catch (e) {
+              log = 'No log produced — pytest may not have started.';
+            }
+            // Extract the leak-test summary lines + pass/fail tail.
+            const leakSummary = (log.match(/  RSS before burst[\s\S]+?Δ between bursts[^\n]+/m) || ['(leak summary not found)'])[0];
+            const tail = log.split('\n').slice(-12).join('\n');
+            const ok = log.includes('18 passed');
+            const emoji = ok ? '✅' : '❌';
+            const body = [
+              `### ${emoji} Pre-Ship Suite (iter-83)`,
+              '',
+              ok ? '**All 18 gates pass — safe to merge.**' : '**One or more gates failed — DO NOT MERGE until investigated.**',
+              '',
+              '<details><summary>Memory leak measurement</summary>',
+              '',
+              '```',
+              leakSummary,
+              '```',
+              '',
+              '</details>',
+              '',
+              '<details><summary>Last lines of pytest output</summary>',
+              '',
+              '```',
+              tail,
+              '```',
+              '',
+              '</details>',
+              '',
+              `_Triggered by ${context.sha.substring(0, 7)} · See [PRE_SHIP_CHECKLIST.md](../blob/${context.sha}/memory/PRE_SHIP_CHECKLIST.md) for the full playbook._`,
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

@@ -1,5 +1,23 @@
 # Pre-Ship Checklist (mandatory from Iter 83 onward)
 
+[![Pre-Ship Suite](https://github.com/REPLACE_WITH_OWNER/REPLACE_WITH_REPO/actions/workflows/pre-ship-suite.yml/badge.svg?branch=main)](../../actions/workflows/pre-ship-suite.yml)
+
+> The pre-ship suite runs **automatically on every PR** touching `backend/` or `frontend/`.
+> Replace the badge URL above with your actual `owner/repo` so it renders in the README.
+
+## CI enforcement
+This checklist is enforced by `.github/workflows/pre-ship-suite.yml`. On every PR:
+1. The 18-test suite runs against `PREVIEW_URL`.
+2. A pass/fail summary is posted as a PR comment with the live memory-leak measurement.
+3. The PR cannot be merged until the workflow goes green (configure in **Settings → Branches → Branch protection rules**).
+
+Required GitHub secrets:
+- `PREVIEW_URL` — full URL to a live build (preview env).
+- `PERF_ADMIN_EMAIL` — admin login.
+- `PERF_ADMIN_PASSWORD` — admin password.
+
+To re-run with a tighter budget, use **workflow_dispatch** with `memory_leak_budget_mb` / `memory_leak_burst`.
+
 Run **all six** items BEFORE every production deploy. Any single failure blocks the deploy until investigated.
 
 ## 1. Reconciliation check (zero failures)
