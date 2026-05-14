@@ -706,5 +706,17 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **6 new regression tests** at `/app/backend/tests/test_iteration_80_recon_and_freshness.py`: recon-zero-failures, KPI ↔ Country Split match per country, /kpis aggregate == Σ countries, snapshot-freshness endpoint shape, orders+units reconcile. **5/5 pass**. Verified across 3 consecutive page refreshes — values identical every time (snapshot is deterministic).
 - **Testing agent (iter 65)**: 100% backend (11/11 pytest), 100% frontend on items with testids. No critical issues.
 
+### Recent (Feb 2026 — Iter 81) — Retail/Online channel-group rewrite (root cause of "KPIs temporarily slow")
+- **Bug**: with the Retail toggle ON, the dashboard rendered an empty page with banner "KPIs are temporarily slow to load. Auto-refreshing in the background — you don't need to do anything." Root cause: the frontend expanded "Retail" to a CSV of ~15 individual POS channels, and the backend's `_get_kpis_live` fanned out 4 countries × 15 channels = 60 upstream calls per request → Vivo BI rate-limited (429) → `kpisError` set → empty banner.
+- **Fix**: server-side channel-group rewrite in `server.py`. New helpers `_classify_channel_group()` and `_normalize_channel_group()` (L770+) detect the Retail / Online pattern (≥2 non-online channels = Retail; any single online channel = Online) and rewrite the request to a country-based slice:
+  - **Retail** → `country=Kenya,Uganda,Rwanda` (skip Online) + `channel=None`
+  - **Online** → `country=Online` + `channel=None`
+- The rewrite happens at every dashboard route entry: `/kpis`, `/country-summary`, `/sales-summary`, `/customers`, `/top-skus`, `/sor`, `/daily-trend`, `/footfall`, `/bootstrap/overview`.
+- **Multi-country aggregate**: new `_derive_kpis_multi_country()` helper sums per-country /kpis snapshots into the Retail aggregate. No upstream calls — pure snapshot reads.
+- **`/bootstrap/overview` country filter**: when channel-group is set, the bootstrap response's `country_summary` rows are filtered to the matching country subset (Kenya+Uganda+Rwanda for Retail, Online for Online). The Overview Country Split chart now correctly omits Online when Retail is on.
+- **Performance**: 60 upstream calls → ≤4 Mongo snapshot reads. Retail toggle now resolves in **<500 ms warm** (was timing out / rate-limited).
+- **4 new tests** at `/app/backend/tests/test_iteration_81_channel_group_rewrite.py`: Retail uses snapshot, Online uses snapshot, Σ(Retail)+Σ(Online)==All, country-summary Retail excludes Online row. **4/4 pass**.
+- **Verified end-to-end via UI**: Retail toggle → KPI card KES 2,171,456 = Kenya 1,909,295 + Uganda 138,381 + Rwanda 123,780 (Online row = 0). Top Location switches from "Online - Shop Zetu" to "Vivo Sarit". Sales-by-Location chart has no Online row. Recon ✓ green.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

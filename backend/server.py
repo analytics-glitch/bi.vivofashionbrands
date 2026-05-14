@@ -785,6 +785,65 @@ async def multi_fetch(path: str, base: Dict[str, Any], countries: List[str], cha
     return results
 
 
+# ── Channel-group → Country normalization (Feb 2026) ──────────────────
+# The frontend's "Retail" / "Online" toggle expands to ~15 individual
+# POS channel names in a CSV. Without normalization the backend would
+# fan out countries × channels (4 × 15 = 60 upstream calls) — guaranteed
+# to trip Vivo BI's rate limit on every request. By recognizing the
+# Retail/Online channel-group pattern at the route entry and rewriting
+# it to a country-based filter, we collapse those 60 calls into 1-4
+# snapshot reads with ZERO upstream calls.
+def _classify_channel_group(channels: List[str]) -> str:
+    """Return one of: "online" (all online — any count), "retail"
+    (all non-online, >=2 channels), "single" (one non-online channel
+    — no normalization needed), "mixed" (mix of online + retail —
+    keep the multi-channel fan-out) or "none" (no channel filter).
+    """
+    if not channels:
+        return "none"
+    has_online = any("online" in (c or "").lower() for c in channels)
+    has_retail = any("online" not in (c or "").lower() for c in channels)
+    if has_online and not has_retail:
+        return "online"
+    if has_retail and not has_online:
+        return "single" if len(channels) == 1 else "retail"
+    return "mixed"
+
+
+def _normalize_channel_group(
+    country: Optional[str], channel: Optional[str],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Translate a (country, channel-CSV) tuple into an equivalent
+    (country, channel) pair that the snapshot layer can serve in ≤4
+    Mongo reads. Returns (effective_country, effective_channel, mode)
+    where `mode` is one of:
+      • "none"       — no rewrite (channel filter is single/mixed/missing)
+      • "retail"     — channel filter collapsed to country=Kenya,Uganda,Rwanda
+      • "online"     — channel filter collapsed to country=Online
+    The country argument is RESPECTED when present (we intersect):
+    e.g. country=Kenya + channel=Retail → country=Kenya, channel=None.
+    """
+    chs = _split_csv(channel)
+    grp = _classify_channel_group(chs)
+    if grp not in ("retail", "online"):
+        return country, channel, "none"
+    cs = _split_csv(country)
+    if grp == "online":
+        # User wants the Online slice only.
+        if cs and "Online" not in cs:
+            # Filter excludes Online — result is empty.
+            return country, channel, "none"
+        return "Online", None, "online"
+    # Retail = Kenya,Uganda,Rwanda
+    retail_countries = ["Kenya", "Uganda", "Rwanda"]
+    if cs:
+        keep = [c for c in cs if c in retail_countries]
+        if not keep:
+            return country, channel, "none"
+        return ",".join(keep), None, "retail"
+    return ",".join(retail_countries), None, "retail"
+
+
 def agg_kpis(list_of_kpis: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = {
         "total_sales": 0.0, "gross_sales": 0.0, "total_discounts": 0.0,
@@ -852,6 +911,7 @@ async def get_locations():
 async def get_country_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    channel: Optional[str] = None,
 ):
     """Snapshot-free wrapper — see `_get_country_summary_live` for
     the actual aggregation logic.
@@ -864,13 +924,27 @@ async def get_country_summary(
     = Y" mismatch the user reported. Reading /kpis snapshots is cheap
     (4 Mongo finds in parallel — ~10 ms warm), so the performance
     cost is negligible vs. the correctness win.
+
+    CHANNEL-GROUP (Feb 2026): when Retail/Online toggle is on, the
+    frontend passes a CSV of channels — translate to a country slice
+    so we don't fan out 60 upstream calls per request.
     """
-    return await _get_country_summary_live(date_from=date_from, date_to=date_to)
+    _ec, _ech, mode = _normalize_channel_group(None, channel)
+    only_countries: Optional[List[str]] = None
+    if mode == "online":
+        only_countries = ["Online"]
+    elif mode == "retail":
+        only_countries = ["Kenya", "Uganda", "Rwanda"]
+    return await _get_country_summary_live(
+        date_from=date_from, date_to=date_to,
+        only_countries=only_countries,
+    )
 
 
 async def _get_country_summary_live(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    only_countries: Optional[List[str]] = None,
 ):
     """Per-country sales rollup. Used by Overview's country split AND
     by the CEO Report's "Country Performance" table.
@@ -885,9 +959,13 @@ async def _get_country_summary_live(
     If a per-country /kpis snapshot is missing or stale, we fall back
     to `_get_kpis_live` which itself rebuilds via /orders when
     upstream is empty. Either way the numbers match by construction.
+
+    `only_countries` restricts the rollup to a subset — used by the
+    Retail/Online channel-group rewrite so the chart shows only the
+    relevant rows.
     """
     cache_key = ("/country-summary", date_from or "", date_to or "", "", "")
-    countries = ["Kenya", "Uganda", "Rwanda", "Online"]
+    countries = only_countries or ["Kenya", "Uganda", "Rwanda", "Online"]
 
     async def _one(c: str) -> Optional[Dict[str, Any]]:
         # Try the snapshot first — guarantees atomicity with /kpis.
@@ -1547,12 +1625,24 @@ async def get_kpis(
     at READ TIME instead of returning a separately-stored all-countries
     snapshot. This guarantees Σ(per-country /kpis) == /kpis(no-country)
     at every request because they share the same source snapshots.
-    Without this, the per-country snapshot and the all-countries
-    snapshot can drift between sweeps and the country-split chart
-    won't match the headline KPI card.
+
+    RETAIL/ONLINE TOGGLE (Feb 2026): the frontend "Retail" / "Online"
+    toggle expands to ~15 channel names. We detect that pattern via
+    `_normalize_channel_group` and rewrite it to a country-based slice
+    so we hit snapshots instead of 60 upstream fan-out calls.
     """
+    # 1. Channel-group → country rewrite (collapses 60-call fan-out
+    # to a single snapshot read).
+    eff_country, eff_channel, _mode = _normalize_channel_group(country, channel)
+    country, channel = eff_country, eff_channel
+
     if (not country) and (not channel):
         return await _derive_kpis_no_country(date_from, date_to)
+    # Multi-country (CSV) — derive via per-country snapshots so we
+    # NEVER fan out to upstream when snapshots are available.
+    cs = _split_csv(country)
+    if len(cs) > 1 and not channel:
+        return await _derive_kpis_multi_country(date_from, date_to, cs)
     snap = await _try_kpi_snapshot(date_from, date_to, country, channel)
     if snap is not None:
         return snap
@@ -1560,6 +1650,42 @@ async def get_kpis(
         date_from=date_from, date_to=date_to,
         country=country, channel=channel,
     )
+
+
+async def _derive_kpis_multi_country(
+    date_from: Optional[str], date_to: Optional[str], countries: List[str],
+) -> Dict[str, Any]:
+    """Aggregate /kpis across a specific country subset by reading
+    per-country snapshots. Same pattern as `_derive_kpis_no_country`
+    but for arbitrary CSV slices (e.g. Retail = Kenya+Uganda+Rwanda).
+    """
+    async def _one(c: str) -> Optional[Dict[str, Any]]:
+        snap = await _try_kpi_snapshot(date_from, date_to, c, None)
+        if snap is not None:
+            return snap
+        try:
+            return await _get_kpis_live(
+                date_from=date_from, date_to=date_to,
+                country=c, channel=None,
+            )
+        except Exception as e:
+            logger.warning("[kpis-multi] %s live fallback failed: %s", c, e)
+            return None
+
+    results = await asyncio.gather(*(_one(c) for c in countries))
+    parts = [r for r in results if r]
+    if not parts:
+        return await _get_kpis_live(
+            date_from=date_from, date_to=date_to,
+            country=",".join(countries),
+        )
+    agg = agg_kpis(parts)
+    ages = [int(p.get("_snapshot_age_sec") or 0) for p in parts if p.get("_source") == "snapshot"]
+    if ages and len(ages) == len(parts):
+        agg["_source"] = "snapshot"
+        agg["_snapshot_age_sec"] = max(ages)
+    agg["stale"] = False
+    return agg
 
 
 async def _derive_kpis_no_country(
@@ -1746,6 +1872,8 @@ async def get_sales_summary(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    # Retail/Online channel-group → country slice (avoids 4×N upstream fan-out).
+    country, channel, _ = _normalize_channel_group(country, channel)
     snap = await _try_analytics_snapshot(
         "/sales-summary", date_from, date_to, country, channel,
     )
@@ -1818,6 +1946,8 @@ async def get_top_skus(
     brand: Optional[str] = None,
     limit: int = Query(20, ge=1, le=10000),
 ):
+    # Retail/Online → country (collapses 60-call fan-out).
+    country, channel, _ = _normalize_channel_group(country, channel)
     # Only snapshot the default (no brand, default limit) case — non-
     # default queries are too varied to be worth pre-warming.
     if not brand and limit == 20:
@@ -1890,6 +2020,7 @@ async def get_sor(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
 ):
+    country, channel, _ = _normalize_channel_group(country, channel)
     # Only snapshot the default (no brand) case — brand-filtered queries
     # are too varied to pre-warm.
     if not brand:
@@ -1971,7 +2102,9 @@ async def get_daily_trend(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     country: Optional[str] = None,
+    channel: Optional[str] = None,
 ):
+    country, _ch, _ = _normalize_channel_group(country, channel)
     snap = await _try_analytics_snapshot(
         "/daily-trend", date_from, date_to, country, None,
     )
@@ -2045,6 +2178,9 @@ async def bootstrap_overview(
     directly into its state setters. Saves 8-10 HTTP round-trips per
     Overview load → ~600-1200 ms off cold paint, ~50-150 ms off warm.
     """
+    # Channel-group → country slice (Feb 2026) so Retail/Online toggle
+    # doesn't trigger 60-call upstream fan-outs everywhere.
+    country, channel, _ = _normalize_channel_group(country, channel)
     countries_for_chart = _split_csv(country) or _OVERVIEW_COUNTRIES
     has_compare = bool(compare_from and compare_to)
     p_country = country
@@ -2106,6 +2242,18 @@ async def bootstrap_overview(
     # wire.
     sor_rows = sor or []
     sor_top = sorted(sor_rows, key=lambda r: r.get("units_sold") or 0, reverse=True)[:20]
+
+    # Retail/Online channel-group filter (Feb 2026): the country slice
+    # is already encoded in `p_country` after the normalization at the
+    # top of this function. Filter the country-split / channel-split
+    # rollups so the Overview chart respects the Retail toggle.
+    if p_country:
+        wanted = set(_split_csv(p_country))
+        country_summary = [r for r in (country_summary or []) if r.get("country") in wanted]
+        if has_compare:
+            # `prev_results` shape: [country_summary, sales_summary, ...]
+            if prev_results and isinstance(prev_results, list) and prev_results:
+                prev_results[0] = [r for r in (prev_results[0] or []) if r.get("country") in wanted]
 
     daily_by_country = {
         c: curr_daily_results[i] or []
@@ -2799,6 +2947,7 @@ async def get_customers(
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    country, channel, _ = _normalize_channel_group(country, channel)
     snap = await _try_analytics_snapshot(
         "/customers", date_from, date_to, country, channel,
     )
@@ -4943,13 +5092,20 @@ async def get_footfall(
     date_to: Optional[str] = None,
     channel: Optional[str] = None,
 ):
+    # Retail/Online → don't fan out N channels; footfall is per-store
+    # so the snapshot already has all stores. Channel-group filter
+    # would just slice the response on the frontend.
+    _ec, eff_channel, mode = _normalize_channel_group(None, channel)
+    # Cache the snapshot under the un-channelled key so all 15 retail
+    # channel-CSVs share one snapshot.
+    snap_channel = None if mode in ("retail", "online") else channel
     snap = await _try_analytics_snapshot(
-        "/footfall", date_from, date_to, None, channel,
+        "/footfall", date_from, date_to, None, snap_channel,
     )
     if snap is not None:
         return snap
     return await _get_footfall_live(
-        date_from=date_from, date_to=date_to, channel=channel,
+        date_from=date_from, date_to=date_to, channel=eff_channel,
     )
 
 
