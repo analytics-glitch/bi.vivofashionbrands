@@ -2352,6 +2352,53 @@ async def admin_snapshot_count(_: User = Depends(require_admin)):
     }
 
 
+# Iter 79 — Standing 2-hour audit endpoints.
+# `/api/run-audit` is the OPEN trigger that any external cron service
+# (cron-job.org, GitHub Actions, Google Cloud Scheduler) hits every
+# 2 h. Gated by a shared secret in the env var AUDIT_TRIGGER_SECRET so
+# the endpoint can't be DOS'd by random callers.
+# `/api/admin/audit-log` reads the last N records for the admin UI.
+from audit_service import run_audit as _run_audit  # noqa: E402
+from audit_service import send_daily_summary as _send_daily_summary  # noqa: E402
+from email_alert import email_configured as _email_configured  # noqa: E402
+
+
+@api_router.post("/run-audit")
+async def trigger_audit(secret: str = "", mode: str = "scheduled"):
+    """Iter 79 — Externally-scheduled audit trigger.
+
+    External cron service (cron-job.org by default) POSTs to this
+    endpoint every 2 hours. The shared secret in `AUDIT_TRIGGER_SECRET`
+    must match. `mode` controls the daily-summary kick:
+      • scheduled (default) — runs the full 2-hour audit + writes record.
+      • daily   — additionally sends the 07:00 daily-summary email.
+    """
+    expected = os.environ.get("AUDIT_TRIGGER_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=401, detail="invalid_or_missing_secret")
+    base = os.environ.get("DASHBOARD_URL", "https://bi.vivofashionbrands.com")
+    # The audit script logs in via SEED_ADMIN_* — it needs to call the
+    # SAME app it's auditing, so we point it at our public URL.
+    record = await _run_audit(base, db, mode=mode)
+    extra = {}
+    if mode == "daily":
+        extra["daily_summary"] = await _send_daily_summary(db)
+    return {"ok": True, "record": record, **extra}
+
+
+@api_router.get("/admin/audit-log")
+async def admin_audit_log(limit: int = 24, _: User = Depends(require_admin)):
+    """Last N audit records, newest first. Used by the admin panel."""
+    limit = max(1, min(int(limit or 24), 100))
+    cursor = db.audit_log.find({}, {"_id": 0}).sort("timestamp", -1).limit(limit)
+    rows = [doc async for doc in cursor]
+    return {
+        "count": len(rows),
+        "email_configured": _email_configured(),
+        "rows": rows,
+    }
+
+
 @api_router.get("/admin/memory-breakdown")
 async def admin_memory_breakdown(_: User = Depends(require_admin)):
     """Iter 77 — Per-cache memory breakdown.
