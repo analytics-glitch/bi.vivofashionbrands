@@ -1444,14 +1444,17 @@ async def facebook_sync(request: Request, payload: Optional[Dict[str, str]] = Bo
     if not pages_to_sync:
         raise HTTPException(status_code=400, detail="No pages to sync. POST /api/social/facebook/discover with a user_access_token first, or set FACEBOOK_PAGE_ID + FACEBOOK_PAGE_ACCESS_TOKEN in env.")
 
-    aggregated = {"pages_synced": 0, "posts": 0, "comments": 0, "reviews": 0, "mentions": 0, "errors": [], "by_page": []}
+    aggregated = {"pages_synced": 0, "posts": 0, "comments": 0, "reviews": 0, "mentions": 0, "errors": [], "scopes_missing": [], "by_page": []}
     for p in pages_to_sync:
         result = await sync_facebook_page(db, p["page_id"], p["page_access_token"])
         aggregated["pages_synced"] += 1
         for key in ("posts", "comments", "reviews", "mentions"):
             aggregated[key] += result.get(key, 0)
         aggregated["errors"].extend(result.get("errors", []))
-        aggregated["by_page"].append({"page_id": p["page_id"], "page_name": p.get("page_name"), **{k: result.get(k, 0) for k in ("posts", "comments", "reviews", "mentions")}})
+        for s in result.get("scopes_missing", []):
+            if s not in aggregated["scopes_missing"]:
+                aggregated["scopes_missing"].append(s)
+        aggregated["by_page"].append({"page_id": p["page_id"], "page_name": p.get("page_name"), "scopes_missing": result.get("scopes_missing", []), **{k: result.get(k, 0) for k in ("posts", "comments", "reviews", "mentions")}})
         await _audit(user, "facebook.sync", "page", p["page_id"], request)
 
     # Fire-and-forget classifier so the new content gets sentiment quickly

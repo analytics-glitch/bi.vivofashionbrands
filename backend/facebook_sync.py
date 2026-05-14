@@ -42,12 +42,21 @@ def app_access_token() -> str:
     return f"{os.environ.get('FACEBOOK_APP_ID', '')}|{os.environ.get('FACEBOOK_APP_SECRET', '')}"
 
 
+class FBScopeError(Exception):
+    """Raised when Meta returns a missing-scope error (code 10 / 200 / 100)."""
+
+
 async def fb_get(path: str, params: Dict[str, Any], token: str) -> Dict[str, Any]:
     p = {**params, "access_token": token}
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.get(f"{BASE}{path}", params=p)
         if r.status_code != 200:
-            logger.warning("FB %s -> %s: %s", path, r.status_code, r.text[:300])
+            body = r.text[:300]
+            # Code 10/200 = OAuth scope insufficient — treat as a soft error so the
+            # caller can skip cleanly (avoids spamming 100 identical errors).
+            if r.status_code == 400 and "permission" in body.lower():
+                raise FBScopeError(body)
+            logger.warning("FB %s -> %s: %s", path, r.status_code, body)
             r.raise_for_status()
         return r.json()
 
@@ -55,9 +64,10 @@ async def fb_get(path: str, params: Dict[str, Any], token: str) -> Dict[str, Any
 async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int = 25) -> Dict[str, Any]:
     """Fetch posts + comments + reviews + mentions for a page; upsert into our
     existing social_* collections so they flow through the same UI + classifier."""
-    summary = {"posts": 0, "comments": 0, "reviews": 0, "mentions": 0, "errors": []}
+    summary = {"posts": 0, "comments": 0, "reviews": 0, "mentions": 0, "errors": [], "scopes_missing": []}
     if not page_id or not page_token:
         return {**summary, "errors": ["page_id and page_token required"]}
+    comments_blocked = False  # Set once after first scope error — silences spam.
 
     # Posts
     try:
@@ -90,7 +100,9 @@ async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int =
             await db.social_posts.update_one({"post_id": doc["post_id"]}, {"$set": doc}, upsert=True)
             summary["posts"] += 1
 
-            # Comments on this post
+            # Comments on this post (requires pages_read_user_generated_content)
+            if comments_blocked:
+                continue
             try:
                 comm_resp = await fb_get(
                     f"/{p['id']}/comments",
@@ -119,8 +131,16 @@ async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int =
                     }
                     await db.social_feedback.update_one({"feedback_id": fb_doc["feedback_id"]}, {"$set": fb_doc}, upsert=True)
                     summary["comments"] += 1
+            except FBScopeError:
+                # Token is missing pages_read_user_generated_content — record once and stop trying.
+                if "pages_read_user_generated_content" not in summary["scopes_missing"]:
+                    summary["scopes_missing"].append("pages_read_user_generated_content")
+                comments_blocked = True
             except Exception as exc:  # noqa: BLE001
                 summary["errors"].append(f"comments {p['id']}: {exc}")
+    except FBScopeError as exc:
+        summary["scopes_missing"].append("pages_read_engagement")
+        summary["errors"].append(f"posts scope: {exc}")
     except Exception as exc:  # noqa: BLE001
         summary["errors"].append(f"posts: {exc}")
 
@@ -156,7 +176,12 @@ async def sync_facebook_page(db, page_id: str, page_token: str, max_posts: int =
             }
             await db.social_feedback.update_one({"feedback_id": doc["feedback_id"]}, {"$set": doc}, upsert=True)
             summary["reviews"] += 1
+    except FBScopeError:
+        # Most Page categories (apparel, fashion) don't expose /ratings — silently skip.
+        pass
     except Exception as exc:  # noqa: BLE001
-        summary["errors"].append(f"reviews: {exc}")
+        # 400s on /ratings are normal for apparel pages — log but don't fail.
+        if "400" not in str(exc):
+            summary["errors"].append(f"reviews: {exc}")
 
     return summary
