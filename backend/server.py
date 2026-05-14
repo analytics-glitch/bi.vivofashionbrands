@@ -147,7 +147,21 @@ _CHURN_NEG_TTL = 60  # seconds
 # predictable on long-running workers.
 _FETCH_CACHE: Dict[tuple, tuple] = {}
 _FETCH_TTL = 120.0  # seconds — default "today" window (overridden per-entry via _smart_ttl)
-_FETCH_CACHE_MAX = 2000  # entries
+_FETCH_CACHE_MAX = 600  # entries — Iter 77: dropped from 2000. With ~1.4 MB
+                       # avg per /orders entry (50 k rows each) the previous
+                       # cap allowed RSS to balloon past 2 GB. 600 entries
+                       # bounds the cache to ~840 MB worst-case while still
+                       # covering the working set of every dashboard role.
+_FETCH_CACHE_MAX_MB = 250  # Iter 77 — hard byte cap. When tracked size
+                          # exceeds this we evict oldest entries until under
+                          # the cap. Measured via approximate row-count
+                          # heuristic so we don't pay pympler cost per write.
+# Iter 77 — running approximate byte tally for _FETCH_CACHE so we can
+# enforce the byte cap without re-measuring every entry on every write.
+# Updated on every insertion and pop; periodically reconciled by the
+# sweep loop. Heuristic: ~1.5 KB per row in a Python dict, +2 KB overhead
+# per entry. Good enough for eviction decisions; not a security feature.
+_FETCH_CACHE_BYTES = 0
 # Hit / miss counters for the /admin/cache-stats endpoint. Reset on
 # pod restart; we don't need persistence — the metric is "is the cache
 # paying off RIGHT NOW".
@@ -291,15 +305,47 @@ def _smart_ttl(clean: Dict[str, Any]) -> float:
     return 3600.0  # 1 h — historical, immutable for dashboard purposes
 
 
+def _approx_entry_bytes(data: Any) -> int:
+    """Iter 77 — cheap byte estimator for _FETCH_CACHE entries.
+
+    Heuristic: 1.5 KB per row for list-of-dict payloads (matches what
+    pympler reports on a representative /orders sample), 256 B floor
+    for everything else. Called on every insertion so we keep a
+    running byte tally without paying pympler's deep-walk cost.
+    """
+    if isinstance(data, list):
+        return max(256, len(data) * 1536)
+    if isinstance(data, dict):
+        return max(256, len(data) * 256)
+    return 256
+
+
 def _evict_fetch_cache_if_needed() -> None:
     """Bound the in-process fetch cache so a hot dashboard doesn't OOM
-    over a long-lived pod. Drops the 200 oldest entries when over
-    `_FETCH_CACHE_MAX`. Called from the L2 (Redis) cache-hit path
-    where we also write back into L1."""
-    if len(_FETCH_CACHE) > _FETCH_CACHE_MAX:
-        oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
-        for k, _ in oldest:
-            _FETCH_CACHE.pop(k, None)
+    over a long-lived pod. Iter 77: evict on EITHER entry count cap OR
+    byte cap, whichever bites first. Drops oldest entries in 100-entry
+    batches until under both caps. Updates the running byte tally.
+    """
+    global _FETCH_CACHE_BYTES
+    cap_bytes = _FETCH_CACHE_MAX_MB * 1024 * 1024
+    while (len(_FETCH_CACHE) > _FETCH_CACHE_MAX
+           or _FETCH_CACHE_BYTES > cap_bytes):
+        if not _FETCH_CACHE:
+            _FETCH_CACHE_BYTES = 0
+            break
+        oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:100]
+        if not oldest:
+            break
+        for k, v in oldest:
+            popped = _FETCH_CACHE.pop(k, None)
+            if popped is not None:
+                # v is (ts, data, ttl); estimate size from data.
+                try:
+                    _FETCH_CACHE_BYTES -= _approx_entry_bytes(v[1])
+                except Exception:
+                    pass
+        if _FETCH_CACHE_BYTES < 0:
+            _FETCH_CACHE_BYTES = 0
 
 # Official Vivo merchandise taxonomy (supplied by merchandising team on
 # 2026-04-24). Map is `product_type` (= upstream `subcategory`) → category.
@@ -524,7 +570,7 @@ async def fetch(
     # Compute the per-entry TTL once — used for both L1 freshness check
     # and the Redis TTL on write.
     entry_ttl = _smart_ttl(clean) if cache_key is not None else _FETCH_TTL
-    global _CACHE_HITS_L1, _CACHE_HITS_L2, _CACHE_MISSES, _CACHE_INFLIGHT_JOIN
+    global _CACHE_HITS_L1, _CACHE_HITS_L2, _CACHE_MISSES, _CACHE_INFLIGHT_JOIN, _FETCH_CACHE_BYTES
     if cache_key is not None:
         hit = _FETCH_CACHE.get(cache_key)
         if hit:
@@ -555,6 +601,8 @@ async def fetch(
                 # skip the Redis RTT. Use the smart TTL so we don't
                 # over-cache a today-window value lifted from Redis.
                 _FETCH_CACHE[cache_key] = (time.time(), r_hit, entry_ttl)
+                # Iter 77 — keep byte tally in sync with insertions.
+                _FETCH_CACHE_BYTES += _approx_entry_bytes(r_hit)
                 _evict_fetch_cache_if_needed()
                 _CACHE_HITS_L2 += 1
                 return r_hit
@@ -621,12 +669,12 @@ async def fetch(
                 data = []
             if cache_key is not None:
                 _FETCH_CACHE[cache_key] = (time.time(), data, entry_ttl)
-                # Bound cache size to avoid unbounded growth (LRU-ish eviction).
-                if len(_FETCH_CACHE) > _FETCH_CACHE_MAX:
-                    # Drop the 200 oldest entries.
-                    oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])[:200]
-                    for k, _ in oldest:
-                        _FETCH_CACHE.pop(k, None)
+                # Iter 77 — running byte tally + size-aware eviction.
+                # _evict_fetch_cache_if_needed enforces BOTH the entry
+                # count cap and the byte cap so a single 50 k-row /orders
+                # response can't blow past the 250 MB ceiling.
+                _FETCH_CACHE_BYTES += _approx_entry_bytes(data)
+                _evict_fetch_cache_if_needed()
                 # Mirror to Redis so sibling pods skip the cold upstream
                 # call. Fire-and-forget — never block the hot path.
                 # Use the SAME smart TTL on Redis so historical entries
@@ -1259,6 +1307,19 @@ async def _refresh_analytics_snapshots(
     today = datetime.now(timezone.utc).date()
     ibt_df = (today - timedelta(days=28)).isoformat()
     ibt_dt = today.isoformat()
+    # Iter 77 — also precompute the all-countries (country=None)
+    # snapshot. The no-params IBT call from the page (or from
+    # cross-country analytics) hits country=None and previously fell
+    # through to live, where upstream /inventory 429s degraded it to
+    # []. Snapshotting None alongside per-country bounds the cold path.
+    tasks.append(_one(
+        "/ibt-warehouse-to-store",
+        lambda df=ibt_df, dt=ibt_dt: _analytics_ibt_warehouse_to_store_impl(
+            date_from=df, date_to=dt, country=None,
+            limit=300, min_daily_velocity=0.2,
+        ),
+        ibt_df, ibt_dt, None, None,
+    ))
     for c in _SNAPSHOT_COUNTRIES:
         if c == "Online":
             continue
@@ -2210,6 +2271,11 @@ async def admin_cache_stats():
         "in_process_cache": {
             "entries": total,
             "max_entries": _FETCH_CACHE_MAX,
+            # Iter 77 — approximate byte tally + ceiling so admins can
+            # see when the cache is approaching its memory cap.
+            "approx_bytes": _FETCH_CACHE_BYTES,
+            "approx_mb": round(_FETCH_CACHE_BYTES / (1024 * 1024), 1),
+            "max_mb": _FETCH_CACHE_MAX_MB,
             "ttl_buckets": {
                 "today_120s": today_120,
                 "yesterday_600s": yest_600,
@@ -2258,6 +2324,77 @@ async def admin_cache_stats():
             "rss_mb": rss_mb,
             "uptime_sec": int(now - _PROCESS_STARTED_AT),
         },
+    }
+
+
+@api_router.get("/admin/memory-breakdown")
+async def admin_memory_breakdown(_: User = Depends(require_admin)):
+    """Iter 77 — Per-cache memory breakdown.
+
+    Walks every module-level cache dict that holds Vivo BI rows / order
+    rows / drill-down rows and reports its deep size via pympler. This
+    is the diagnostic endpoint we use when RSS climbs into GB territory
+    and we need to find the culprit. Read-only; no GC, no eviction.
+    """
+    try:
+        from pympler import asizeof  # type: ignore
+    except Exception:
+        return {"ok": False, "error": "pympler not installed"}
+
+    # Module-level caches we care about. Add new ones here as they grow.
+    candidates = [
+        ("_FETCH_CACHE", _FETCH_CACHE),
+        ("_kpi_stale_cache", _kpi_stale_cache),
+        ("_repl_cache", _repl_cache),
+        ("_repl_inflight", _repl_inflight),
+        ("_all_styles_cache", _all_styles_cache),
+        ("_sku_breakdown_cache", _sku_breakdown_cache),
+        ("_curve_cache", _curve_cache),
+        ("_style_dates_cache", _style_dates_cache),
+        ("_style_sku_cache", _style_sku_cache),
+        ("_location_breakdown_cache", _location_breakdown_cache),
+        ("_location_color_cache", _location_color_cache),
+        ("_sts_by_attr_cache", _sts_by_attr_cache),
+        ("_weekday_pattern_cache", _weekday_pattern_cache),
+        ("_inv_cache", _inv_cache),
+        ("_ibt_dedup_cache", _ibt_dedup_cache),
+        ("_repl_dedup_cache", _repl_dedup_cache),
+        ("_perf_rank_cache", _perf_rank_cache),
+        ("_churn_full_cache", _churn_full_cache),
+        ("_churn_neg_cache", _churn_neg_cache),
+    ]
+
+    breakdown: List[Dict[str, Any]] = []
+    total_bytes = 0
+    for name, obj in candidates:
+        try:
+            size = int(asizeof.asizeof(obj))
+        except Exception:
+            size = -1
+        entries = len(obj) if hasattr(obj, "__len__") else 0
+        breakdown.append({
+            "name": name,
+            "entries": entries,
+            "bytes": size,
+            "mb": round(size / (1024 * 1024), 2) if size > 0 else None,
+        })
+        if size > 0:
+            total_bytes += size
+    breakdown.sort(key=lambda x: x.get("bytes") or 0, reverse=True)
+
+    rss_mb: Optional[float] = None
+    try:
+        import psutil  # type: ignore
+        rss_mb = round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rss_mb": rss_mb,
+        "tracked_caches_mb": round(total_bytes / (1024 * 1024), 2),
+        "caches": breakdown,
     }
 
 
@@ -3870,14 +4007,16 @@ async def analytics_ibt_warehouse_to_store(
         today = datetime.now(timezone.utc).date()
         canonical_df = (today - timedelta(days=28)).isoformat()
         canonical_dt = today.isoformat()
-        # Accept the caller's window if it's within 1 day of the
-        # canonical 28-day-ending-today (UI might send "30 days ago"
-        # / "today minus 1" / etc.) — snapshot semantics don't change.
+        # Iter 77 — accept the no-params case as canonical too. If the
+        # caller omitted date_from/date_to, treat that as "give me the
+        # default 28-day window" and route through the snapshot. Before
+        # this change, no-params requests fell through to live and
+        # degraded to [] whenever upstream /inventory returned 429s.
         try:
-            df_ok = date_from and abs(
+            df_ok = (not date_from) or abs(
                 (datetime.strptime(date_from, "%Y-%m-%d").date() - (today - timedelta(days=28))).days
             ) <= 2
-            dt_ok = date_to and abs(
+            dt_ok = (not date_to) or abs(
                 (datetime.strptime(date_to, "%Y-%m-%d").date() - today).days
             ) <= 1
         except Exception:
@@ -7882,6 +8021,13 @@ def _is_online_channel(name: Optional[str]) -> bool:
 
 _repl_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _REPL_TTL = 60 * 30  # 30 minutes
+# Iter 77 — Inflight join for the replenishment impl. Without this,
+# two simultaneous cold callers (e.g. the startup warmup + the first
+# user click after a pod restart) BOTH enter the 30-60 s compute path
+# and double the load on the upstream fan-out. With this map every
+# subsequent caller for the same cache_key simply awaits the in-flight
+# future and gets the same payload — only one compute runs.
+_repl_inflight: Dict[str, asyncio.Future] = {}
 _perf_rank_cache: Dict[str, Tuple[float, Dict[str, int]]] = {}
 _PERF_RANK_TTL = 60 * 60 * 4  # 4 hours — store performance is slow-changing
 
@@ -7963,6 +8109,34 @@ async def _analytics_replenishment_report_impl(
             # rows; the state can change minute-by-minute as owners pick).
             await _overlay_repl_state(payload, df, dt)
             return payload
+
+    # Iter 77 — inflight join. If another coroutine (warmup, recovery
+    # loop re-warm, or a sibling user click) is ALREADY computing this
+    # exact cache_key, await its future and return its payload instead
+    # of re-doing the 30-60 s scan. Critical for the "first click after
+    # pod restart" case where the user lands a request while the
+    # background warmup is mid-compute. Without this gate both
+    # coroutines blow through the HeavyGuard slots and time out.
+    existing = _repl_inflight.get(cache_key)
+    if existing is not None and not existing.done():
+        try:
+            # 90 s safety timeout — a healthy cold compute finishes in
+            # 30-60 s. If the leader stalls or its task gets cancelled
+            # without setting the future, waiters fall through and run
+            # their own compute (which overwrites the stale entry).
+            payload = await asyncio.wait_for(asyncio.shield(existing), timeout=90.0)
+            # Re-overlay state on the shared payload — different callers
+            # may need fresh replenishment_state stamps.
+            await _overlay_repl_state(payload, df, dt)
+            return payload
+        except Exception:
+            # The leader's compute failed or timed out — fall through
+            # and try our own compute. Our future registration below
+            # will overwrite the stale inflight entry.
+            pass
+
+    my_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    _repl_inflight[cache_key] = my_future
 
     # 1) Units sold over [df, dt]: orders chunked into ≤30-day windows
     # (upstream caps at 50k rows per call) AND fanned-out per country so a
@@ -8265,6 +8439,13 @@ async def _analytics_replenishment_report_impl(
     }
     _repl_cache[cache_key] = (_time.time(), payload)
     await _overlay_repl_state(payload, df, dt)
+    # Iter 77 — surface result to any joined-in-flight waiters then
+    # remove ourselves from the inflight map so the NEXT cache-miss
+    # call starts a fresh compute (we re-cache for 30 min so this
+    # only matters after TTL expiry).
+    if not my_future.done():
+        my_future.set_result(payload)
+    _repl_inflight.pop(cache_key, None)
     return payload
 
 
