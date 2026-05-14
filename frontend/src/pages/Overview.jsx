@@ -904,6 +904,22 @@ const Overview = () => {
                   </ResponsiveContainer>
                 </div>
               )}
+              {/* Iter 80 — Hidden DOM mirror of the Country-split values so
+                  regression tests can assert KPI card ↔ chart equality without
+                  scraping Recharts internals. Visible to screen-readers only. */}
+              <dl className="sr-only" aria-hidden="false" data-testid="country-split-values">
+                {countryBars.map((row) => (
+                  <React.Fragment key={row.country}>
+                    <dt>{row.country}</dt>
+                    <dd
+                      data-testid={`country-split-${row.country}`}
+                      data-total-sales={row.total_sales}
+                    >
+                      {row.total_sales}
+                    </dd>
+                  </React.Fragment>
+                ))}
+              </dl>
 
               <div className="mt-6" data-testid="chart-channel-split">
                 <SectionTitle title="Channel split" subtitle="How the Retail vs Online vs Wholesale mix is shaping up." />
