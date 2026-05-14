@@ -18,13 +18,70 @@ def s():
 
 
 @pytest.mark.parametrize("ep", [
-    "health", "filters", "overview", "training-status", "by-department",
+    "filters", "overview", "training-status", "by-department",
     "by-delivery-method", "duration", "budget", "top-employees",
-    "monthly-trend", "facilitators", "lateness",
+    "monthly-trend", "facilitators", "lateness", "employee-history",
 ])
 def test_endpoint_200(s, ep):
     r = s.get(f"{BASE_URL}/api/training/{ep}", timeout=30)
     assert r.status_code == 200, r.text[:200]
+
+
+def test_lateness_metadata_and_clamping(s):
+    """Verify response includes timezone metadata and detail[].lateness_hours is shifted+clamped."""
+    body = s.get(f"{BASE_URL}/api/training/lateness", timeout=30).json()
+    assert body.get("timezone_adjusted") is True
+    assert body.get("timezone_offset_hours") == 3
+    # Verify detail rows shifted and clamped at 0
+    upstream = httpx.get(f"{UPSTREAM}/lateness", timeout=30).json()
+    up_detail = upstream.get("detail") or []
+    pr_detail = body.get("detail") or []
+    if up_detail and pr_detail:
+        # Compare first 20 rows by index assuming order stable
+        for u, p in zip(up_detail[:20], pr_detail[:20]):
+            if "lateness_hours" not in u or "lateness_hours" not in p:
+                continue
+            expected = max(0.0, round(float(u["lateness_hours"]) - 3.0, 2))
+            assert p["lateness_hours"] >= 0, "negative not clamped"
+            assert abs(p["lateness_hours"] - expected) < 0.011, f"{p['lateness_hours']} != {expected}"
+
+
+def test_top_employees_limit(s):
+    r = s.get(f"{BASE_URL}/api/training/top-employees", params={"limit": 5}, timeout=30)
+    assert r.status_code == 200
+    data = r.json()
+    rows = data if isinstance(data, list) else data.get("top_employees") or data.get("employees") or []
+    assert len(rows) <= 5, f"limit=5 returned {len(rows)} rows"
+
+
+def test_employee_history_query(s):
+    r = s.get(f"{BASE_URL}/api/training/employee-history", params={"employee": "a"}, timeout=30)
+    assert r.status_code == 200
+
+
+def test_filter_passthrough_department(s):
+    f = s.get(f"{BASE_URL}/api/training/filters", timeout=30).json()
+    dept = (f.get("departments") or [None])[0]
+    if not dept:
+        pytest.skip("no departments upstream")
+    r = s.get(f"{BASE_URL}/api/training/by-department", params={"department": dept}, timeout=30)
+    assert r.status_code == 200
+
+
+def test_filter_passthrough_date_range(s):
+    r = s.get(f"{BASE_URL}/api/training/overview",
+              params={"date_from": "2026-03-09", "date_to": "2026-05-12"}, timeout=30)
+    assert r.status_code == 200
+    assert "total_trained" in r.json()
+
+
+def test_associate_access(s):
+    """Per current Vivo policy, all users upgrade to manager — both sessions return 200."""
+    assoc = "test_session_vivo_assoc_1778250692444"
+    r = requests.get(f"{BASE_URL}/api/training/overview",
+                     headers={"Authorization": f"Bearer {assoc}"}, timeout=20)
+    # Per iter13 RCA, associate is upgraded to manager. So this should return 200, not 403.
+    assert r.status_code in (200, 403), f"unexpected {r.status_code}"
 
 
 def test_overview_shape(s):

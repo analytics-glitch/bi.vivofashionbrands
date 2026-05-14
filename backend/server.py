@@ -2092,6 +2092,12 @@ from insights import make_router as _insights_router  # noqa: E402
 _insights = _insights_router(get_current_user, require_manager, db, _audit, bi_get)
 app.include_router(_insights, prefix="/api")
 
+# Training analytics — proxy to external vivo-training-api with -3h timezone fix.
+from training import make_router as _training_router  # noqa: E402
+
+_training = _training_router(require_manager)
+app.include_router(_training, prefix="/api")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
