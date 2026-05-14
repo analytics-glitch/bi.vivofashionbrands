@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import {
   ClockCounterClockwise, CheckCircle, Warning, XCircle,
-  CaretDown, CaretUp, ArrowsClockwise, EnvelopeSimple,
+  CaretDown, CaretUp, ArrowsClockwise, EnvelopeSimple, Play,
 } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 /**
  * AuditHistoryPanel — admin view of the standing 2-hour audit.
@@ -47,6 +48,7 @@ const AuditHistoryPanel = () => {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [openRow, setOpenRow] = useState(null);
+  const [running, setRunning] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,6 +62,52 @@ const AuditHistoryPanel = () => {
       setLoading(false);
     }
   }, []);
+
+  const runNow = useCallback(async () => {
+    if (running) return;
+    setRunning(true);
+    try {
+      const r = await api.post("/admin/run-audit-now");
+      const queuedAt = r.data?.queued_at;
+      toast.success("Audit queued — running now", {
+        description: "Takes ~2 min. Refreshing automatically when done.",
+        duration: 4000,
+      });
+      // Poll the audit-log endpoint every 10 s until a NEWER row appears.
+      // We compare against `latest.timestamp` captured at click time.
+      const beforeTs = rows[0]?.timestamp;
+      let attempts = 0;
+      const tick = async () => {
+        attempts += 1;
+        try {
+          const lr = await api.get("/admin/audit-log", { params: { limit: 1 } });
+          const newest = lr.data?.rows?.[0];
+          if (newest && newest.timestamp !== beforeTs) {
+            setRows(prev => [newest, ...prev.filter(r => r.timestamp !== newest.timestamp)]);
+            toast.success(`Audit complete — ${newest.status}`, {
+              description: newest.issues_found
+                ? `Found ${newest.issues_found}, auto-fixed ${newest.issues_auto_fixed || 0}`
+                : "All checks passed",
+            });
+            await load();
+            setRunning(false);
+            return;
+          }
+        } catch { /* ignore — keep polling */ }
+        if (attempts < 30) {  // 30×10s = 5 min cap
+          setTimeout(tick, 10_000);
+        } else {
+          toast.message("Audit still running — refresh manually when ready");
+          setRunning(false);
+        }
+      };
+      setTimeout(tick, 15_000);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e?.message || "Request failed";
+      toast.error("Couldn't queue audit", { description: msg });
+      setRunning(false);
+    }
+  }, [running, rows, load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -94,6 +142,30 @@ const AuditHistoryPanel = () => {
           >
             <EnvelopeSimple size={11} weight="bold" /> {emailOn ? "Email ON" : "Email OFF"}
           </span>
+          <button
+            type="button"
+            onClick={runNow}
+            disabled={running}
+            className={`text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border transition-colors ${
+              running
+                ? "bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed"
+                : "bg-brand-deep text-white border-brand-deep hover:bg-brand"
+            }`}
+            data-testid="audit-run-now"
+            title="Trigger the 2-hour audit on demand (admin only)"
+          >
+            {running ? (
+              <>
+                <ArrowsClockwise size={12} className="animate-spin" />
+                Running…
+              </>
+            ) : (
+              <>
+                <Play size={12} weight="fill" />
+                Run audit now
+              </>
+            )}
+          </button>
           <button
             type="button"
             onClick={load}

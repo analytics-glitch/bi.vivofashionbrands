@@ -3019,6 +3019,33 @@ async def trigger_audit(secret: str = "", mode: str = "scheduled"):
     return {"ok": True, "queued": True, "mode": mode, "queued_at": datetime.now(timezone.utc).isoformat()}
 
 
+@api_router.post("/admin/run-audit-now")
+async def admin_run_audit_now(_: User = Depends(require_admin)):
+    """Iter 82 — Admin-authenticated manual trigger for the 2-hour audit.
+
+    Wraps `/api/run-audit` so an admin can run an audit on demand from
+    the UI without needing the `AUDIT_TRIGGER_SECRET`. The audit
+    itself takes 1-3 min and runs in the background — this endpoint
+    returns immediately with a `queued_at` timestamp.
+    """
+    base = os.environ.get("AUDIT_TARGET_URL") or "http://localhost:8001"
+
+    async def _run_in_bg():
+        try:
+            await _run_audit(base, db, mode="manual")
+        except Exception as e:
+            logger.exception("[admin run-audit-now] background task failed: %s", e)
+
+    asyncio.create_task(_run_in_bg())
+    return {
+        "ok": True,
+        "queued": True,
+        "mode": "manual",
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "expected_completion_sec": 180,
+    }
+
+
 @api_router.get("/admin/audit-log")
 async def admin_audit_log(limit: int = 24, _: User = Depends(require_admin)):
     """Last N audit records, newest first. Used by the admin panel."""
