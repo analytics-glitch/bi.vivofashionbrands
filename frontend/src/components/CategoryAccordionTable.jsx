@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { exportCSV } from "@/components/SortableTable";
 import { Plus, Minus, Download } from "@phosphor-icons/react";
 import { fmtNum, fmtPct } from "@/lib/api";
+import { VarianceCell, varianceFlag } from "@/lib/variance";
 
 /**
  * Category-grouped accordion view of subcategory rows.
@@ -69,6 +70,8 @@ const CategoryAccordionTable = ({
   const collapseAll = () => setOpenSet(new Set());
 
   // Synthetic columns mirroring the by-Subcategory layout for CSV export.
+  // Iter 78 — added Risk Flag so CSV output matches the on-screen
+  // table (Variance + Risk Flag are now both visible columns).
   const csvCols = useMemo(
     () => [
       { key: "category", label: "Category" },
@@ -78,6 +81,7 @@ const CategoryAccordionTable = ({
       { key: "pct_of_total_sold", label: "% of Total Sales" },
       { key: "pct_of_total_stock", label: "% of Total Inventory" },
       { key: "variance", label: "Variance (pts)" },
+      { key: "risk_flag", label: "Risk Flag" },
       { key: "sor_percent", label: "SOR %" },
       { key: "orders", label: "Orders" },
     ],
@@ -94,6 +98,7 @@ const CategoryAccordionTable = ({
           pct_of_total_sold: r.pct_of_total_sold?.toFixed?.(2) ?? r.pct_of_total_sold,
           pct_of_total_stock: r.pct_of_total_stock?.toFixed?.(2) ?? r.pct_of_total_stock,
           variance: r.variance?.toFixed?.(2) ?? r.variance,
+          risk_flag: varianceFlag(r.variance),
           sor_percent: r.sor_percent?.toFixed?.(2) ?? r.sor_percent,
           orders: r.orders,
         }))
@@ -140,16 +145,15 @@ const CategoryAccordionTable = ({
       <div className="space-y-2">
         {groups.map((g) => {
           const open = openSet.has(g.category);
-          const flag =
-            g.variance >= 3 ? "Stockout Risk" :
-            g.variance >= 1 ? "Watch" :
-            g.variance <= -3 ? "Overstock" :
-            "Healthy";
+          // Iter 78 — Risk Flag column uses the shared varianceFlag()
+          // mapping so it stays in lock-step with the flat table's
+          // <VarianceCell> tooltip / pill behaviour. Threshold cutoffs
+          // live in /app/frontend/src/lib/variance.jsx.
+          const flag = varianceFlag(g.variance);
           const flagClass =
-            g.variance >= 3 ? "pill-red" :
-            g.variance >= 1 ? "pill-amber" :
-            g.variance <= -3 ? "pill-red" :
-            "pill-green";
+            Math.abs(g.variance) <= 2 ? "pill-green" :
+            Math.abs(g.variance) <= 5 ? "pill-amber" :
+            "pill-red";
           return (
             <div
               key={g.category}
@@ -158,7 +162,7 @@ const CategoryAccordionTable = ({
             >
               <button
                 onClick={() => toggle(g.category)}
-                className={`w-full grid grid-cols-[28px_1.4fr_1fr_1fr_1fr_1fr_1fr] gap-2 items-center px-3 py-2.5 text-left transition-colors ${
+                className={`w-full grid grid-cols-[28px_1.3fr_0.9fr_0.9fr_0.9fr_0.9fr_1fr_1.1fr] gap-2 items-center px-3 py-2.5 text-left transition-colors ${
                   open ? "bg-[#fef3e0]" : "bg-[#fff8ee] hover:bg-[#fef3e0]"
                 }`}
                 data-testid={`acc-toggle-${g.category.toLowerCase().replace(/\s+/g, '-')}`}
@@ -176,8 +180,14 @@ const CategoryAccordionTable = ({
                 <span className="text-right tabular-nums text-[13px] text-[#0f3d24]">{fmtNum(g.current_stock)}</span>
                 <span className="text-right tabular-nums text-[12px]">{fmtPct(g.pct_sales, 2)}</span>
                 <span className="text-right tabular-nums text-[12px]">{fmtPct(g.pct_stock, 2)}</span>
+                {/* Iter 78 — Variance column matches the flat-table
+                    cell exactly so users see the same "✅ +1.23%"
+                    treatment whether they're in flat or grouped view. */}
                 <span className="text-right">
-                  <span className={flagClass}>{flag}</span>
+                  <VarianceCell value={g.variance} />
+                </span>
+                <span className="text-right">
+                  <span className={flagClass} data-testid={`acc-risk-flag-${g.category.toLowerCase().replace(/\s+/g, '-')}`}>{flag}</span>
                 </span>
               </button>
 
@@ -192,12 +202,17 @@ const CategoryAccordionTable = ({
                         <th className="text-right py-2 px-2">% Sales</th>
                         <th className="text-right py-2 px-2">% Inventory</th>
                         <th className="text-right py-2 px-3">Variance</th>
+                        <th className="text-right py-2 px-3">Risk Flag</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#fce6cc]">
                       {g.items.map((r) => {
                         const v = r.variance ?? 0;
-                        const cls = v >= 3 ? "text-[#dc2626]" : v >= 1 ? "text-[#d97706]" : v <= -3 ? "text-[#dc2626]" : "text-[#16a34a]";
+                        const subFlag = varianceFlag(v);
+                        const subFlagClass =
+                          Math.abs(v) <= 2 ? "pill-green" :
+                          Math.abs(v) <= 5 ? "pill-amber" :
+                          "pill-red";
                         return (
                           <tr key={r.subcategory} className="hover:bg-[#fff8ee]">
                             <td className="py-2 pl-9 pr-2 text-[#0f3d24]">{r.subcategory}</td>
@@ -205,8 +220,14 @@ const CategoryAccordionTable = ({
                             <td className="py-2 px-2 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
                             <td className="py-2 px-2 text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_sold, 2)}</td>
                             <td className="py-2 px-2 text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_stock, 2)}</td>
-                            <td className={`py-2 px-3 text-right tabular-nums font-bold ${cls}`}>
-                              {v > 0 ? "+" : ""}{v.toFixed(2)} pts
+                            {/* Iter 78 — match flat-table variance
+                                rendering (uses %) so users don't see
+                                two different formats on the same page. */}
+                            <td className="py-2 px-3 text-right tabular-nums">
+                              <VarianceCell value={v} />
+                            </td>
+                            <td className="py-2 px-3 text-right">
+                              <span className={subFlagClass}>{subFlag}</span>
                             </td>
                           </tr>
                         );

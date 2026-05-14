@@ -415,6 +415,15 @@ const Locations = () => {
                       className={`card-white p-4 hover-lift text-left border-l-4 ${borderCls} relative`}
                       data-testid={`location-card-${l.channel}`}
                       onClick={() => setSelected(l.channel)}
+                      onMouseEnter={() => {
+                        // Iter 78 — prefetch the StoreDeepDive payload
+                        // so the slide-over opens instantly when the
+                        // card is actually clicked. Fire-and-forget;
+                        // idempotent via lib/api's response cache.
+                        const pf = { date_from: dateFrom, date_to: dateTo, channel: l.channel, limit: 10 };
+                        api.get("/top-skus", { params: pf }).catch(() => {});
+                        api.get("/top-customers", { params: pf }).catch(() => {});
+                      }}
                     >
                       {/* Deep-dive affordance — a subtle ArrowUpRight pinned
                           to the top-right corner of every card so the user

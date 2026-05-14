@@ -3651,16 +3651,27 @@ async def analytics_ibt_suggestions(
 ):
     """Inter-Branch Transfer recommendations.
 
-    Algorithm (simplified, practical):
-      1. Fetch full inventory (all stores).
-      2. For each physical store (excluding warehouses), fetch top-skus for
-         the selected window.
-      3. For every style that appears in at least TWO stores' inventory:
-          • Compute velocity per store = (units sold in window / days).
-          • If store A has stock ≥ min_move AND velocity ≤ 20% of group-avg,
-            AND store B has velocity ≥ 150% of group-avg AND stock < 5,
-            suggest moving min(A.stock - buffer, B.gap_to_cover) units.
-      4. Sort by estimated uplift desc, return top N.
+    Iter 78 — rule priority (top-down; each row must satisfy ALL MUSTs):
+
+      MUST #1  TO store has sold this style at least once in the window
+               (binary "is there a buyer here?"). This is the hard
+               anchor — never transfer a style to a store that's never
+               sold it before.
+      MUST #2  TO store and FROM store are in the SAME country
+               (Kenya → Kenya, Uganda → Uganda, …). Cross-country moves
+               are only allowed from the warehouse; store-to-store
+               stays within national borders. Exception: warehouse
+               source (handled by a different endpoint).
+      MUST #3  FROM has enough stock minus a 2-unit safety floor.
+      MUST #4  FROM is in the low-velocity band (≤ low_pct% of group avg).
+      MUST #5  TO is in the high-velocity band (≥ high_pct% of group avg).
+      MUST #6  TO stock has dropped below 5 units (real coverage gap).
+      MUST #7  The move is at least `min_move` units.
+
+    Subsequent steps are sort + dedupe (one source per destination, no
+    double-claiming surplus). The two `qty_sold_28d_*` fields surface
+    a FIXED-window sales reference next to each row so users can
+    sanity-check direction without changing their date filter.
     """
     import datetime as _dt
     if not date_from or not date_to:
@@ -3684,6 +3695,17 @@ async def analytics_ibt_suggestions(
         if r.get("location_name") and r.get("location_name") not in WAREHOUSE_NAMES
     })
 
+    # Iter 78 — per-location country map for the same-country MUST gate.
+    # Built from inventory rows so we don't need a second upstream call.
+    # Picks the first non-empty country seen per location (locations
+    # don't change country across rows, so the first hit is canonical).
+    loc_country: Dict[str, str] = {}
+    for r in inv:
+        loc = r.get("location_name")
+        cty = (r.get("country") or "").strip()
+        if loc and cty and loc not in loc_country:
+            loc_country[loc] = cty
+
     # 2) Sales per store (top-skus per channel)
     async def _per_store_top(ch: str):
         try:
@@ -3696,6 +3718,37 @@ async def analytics_ibt_suggestions(
             return ch, []
 
     store_sales_results = await asyncio.gather(*[_per_store_top(ch) for ch in all_locations])
+
+    # Iter 78 — second, parallel fetch for the FIXED 28-day window. The
+    # user's selected filter window changes the velocity math above,
+    # but the new "Qty Sold (28d)" columns must always reflect the
+    # same canonical period so the audit trail is comparable across
+    # filter changes. If the user's window already IS 28 days ending
+    # today (the default), we reuse the first fetch and skip the
+    # round-trip.
+    today = _dt.date.today()
+    canonical_df = (today - _dt.timedelta(days=28)).isoformat()
+    canonical_dt = today.isoformat()
+    if date_from == canonical_df and date_to == canonical_dt:
+        sales28_results = store_sales_results
+    else:
+        async def _per_store_top_28d(ch: str):
+            try:
+                rows = await _safe_fetch("/top-skus", {
+                    "date_from": canonical_df, "date_to": canonical_dt,
+                    "channel": ch, "limit": 200,
+                })
+                return ch, rows or []
+            except Exception:
+                return ch, []
+        sales28_results = await asyncio.gather(*[_per_store_top_28d(ch) for ch in all_locations])
+    sales28_map: Dict[tuple, float] = {}
+    for store, rows in sales28_results:
+        for r in rows:
+            style = r.get("style_name")
+            if not style:
+                continue
+            sales28_map[(style, store)] = float(r.get("units_sold") or 0)
 
     # Build a map: (style_name, store) -> units_sold, avg_price
     sales_map: Dict[tuple, Dict[str, float]] = {}
@@ -3749,13 +3802,34 @@ async def analytics_ibt_suggestions(
         lows = [(loc, s) for loc, s in per_store.items()
                 if s["available"] >= min_move and s["units_sold"] <= low_threshold]
         # High-demand candidates (TO) — tunable via high_pct.
+        # Iter 78 — MUST #1 sold-before gate is baked in here: a store
+        # only qualifies as a destination if it has ALREADY sold this
+        # style in the window. `units_sold > 0` is the explicit binary
+        # check; the > high_threshold velocity rule still applies on
+        # top (so we don't recommend a store that's sold 1 unit in 28
+        # days). Without this gate, a high-percentage threshold on
+        # avg_units=0.5 could let `units_sold=0` slip through edge
+        # cases — we surface the rule explicitly so it's visible in
+        # the algorithm + code review.
         high_threshold = avg_units * (high_pct / 100.0)
         highs = [(loc, s) for loc, s in per_store.items()
-                 if s["units_sold"] >= high_threshold and s["available"] < 5]
+                 if s["units_sold"] > 0
+                 and s["units_sold"] >= high_threshold
+                 and s["available"] < 5]
 
         for from_loc, from_s in lows:
             for to_loc, to_s in highs:
                 if from_loc == to_loc:
+                    continue
+                # Iter 78 — MUST #2: same-country gate. Cross-country
+                # transfers from a physical store to another physical
+                # store are not allowed (logistics, customs, currency).
+                # If either side has no country attribution we err on
+                # the safe side and skip — better a missed suggestion
+                # than a recommendation crossing borders.
+                f_cty = loc_country.get(from_loc)
+                t_cty = loc_country.get(to_loc)
+                if not f_cty or not t_cty or f_cty != t_cty:
                     continue
                 # Estimate target cover: ~2 weeks at current velocity.
                 daily = to_s["units_sold"] / total_days
@@ -3776,6 +3850,14 @@ async def analytics_ibt_suggestions(
                     "from_units_sold": int(from_s["units_sold"]),
                     "to_available": int(to_s["available"]),
                     "to_units_sold": int(to_s["units_sold"]),
+                    # Iter 78 — fixed 28-day window so reviewers always
+                    # see the same baseline regardless of the active
+                    # filter. Falls back to filter-window units if the
+                    # 28-day fetch failed for that store (rare; logged).
+                    "from_qty_sold_28d": int(sales28_map.get((style, from_loc),
+                                                             from_s["units_sold"])),
+                    "to_qty_sold_28d": int(sales28_map.get((style, to_loc),
+                                                           to_s["units_sold"])),
                     "units_to_move": movable,
                     "estimated_uplift": round(uplift),
                     "avg_price": avg_price,
@@ -4207,6 +4289,39 @@ async def _analytics_ibt_warehouse_to_store_impl(
             "[ibt-wh] dedup against last-3-day replenishments skipped %d (style,store) pairs",
             skipped_via_repl,
         )
+    # Iter 78 — owner assignment for the warehouse → store list.
+    # Pulls the same owner roster the Daily Replenishment workflow uses
+    # so a picker sees a consistent assignment across both screens.
+    # Stores are sorted alphabetically and sliced equally across the
+    # roster (so a single owner gets a contiguous block of stores).
+    try:
+        eff_owners: List[str] = []
+        cfg_doc = await db.replenishment_config.find_one(
+            {"_id": "default"}, {"_id": 0, "owners": 1}
+        )
+        if cfg_doc and isinstance(cfg_doc.get("owners"), list):
+            eff_owners = [str(x).strip() for x in cfg_doc["owners"] if str(x).strip()]
+        if not eff_owners:
+            eff_owners = list(OWNERS)
+        stores_sorted = sorted({s["to_store"] for s in final_wh})
+        n_stores = len(stores_sorted)
+        n_owners = max(len(eff_owners), 1)
+        store_owner_map: Dict[str, str] = {}
+        if n_stores and n_owners:
+            base = n_stores // n_owners
+            extra = n_stores % n_owners
+            cursor = 0
+            for i, owner in enumerate(eff_owners):
+                slice_len = base + (1 if i < extra else 0)
+                for st in stores_sorted[cursor:cursor + slice_len]:
+                    store_owner_map[st] = owner
+                cursor += slice_len
+        for s in final_wh:
+            s["owner"] = store_owner_map.get(s.get("to_store"), "")
+    except Exception as e:
+        logger.warning("[ibt-wh] owner assignment failed: %s — proceeding without owner", e)
+        for s in final_wh:
+            s.setdefault("owner", "")
     # Track first-seen for warehouse → store too (from_store is always
     # the central warehouse so we tag it explicitly).
     try:
@@ -4374,6 +4489,20 @@ async def analytics_ibt_sku_breakdown(
 
     # Re-sort for display: biggest suggested first, then biggest from_stock.
     rows.sort(key=lambda r: (r["suggested_qty"], r["from_available"]), reverse=True)
+
+    # Iter 78 — bin enrichment so the Warehouse → Store IBT table can
+    # render the Bin column next to each SKU without a separate
+    # frontend lookup. The bins_map is cached for 1 h inside
+    # bins_lookup so this is essentially free per call.
+    try:
+        bins_map = await bins_lookup.get_bins()
+        for r in rows:
+            bc = r.get("barcode") or ""
+            r["bin"] = bins_lookup.lookup(bins_map, bc) if bc else ""
+    except Exception as e:
+        logger.warning("[ibt-sku-breakdown] bin lookup failed: %s", e)
+        for r in rows:
+            r.setdefault("bin", "")
 
     return {
         "style_name": style_name,

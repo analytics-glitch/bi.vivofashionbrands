@@ -245,6 +245,13 @@ async def calculate_allocation(
 
     # SOH per store for the matching subcategory/color.
     soh_by_store: Dict[str, int] = {}
+    # Iter 78 — per-(store, normalised size) SOH so the "Existing Style"
+    # allocation path can build a gap-fill pack instead of always
+    # shipping a full S/M/L/XL pack. We carry this map alongside the
+    # aggregate `soh_by_store` (which still drives the low-stock
+    # ranking) — we only DIVIDE the allocated pack by size when the
+    # caller is on the replenishment (existing style) flow.
+    soh_by_store_size: Dict[str, Dict[str, int]] = {}
     for r in (inv or []):
         loc = r.get("location_name") or ""
         if not loc or is_warehouse_location(loc) or loc in excluded:
@@ -258,7 +265,15 @@ async def calculate_allocation(
             continue
         if not _row_matches(r):
             continue
-        soh_by_store[loc] = soh_by_store.get(loc, 0) + int(r.get("available") or 0)
+        avail = int(r.get("available") or 0)
+        soh_by_store[loc] = soh_by_store.get(loc, 0) + avail
+        # Track per-size SOH only when sizes match the requested pack —
+        # rows with unrelated sizes (e.g. "OS" for a S/M/L request) are
+        # ignored so they don't pollute the gap-fill math.
+        sz = _norm_size(r.get("size"))
+        if sz in pack_breakdown:
+            store_sizes = soh_by_store_size.setdefault(loc, {})
+            store_sizes[sz] = store_sizes.get(sz, 0) + avail
 
     # Velocity per store from /orders + sales-KES so we can derive ASP.
     sold_by_store: Dict[str, int] = {}
@@ -401,7 +416,26 @@ async def calculate_allocation(
         ))
     for s in candidate_stores:
         packs = pack_count.get(s, 0)
-        sizes = {sz: packs * v for sz, v in pack_breakdown.items()}
+        # Iter 78 — Gap-fill for Existing Style Allocations.
+        # When the caller is on the replenishment (existing style) flow,
+        # ONLY ship sizes the store is missing. Compute the full-pack
+        # distribution first, then for each size cap the units to
+        # `max(0, full_units - current_soh_for_size)`. Sizes the store
+        # already has covered drop to zero; sizes it lacks ship at the
+        # full pack-ratio amount. Net effect: a store sitting on plenty
+        # of S+M only receives L+XL, not another full S/M/L/XL run.
+        full_sizes = {sz: packs * v for sz, v in pack_breakdown.items()}
+        if body.allocation_type == "replenishment":
+            store_size_soh = soh_by_store_size.get(s, {})
+            sizes = {}
+            for sz, full_units in full_sizes.items():
+                covered = int(store_size_soh.get(sz, 0))
+                # Cap at full pack amount — we never ship MORE than
+                # the pack ratio specifies for a single size, only
+                # less when the store already has coverage.
+                sizes[sz] = max(0, full_units - covered)
+        else:
+            sizes = full_sizes
         units = sum(sizes.values())
         rows.append(StoreAllocationRow(
             store=s,

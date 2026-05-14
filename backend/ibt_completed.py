@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
-from auth import User, get_current_user, require_admin
+from auth import User, get_current_user
 
 
 _client = AsyncIOMotorClient(os.environ["MONGO_URL"])
@@ -151,8 +151,17 @@ async def complete_move(body: CompleteMoveBody, user: User = Depends(get_current
 
 
 @router.get("/completed", response_model=List[CompletedMove])
-async def list_completed(_: User = Depends(require_admin)):
-    """Admin-only — list every completed move, newest first."""
+async def list_completed(user: User = Depends(get_current_user)):
+    """Admin + Exec — list every completed move, newest first.
+
+    Iter 78: Exec role now has audit access to this report so leadership
+    can spot-check IBT execution without an admin handoff. Lower roles
+    still hit a 403 (the lightweight `/completed/keys` endpoint is the
+    one any role can call for the "hide already-completed" UI logic).
+    """
+    role = (user.role or "viewer").lower()
+    if role not in ("admin", "exec"):
+        raise HTTPException(status_code=403, detail="Admin or Exec role required")
     cursor = _coll.find({}, {"_id": 0}).sort("completed_at", -1).limit(2000)
     return [doc async for doc in cursor]
 

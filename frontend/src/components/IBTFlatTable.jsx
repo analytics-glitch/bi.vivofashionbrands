@@ -152,6 +152,15 @@ export default function IBTFlatTable({
           from_cluster_id: s.from_cluster_id,
           to_cluster_id: s.to_cluster_id,
           cluster_match: s.cluster_match,
+          // Iter 78 — owner is per-store so the stub row can already
+          // carry it. Bin is per-barcode → blank until SKU rows load.
+          owner: s.owner || "",
+          bin: "",
+          // Iter 78 — fixed-28-day Qty Sold for the From / To stores.
+          // Only populated by the store-to-store endpoint; warehouse
+          // flow leaves these blank because warehouses don't book sales.
+          from_qty_sold_28d: s.from_qty_sold_28d ?? null,
+          to_qty_sold_28d: s.to_qty_sold_28d ?? null,
           parent: s,
         });
         continue;
@@ -180,6 +189,16 @@ export default function IBTFlatTable({
           from_cluster_id: s.from_cluster_id,
           to_cluster_id: s.to_cluster_id,
           cluster_match: s.cluster_match,
+          // Iter 78 — Owner (per destination store) + Bin (per barcode)
+          // surfaced on every SKU row of the warehouse → store flow.
+          // Owner mirrored from the parent suggestion; Bin comes from
+          // the SKU breakdown response which now joins bins_lookup.
+          owner: s.owner || "",
+          bin: sk.bin || "",
+          // Iter 78 — fixed-28-day Qty Sold mirrored from the parent
+          // suggestion onto every SKU row, same as days_lapsed.
+          from_qty_sold_28d: s.from_qty_sold_28d ?? null,
+          to_qty_sold_28d: s.to_qty_sold_28d ?? null,
           parent: s,
         });
       }
@@ -231,8 +250,14 @@ export default function IBTFlatTable({
   };
 
   const exportCSV = () => {
-    const header = ["Style", "Brand", "Subcategory", "From Store", "To Store",
+    const isWh = _isWh(flow);
+    const header = ["Style", "Brand", "Subcategory", "From Store",
+      ...(!isWh ? ["From: Qty Sold (28d)"] : []),
+      "To Store",
+      ...(!isWh ? ["To: Qty Sold (28d)"] : []),
+      ...(isWh ? ["Owner"] : []),
       "Color", "Size", "SKU", "Barcode",
+      ...(isWh ? ["Bin"] : []),
       "Inv. Qty FROM", "Inv. Qty TO",
       "Suggested Qty", "Actual Transferred",
       "Days Lapsed", "First Seen"];
@@ -240,8 +265,13 @@ export default function IBTFlatTable({
     for (const r of filteredRows) {
       out.push([
         r.style_name, r.brand || "", r.subcategory || "",
-        r.from_store, r.to_store,
+        r.from_store,
+        ...(!isWh ? [r.from_qty_sold_28d ?? ""] : []),
+        r.to_store,
+        ...(!isWh ? [r.to_qty_sold_28d ?? ""] : []),
+        ...(isWh ? [r.owner || ""] : []),
         r.color, r.size, r.sku, r.barcode,
+        ...(isWh ? [r.bin || ""] : []),
         r.from_available ?? "", r.to_available ?? "",
         r.suggested_qty,
         actuals[r.rowKey] ?? "",
@@ -303,12 +333,31 @@ export default function IBTFlatTable({
             <tr className="text-left">
               <th className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[180px] max-w-[260px]">Style</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">From</th>
+              {/* Iter 78 — fixed-28-day Qty Sold per side, only on the
+                  store-to-store flow. Helps the user justify the
+                  transfer direction without changing their filter. */}
+              {!_isWh(flow) && (
+                <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Units sold at the FROM store in the last 28 days (fixed window)">From: Qty Sold (28d)</th>
+              )}
               <th className="px-2 py-2.5"></th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">To</th>
+              {!_isWh(flow) && (
+                <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Units sold at the TO store in the last 28 days (fixed window)">To: Qty Sold (28d)</th>
+              )}
+              {/* Iter 78 — Owner + Bin only on the warehouse → store
+                  flow (mirrors what the Daily Replenishment table
+                  shows). Store-to-store flow keeps the original
+                  column layout. */}
+              {_isWh(flow) && (
+                <th className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Picker assigned to the destination store">Owner</th>
+              )}
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Color</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">SKU</th>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</th>
+              {_isWh(flow) && (
+                <th className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Warehouse bin location for this barcode">Bin</th>
+              )}
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the FROM store">Inv. Qty FROM</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the TO store">Inv. Qty TO</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Suggested</th>
@@ -319,7 +368,7 @@ export default function IBTFlatTable({
           </thead>
           <tbody>
             {filteredRows.length === 0 && !loading && (
-              <tr><td colSpan={14} className="px-3 py-6 text-center text-muted">No matches.</td></tr>
+              <tr><td colSpan={16} className="px-3 py-6 text-center text-muted">No matches.</td></tr>
             )}
             {filteredRows.map((r, idx) => (
               <tr
@@ -351,6 +400,13 @@ export default function IBTFlatTable({
                     )}
                   </span>
                 </td>
+                {!_isWh(flow) && (
+                  <td className="px-3 py-3 text-right tabular-nums" data-testid={`${testId}-from-qty28d-${idx}`}>
+                    {r.from_qty_sold_28d == null
+                      ? <span className="text-muted/60">—</span>
+                      : <span className="text-[#0f3d24]">{fmtNum(r.from_qty_sold_28d)}</span>}
+                  </td>
+                )}
                 <td className="px-2 py-3 text-brand"><ArrowRight size={14} weight="bold" /></td>
                 <td className="px-3 py-3 whitespace-nowrap font-semibold text-brand">
                   <span className="inline-flex items-center gap-1.5">
@@ -370,10 +426,29 @@ export default function IBTFlatTable({
                     )}
                   </span>
                 </td>
+                {!_isWh(flow) && (
+                  <td className="px-3 py-3 text-right tabular-nums" data-testid={`${testId}-to-qty28d-${idx}`}>
+                    {r.to_qty_sold_28d == null
+                      ? <span className="text-muted/60">—</span>
+                      : <span className="text-[#0f3d24] font-semibold">{fmtNum(r.to_qty_sold_28d)}</span>}
+                  </td>
+                )}
+                {_isWh(flow) && (
+                  <td className="px-3 py-3 whitespace-nowrap" data-testid={`${testId}-owner-${idx}`}>
+                    {r.owner
+                      ? <span className="pill-neutral">{r.owner}</span>
+                      : <span className="text-muted/60">—</span>}
+                  </td>
+                )}
                 <td className="px-3 py-3 whitespace-nowrap">{r.color || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{r.size || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.sku || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.barcode || "—"}</td>
+                {_isWh(flow) && (
+                  <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]" data-testid={`${testId}-bin-${idx}`}>
+                    {r.bin || <span className="text-muted/60">—</span>}
+                  </td>
+                )}
                 <td className="px-3 py-3 text-right tabular-nums">{fmtNum(r.from_available ?? 0)}</td>
                 <td className="px-3 py-3 text-right tabular-nums">
                   {r.to_available === 0 || r.to_available == null

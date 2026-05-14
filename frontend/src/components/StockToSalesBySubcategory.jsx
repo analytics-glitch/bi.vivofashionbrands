@@ -27,7 +27,10 @@ const StockToSalesBySubcategory = ({
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [view, setView] = useState("flat");
+  // Iter 78 — Default to the category-grouped view per leadership ask.
+  // The flat layout is still one click away via the toggle for users
+  // who want the row-per-subcategory drill.
+  const [view, setView] = useState("grouped");
 
   useEffect(() => {
     let cancel = false;

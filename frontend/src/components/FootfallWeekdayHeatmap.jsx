@@ -94,9 +94,12 @@ const FootfallWeekdayHeatmap = () => {
     if (!data || !Array.isArray(data.rows)) {
       return { rows: [], groupByWkd: [], windowMeta: null, maxValue: 1 };
     }
-    // Keep only top 15 locations so the heatmap stays scannable; rest is
-    // still in the table below. The user's eye handles 15 rows fine.
-    const top = data.rows.slice(0, 15);
+    // Iter 78 — show every location instead of the top 15. The
+    // backend payload is small (~25 rows × 7 weekdays of integers) so
+    // the heatmap still scrolls comfortably and the user's question
+    // ("where are MY stores in this pattern?") is now answerable
+    // without leaving the page.
+    const top = data.rows;
     // For share mode, pre-compute each row's weekly total so the
     // per-cell value = day_avg / weekly_sum (each row sums to 1.0).
     if (mode === "share") {

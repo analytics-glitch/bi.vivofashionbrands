@@ -4,10 +4,11 @@ import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import {
   Calendar as CalendarIcon, CheckCircle, FilePdf,
-  Package, Users, FloppyDisk, ArrowCounterClockwise, MagnifyingGlass,
+  Package, ArrowCounterClockwise, MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
+import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
 
 /**
  * Daily Replenishment Page — full workflow.
@@ -55,10 +56,9 @@ const Replenishments = () => {
   const [dateFrom, setDateFrom] = useState(yesterday);
   const [dateTo, setDateTo] = useState(yesterday);
 
-  // Owner config (persisted server-side).
-  const [ownerCount, setOwnerCount] = useState(4);
-  const [ownerNames, setOwnerNames] = useState(["", "", "", ""]);
-  const [ownerSaving, setOwnerSaving] = useState(false);
+  // Owner config (persisted server-side). Roster state moved into
+  // <ReplenishmentRosterCard> (iter 78); we still keep a "saved" tick
+  // so the live list re-fetches after a successful save.
   const [ownerSavedTick, setOwnerSavedTick] = useState(0);
 
   // Live data.
@@ -78,51 +78,19 @@ const Replenishments = () => {
   const [completedLoading, setCompletedLoading] = useState(false);
   const [completedRefresh, setCompletedRefresh] = useState(0);
 
-  // Bootstrap owner config (admin only — fetch is only allowed for admins).
-  useEffect(() => {
-    if (!isAdmin) return;
-    let cancel = false;
-    api.get("/admin/replenishment-config")
-      .then(({ data: cfg }) => {
-        if (cancel) return;
-        const names = (cfg?.owners || []).map(String);
-        setOwnerCount(Math.max(1, names.length || 4));
-        setOwnerNames(names.length ? names : ["", "", "", ""]);
-      })
-      .catch(() => { /* fall back to defaults */ });
-    return () => { cancel = true; };
-  }, [isAdmin]);
+  // Bootstrap is now handled inside <ReplenishmentRosterCard>; this
+  // page just listens for the save signal via the onSaved callback.
 
-  // Resize the owner names array when count changes.
-  useEffect(() => {
-    setOwnerNames((prev) => {
-      const n = Math.max(1, Math.min(20, ownerCount));
-      const out = [...prev];
-      while (out.length < n) out.push("");
-      while (out.length > n) out.pop();
-      return out;
-    });
-  }, [ownerCount]);
+  // (Roster name/array resize lives inside the shared card component.)
 
-  const saveOwners = async () => {
-    setOwnerSaving(true);
-    try {
-      const cleaned = ownerNames.map((s) => s.trim()).filter(Boolean);
-      await api.post("/admin/replenishment-config", { owners: cleaned });
-      toast.success(cleaned.length
-        ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}. Redistributing…`
-        : "Roster reset to default. Redistributing…");
-      // Bypass the 5-min response cache so the redistribution is
-      // visible instantly (otherwise the admin sees the OLD owner pills
-      // until the cache expires).
-      await loadLive({ forceFresh: true });
-      setOwnerSavedTick((t) => t + 1);
-    } catch (e) {
-      toast.error("Couldn't save — " + (e?.response?.data?.detail || e.message));
-    } finally {
-      setOwnerSaving(false);
-    }
-  };
+  const handleRosterSaved = useCallback(async () => {
+    // Bypass the 5-min response cache so the redistribution is visible
+    // instantly (otherwise the admin sees the OLD owner pills until
+    // the cache expires).
+    await loadLive({ forceFresh: true });
+    setOwnerSavedTick((t) => t + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Fetch live replenishment list (re-runs when roster save tick changes
   // so admins see the new owner assignment immediately).
@@ -368,68 +336,11 @@ const Replenishments = () => {
         </p>
       </div>
 
-      {/* Owner roster panel — admin/owner only. */}
-      {isAdmin && (
-        <div className="card-white p-5" data-testid="replen-owner-panel">
-          <SectionTitle
-            title={
-              <span className="inline-flex items-center gap-2">
-                <Users size={16} weight="duotone" className="text-brand-deep" />
-                Replenishment team roster
-              </span>
-            }
-            subtitle="How many people are picking today, and who? Save to redistribute lines across your roster — POS sorted ascending so each person owns a contiguous block of stores."
-          />
-          <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-4 items-start">
-            <div>
-              <label className="eyebrow block mb-1">Number of pickers</label>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={ownerCount}
-                onChange={(e) => setOwnerCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-                className="input-pill w-full"
-                data-testid="replen-owner-count"
-              />
-            </div>
-            <div>
-              <label className="eyebrow block mb-1">Names (one per row)</label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                {ownerNames.map((name, i) => (
-                  <input
-                    key={i}
-                    type="text"
-                    value={name}
-                    placeholder={`Picker ${i + 1}`}
-                    onChange={(e) => setOwnerNames((prev) => {
-                      const next = [...prev];
-                      next[i] = e.target.value;
-                      return next;
-                    })}
-                    className="input-pill w-full"
-                    data-testid={`replen-owner-name-${i}`}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              type="button"
-              onClick={saveOwners}
-              disabled={ownerSaving}
-              className="inline-flex items-center gap-1.5 text-[12px] font-bold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-3 py-2 rounded-md disabled:opacity-50"
-              data-testid="replen-save-owners"
-            >
-              <FloppyDisk size={13} weight="bold" /> {ownerSaving ? "Saving…" : "Save & redistribute"}
-            </button>
-            <span className="text-[11px] text-muted">
-              Empty list = use the default roster (Matthew, Teddy, Alvi, Emma).
-            </span>
-          </div>
-        </div>
-      )}
+      {/* Owner roster panel — admin/owner only. Extracted to a reusable
+          component so the IBT Warehouse→Store page can mount the same
+          card (iter 78). Saves to /admin/replenishment-config; on
+          success we refresh the live list. */}
+      <ReplenishmentRosterCard isAdmin={isAdmin} onSaved={handleRosterSaved} />
 
       {/* Live list. */}
       <div className="card-white p-5" data-testid="replen-live-card">

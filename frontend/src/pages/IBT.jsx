@@ -17,6 +17,9 @@ const IBT = () => {
   const { applied, touchLastUpdated, setPreset } = useFilters();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  // Iter 78 — Execs also need access to the Completed Moves report so
+  // they can audit IBT picker activity without admin-only navigation.
+  const canSeeCompletedMoves = isAdmin || user?.role === "exec";
   const { dateFrom, dateTo, countries, dataVersion } = applied;
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -329,7 +332,7 @@ const IBT = () => {
             completedSkuKeys={completedSkuKeys}
           />
 
-          {isAdmin && (
+          {canSeeCompletedMoves && (
             <IBTCompletedMoves refreshKey={completedRefresh} />
           )}
 

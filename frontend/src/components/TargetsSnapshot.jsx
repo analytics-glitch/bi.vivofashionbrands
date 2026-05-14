@@ -207,7 +207,12 @@ const TargetsSnapshot = ({ quarterLabel, daysLeft, rows, overall, onClose }) => 
               </div>
               <div className="text-right">
                 <div className="text-[9.5px] font-semibold text-white/75 uppercase tracking-wider">Projected landing</div>
-                <div className="text-[14px] font-bold tabular-nums whitespace-nowrap">{fmtKESMobile(overall?.projected)}</div>
+                {/* Iter 78 — CEO ask: bump the overall projection so it
+                    pops on screenshots, and recolour to bright yellow
+                    so it stands out from the surrounding green hero
+                    card. Other figures keep their existing weight so
+                    the projection reads as the headline number. */}
+                <div className="text-[20px] font-extrabold tabular-nums whitespace-nowrap text-[#FFD400] drop-shadow-[0_0_6px_rgba(255,212,0,0.35)]" data-testid="targets-snapshot-projection">{fmtKESMobile(overall?.projected)}</div>
               </div>
             </div>
           </div>
