@@ -155,6 +155,18 @@ _CACHE_HITS_L1 = 0  # in-process dict cache
 _CACHE_HITS_L2 = 0  # cross-pod Redis cache
 _CACHE_MISSES = 0   # had to call upstream
 _CACHE_INFLIGHT_JOIN = 0  # joined an already-running request
+# Per-key miss counter — answers "is this miss because we'd never seen
+# this key, or are we missing the same key over and over?". The pill
+# uses this to surface first-miss vs repeated-miss ratio so an admin
+# can tell whether the TTL policy is right (mostly first misses = good)
+# or whether something is invalidating keys faster than they're served
+# (mostly repeated misses = bad).
+#
+# Map shape: cache_key (tuple) → int count of misses for that key.
+# Bounded at 5000 keys; oldest dropped LRU-ish via `_evict_miss_keys`.
+_PER_KEY_MISSES: Dict[tuple, int] = {}
+_PER_KEY_MISSES_MAX = 5000
+
 # Process start time for the cache-stats uptime field — set at module
 # import (the first thing FastAPI does after Python starts).
 _PROCESS_STARTED_AT = time.time()
@@ -562,6 +574,16 @@ async def fetch(
         _INFLIGHT[cache_key] = my_future
         # No L1/L2 hit and no in-flight join → we're about to hit upstream.
         _CACHE_MISSES += 1
+        # Per-key miss tally → distinguishes "first time we've seen this
+        # key" (count=1, healthy) from "missed this key repeatedly"
+        # (count>1, TTL probably too short OR cache being invalidated
+        # too aggressively).
+        _PER_KEY_MISSES[cache_key] = _PER_KEY_MISSES.get(cache_key, 0) + 1
+        if len(_PER_KEY_MISSES) > _PER_KEY_MISSES_MAX:
+            # LRU-ish — drop the 200 oldest entries (by insertion order;
+            # Python 3.7+ dicts preserve it).
+            for k in list(_PER_KEY_MISSES.keys())[:200]:
+                _PER_KEY_MISSES.pop(k, None)
     else:
         my_future = None
     # Circuit breaker — if this upstream path has been repeatedly failing,
@@ -1856,6 +1878,37 @@ async def admin_cache_stats():
     hits = _CACHE_HITS_L1 + _CACHE_HITS_L2
     total_lookups = hits + _CACHE_MISSES + _CACHE_INFLIGHT_JOIN
     hit_rate = (hits / total_lookups * 100) if total_lookups > 0 else 0.0
+    # Per-key miss analysis — answers "is the miss rate dominated by
+    # first-time queries (healthy) or by repeated misses on the same
+    # key (TTL too short / cache thrashing)?".
+    first_misses = 0
+    repeat_misses = 0  # total miss count beyond the first miss per key
+    repeat_offenders: List[Tuple[str, int]] = []  # (key_summary, count)
+    for k, count in _PER_KEY_MISSES.items():
+        first_misses += 1  # every distinct key contributes exactly 1 first miss
+        if count > 1:
+            repeat_misses += count - 1
+            # Build a short readable summary of the cache key. The key
+            # is (path, sorted_params_tuple); collapse params to a few
+            # k=v fragments for display.
+            try:
+                path = k[0]
+                params = dict(k[1]) if len(k) > 1 else {}
+                summary = path
+                if params:
+                    short = ", ".join(
+                        f"{p_k}={p_v}" for p_k, p_v in list(params.items())[:3]
+                    )
+                    summary = f"{path}?{short}"
+                repeat_offenders.append((summary, count))
+            except Exception:
+                repeat_offenders.append((str(k)[:80], count))
+    repeat_offenders.sort(key=lambda x: x[1], reverse=True)
+    distinct_keys_missed = len(_PER_KEY_MISSES)
+    repeat_miss_pct = (
+        round(repeat_misses / _CACHE_MISSES * 100, 1)
+        if _CACHE_MISSES > 0 else 0.0
+    )
     # Mongo snapshot count — cheap (collection is tiny).
     mongo_snap_count = 0
     try:
@@ -1891,6 +1944,25 @@ async def admin_cache_stats():
             "inflight_joins": _CACHE_INFLIGHT_JOIN,
             "misses": _CACHE_MISSES,
             "hit_rate_pct": round(hit_rate, 1),
+        },
+        # Miss breakdown — answers "is the TTL still too short?".
+        # `first_misses` = distinct cache keys we've ever requested
+        # (one miss per key is unavoidable — that's just the cold path).
+        # `repeat_misses` = times we missed a key we'd already missed
+        # before. Healthy ratio is repeat_miss_pct < 20 %; if it climbs
+        # higher, the TTL on that key family is shorter than the time
+        # between user requests.
+        "miss_analysis": {
+            "distinct_keys_missed": distinct_keys_missed,
+            "first_misses": first_misses,
+            "repeat_misses": repeat_misses,
+            "repeat_miss_pct": repeat_miss_pct,
+            # Top 10 keys missed > 1 time, sorted by total miss count.
+            # These are the candidates for "TTL too short" or "we're
+            # invalidating this key too eagerly".
+            "top_repeat_offenders": [
+                {"key": k, "miss_count": c} for k, c in repeat_offenders[:10]
+            ],
         },
         "mongo_snapshots": mongo_snap_count,
         "heavy_guard": {

@@ -163,6 +163,48 @@ const CacheStatsPill = () => {
                   <Stat label="In-flight joins" value={data.counters_since_boot.inflight_joins.toLocaleString()} hint="dedup wins" />
                 </div>
 
+                {/* Miss analysis — answers "is the TTL too short?" */}
+                {data.miss_analysis && data.miss_analysis.distinct_keys_missed > 0 && (() => {
+                  const m = data.miss_analysis;
+                  const repeatHigh = m.repeat_miss_pct > 30;
+                  return (
+                    <div className="space-y-1 mb-3 pt-3 border-t border-border">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-brand-deep">
+                        Miss analysis
+                      </div>
+                      <Stat label="Distinct keys missed" value={m.distinct_keys_missed.toLocaleString()} hint="first-time" />
+                      <Stat label="Repeat misses" value={m.repeat_misses.toLocaleString()} hint={`${m.repeat_miss_pct}% of all misses`} />
+                      <div className={`mt-1 px-2 py-1.5 rounded-md text-[10.5px] leading-snug ${
+                        repeatHigh
+                          ? "bg-amber-50 border border-amber-200 text-amber-900"
+                          : "bg-emerald-50 border border-emerald-200 text-emerald-900"
+                      }`}>
+                        {repeatHigh
+                          ? <><strong>Investigate.</strong> {m.repeat_miss_pct}% repeat-miss rate suggests TTL is shorter than user request cadence on some keys.</>
+                          : <><strong>Healthy.</strong> Misses are mostly first-time queries — TTL policy is well-matched to usage.</>
+                        }
+                      </div>
+                      {m.top_repeat_offenders && m.top_repeat_offenders.length > 0 && (
+                        <div className="mt-1.5 space-y-0.5">
+                          <div className="text-[9.5px] uppercase tracking-wider text-muted/80 font-bold">
+                            Top repeat-miss keys
+                          </div>
+                          {m.top_repeat_offenders.slice(0, 5).map((r, i) => (
+                            <div key={i} className="flex items-baseline justify-between gap-2 py-0.5">
+                              <span className="text-[10px] text-muted truncate font-mono" title={r.key}>
+                                {r.key}
+                              </span>
+                              <span className="text-[10px] tabular-nums font-bold text-rose-700 shrink-0">
+                                {r.miss_count}×
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* In-process cache state */}
                 <div className="space-y-1 mb-3 pt-3 border-t border-border">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-brand-deep">

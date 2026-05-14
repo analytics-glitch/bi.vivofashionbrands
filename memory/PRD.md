@@ -620,5 +620,10 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **New `GET /api/admin/cache-stats` endpoint.** Live observability across every cache layer added since iter 65: L1 (in-process) hits / L2 (Redis) hits / upstream misses / in-flight joins, TTL-bucket distribution, Mongo snapshot count, heavy-guard semaphore state + rejection counts, and pod RSS / uptime (via new `psutil` dependency).
 - **New `CacheStatsPill` admin UI.** Pill in the topbar next to `Recon` and `Cache · N keys` — shows overall hit rate at a glance with colour state (green ≥50%, amber <50%, red on any heavy-guard rejection). Click opens a panel with the full breakdown. Polls every 60 s. Admin-only.
 
+### Recent (Feb 2026 — Iter 74)
+- **Per-key miss instrumentation.** Cache-stats endpoint now distinguishes first-time misses from repeat misses — answers the question "is the TTL still too short?" without guessing. New `_PER_KEY_MISSES` dict tracks how often each cache key has been re-missed (bounded at 5000 entries, LRU-ish eviction). Endpoint returns `miss_analysis: { distinct_keys_missed, first_misses, repeat_misses, repeat_miss_pct, top_repeat_offenders[10] }`.
+- **UI surface in the pill.** New "Miss analysis" section in the panel shows the breakdown plus a green/amber verdict banner: <30 % repeat-miss = "Healthy. TTL well-matched to usage", >30 % = "Investigate. TTL shorter than user request cadence on some keys" with the top-5 offending keys listed by miss count.
+- **Empirical reading on preview**: after 20 mixed requests across 5 endpoints, the system showed 92.3 % hit rate / 2 misses / **0 repeat misses (0 %)** — confirms TTL policy from iter 72 is correctly sized for the current usage pattern.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
