@@ -31,6 +31,7 @@ import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 import RedisStatusPill from "@/components/RedisStatusPill";
 import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
+import CacheStatsPill from "@/components/CacheStatsPill";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
@@ -313,6 +314,7 @@ const TopNav = () => {
         </button>
         <NotificationBell />
         <ReconciliationStatusPill />
+        <CacheStatsPill />
         <RedisStatusPill />
         <UserMenu />
       </div>

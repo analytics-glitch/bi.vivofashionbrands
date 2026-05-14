@@ -612,5 +612,13 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Phase B · Page fan-out audit.** Walked all 21 lazy-loaded pages. Customers (the most fan-out-heavy at 24 calls) fires all secondary fetches in parallel after the primary `/customers` payload arrives — the visible `for…of` loop is over pre-kicked-off promises, not sequential awaits. The 3 `await api.get` sites in the codebase are all user-event handlers (search box, customer-row click), not initial page-load fans. No violations to fix.
 - **What this combined with Vivo BI's fixes (Cloud Run min-instances=1, TTL 60→300 s, BQ client reuse) achieves**: dashboard upstream traffic drops ~70 % (historical hits cached 30× longer than before), cold-start tail latency drops from 5 s to ~1 s, and the "KPIs slow to load" banner becomes effectively extinct.
 
+### Recent (Feb 2026 — Iter 73)
+- **P1 · Memory-cap protection on heavy endpoints.** Per-endpoint `asyncio.Semaphore` concurrency caps shipped via a new `HeavyGuard` async context manager — when a slot is free, requests run immediately; when full, requests wait up to 2 s and then receive HTTP 503 with a clear "server temporarily busy" detail. Prevents the May 13 outage class of bug where one heavy click (SOR 6-month scan, style-location-breakdown for a large style, replenishment-report fan-out) OOM-killed the worker for every other user.
+  - Limits: `/sor` 3 · `/analytics/style-location-breakdown` 2 · `/analytics/replenishment-report` 2 · `/customers/walk-ins` 3 · `/analytics/customer-retention` 2 · `/analytics/ibt-warehouse-to-store` 3.
+  - Internal warmup callers (`/sor-all-styles`, replenishment re-warm) routed through new `_*_impl` helpers that bypass the guard so background warmup doesn't compete with live user traffic.
+  - 3 regression tests at `/app/backend/tests/test_iteration_73_heavy_guard.py` lock in admit-under-limit, reject-over-limit, and no-op-for-unknown-path semantics.
+- **New `GET /api/admin/cache-stats` endpoint.** Live observability across every cache layer added since iter 65: L1 (in-process) hits / L2 (Redis) hits / upstream misses / in-flight joins, TTL-bucket distribution, Mongo snapshot count, heavy-guard semaphore state + rejection counts, and pod RSS / uptime (via new `psutil` dependency).
+- **New `CacheStatsPill` admin UI.** Pill in the topbar next to `Recon` and `Cache · N keys` — shows overall hit rate at a glance with colour state (green ≥50%, amber <50%, red on any heavy-guard rejection). Click opens a panel with the full breakdown. Polls every 60 s. Admin-only.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

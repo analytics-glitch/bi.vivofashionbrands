@@ -148,6 +148,108 @@ _CHURN_NEG_TTL = 60  # seconds
 _FETCH_CACHE: Dict[tuple, tuple] = {}
 _FETCH_TTL = 120.0  # seconds — default "today" window (overridden per-entry via _smart_ttl)
 _FETCH_CACHE_MAX = 2000  # entries
+# Hit / miss counters for the /admin/cache-stats endpoint. Reset on
+# pod restart; we don't need persistence — the metric is "is the cache
+# paying off RIGHT NOW".
+_CACHE_HITS_L1 = 0  # in-process dict cache
+_CACHE_HITS_L2 = 0  # cross-pod Redis cache
+_CACHE_MISSES = 0   # had to call upstream
+_CACHE_INFLIGHT_JOIN = 0  # joined an already-running request
+# Process start time for the cache-stats uptime field — set at module
+# import (the first thing FastAPI does after Python starts).
+_PROCESS_STARTED_AT = time.time()
+
+
+# ─── Heavy-endpoint concurrency guard ───────────────────────────────
+# A single user clicking the SOR 6-month scan or the
+# style-location-breakdown for a large style can pull 200 k+ rows into
+# Python memory. With multiple users hitting these simultaneously the
+# worker OOM-kills → Cloudflare 520 → wedged production pod (exactly
+# what happened on May 13). Per-endpoint asyncio.Semaphore caps the
+# concurrent execution count for each known-heavy endpoint; when full
+# the request gets a fast HTTP 503 instead of being allowed to pile on
+# top of the memory pressure.
+_HEAVY_SEMAPHORES: Dict[str, asyncio.Semaphore] = {}
+_HEAVY_LIMITS = {
+    # Endpoint path → max concurrent in-flight requests on this pod.
+    "/sor": 3,
+    "/analytics/style-location-breakdown": 2,
+    "/analytics/replenishment-report": 2,
+    "/customers/walk-ins": 3,
+    "/analytics/customer-retention": 2,
+    "/analytics/ibt-warehouse-to-store": 3,
+}
+# Acquire wait — how long a queued request will wait for a slot
+# before giving up with a 503. Short on purpose: a fast 503 is better
+# UX than a 60s hang.
+_HEAVY_ACQUIRE_TIMEOUT_SEC = 2.0
+# Total times we've returned 503 from the heavy-guard; surfaced on the
+# admin cache-stats endpoint so we can spot capacity pressure.
+_HEAVY_GUARD_REJECTIONS: Dict[str, int] = {}
+
+
+def _heavy_sem(path: str) -> Optional[asyncio.Semaphore]:
+    """Lazy-init the per-endpoint semaphore. Lazy because asyncio
+    primitives need a running event loop, and the module-level
+    initialisation here happens during import (no loop yet).
+    """
+    if path not in _HEAVY_LIMITS:
+        return None
+    sem = _HEAVY_SEMAPHORES.get(path)
+    if sem is None:
+        sem = asyncio.Semaphore(_HEAVY_LIMITS[path])
+        _HEAVY_SEMAPHORES[path] = sem
+    return sem
+
+
+class HeavyGuard:
+    """Async context manager that gates a heavy endpoint.
+
+    Usage:
+        async with HeavyGuard("/sor"):
+            ...  # expensive work
+
+    Behaviour:
+      • If the endpoint has no configured limit → no-op.
+      • If a slot is free → enter immediately.
+      • If full → wait up to _HEAVY_ACQUIRE_TIMEOUT_SEC for a slot.
+      • If still full after the timeout → raise HTTPException(503).
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self.sem = _heavy_sem(path)
+        self._acquired = False
+
+    async def __aenter__(self):
+        if self.sem is None:
+            return self
+        try:
+            await asyncio.wait_for(
+                self.sem.acquire(), timeout=_HEAVY_ACQUIRE_TIMEOUT_SEC,
+            )
+            self._acquired = True
+        except asyncio.TimeoutError:
+            _HEAVY_GUARD_REJECTIONS[self.path] = _HEAVY_GUARD_REJECTIONS.get(self.path, 0) + 1
+            logger.warning(
+                "[heavy-guard] %s rejected — semaphore full (limit=%d). "
+                "Returning 503 to caller; total rejections this pod: %d",
+                self.path, _HEAVY_LIMITS[self.path],
+                _HEAVY_GUARD_REJECTIONS[self.path],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Server temporarily busy — {self.path} is at capacity "
+                    f"({_HEAVY_LIMITS[self.path]} concurrent). Try again in a few seconds."
+                ),
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._acquired and self.sem is not None:
+            self.sem.release()
+        return False  # never swallow exceptions
 
 
 def _smart_ttl(clean: Dict[str, Any]) -> float:
@@ -410,6 +512,7 @@ async def fetch(
     # Compute the per-entry TTL once — used for both L1 freshness check
     # and the Redis TTL on write.
     entry_ttl = _smart_ttl(clean) if cache_key is not None else _FETCH_TTL
+    global _CACHE_HITS_L1, _CACHE_HITS_L2, _CACHE_MISSES, _CACHE_INFLIGHT_JOIN
     if cache_key is not None:
         hit = _FETCH_CACHE.get(cache_key)
         if hit:
@@ -419,6 +522,7 @@ async def fetch(
             # as a 120 s "today" entry on read.
             hit_ttl = hit[2] if len(hit) >= 3 else _FETCH_TTL
             if (time.time() - hit[0]) < hit_ttl:
+                _CACHE_HITS_L1 += 1
                 return hit[1]
         # L2 — shared Redis cache. Lets a warm response from pod A serve
         # pod B's traffic instantly instead of paying the cold upstream
@@ -440,6 +544,7 @@ async def fetch(
                 # over-cache a today-window value lifted from Redis.
                 _FETCH_CACHE[cache_key] = (time.time(), r_hit, entry_ttl)
                 _evict_fetch_cache_if_needed()
+                _CACHE_HITS_L2 += 1
                 return r_hit
         # In-flight de-dup. If another coroutine already kicked off this
         # exact upstream call, await its Future instead of duplicating the
@@ -448,12 +553,15 @@ async def fetch(
         running = _INFLIGHT.get(cache_key)
         if running is not None:
             try:
+                _CACHE_INFLIGHT_JOIN += 1
                 return await running
             except Exception:
                 pass  # fall through to retry our own request
         loop = asyncio.get_event_loop()
         my_future: asyncio.Future = loop.create_future()
         _INFLIGHT[cache_key] = my_future
+        # No L1/L2 hit and no in-flight join → we're about to hit upstream.
+        _CACHE_MISSES += 1
     else:
         my_future = None
     # Circuit breaker — if this upstream path has been repeatedly failing,
@@ -1249,6 +1357,20 @@ async def get_sor(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
 ):
+    async with HeavyGuard("/sor"):
+        return await _get_sor_impl(
+            date_from=date_from, date_to=date_to,
+            country=country, channel=channel, brand=brand,
+        )
+
+
+async def _get_sor_impl(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    brand: Optional[str] = None,
+):
     base = {"date_from": date_from, "date_to": date_to}
     if brand:
         base["product"] = brand
@@ -1696,6 +1818,96 @@ async def admin_flush_kpi_cache():
     }
 
 
+@api_router.get("/admin/cache-stats")
+async def admin_cache_stats():
+    """Live observability for the multi-tier cache layer added across
+    iterations 65-72. Returns hit / miss counts (per pod since boot),
+    TTL-bucket distribution of in-process entries, semaphore rejection
+    counts, and the Mongo + Redis layer sizes.
+
+    Surfaced on the admin topbar via the `CacheStatsPill` component so
+    we can spot any future regression of the smart-TTL policy or the
+    HeavyGuard rejecting too aggressively. Public-ish — no PII; the
+    only sensitive info is upstream call patterns which is exactly what
+    we want admins to see.
+    """
+    now = time.time()
+    entries = list(_FETCH_CACHE.items())
+    total = len(entries)
+    today_120 = 0
+    yest_600 = 0
+    historical_3600 = 0
+    legacy = 0
+    ages: List[float] = []
+    for _, v in entries:
+        ages.append(now - v[0])
+        if len(v) >= 3:
+            ttl = v[2]
+            if ttl == 120.0:
+                today_120 += 1
+            elif ttl == 600.0:
+                yest_600 += 1
+            elif ttl == 3600.0:
+                historical_3600 += 1
+            else:
+                legacy += 1
+        else:
+            legacy += 1
+    hits = _CACHE_HITS_L1 + _CACHE_HITS_L2
+    total_lookups = hits + _CACHE_MISSES + _CACHE_INFLIGHT_JOIN
+    hit_rate = (hits / total_lookups * 100) if total_lookups > 0 else 0.0
+    # Mongo snapshot count — cheap (collection is tiny).
+    mongo_snap_count = 0
+    try:
+        mongo_snap_count = await db[_SNAPSHOT_COLL].count_documents({})
+    except Exception:
+        pass
+    # Pod memory pressure (RSS) — only emit if psutil is available;
+    # otherwise skip rather than carry a hard dep.
+    rss_mb: Optional[float] = None
+    try:
+        import psutil  # type: ignore
+        rss_mb = round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "in_process_cache": {
+            "entries": total,
+            "max_entries": _FETCH_CACHE_MAX,
+            "ttl_buckets": {
+                "today_120s": today_120,
+                "yesterday_600s": yest_600,
+                "historical_3600s": historical_3600,
+                "legacy_or_no_date": legacy,
+            },
+            "avg_age_sec": int(sum(ages) / len(ages)) if ages else 0,
+            "oldest_age_sec": int(max(ages)) if ages else 0,
+        },
+        "counters_since_boot": {
+            "l1_hits": _CACHE_HITS_L1,
+            "l2_redis_hits": _CACHE_HITS_L2,
+            "inflight_joins": _CACHE_INFLIGHT_JOIN,
+            "misses": _CACHE_MISSES,
+            "hit_rate_pct": round(hit_rate, 1),
+        },
+        "mongo_snapshots": mongo_snap_count,
+        "heavy_guard": {
+            "limits": _HEAVY_LIMITS,
+            "rejections_since_boot": dict(_HEAVY_GUARD_REJECTIONS),
+            "in_use": {
+                p: _HEAVY_LIMITS[p] - (sem._value if sem else 0)
+                for p, sem in _HEAVY_SEMAPHORES.items()
+            },
+        },
+        "process": {
+            "rss_mb": rss_mb,
+            "uptime_sec": int(now - _PROCESS_STARTED_AT),
+        },
+    }
+
+
 @api_router.get("/stock-to-sales")
 async def get_stock_to_sales(
     date_from: Optional[str] = None,
@@ -2009,6 +2221,19 @@ def _get_customer_contact_lookup_sync() -> Dict[str, Dict[str, bool]]:
 
 @api_router.get("/customers/walk-ins")
 async def get_walk_ins(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+):
+    async with HeavyGuard("/customers/walk-ins"):
+        return await _get_walk_ins_impl(
+            date_from=date_from, date_to=date_to,
+            country=country, channel=channel,
+        )
+
+
+async def _get_walk_ins_impl(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     country: Optional[str] = None,
@@ -6618,6 +6843,21 @@ async def analytics_style_location_breakdown(
     size: Optional[str] = None,
     response: Response = None,
 ):
+    async with HeavyGuard("/analytics/style-location-breakdown"):
+        return await _analytics_style_location_breakdown_impl(
+            style_name=style_name, country=country, channel=channel,
+            color=color, size=size, response=response,
+        )
+
+
+async def _analytics_style_location_breakdown_impl(
+    style_name: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    color: Optional[str] = None,
+    size: Optional[str] = None,
+    response: Response = None,
+):
     """Per-location sales + SOH for one style, optionally filtered to
     rows of a single colour and / or size.
 
@@ -7235,6 +7475,21 @@ async def analytics_replenishment_report(
                                    # overrides the default OWNERS list and
                                    # distributes lines equally across them.
     user: User = Depends(require_page("replenishments")),
+):
+    async with HeavyGuard("/analytics/replenishment-report"):
+        return await _analytics_replenishment_report_impl(
+            date_from=date_from, date_to=date_to, date=date,
+            country=country, owners=owners, user=user,
+        )
+
+
+async def _analytics_replenishment_report_impl(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    date: Optional[str] = None,
+    country: Optional[str] = None,
+    owners: Optional[str] = None,
+    user: Optional[User] = None,
 ):
     """Daily replenishment report — returns rows that need a top-up today.
 
@@ -8760,7 +9015,10 @@ async def startup():
             )
             await asyncio.gather(
                 analytics_sor_all_styles(),
-                analytics_replenishment_report(),
+                # Warmup calls bypass the HeavyGuard + auth wrapper so
+                # they can run without a real User and don't compete
+                # with live user traffic for semaphore slots.
+                _analytics_replenishment_report_impl(),
                 return_exceptions=True,
             )
             logger.info("[warmup] sor-all-styles + new-styles-curve + replenishment cache warmed")
@@ -8901,7 +9159,7 @@ async def startup():
                             get_sales_summary(date_from=today, date_to=today),
                             get_sales_summary(date_from=mtd_from, date_to=today),
                             get_footfall(date_from=mtd_from, date_to=today),
-                            analytics_replenishment_report(),
+                            _analytics_replenishment_report_impl(),
                             return_exceptions=True,
                         )
                         logger.info("[warmer] proactive 5-min re-warm complete")
