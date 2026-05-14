@@ -1,7 +1,7 @@
 import React from "react";
 import { Info, ArrowRight } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import { fmtDelta } from "@/lib/api";
+import { fmtDelta, api } from "@/lib/api";
 
 const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => {
   if (delta === null || delta === undefined) {
@@ -68,13 +68,38 @@ export const KPICard = ({
   // keyboard-accessible. Passing `action={null}` or omitting keeps the
   // card passive (back-compat with every existing call-site).
   action = null,
+  // Iter 77 — Prefetch-on-hover. Optional array of GET endpoints to
+  // warm into the shared response cache when the user's cursor lands
+  // on the tile. Each entry is `{url, params}` — same shape as
+  // `api.get(url, {params})`. The cache layer in `lib/api.js`
+  // dedupes inflight + memoises for 5 min, so by the time the user
+  // commits to the click the destination page sees an instant hit.
+  // No-op when omitted. Fires AT MOST once per mount (idempotent
+  // via the inflight cache).
+  prefetch = null,
 }) => {
   const navigate = useNavigate();
+  const prefetchedRef = React.useRef(false);
   const handleAction = (e) => {
     if (!action) return;
     e.stopPropagation();
     if (typeof action.onClick === "function") return action.onClick(e);
     if (action.to) navigate(action.to);
+  };
+  // Fire the prefetch ONCE per mount. Subsequent hovers re-use the
+  // already-cached payload from `_respCache` in lib/api.js, so even
+  // without the ref guard they'd be free — the guard just shaves the
+  // Map lookup cost on a hot grid of 6+ cards.
+  const handleHover = () => {
+    if (prefetchedRef.current) return;
+    if (!Array.isArray(prefetch) || prefetch.length === 0) return;
+    prefetchedRef.current = true;
+    for (const entry of prefetch) {
+      if (!entry || !entry.url) continue;
+      // Fire-and-forget — errors are silent; the destination page
+      // will see them on its own fetch if upstream is truly down.
+      api.get(entry.url, { params: entry.params }).catch(() => {});
+    }
   };
   const ActionIcon = action?.icon || ArrowRight;
   const titleTip = formula || (typeof value === "string" ? value : undefined);
@@ -83,6 +108,8 @@ export const KPICard = ({
       className={`${accent ? "card-accent" : "card-white"} ${small ? "p-3 sm:p-4" : "p-3.5 sm:p-5"} hover-lift fade-in`}
       data-testid={testId}
       title={titleTip}
+      onMouseEnter={handleHover}
+      onFocus={handleHover}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="eyebrow flex items-center gap-1">

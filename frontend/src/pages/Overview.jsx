@@ -330,6 +330,35 @@ const Overview = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawKpisPrev]);
 
+  // Iter 77 — Prefetch-on-hover hints for KPI tiles. When the user
+  // hovers a tile, the KPI card eagerly warms the destination page's
+  // top-1 endpoint into the shared response cache (`lib/api.js`).
+  // By the time they click, that page sees an instant hit. Hints are
+  // memoised on the current filter snapshot so cache keys match the
+  // destination page's actual fetch params.
+  const prefetchParams = useMemo(() => ({
+    date_from: dateFrom,
+    date_to: dateTo,
+    country: countries && countries.length ? countries.join(",") : undefined,
+    channel: channels && channels.length ? channels.join(",") : undefined,
+  }), [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels)]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Destination-keyed prefetch list. Each tile uses the top-1 endpoint
+  // its target page calls on mount (see /app/frontend/src/pages/*.jsx
+  // — Locations.jsx → /sales-summary, Products.jsx → /top-skus, etc).
+  // Keep lean: each hover fires at MOST 2 requests so we never spam
+  // the upstream with speculative work.
+  const prefetchByDest = useMemo(() => ({
+    "/locations":  [{ url: "/sales-summary", params: prefetchParams }],
+    "/products":   [{ url: "/top-skus", params: { ...prefetchParams, limit: 200 } }],
+    "/footfall":   [{ url: "/footfall", params: prefetchParams }],
+    "/exports":    [{ url: "/sor", params: prefetchParams }],
+  }), [prefetchParams]);
+  const pf = (path) => {
+    // Strip URL hash (e.g. "/ceo-report#returns") to match the keys.
+    const key = (path || "").split("#")[0];
+    return prefetchByDest[key] || null;
+  };
+
   // --- Range-length driven chart type for Daily Sales Trend ---
   // ≤1 day → paired bars (Today / SDLW / SDLM / SDLY-if-LY).
   //  2–6 day → mini bar per day.
@@ -661,7 +690,8 @@ const Overview = () => {
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="How much money came in this period (before subtracting returns)."
               delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
-              action={{ label: "See by location", to: "/locations" }} />
+              action={{ label: "See by location", to: "/locations" }}
+              prefetch={pf("/locations")} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} icon={Coins}
               formula="Total Sales minus refunds. The cash you actually kept."
               delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
@@ -669,22 +699,26 @@ const Overview = () => {
             <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="How many separate purchases were made."
               delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
-              action={{ label: "Order-level export", to: "/exports" }} />
+              action={{ label: "Order-level export", to: "/exports" }}
+              prefetch={pf("/exports")} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
               formula="How many individual items left the shelves."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
-              action={{ label: "Top styles", to: "/products" }} />
+              action={{ label: "Top styles", to: "/products" }}
+              prefetch={pf("/products")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-                action={{ label: "Footfall by store", to: "/footfall" }} />
+                action={{ label: "Footfall by store", to: "/footfall" }}
+                prefetch={pf("/footfall")} />
             )}
             {!isOnlineOnly && (
               <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
-                action={{ label: "Which stores dropped?", to: "/footfall" }} />
+                action={{ label: "Which stores dropped?", to: "/footfall" }}
+                prefetch={pf("/footfall")} />
             )}
           </div>
 
@@ -718,13 +752,15 @@ const Overview = () => {
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
               prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
               showDelta={compareMode !== "none"}
-              action={{ label: "Locations w/ highest returns", to: "/locations" }} />
+              action={{ label: "Locations w/ highest returns", to: "/locations" }}
+              prefetch={pf("/locations")} />
             <KPICard small testId="kpi-returns" label="Return Amount" sub="Refunds in cash" value={kfmt(kpis.total_returns)} icon={ArrowUUpLeft}
               formula="Total cash refunded to customers, counted on the day they originally bought it."
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
               prevValue={prev("total_returns", kfmt)}
               showDelta={compareMode !== "none"}
-              action={{ label: "Export returns CSV", to: "/exports" }} />
+              action={{ label: "Export returns CSV", to: "/exports" }}
+              prefetch={pf("/exports")} />
           </div>
 
           <div className={`grid grid-cols-1 ${isOnlineOnly ? "md:grid-cols-1" : "md:grid-cols-3"} gap-3`}>

@@ -1,0 +1,55 @@
+name: Section-1 Performance Audit
+
+# Post-deploy SLA gate. Runs the audit script against the just-deployed
+# environment and fails the workflow if any of the four hot endpoints
+# regresses past its budget. Wire this AFTER your existing deploy step.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   PROD_URL                — Full URL of the deployed app (no trailing /)
+#   PERF_ADMIN_EMAIL        — Admin login used to fetch a JWT
+#   PERF_ADMIN_PASSWORD     — Password for the above
+#
+# SLAs (warm3, see /app/backend/tests/audit_section1_perf.py):
+#   /api/kpis                                   < 500 ms
+#   /api/analytics/ibt-warehouse-to-store       < 500 ms
+#   /api/sor                                    < 2000 ms
+#   /api/analytics/replenishment-report         < 3000 ms
+
+on:
+  # Run after the deploy job finishes (the deploy workflow should
+  # `workflow_run`-trigger this one, OR call it as a reusable job).
+  workflow_dispatch:
+  # Also run on a daily schedule so we catch drift even between deploys.
+  schedule:
+    - cron: "0 6 * * *"  # 06:00 UTC every day
+
+jobs:
+  perf-audit:
+    name: Section-1 perf audit (warm3 < SLA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run audit
+        env:
+          PERF_AUDIT_BASE_URL: ${{ secrets.PROD_URL }}
+          PERF_AUDIT_EMAIL: ${{ secrets.PERF_ADMIN_EMAIL }}
+          PERF_AUDIT_PASSWORD: ${{ secrets.PERF_ADMIN_PASSWORD }}
+          PERF_AUDIT_WARMUP_SLEEP: "120"
+          PERF_AUDIT_REPORT: ${{ github.workspace }}/audit_section1.json
+        run: bash scripts/run_perf_audit.sh
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit_section1.json
+          path: audit_section1.json
+          if-no-files-found: ignore
