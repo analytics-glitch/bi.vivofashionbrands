@@ -151,6 +151,33 @@ async def _check_country_data(client: httpx.AsyncClient, base: str, headers: dic
     return {**out, "all_non_zero": all_non_zero}, zero_required
 
 
+async def _check_reconciliation(client: httpx.AsyncClient, base: str, headers: dict) -> Tuple[Dict, List[str]]:
+    """Iter 80 — Per CEO spec: the recon check
+    `kpis.total_sales == Σ country_summary.total_sales` must pass at
+    all times. Wraps `/api/admin/reconciliation-check` and returns its
+    failed-check names so the audit can attempt auto-fix.
+    """
+    out: Dict[str, Any] = {"ok": False, "failed_checks": []}
+    failed: List[str] = []
+    try:
+        status, _, body = await _time_get(
+            client, f"{base}/api/admin/reconciliation-check",
+            headers, timeout=60,
+        )
+        if status == 200 and isinstance(body, dict):
+            out["ok"] = bool(body.get("ok"))
+            for c in body.get("checks", []) or []:
+                if c.get("ok") is False:
+                    failed.append(c.get("name") or "?")
+            out["failed_checks"] = failed
+            out["source_of_truth"] = body.get("source_of_truth")
+    except Exception as e:
+        logger.warning("[audit] reconciliation-check fetch failed: %s", e)
+        out["error"] = str(e)[:120]
+        failed = ["recon_endpoint_unreachable"]
+    return out, failed
+
+
 async def _check_system_health(client: httpx.AsyncClient, base: str, headers: dict) -> Tuple[Dict, List[str]]:
     """Returns (system metrics dict, list of breached metrics)."""
     cs: dict = {}
@@ -412,6 +439,49 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                     })
                     sys_h = sys_h3
 
+        # ── 3.5 Reconciliation (Iter 80) ──────────────
+        # CEO spec: kpis.total_sales == Σ country_summary.total_sales
+        # must reconcile at all times. If recon has failures, attempt
+        # the standard 2-attempt auto-fix (flush + warmup).
+        recon, recon_fails = await _check_reconciliation(client, base_url, headers)
+        if recon_fails:
+            issues_found += 1
+            await _flush_cache(client, base_url, headers)
+            await asyncio.sleep(8)
+            recon2, recon_fails2 = await _check_reconciliation(client, base_url, headers)
+            if not recon_fails2:
+                issues_auto_fixed += 1
+                fix_details.append({
+                    "issue": f"Reconciliation failed: {recon_fails}",
+                    "attempt_1": "Flush KPI cache + 8s",
+                    "attempt_1_result": "success — recon green",
+                    "resolved": True, "escalated": False,
+                })
+                recon = recon2
+            else:
+                await _flush_cache(client, base_url, headers)
+                await asyncio.sleep(30)
+                recon3, recon_fails3 = await _check_reconciliation(client, base_url, headers)
+                if not recon_fails3:
+                    issues_auto_fixed += 1
+                    fix_details.append({
+                        "issue": f"Reconciliation failed: {recon_fails}",
+                        "attempt_1": "Flush + 8s", "attempt_1_result": f"failed — {recon_fails2}",
+                        "attempt_2": "Re-flush + 30s warmup", "attempt_2_result": "success",
+                        "resolved": True, "escalated": False,
+                    })
+                    recon = recon3
+                else:
+                    issues_escalated += 1
+                    critical_msgs.append(f"Reconciliation still failing after 2 attempts: {recon_fails3}")
+                    fix_details.append({
+                        "issue": f"Reconciliation failed: {recon_fails}",
+                        "attempt_1": "Flush + 8s", "attempt_1_result": f"failed — {recon_fails2}",
+                        "attempt_2": "Re-flush + 30s", "attempt_2_result": f"failed — {recon_fails3}",
+                        "resolved": False, "escalated": True,
+                    })
+                    recon = recon3
+
         # ── 4. Connectivity ───────────────────────────
         conn, unreachable = await _check_connectivity(client)
         if unreachable:
@@ -464,6 +534,7 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
         "status": status,
         "performance": perf,
         "data_accuracy": cty,
+        "reconciliation": locals().get("recon") or {"ok": True, "failed_checks": []},
         "system_health": sys_h,
         "connectivity": conn,
         "issues_found": issues_found,

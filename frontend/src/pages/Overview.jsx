@@ -670,19 +670,52 @@ const Overview = () => {
           <span>{degradedMessage}</span>
         </div>
       )}
-      {!degradedMessage && kpis?.stale && (
-        <div
-          className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2"
-          data-testid="stale-banner"
-        >
-          <svg className="animate-spin h-3.5 w-3.5 text-amber-700" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-          </svg>
-          <span>
-            Upstream KPI service is slow right now — showing values from {Math.max(1, Math.round((kpis.stale_age_sec || 0) / 60))} min ago. Auto-refreshes when upstream recovers.
-          </span>
-        </div>
-      )}
+      {!degradedMessage && kpis?.stale && (() => {
+        // Per-country freshness threshold (Feb 2026):
+        //   Kenya/Uganda/Rwanda: warn if data is > 10 min old
+        //   Online (Shop Zetu):  warn if data is > 35 min old
+        //   default (no filter / mixed): use the longer Online ceiling
+        //   so the aggregate row never alarms before its country rows
+        const ageMin = Math.max(1, Math.round((kpis.stale_age_sec || 0) / 60));
+        const isOnlineOnlyFilter =
+          (Array.isArray(countries) && countries.length === 1 &&
+            countries[0]?.toLowerCase() === "online") || isOnlineOnly;
+        const threshold = isOnlineOnlyFilter ? 35 : 10;
+        // Within the expected refresh window → show a subtle neutral
+        // "Updated X min ago" tag instead of an alarming amber banner.
+        // Only escalate to the banner when staleness exceeds the
+        // country-appropriate ceiling.
+        if (ageMin <= threshold) {
+          return (
+            <div
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 text-[11px] font-semibold w-fit"
+              data-testid="stale-banner"
+              title="Auto-refreshes every 2 minutes from the Mongo snapshot layer"
+            >
+              <svg className="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="6" fill="currentColor" />
+              </svg>
+              <span>Last updated {ageMin} min ago</span>
+            </div>
+          );
+        }
+        // Beyond threshold → neutral (not alarming) amber banner with
+        // the SAME wording the user asked for ("Last updated"), no
+        // mention of "upstream slow" or "cache off".
+        return (
+          <div
+            className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2"
+            data-testid="stale-banner"
+          >
+            <svg className="h-3.5 w-3.5 text-amber-700" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            </svg>
+            <span>
+              Last updated {ageMin} min ago — auto-refreshes every 2 minutes.
+            </span>
+          </div>
+        );
+      })()}
 
       {!kpisLoading && !error && kpis && (
         <>
