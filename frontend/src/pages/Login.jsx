@@ -14,11 +14,20 @@ const Login = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [domains, setDomains] = useState([]);
+  // Iter 78 — surface a friendly explanation when the API client
+  // 401-redirects us here mid-session. URL is set by the axios
+  // interceptor in `lib/api.js`. Suppressed once the user clicks
+  // anything (clearing the error).
+  const [sessionExpired, setSessionExpired] = useState(false);
   const emailRef = useRef(null);
   const passwordRef = useRef(null);
 
   useEffect(() => {
     api.get("/auth/allowed-domains").then((r) => setDomains(r.data.domains || [])).catch(() => {});
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("session_expired") === "1") setSessionExpired(true);
+    } catch { /* noop */ }
   }, []);
 
   if (user) return <Navigate to="/" replace />;
@@ -157,6 +166,13 @@ const Login = () => {
               />
             </div>
           </div>
+
+          {sessionExpired && !error && (
+            <div className="rounded-lg border border-amber-300/60 bg-amber-50 text-amber-900 px-3 py-2 text-[12.5px] flex items-start gap-2" data-testid="login-session-expired">
+              <Warning size={14} className="mt-0.5 shrink-0" />
+              <span>Your session has expired. Please sign in again to continue.</span>
+            </div>
+          )}
 
           {error && (
             <div className="rounded-lg border border-danger/30 bg-danger/5 text-danger px-3 py-2 text-[12.5px] flex items-start gap-2" data-testid="login-error">

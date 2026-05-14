@@ -2112,7 +2112,7 @@ async def admin_cache_clear():
 
 
 @api_router.post("/admin/flush-kpi-cache")
-async def admin_flush_kpi_cache():
+async def admin_flush_kpi_cache(_: User = Depends(require_admin)):
     """Hard-flush the /kpis stale cache (in-memory + disk + Redis L2).
 
     Use case: an upstream BI hiccup persisted a zero-blob into
@@ -2324,6 +2324,31 @@ async def admin_cache_stats():
             "rss_mb": rss_mb,
             "uptime_sec": int(now - _PROCESS_STARTED_AT),
         },
+    }
+
+
+@api_router.get("/admin/snapshot-count")
+async def admin_snapshot_count(_: User = Depends(require_admin)):
+    """Iter 78 — Lightweight count of Mongo `analytics_snapshots` rows.
+
+    Used by the standing 2-hour audit script to confirm the precompute
+    layer is populated. Separate from `/admin/cache-stats` because that
+    endpoint already runs a fair amount of in-process inspection;
+    this one is a single Mongo count() call.
+    """
+    try:
+        analytics_n = await db.analytics_snapshots.count_documents({})
+    except Exception:
+        analytics_n = 0
+    try:
+        kpi_n = await db.kpi_snapshots.count_documents({})
+    except Exception:
+        kpi_n = 0
+    return {
+        "count": int(analytics_n) + int(kpi_n),
+        "analytics_snapshots": int(analytics_n),
+        "kpi_snapshots": int(kpi_n),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -4104,15 +4129,43 @@ async def analytics_ibt_warehouse_to_store(
         except Exception:
             df_ok = dt_ok = False
         if df_ok and dt_ok:
-            snap = await _try_analytics_snapshot(
-                "/ibt-warehouse-to-store", canonical_df, canonical_dt, country, None,
-            )
-            if snap is not None:
-                # The snapshot is always written with limit=300 (the max
-                # the page asks for); slice down if the caller asked for less.
-                if isinstance(snap, list) and limit < len(snap):
-                    return snap[:limit]
-                return snap
+            # Iter 78 — chain-wide path. When `country=None`, the live
+            # impl genuinely returns ~0 rows because the chain-wide
+            # replenishment dedup absorbs every candidate pair across
+            # all three countries' replenishment caches (a 900+ pair
+            # blob). UX-wise the user expects "All countries" = union
+            # of per-country views, NOT "show me only pairs not in
+            # ANY country's replenishment". So we override: when
+            # country is None, fetch the per-country snapshots and
+            # concatenate them, sorted by missed_sales_risk desc.
+            if country is None:
+                per_country: List[Any] = []
+                for c in _SNAPSHOT_COUNTRIES:
+                    if c == "Online":
+                        continue
+                    snap_c = await _try_analytics_snapshot(
+                        "/ibt-warehouse-to-store", canonical_df, canonical_dt, c, None,
+                    )
+                    if isinstance(snap_c, list):
+                        per_country.extend(snap_c)
+                if per_country:
+                    per_country.sort(
+                        key=lambda r: r.get("missed_sales_risk", 0),
+                        reverse=True,
+                    )
+                    return per_country[:limit]
+                # Fall through to live if no per-country snapshots are
+                # populated yet (very early after a cold pod restart).
+            else:
+                snap = await _try_analytics_snapshot(
+                    "/ibt-warehouse-to-store", canonical_df, canonical_dt, country, None,
+                )
+                if snap is not None:
+                    # The snapshot is always written with limit=300 (the max
+                    # the page asks for); slice down if the caller asked for less.
+                    if isinstance(snap, list) and limit < len(snap):
+                        return snap[:limit]
+                    return snap
     async with HeavyGuard("/analytics/ibt-warehouse-to-store"):
         return await _analytics_ibt_warehouse_to_store_impl(
             date_from=date_from, date_to=date_to, country=country,

@@ -639,6 +639,28 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Measured impact**: IBT default (no country, 28-day window) dropped from **29,182 ms → 142-201 ms** (~150× speedup). Country-scoped IBT (Kenya / Uganda / Rwanda) at 140-280 ms even on the live-fallback path because the upstream calls are now warm in `_FETCH_CACHE`.
 - **3 regression tests** at `/app/backend/tests/test_iteration_76_ibt_snapshot.py`. Full suite iters 70-76: **22 / 22 pass**.
 
+### Recent (Feb 2026 — Iter 78 post-audit) — Bug fixes + Standing 2-hour audit
+- **Bug #1 (false alarm)**. Re-Order page uses `/analytics/new-styles`, not `/analytics/re-order-list`. My audit script's endpoint guess was wrong; updated `audit_full_self_v2.py` to remove the bad URL.
+- **Bug #2 fixed — chain-wide IBT empty**. Root cause: when `country=None`, the chain-wide replenishment dedup absorbs ~900+ pairs across all countries' replenishment caches, leaving zero candidates for the warehouse-to-store recommender. Fix: the wrapper now treats `country=None` as "give me the UNION of per-country snapshots" — calls `_try_analytics_snapshot` for each of Kenya/Uganda/Rwanda, concatenates, sorts by `missed_sales_risk` desc, returns top `limit`. Measured: chain-wide IBT went from **0 rows → 113-200 rows**. Per-country snapshots still hit directly with no behavior change (Kenya 38 rows in 123 ms ✅).
+- **Bug #3 fixed — 401 session-expired handling**. New axios response interceptor in `lib/api.js` (lines ~78-110): on 401 + non-auth path → clear `vivo_token` + clear `_respCache` + clear `_inflight` + `window.location.assign("/login?session_expired=1")`. Login page reads the query param and surfaces a friendly amber banner ("Your session has expired. Please sign in again to continue.") via the new `[data-testid='login-session-expired']` element.
+- **Security fix** (caught during audit work). `/api/admin/flush-kpi-cache` was wide open — anyone could trigger a Mongo + Redis purge anonymously. Added `Depends(require_admin)` gate. Verified: 401 unauth, 403 viewer, 200 admin.
+- **New `/api/admin/snapshot-count`** endpoint. Lightweight Mongo `count_documents({})` over `analytics_snapshots` + `kpi_snapshots`. Used by the standing 2-hour audit to verify the precompute layer is populated. Admin-only.
+- **STANDING INSTRUCTION shipped — 2-hour self-audit**. `/app/backend/tests/audit_2hour.py` (cron-ready) + `/app/.github/workflows/audit-2hour.yml` (GitHub Actions every 2 h at :00 EAT). Produces the EXACT report format CEO asked for:
+  ```
+  ═══════════════════════════════════
+  🕐 2-HOUR AUDIT — 2026-05-14 15:04 EAT
+  ═══════════════════════════════════
+  Performance  : ✅ All endpoints healthy (slowest: 206ms)
+  Data accuracy: ✅ 3/4 countries live (Online quiet ⚠️)
+  System health: ✅ Hit rate X%, RSS XMB, 0 rejections
+  Connectivity : ✅ All APIs responding
+  Issues found : 2 (1 auto-fixed, 0 escalated)
+  ═══════════════════════════════════
+  ```
+  Auto-fix protocol: ❌ endpoint > 2 s OR country=0 OR hit-rate < 50% → POST `/api/admin/flush-kpi-cache` + re-test. ❌ that survives the auto-fix → emits `🚨 CRITICAL ALERTS` block at the bottom. Exit codes: 0 healthy / 1 issues remain / 2 auth failed. Live-tested twice in this session: auto-fix recovered SOR from 7.5 s → 206 ms.
+- **Honest caveat re: "every 2 hours forever"**. I can't run on a schedule — I only execute when invoked in chat. The CEO's standing instruction is satisfied by scheduling `audit_2hour.py` via GHA / cron / Emergent platform's scheduled jobs. Once that schedule is wired (3 secrets required: PROD_URL, PERF_ADMIN_EMAIL, PERF_ADMIN_PASSWORD), it runs forever without me.
+- **6 new regression tests** at `test_iteration_78_post_audit_fixes.py`. Iters 76-78 suite: **22/22 pass**.
+
 ### Recent (Feb 2026 — Iter 78) — 11-item batch (IBT polish, allocations gap-fill, footfall full-stores, snapshot styling)
 - **#1 IBT Warehouse→Store roster**. Extracted the Replenishment team roster into a reusable `ReplenishmentRosterCard.jsx` and mounted it above the Warehouse→Store table on `/ibt`. Saving redistributes the per-store owner assignment instantly (refresh signal via the `onSaved` callback).
 - **#2 Owner + Bin columns** on the Warehouse→Store IBT table only (kept off store-to-store). Backend `_analytics_ibt_warehouse_to_store_impl` now loads the saved roster from `replenishment_config`, sorts stores alphabetically and slices them equally across the roster → each store gets a single owner; SKU-breakdown endpoint joins `bins_lookup` so each barcode row carries its bin. CSV export updated accordingly.

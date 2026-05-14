@@ -155,13 +155,42 @@ const _RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 api.interceptors.response.use(undefined, async (error) => {
   const cfg = error?.config;
   if (!cfg) return Promise.reject(error);
+  const status = error?.response?.status;
+  const url = cfg.url || "";
+  // Iter 78 — 401 redirect-to-login interceptor.
+  // If the JWT has expired mid-session, every subsequent call returns
+  // 401. Without this guard the user just sees red error boxes until
+  // their next route change (when /auth/me fails and the auth provider
+  // resets). With it, we wipe the token + bounce to /login the first
+  // time we see 401 on a non-auth path. The auth endpoints themselves
+  // are excluded so the login form can render its own validation
+  // error instead of looping.
+  const isAuthPath = NO_CACHE_PATHS.some((p) => url.includes(p));
+  if (status === 401 && !isAuthPath) {
+    try {
+      // Clear the stored token + persisted response cache so the next
+      // tab/refresh starts clean.
+      if (typeof window !== "undefined") {
+        try { window.localStorage.removeItem("vivo_token"); } catch { /* noop */ }
+        const ss = _safeSS();
+        if (ss) try { ss.removeItem(SS_KEY); } catch { /* noop */ }
+      }
+      _respCache.clear();
+      _inflight.clear();
+      // Hard redirect — React Router would keep the in-memory user
+      // state and we want a clean slate.
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        window.location.assign("/login?session_expired=1");
+      }
+    } catch { /* defensive — never break the rejection path */ }
+    return Promise.reject(error);
+  }
   const method = (cfg.method || "get").toLowerCase();
   if (method !== "get") return Promise.reject(error);
   // Don't retry auth — those are sensitive and the FE already polls.
   if (NO_CACHE_PATHS.some((p) => (cfg.url || "").includes(p))) {
     return Promise.reject(error);
   }
-  const status = error?.response?.status;
   const transient =
     !error.response ||  // network error
     status === undefined ||

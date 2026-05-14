@@ -1,0 +1,51 @@
+name: 2-Hour Self-Audit (standing instruction)
+
+# CEO standing instruction: run a full self-audit of the dashboard
+# every 2 hours starting from :00 of every even hour EAT.
+# EAT = UTC+3, so the cron expressions below trigger at:
+#   00:00, 02:00, 04:00, ..., 22:00 EAT
+#   which is 21:00, 23:00, 01:00, ..., 19:00 UTC.
+#
+# Required repository secrets:
+#   PROD_URL              — Production app URL (https://bi.vivofashionbrands.com)
+#   PERF_ADMIN_EMAIL      — admin email
+#   PERF_ADMIN_PASSWORD   — admin password
+#
+# Output:
+#   • Audit summary printed to job log (parsable by humans).
+#   • JSON artifact `audit_2hour.json` uploaded for downstream tooling.
+#   • CRITICAL alerts surface as a failed step (job fails with red ❌).
+
+on:
+  schedule:
+    # Cron is in UTC. UTC = EAT − 3 hours, so to fire at :00 of every
+    # even EAT hour we run at UTC hours: 21, 23, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19.
+    - cron: "0 21,23,1,3,5,7,9,11,13,15,17,19 * * *"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: 2h audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install requests
+        run: pip install --quiet requests
+      - name: Run audit
+        env:
+          PERF_AUDIT_BASE_URL: ${{ secrets.PROD_URL }}
+          PERF_AUDIT_EMAIL: ${{ secrets.PERF_ADMIN_EMAIL }}
+          PERF_AUDIT_PASSWORD: ${{ secrets.PERF_ADMIN_PASSWORD }}
+          PERF_AUDIT_REPORT: ${{ github.workspace }}/audit_2hour.json
+        run: python backend/tests/audit_2hour.py
+      - name: Upload audit JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit_2hour
+          path: audit_2hour.json
+          if-no-files-found: ignore
