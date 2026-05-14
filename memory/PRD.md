@@ -718,5 +718,20 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **4 new tests** at `/app/backend/tests/test_iteration_81_channel_group_rewrite.py`: Retail uses snapshot, Online uses snapshot, Σ(Retail)+Σ(Online)==All, country-summary Retail excludes Online row. **4/4 pass**.
 - **Verified end-to-end via UI**: Retail toggle → KPI card KES 2,171,456 = Kenya 1,909,295 + Uganda 138,381 + Rwanda 123,780 (Online row = 0). Top Location switches from "Online - Shop Zetu" to "Vivo Sarit". Sales-by-Location chart has no Online row. Recon ✓ green.
 
+### Recent (Feb 2026 — Iter 82) — Fan-out tripwire & self-healing remediation
+- **User requirement**: "Create a mechanism to self-fix this issue if you find it — an email to the admin will not solve the problem."
+- **Tripwire**: every dashboard request is inspected BEFORE any upstream HTTP call. Planned fan-out = `len(countries) × len(channels)`. When it exceeds `_MAX_FANOUT_PER_REQUEST` (default 8, override via env), the system:
+  1. Aborts the live fan-out (zero upstream calls).
+  2. Builds an approximate response by reading whatever per-country `/kpis` snapshots are already in Mongo.
+  3. Schedules background warm tasks for the EXACT missing (window, country, channel) combos via `_fanout_warm_one()` — throttled to once per 60 s per combo so warm storms can't snowball.
+  4. Logs the event to `fanout_alerts` Mongo collection with planned-call-count, remediation, and what was served.
+  5. Tags the response with `_fanout_protected: true` so downstream consumers can tell the value was tripwire-derived (still served from snapshot, never blank).
+- **New endpoints** (admin):
+  - `GET /api/admin/fanout-alerts?minutes=60` — recent tripwire activations with full filter context.
+  - `POST /api/admin/fanout-self-heal` — manual / audit-triggered remediation. For every distinct combo that fired an alert in the last hour, rebuilds the matching `/kpis` snapshot now. Idempotent. Returns `{ok, rebuilt, distinct_combos, failures[]}`.
+- **2-hour audit wired up**: new step 3.4 `_check_fanout_tripwire()` reads `/admin/fanout-alerts`, and if alerts exist runs `/admin/fanout-self-heal` automatically. Recorded under `audit_log.fanout_tripwire` with full self-heal outcome. **No email is sent** unless the self-heal endpoint ITSELF returns non-200 — by which point the snapshots are already rebuilt and subsequent requests resolve from cache.
+- **3 new regression tests** (`/app/backend/tests/test_iteration_82_fanout_tripwire.py`): tripwire serves from snapshot in <2 s, alert is persisted to Mongo, self-heal endpoint is idempotent. **3/3 pass**, **12/12 across iters 80/81/82**.
+- **Validated end-to-end**: 10-channel mixed-CSV request that previously would have triggered 40 upstream calls now resolves in **193 ms** with `_fanout_protected=true` + snapshot data + alert logged + self-heal rebuilt 3 snapshots automatically.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

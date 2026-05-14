@@ -99,6 +99,23 @@ async def _time_get(client: httpx.AsyncClient, url: str, headers: dict, timeout:
         return -1, round((_t.perf_counter() - t0) * 1000, 1), {"__err__": str(e)[:160]}
 
 
+async def _time_post(client: httpx.AsyncClient, url: str, headers: dict, timeout: float = 30, json: Any = None) -> Tuple[int, float, dict | list | None]:
+    """POST counterpart of `_time_get`. Returns (status, latency_ms, body)."""
+    import time as _t
+    t0 = _t.perf_counter()
+    try:
+        r = await client.post(url, headers=headers, timeout=timeout, json=(json or {}))
+        ms = (_t.perf_counter() - t0) * 1000
+        body: Any = None
+        try:
+            body = r.json()
+        except Exception:
+            body = None
+        return r.status_code, round(ms, 1), body
+    except Exception as e:
+        return -1, round((_t.perf_counter() - t0) * 1000, 1), {"__err__": str(e)[:160]}
+
+
 # ───────────────────── checks ───────────────────────
 
 
@@ -149,6 +166,43 @@ async def _check_country_data(client: httpx.AsyncClient, base: str, headers: dic
     zero_required = [c for c in required if out[c] <= 0]
     all_non_zero = not zero_required
     return {**out, "all_non_zero": all_non_zero}, zero_required
+
+
+async def _check_fanout_tripwire(client: httpx.AsyncClient, base: str, headers: dict) -> Tuple[Dict, List[str]]:
+    """Iter 82 — Check for recent fan-out tripwire activations and
+    auto-heal by running `/admin/fanout-self-heal` when alerts exist.
+
+    The self-heal endpoint rebuilds the missing snapshots for every
+    combo that tripped the wire in the last hour. This means the
+    *next* identical request resolves from cache, with ZERO upstream
+    calls and ZERO admin paging.
+    """
+    out: Dict[str, Any] = {"ok": True, "alerts_60m": 0, "self_heal": None}
+    failed: List[str] = []
+    try:
+        status, _, body = await _time_get(
+            client, f"{base}/api/admin/fanout-alerts?minutes=60",
+            headers, timeout=15,
+        )
+        if status == 200 and isinstance(body, dict):
+            n = int(body.get("count") or 0)
+            out["alerts_60m"] = n
+            if n > 0:
+                # Auto-heal: rebuild the missing snapshots so the next
+                # request hits cache. No email — system fixes itself.
+                hstatus, _, hbody = await _time_post(
+                    client, f"{base}/api/admin/fanout-self-heal",
+                    headers, timeout=60,
+                )
+                out["self_heal"] = hbody if hstatus == 200 else {"status": hstatus, "error": str(hbody)[:200]}
+                if hstatus != 200 or not (hbody or {}).get("ok"):
+                    failed.append("fanout_self_heal_failed")
+        else:
+            out["error"] = f"alerts endpoint {status}"
+    except Exception as e:
+        logger.warning("[audit] fanout tripwire check failed: %s", e)
+        out["error"] = str(e)[:120]
+    return out, failed
 
 
 async def _check_reconciliation(client: httpx.AsyncClient, base: str, headers: dict) -> Tuple[Dict, List[str]]:
@@ -439,6 +493,33 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                     })
                     sys_h = sys_h3
 
+        # ── 3.4 Fan-out tripwire (Iter 82) ─────────────
+        # If any user request triggered >8 upstream calls in the last
+        # hour, auto-rebuild the relevant snapshots so future requests
+        # resolve from cache. NO email — the system fixes itself.
+        fanout, fanout_fails = await _check_fanout_tripwire(client, base_url, headers)
+        if fanout.get("alerts_60m"):
+            issues_found += 1
+            sh = fanout.get("self_heal") or {}
+            if sh.get("ok") and (sh.get("rebuilt") or 0) > 0:
+                issues_auto_fixed += 1
+                fix_details.append({
+                    "issue": f"Fan-out tripwire fired {fanout['alerts_60m']}× in last hour",
+                    "attempt_1": f"/admin/fanout-self-heal → rebuilt {sh.get('rebuilt')} snapshots",
+                    "attempt_1_result": "success — next requests will resolve from cache",
+                    "resolved": True, "escalated": False,
+                })
+            elif fanout_fails:
+                # Self-heal endpoint itself failed → escalate to recovery.
+                issues_escalated += 1
+                critical_msgs.append(f"Fan-out self-heal failed: {fanout_fails}")
+                fix_details.append({
+                    "issue": f"Fan-out tripwire fired {fanout['alerts_60m']}× in last hour",
+                    "attempt_1": "/admin/fanout-self-heal",
+                    "attempt_1_result": f"failed — {fanout_fails}",
+                    "resolved": False, "escalated": True,
+                })
+
         # ── 3.5 Reconciliation (Iter 80) ──────────────
         # CEO spec: kpis.total_sales == Σ country_summary.total_sales
         # must reconcile at all times. If recon has failures, attempt
@@ -535,6 +616,7 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
         "performance": perf,
         "data_accuracy": cty,
         "reconciliation": locals().get("recon") or {"ok": True, "failed_checks": []},
+        "fanout_tripwire": locals().get("fanout") or {"alerts_60m": 0, "self_heal": None},
         "system_health": sys_h,
         "connectivity": conn,
         "issues_found": issues_found,

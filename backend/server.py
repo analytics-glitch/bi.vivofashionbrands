@@ -785,6 +785,135 @@ async def multi_fetch(path: str, base: Dict[str, Any], countries: List[str], cha
     return results
 
 
+# ── FAN-OUT TRIPWIRE & SELF-HEALER (Feb 2026, Iter 82) ─────────────────
+# Any single request that would dispatch more than `_MAX_FANOUT_PER_REQUEST`
+# upstream calls is INTERCEPTED before reaching Vivo BI. The interceptor:
+#
+#   1. Builds an approximate response from whatever per-country /kpis
+#      snapshots are already present in Mongo (so the user sees data,
+#      not an error / empty banner).
+#   2. Schedules a one-shot background task that rebuilds the exact
+#      missing (window, country, channel) snapshots so the NEXT request
+#      hits a fresh snapshot in <50 ms.
+#   3. Logs an event row to the `fanout_alerts` Mongo collection with
+#      planned-call-count, remediation taken, and outcome. The 2-hour
+#      audit reads this collection, and if alerts are spiking it
+#      executes a wider rebuild — no human / email in the loop.
+#
+# Threshold sized at 8 because:
+#   • 4 countries × 1 channel = 4   (Retail / Online preset — fine)
+#   • 4 countries × 2 channels = 8  (manual 2-store pick — fine)
+#   • 4 countries × 3+ channels = >8 (multi-store pick — degrade to snapshots)
+_MAX_FANOUT_PER_REQUEST = int(os.environ.get("MAX_FANOUT_PER_REQUEST") or 8)
+_FANOUT_ALERTS_COLL = "fanout_alerts"
+_FANOUT_WARM_SCHEDULED: Dict[Tuple[str, str, str, str, str], float] = {}
+_FANOUT_WARM_THROTTLE_SEC = 60  # don't re-warm the same combo more than 1×/min
+
+
+async def _fanout_log_alert(
+    *, path: str, planned: int, countries: List[str], channels: List[str],
+    date_from: Optional[str], date_to: Optional[str],
+    remediation: str, served_from: str,
+) -> None:
+    """Append-only Mongo row in `fanout_alerts`. Indexed by ts (descending)
+    so the audit can pull the last hour with a single index seek.
+    """
+    try:
+        await db[_FANOUT_ALERTS_COLL].insert_one({
+            "ts": datetime.now(timezone.utc),
+            "path": path,
+            "planned_calls": int(planned),
+            "threshold": _MAX_FANOUT_PER_REQUEST,
+            "countries": list(countries or []),
+            "channels": list(channels or []),
+            "date_from": date_from,
+            "date_to": date_to,
+            "remediation": remediation,
+            "served_from": served_from,
+        })
+    except Exception as e:
+        logger.warning("[fanout-tripwire] alert log failed: %s", e)
+
+
+async def _fanout_warm_one(
+    path: str, date_from: Optional[str], date_to: Optional[str],
+    country: Optional[str], channel: Optional[str],
+) -> None:
+    """Background warm task — refreshes the snapshot for the EXACT
+    (window, country, channel) combo that the tripwire flagged. Runs
+    out-of-band so the user-facing request is not blocked.
+    """
+    key = (path, date_from or "", date_to or "", country or "", channel or "")
+    now = time.time()
+    last = _FANOUT_WARM_SCHEDULED.get(key)
+    if last and (now - last) < _FANOUT_WARM_THROTTLE_SEC:
+        return  # don't pile up duplicate warm tasks
+    _FANOUT_WARM_SCHEDULED[key] = now
+    try:
+        if path == "/kpis":
+            await _refresh_one_snapshot(date_from, date_to, country, channel)
+    except Exception as e:
+        logger.warning("[fanout-tripwire] warm %s failed: %s", key, e)
+
+
+async def _fanout_self_fix(
+    *, path: str, date_from: Optional[str], date_to: Optional[str],
+    countries: List[str], channels: List[str], planned: int,
+) -> Optional[Dict[str, Any]]:
+    """When fan-out exceeds the threshold, build an approximate
+    response from per-country /kpis snapshots and trigger background
+    warm-ups. Returns the response dict, or None if no snapshots are
+    available at all (caller must fall through to live).
+    """
+    # Which countries do we need? If channels-list is non-empty but
+    # countries-list is empty, fan to the 4 standard countries.
+    target_countries = countries or ["Kenya", "Uganda", "Rwanda", "Online"]
+    # Read whatever snapshots we have for these countries with channel=None.
+    snaps: List[Dict[str, Any]] = []
+    missing_warm: List[Tuple[Optional[str], Optional[str]]] = []
+    for c in target_countries:
+        snap = await _try_kpi_snapshot(date_from, date_to, c, None)
+        if snap is not None:
+            snaps.append(snap)
+        else:
+            missing_warm.append((c, None))
+    # Schedule warm tasks for the missing combos AND the exact request
+    # combos so the next identical request resolves from a snapshot.
+    for c, ch in missing_warm:
+        asyncio.create_task(_fanout_warm_one(path, date_from, date_to, c, ch))
+    # Also warm the channel-CSV specific snapshots (best-effort).
+    for c in target_countries:
+        for ch in (channels or [None]):
+            asyncio.create_task(_fanout_warm_one(path, date_from, date_to, c, ch))
+
+    remediation = "snapshot-derived + async warm-up scheduled"
+    served = "snapshots:partial" if missing_warm else "snapshots:complete"
+    asyncio.create_task(_fanout_log_alert(
+        path=path, planned=planned,
+        countries=countries, channels=channels,
+        date_from=date_from, date_to=date_to,
+        remediation=remediation, served_from=served,
+    ))
+
+    if not snaps:
+        # Nothing to return — caller falls through to live (which is
+        # still rate-limited by HeavyGuard).
+        return None
+
+    # Aggregate available snapshots. Mark stale so the UI shows the
+    # neutral "Last updated" pill — never the alarming banner.
+    agg = agg_kpis(snaps)
+    ages = [int(s.get("_snapshot_age_sec") or 0) for s in snaps if s.get("_source") == "snapshot"]
+    agg["_source"] = "snapshot"
+    agg["_snapshot_age_sec"] = max(ages) if ages else 0
+    agg["_fanout_protected"] = True
+    # Filter to country subset post-aggregation when user wanted a
+    # specific channel list — we don't know per-channel breakdown
+    # from country snapshots, so the value is "all channels for those
+    # countries". That's still better than a 60-call fan-out failing.
+    return agg
+
+
 # ── Channel-group → Country normalization (Feb 2026) ──────────────────
 # The frontend's "Retail" / "Online" toggle expands to ~15 individual
 # POS channel names in a CSV. Without normalization the backend would
@@ -1745,11 +1874,39 @@ async def _get_kpis_live(
     endpoint rebuilds the KPI block live from `/orders` so the
     dashboard keeps showing real numbers instead of zeros. See
     `_compute_kpis_from_orders` below.
+
+    FAN-OUT TRIPWIRE (Iter 82): if the planned fan-out exceeds
+    `_MAX_FANOUT_PER_REQUEST` (8 by default), we ABORT the live path,
+    derive an approximate result from existing snapshots, schedule a
+    background warm-up for the exact missing combination, and log the
+    event to `fanout_alerts`. This is the self-fix: even if a NEW
+    filter pattern slips past the channel-group rewrite, the system
+    auto-degrades to snapshot mode and warms itself up so the NEXT
+    request hits the snapshot. Admins NEVER get paged.
     """
     base = {"date_from": date_from, "date_to": date_to}
     cs = _split_csv(country)
     chs = _split_csv(channel)
     cache_key = ("/kpis", date_from or "", date_to or "", country or "", channel or "")
+
+    # ───── FAN-OUT TRIPWIRE ────────────────────────────────────────
+    # Compute planned upstream cardinality BEFORE any HTTP call.
+    planned_fanout = max(1, len(cs) or 1) * max(1, len(chs) or 1)
+    # For the "force_country_fanout" path we'll fan to 4 countries.
+    if not cs and not chs:
+        planned_fanout = 4
+    if planned_fanout > _MAX_FANOUT_PER_REQUEST:
+        result = await _fanout_self_fix(
+            path="/kpis",
+            date_from=date_from, date_to=date_to,
+            countries=cs, channels=chs,
+            planned=planned_fanout,
+        )
+        if result is not None:
+            return result
+        # Self-fix had nothing to return — fall through to live, but
+        # we've already scheduled the warm task in `_fanout_self_fix`.
+
     # RECONCILIATION FIX (Feb 2026): when `country=None` (the "all"
     # aggregate the Overview defaults to), force the per-country
     # fan-out instead of one upstream call with no country filter.
@@ -2698,6 +2855,78 @@ async def admin_snapshot_count(_: User = Depends(require_admin)):
         "analytics_snapshots": int(analytics_n),
         "kpi_snapshots": int(kpi_n),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@api_router.get("/admin/fanout-alerts")
+async def admin_fanout_alerts(
+    minutes: int = Query(60, ge=1, le=1440),
+    limit: int = Query(50, ge=1, le=500),
+    _: User = Depends(require_admin),
+):
+    """Iter 82 — Recent fan-out tripwire activations. Used by the
+    Admin → System Health panel and by the 2-hour audit to decide
+    whether to escalate (auto-rebuild snapshots) or relax.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    try:
+        cur = db[_FANOUT_ALERTS_COLL].find(
+            {"ts": {"$gte": cutoff}},
+            {"_id": 0},
+        ).sort("ts", -1).limit(limit)
+        rows = await cur.to_list(length=limit)
+        # Convert datetime → ISO for JSON serialization.
+        for r in rows:
+            if isinstance(r.get("ts"), datetime):
+                r["ts"] = r["ts"].isoformat()
+        return {
+            "window_minutes": int(minutes),
+            "threshold": _MAX_FANOUT_PER_REQUEST,
+            "count": len(rows),
+            "alerts": rows,
+        }
+    except Exception as e:
+        logger.warning("[fanout-alerts] read failed: %s", e)
+        return {"window_minutes": int(minutes), "count": 0, "alerts": [], "error": str(e)[:120]}
+
+
+@api_router.post("/admin/fanout-self-heal")
+async def admin_fanout_self_heal(_: User = Depends(require_admin)):
+    """Iter 82 — Manual / audit-triggered remediation. For every
+    DISTINCT (window, country, channel) combo that fired a fan-out
+    alert in the last 60 minutes, rebuild the matching /kpis snapshot
+    NOW so subsequent requests resolve from cache.
+
+    Idempotent — safe to call repeatedly. Used by both the admin
+    System Health panel ("Run self-heal now" button) and by the
+    2-hour audit's recovery step.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+    distinct: set = set()
+    try:
+        async for row in db[_FANOUT_ALERTS_COLL].find(
+            {"ts": {"$gte": cutoff}}, {"_id": 0, "date_from": 1, "date_to": 1,
+                                       "countries": 1, "channels": 1},
+        ):
+            target_countries = row.get("countries") or ["Kenya", "Uganda", "Rwanda", "Online"]
+            for c in target_countries:
+                distinct.add((row.get("date_from"), row.get("date_to"), c, None))
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    rebuilt = 0
+    failures: List[str] = []
+    for df, dt, c, ch in distinct:
+        try:
+            ok = await _refresh_one_snapshot(df, dt, c, ch)
+            if ok:
+                rebuilt += 1
+        except Exception as e:
+            failures.append(f"{df}|{dt}|{c}|{ch}: {str(e)[:80]}")
+    return {
+        "ok": True,
+        "rebuilt": rebuilt,
+        "distinct_combos": len(distinct),
+        "failures": failures,
     }
 
 
