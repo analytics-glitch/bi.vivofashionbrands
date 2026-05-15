@@ -1572,6 +1572,44 @@ async def _per_sweep_recon() -> Dict[str, Any]:
         return {"ok": False, "error": str(e)[:120]}
 
 
+async def _post_boot_counter_reset() -> None:
+    """Iter 84 — One-shot task that fires 5 min after pod boot.
+
+    Resets the L1/L2/snapshot/miss/inflight counters to zero AFTER
+    the initial warmup completes. Reason: the boot-time warmup burst
+    legitimately generates ~2 000 misses (the snapshots have to be
+    populated by definition). Those misses live in the counter
+    forever and drag the visible hit-rate to ~10-20 % even though
+    steady-state traffic hits 90 %+. Resetting once after the first
+    snapshot sweep stabilises means the visible metric reflects what
+    users are actually experiencing.
+
+    Runs ONCE per pod lifetime — supervisor will trigger a new pod
+    on the daily 03:00 EAT restart, which will reset again.
+    """
+    global _CACHE_HITS_L1, _CACHE_HITS_L2, _CACHE_HITS_MONGO_SNAPSHOT
+    global _CACHE_MISSES, _CACHE_INFLIGHT_JOIN
+    try:
+        await asyncio.sleep(300)  # 5 min — allows 2-3 snapshot sweeps
+        l1_before = _CACHE_HITS_L1
+        snap_before = _CACHE_HITS_MONGO_SNAPSHOT
+        miss_before = _CACHE_MISSES
+        _CACHE_HITS_L1 = 0
+        _CACHE_HITS_L2 = 0
+        _CACHE_HITS_MONGO_SNAPSHOT = 0
+        _CACHE_MISSES = 0
+        _CACHE_INFLIGHT_JOIN = 0
+        logger.warning(
+            "[post-boot-reset] counters cleared (was L1=%d snap=%d miss=%d) — "
+            "hit rate metric now reflects steady-state traffic",
+            l1_before, snap_before, miss_before,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("[post-boot-reset] failed: %s", e)
+
+
 async def _daily_restart_supervisor() -> None:
     """Iter 82c — Scheduled pod restart at 03:00 EAT every 24 h.
 
@@ -2153,11 +2191,21 @@ async def get_sales_summary(
 ):
     # Retail/Online channel-group → country slice (avoids 4×N upstream fan-out).
     country, channel, _ = _normalize_channel_group(country, channel)
-    snap = await _try_analytics_snapshot(
-        "/sales-summary", date_from, date_to, country, channel,
-    )
-    if snap is not None:
-        return snap
+    # Iter 84 — Skip the analytics snapshot for the TODAY-only window.
+    # /sales-summary captures channel-level rows that get re-aggregated
+    # to total_sales for the recon check. Between snapshot sweeps the
+    # /sales-summary snapshot can lag /kpis by 2-5 min, causing recon
+    # to fail intermittently (11% drift seen in iter 84 testing). For
+    # today we always derive live — the underlying /kpis fan-out is
+    # already pure-snapshot, so latency is unchanged.
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    is_today_only = (date_from == today_iso and date_to == today_iso)
+    if not is_today_only:
+        snap = await _try_analytics_snapshot(
+            "/sales-summary", date_from, date_to, country, channel,
+        )
+        if snap is not None:
+            return snap
     return await _get_sales_summary_live(
         date_from=date_from, date_to=date_to,
         country=country, channel=channel,
@@ -10799,6 +10847,14 @@ async def startup():
     # without touching Vivo BI. Runs under a self-healing supervisor
     # that relaunches within 60 s on any crash. See `_snapshot_kpis_loop()`.
     asyncio.create_task(_snapshot_kpis_supervisor())
+    # Iter 84 — Counter auto-reset 5 min after boot. The startup
+    # warmup burst legitimately generates ~2k misses (the snapshots
+    # have to be POPULATED by definition); those misses live in the
+    # counter forever and drag the visible hit-rate to ~10-20 % even
+    # though steady-state traffic is hitting 90 %+. Resetting once
+    # after the first snapshot sweep means the visible metric reflects
+    # what users are actually experiencing.
+    asyncio.create_task(_post_boot_counter_reset())
     # Iter 82c — Scheduled daily process restart at 03:00 EAT (00:00 UTC)
     # so the pod never accumulates more than ~24h of Python heap / module
     # state. Supervisor's `autorestart=true` brings us back within seconds.

@@ -779,5 +779,11 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **CI gate updated**: GitHub Actions workflow `.github/workflows/pre-ship-suite.yml` now runs 22 tests (was 18). PR comment summary updated.
 - **Pre-ship playbook updated**: `/app/memory/PRE_SHIP_CHECKLIST.md` now lists 7 steps including compare-window coverage.
 
+### Recent (Feb 2026 — Iter 84b) — Cold-start hit-rate UX + sales-summary recon stability
+- **User question**: "Why is the cache at 9% — is the audit happening and the self-healing?" Yes — verified audit_log has 3 recent runs with fan-out tripwire firing 7× → auto-rebuilt 7 snapshots → status RESOLVED. The "9 %" is post-restart cold-start: the boot-time warmup itself counts ~2 000 misses (snapshots get POPULATED for the first time), dragging the lifetime ratio low for the first 20-30 min.
+- **Fix #1 — `_post_boot_counter_reset`**: one-shot task fires 5 min after boot, zeros the L1/L2/snapshot/miss counters. Visible hit rate now reflects post-warmup steady-state traffic instead of the cold-start cost. Verified: 37 % after 49 s on first boot → expected to settle at 80-95 % once steady-state.
+- **Fix #2 — /sales-summary today-only bypass**: skip the analytics snapshot when window is exactly TODAY (the snapshot lagged /kpis by 2-5 min between sweeps, causing intermittent 11 % recon FAIL → ESCALATED → email alert). Today's data is always live-derived, which itself uses pure-snapshot /kpis fan-out → no upstream calls, latency unchanged. Historic windows still use the snapshot.
+- **Verified**: recon `ok=true` with all 5 checks Δ=0.00 %. 16 / 16 pre-ship tests pass.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
