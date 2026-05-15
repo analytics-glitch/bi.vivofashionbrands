@@ -764,5 +764,20 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Measured pre-ship numbers (preview, post-warmup)**: Δ RSS +76.6 MB for 100 reqs (under 100 budget), 0.0 MB between consecutive bursts ✓.
 - **Test suite**: 18 / 18 pass across iters 80/81/82/82b/82c/83.
 
+### Recent (Feb 2026 — Iter 84) — Compare-window snapshot coverage + defensive frontend
+- **User reported production banner** "KPIs are temporarily slow to load" with "Today + vs Previous Month" filter, even AFTER iter 81-83 fixes were deployed.
+- **Root cause**: only the 5 default windows (Today / Yesterday / MTD / Last 7 / Last 30) were in the snapshot rotation. When the user picked "vs Previous Month", the frontend fired a second /kpis call for Apr 1-30 that had NO snapshot, fell through to live, fanned out to 4 countries, hit Vivo BI's rate limit (429), bootstrap rejected, banner appeared. The tripwire didn't catch this because 4 calls is below the 8-call threshold.
+- **Fix #1 — backend**: added 4 compare windows to `_standard_snapshot_windows()`:
+  - Previous month (full last calendar month)
+  - Previous week (Mon-Sun of the last full week)
+  - Last quarter (Jan-Mar / Apr-Jun / Jul-Sep / Oct-Dec, whichever is fully past)
+  - QTD (current quarter to date)
+  
+  Snapshot rotation now covers 9 windows × 5 country slices = **45 /kpis combinations** + **203 analytics combinations**, refreshed every 2 min. Verified: 45/45 + 203/203 written in one sweep.
+- **Fix #2 — frontend (`useKpis.js`)**: switched `Promise.all` → `Promise.allSettled` on both the initial fetch AND the auto-retry. A compare-window failure now silently hides the delta arrows BUT preserves the current-window KPIs (and clears the banner). Console warns for visibility; user sees data, not the banner.
+- **4 new regression tests** at `/app/backend/tests/test_iteration_84_compare_windows.py`: Previous Month + Previous Week resolve from snapshot, /kpis ↔ Country Split match for Previous Month, snapshot count ≥30 after warm. **4/4 pass + 16/16 across iters 80/81/82/82c/82d**.
+- **CI gate updated**: GitHub Actions workflow `.github/workflows/pre-ship-suite.yml` now runs 22 tests (was 18). PR comment summary updated.
+- **Pre-ship playbook updated**: `/app/memory/PRE_SHIP_CHECKLIST.md` now lists 7 steps including compare-window coverage.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

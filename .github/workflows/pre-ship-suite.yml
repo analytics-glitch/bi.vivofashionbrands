@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   pre-ship:
-    name: Pre-ship suite (18 tests)
+    name: Pre-ship suite (22 tests)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -78,6 +78,7 @@ jobs:
             tests/test_iteration_82_fanout_tripwire.py \
             tests/test_iteration_82b_surgical_self_fix.py \
             tests/test_iteration_83_memory_leak_ci.py \
+            tests/test_iteration_84_compare_windows.py \
             --junitxml=pre_ship_junit.xml 2>&1 | tee pre_ship_output.log
 
       - name: Upload pre-ship JUnit + log
@@ -105,12 +106,12 @@ jobs:
             // Extract the leak-test summary lines + pass/fail tail.
             const leakSummary = (log.match(/  RSS before burst[\s\S]+?Δ between bursts[^\n]+/m) || ['(leak summary not found)'])[0];
             const tail = log.split('\n').slice(-12).join('\n');
-            const ok = log.includes('18 passed');
+            const ok = log.includes('22 passed');
             const emoji = ok ? '✅' : '❌';
             const body = [
               `### ${emoji} Pre-Ship Suite (iter-83)`,
               '',
-              ok ? '**All 18 gates pass — safe to merge.**' : '**One or more gates failed — DO NOT MERGE until investigated.**',
+              ok ? '**All 22 gates pass — safe to merge.**' : '**One or more gates failed — DO NOT MERGE until investigated.**',
               '',
               '<details><summary>Memory leak measurement</summary>',
               '',

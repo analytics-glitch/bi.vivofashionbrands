@@ -125,13 +125,32 @@ export function useKpis({ compare = false } = {}) {
       const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo);
       calls.push(prev ? fetchKpis({ ...params, ...prev }) : Promise.resolve(null));
     }
-    Promise.all(calls)
-      .then(([curr, prev]) => {
+    // Iter 84 — Promise.allSettled instead of Promise.all so a compare-
+    // window failure (e.g. snapshot miss for a custom date pick) DOESN'T
+    // wipe out the current-window KPIs. The banner now appears ONLY when
+    // the CURRENT window itself fails; compare-window failure silently
+    // hides the delta arrows but the headline numbers still render.
+    Promise.allSettled(calls)
+      .then(([currR, prevR]) => {
         if (cancelled) return;
-        setKpis(curr);
-        setPrevKpis(prev || null);
+        if (currR.status === "fulfilled") {
+          setKpis(currR.value);
+          setError(null);
+        } else {
+          setError(currR.reason?.response?.data?.detail || currR.reason?.message || "fetch failed");
+        }
+        if (prevR?.status === "fulfilled") {
+          setPrevKpis(prevR.value || null);
+        } else {
+          // Don't surface compare-window errors to the user — just
+          // suppress the delta. Log for support visibility.
+          setPrevKpis(null);
+          if (prevR?.reason) {
+            // eslint-disable-next-line no-console
+            console.warn("[useKpis] compare window failed (suppressed):", prevR.reason?.message);
+          }
+        }
       })
-      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,11 +183,17 @@ export function useKpis({ compare = false } = {}) {
           const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo);
           calls.push(prev ? fetchKpis({ ...params, ...prev }) : Promise.resolve(null));
         }
-        const [curr, prev] = await Promise.all(calls);
-        if (cancelled || !curr) return;
-        setKpis(curr);
-        setPrevKpis(prev || null);
-        setError(null);  // banner clears on next render
+        const settled = await Promise.allSettled(calls);
+        const currR = settled[0];
+        const prevR = settled[1];
+        if (cancelled) return;
+        if (currR?.status === "fulfilled" && currR.value) {
+          setKpis(currR.value);
+          setError(null);  // banner clears on next render
+        }
+        if (prevR?.status === "fulfilled") {
+          setPrevKpis(prevR.value || null);
+        }
       } catch {
         // Still down — silent retry on next tick.
       }

@@ -51,7 +51,13 @@ pytest backend/tests/test_iteration_82b_surgical_self_fix.py -v
 ```
 Expected: 4/4 pass — warm-snapshots-now (async + sync), trim-memory shape, admin-gating.
 
-## 6. **Memory leak gate (NEW, mandatory)**
+## 6. Compare-window snapshot coverage (Iter 84)
+```bash
+pytest backend/tests/test_iteration_84_compare_windows.py -v
+```
+Expected: 4/4 pass — "vs Previous Month" / "vs Previous Week" / quarter windows all resolve from snapshot.
+
+## 7. **Memory leak gate (mandatory)**
 ```bash
 pytest backend/tests/test_iteration_83_memory_leak_ci.py -v
 ```
@@ -73,7 +79,8 @@ REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL ../frontend/.env | cut -d '='
          tests/test_iteration_81_channel_group_rewrite.py \
          tests/test_iteration_82_fanout_tripwire.py \
          tests/test_iteration_82b_surgical_self_fix.py \
-         tests/test_iteration_83_memory_leak_ci.py -v
+         tests/test_iteration_83_memory_leak_ci.py \
+         tests/test_iteration_84_compare_windows.py -v
 ```
 
-Expected: **18 tests pass** with the memory leak gate reporting Δ ≤ 100 MB.
+Expected: **22 tests pass** with the memory leak gate reporting Δ ≤ 100 MB.

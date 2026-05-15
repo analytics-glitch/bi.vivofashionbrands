@@ -1338,19 +1338,50 @@ def _snapshot_id(date_from: str, date_to: str, country: Optional[str], channel: 
 def _standard_snapshot_windows() -> List[Tuple[str, str]]:
     """Return (date_from, date_to) tuples for the windows the
     snapshotter proactively refreshes — chosen to cover the 5 default
-    period options buyers click most often on the Overview page.
+    period options buyers click most often on the Overview page
+    PLUS the 4 most-clicked compare windows (vs Last Month / Last Week /
+    Last Quarter / This Quarter) so the "vs X" toggle never falls
+    through to live (Iter 84 root-cause fix).
     """
     today = datetime.now(timezone.utc).date()
     yest = today - timedelta(days=1)
     l7 = today - timedelta(days=6)
     l30 = today - timedelta(days=29)
     mtd_from = today.replace(day=1)
+    # Previous month — full calendar last-month (e.g. Apr 1-30 when
+    # today is in May). Day 1 of THIS month minus 1 day = last day of
+    # PREVIOUS month; first day of that month = its 1st.
+    last_month_end = (today.replace(day=1) - timedelta(days=1))
+    last_month_start = last_month_end.replace(day=1)
+    # Previous calendar week (Monday-Sunday before this week).
+    weekday = today.weekday()  # Mon=0..Sun=6
+    this_week_mon = today - timedelta(days=weekday)
+    last_week_sun = this_week_mon - timedelta(days=1)
+    last_week_mon = last_week_sun - timedelta(days=6)
+    # Quarter math.
+    cur_q = (today.month - 1) // 3  # 0..3
+    cur_q_start = today.replace(month=cur_q * 3 + 1, day=1)
+    # Last quarter = months [cur_q*3-3 .. cur_q*3-1]; handle Jan-Mar wrap.
+    if cur_q == 0:
+        last_q_year = today.year - 1
+        last_q_start = today.replace(year=last_q_year, month=10, day=1)
+        last_q_end = today.replace(year=last_q_year, month=12, day=31)
+    else:
+        last_q_start_month = (cur_q - 1) * 3 + 1
+        last_q_start = today.replace(month=last_q_start_month, day=1)
+        last_q_end = (today.replace(month=cur_q * 3 + 1, day=1) - timedelta(days=1))
     return [
+        # Default windows (Iter 75)
         (today.isoformat(), today.isoformat()),    # Today
         (yest.isoformat(), yest.isoformat()),      # Yesterday
         (mtd_from.isoformat(), today.isoformat()), # MTD
         (l7.isoformat(), today.isoformat()),       # Last 7 days
         (l30.isoformat(), today.isoformat()),      # Last 30 days
+        # Compare windows (Iter 84)
+        (last_month_start.isoformat(), last_month_end.isoformat()),  # Previous month
+        (last_week_mon.isoformat(), last_week_sun.isoformat()),      # Previous week
+        (last_q_start.isoformat(), last_q_end.isoformat()),          # Last quarter
+        (cur_q_start.isoformat(), today.isoformat()),                # QTD
     ]
 
 
