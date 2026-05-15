@@ -3070,6 +3070,41 @@ async def admin_snapshot_count(_: User = Depends(require_admin)):
     }
 
 
+@api_router.get("/admin/redis-quota")
+async def admin_redis_quota(_: User = Depends(require_admin)):
+    """Iter 84c — Upstash Redis request-quota observability.
+
+    The free Upstash tier caps at 500k requests/month. Once exceeded
+    the cache auto-disables (cluster-side) and our L2 hit rate
+    collapses to 0 %, which in turn drags the overall hit-rate below
+    the 80 % audit threshold. Surfacing usage / pct here lets the
+    daily-summary email and the 2-hour audit warn the user BEFORE the
+    cache disables itself.
+
+    Usage is detected lazily: Upstash returns the current limit + usage
+    inside its error string when a request fails, and `redis_cache.py`
+    parses it (see `_QUOTA_RE`). If the cache has been operating
+    cleanly the whole month, `known` will be False and `status` will
+    be "ok" by default (we have no observation point but everything is
+    working). If `known` is True and `status` is "warning" / "critical"
+    / "exhausted", action is required.
+    """
+    try:
+        from redis_cache import rc as _rc
+        return _rc.quota_status()
+    except Exception as e:
+        # Never surface a 500 here — the audit relies on this endpoint.
+        return {
+            "enabled": False,
+            "known": False,
+            "status": "unknown",
+            "error": str(e)[:120],
+        }
+
+
+
+
+
 @api_router.get("/admin/fanout-alerts")
 async def admin_fanout_alerts(
     minutes: int = Query(60, ge=1, le=1440),

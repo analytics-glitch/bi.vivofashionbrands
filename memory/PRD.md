@@ -3,6 +3,21 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84c) — Upstash Redis quota observability in audit emails
+- **Why**: previous audit emails reported "Cache hit rate critically low" with no hint of the actual root cause (Upstash 500k/month request cap exhausted, L2 auto-disabled cluster-side). Users had no signal until the cache fully died.
+- **Fix**: parse Upstash's own error string (`max requests limit exceeded. Limit: N, Usage: M`) on every Redis op failure → expose as a structured `quota_status()` snapshot.
+- **New admin endpoint** `GET /api/admin/redis-quota` returns:
+  - `limit` / `usage` / `pct`
+  - `status` ∈ `ok | warning (≥80%) | critical (≥95%) | exhausted (≥100%) | disabled | unknown`
+  - `observed_age_sec` (how stale the observation is)
+- **Audit-service integration**:
+  - `_check_system_health()` calls the endpoint each cycle and surfaces `redis_quota_pct/status/usage/limit` into the system-health snapshot
+  - New `redis_quota_critical` / `redis_quota_exhausted` breaches trip the email pipeline (no auto-fix attempted — this is an external subscription cap)
+  - Both the CRITICAL/WARNING audit email AND the daily summary email now render a "Redis quota: 97.5% (487,341/500,000) [CRIT]" line so admins see the cap approaching before the cache dies
+- **Verified end-to-end**: manual audit run captured the live Upstash state — `redis_quota_status: exhausted (500,000/500,000)` — and emailed successfully. The user will now know to upgrade Upstash tier or shed load.
+- **Tests**: new `test_iteration_84c_redis_quota.py` (8 tests: parser thresholds, defensive ignores, admin endpoint shape + RBAC, email body rendering for both known + unknown quota states). All pass.
+
+
 ### Recent (Feb 2026 — Iter 84b) — Cache hit-rate self-heal + Redis quota relief
 - **User alert trigger**: audit emails fired at 17:45-17:52 with three CRITICAL escalations — slow `/api/kpis`, cache hit rate critically low, RSS memory critically high.
 - **Root causes identified**:

@@ -236,6 +236,7 @@ async def _check_system_health(client: httpx.AsyncClient, base: str, headers: di
     """Returns (system metrics dict, list of breached metrics)."""
     cs: dict = {}
     sn = {"count": 0}
+    rq: dict = {}
     try:
         _, _, body = await _time_get(client, f"{base}/api/admin/cache-stats", headers, timeout=15)
         cs = body if isinstance(body, dict) else {}
@@ -247,12 +248,23 @@ async def _check_system_health(client: httpx.AsyncClient, base: str, headers: di
             sn = body
     except Exception:
         pass
+    try:
+        # Iter 84c — Upstash request-quota observability. The cap is
+        # 500k/month on the free tier; once exceeded the cache auto-
+        # disables and hit-rate collapses. We surface this BEFORE that
+        # happens so the user can upgrade or shed load.
+        _, _, body = await _time_get(client, f"{base}/api/admin/redis-quota", headers, timeout=10)
+        rq = body if isinstance(body, dict) else {}
+    except Exception:
+        pass
     hit_rate = float(cs.get("counters_since_boot", {}).get("hit_rate_pct", 0) or 0)
     misses = cs.get("miss_analysis", {}).get("top_repeat_offenders", []) or []
     repeat_miss = int(misses[0].get("miss_count", 0)) if misses else 0
     rss = float(cs.get("process", {}).get("rss_mb", 0) or 0)
     heavy_rej = sum((v or 0) for v in (cs.get("heavy_guard", {}).get("rejections_since_boot", {}) or {}).values())
     snaps = int(sn.get("count", 0))
+    redis_quota_pct = rq.get("pct")
+    redis_quota_status = rq.get("status") or "unknown"
 
     breached: List[str] = []
     if hit_rate < 80:
@@ -271,12 +283,22 @@ async def _check_system_health(client: httpx.AsyncClient, base: str, headers: di
         # 03:00 EAT auto-restart task keeps the pod fresh.
         if rss > 1600:
             breached.append("rss_critical")
+    # Iter 84c — proactive quota warning. Critical=≥95 %, exhausted=
+    # cache already disabled. The audit-fix can't recover from this
+    # (it's an upstream subscription limit) so we surface it as
+    # WARNING-class to trip an email without spamming auto-fix retries.
+    if redis_quota_status in ("critical", "exhausted"):
+        breached.append(f"redis_quota_{redis_quota_status}")
     return {
         "cache_hit_rate": round(hit_rate, 1),
         "repeat_miss_rate": repeat_miss,
         "rss_mb": int(rss),
         "heavyguard_rejections": int(heavy_rej),
         "mongo_snapshots": snaps,
+        "redis_quota_pct": redis_quota_pct,
+        "redis_quota_status": redis_quota_status,
+        "redis_quota_limit": rq.get("limit"),
+        "redis_quota_usage": rq.get("usage"),
     }, breached
 
 
@@ -539,6 +561,33 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                         "resolved": False, "escalated": True,
                     })
                     sys_h = sys_h3
+            # Iter 84c — Redis quota near/at the monthly cap. There's
+            # no auto-fix (it's a subscription-tier limit) so we
+            # escalate straight to email so the user can upgrade or
+            # shed load before the cache fully disables.
+            rq_breach = next(
+                (b for b in breached if b.startswith("redis_quota_")), None
+            )
+            if rq_breach:
+                pct = sys_h.get("redis_quota_pct")
+                usage = sys_h.get("redis_quota_usage")
+                limit = sys_h.get("redis_quota_limit")
+                severity = rq_breach.split("redis_quota_", 1)[1]
+                issues_escalated += 1
+                msg = (
+                    f"Upstash Redis quota {severity} — "
+                    f"{usage:,}/{limit:,} requests ({pct}% of monthly cap). "
+                    f"Upgrade Upstash tier or reduce write volume."
+                ) if (usage is not None and limit) else (
+                    f"Upstash Redis quota {severity} — usage figure unavailable."
+                )
+                critical_msgs.append(msg)
+                fix_details.append({
+                    "issue": msg,
+                    "attempt_1": "no auto-fix (external subscription cap)",
+                    "attempt_1_result": "escalated to email",
+                    "resolved": False, "escalated": True,
+                })
 
         # ── 3.4 Fan-out tripwire (Iter 82) ─────────────
         # If any user request triggered >8 upstream calls in the last
@@ -707,6 +756,21 @@ def _format_alert_body(record: Dict[str, Any], critical_msgs: List[str]) -> str:
     ) or "- (none)"
     zero_countries = [c for c in ("kenya", "uganda", "rwanda", "online") if (cty.get(c) or 0) <= 0]
     unreachable_apis = [k for k, v in conn.items() if not v]
+    # Iter 84c — Redis quota line. Only render numbers when Upstash has
+    # actually told us our usage (otherwise show "n/a"). Adds a
+    # severity emoji so the email is scannable.
+    rq_status = (sys_h.get("redis_quota_status") or "unknown").lower()
+    rq_pct = sys_h.get("redis_quota_pct")
+    rq_limit = sys_h.get("redis_quota_limit")
+    rq_usage = sys_h.get("redis_quota_usage")
+    if rq_pct is not None and rq_limit:
+        _emoji = {
+            "ok": "OK", "warning": "WARN", "critical": "CRIT",
+            "exhausted": "EXHAUSTED", "disabled": "OFF", "unknown": "?",
+        }.get(rq_status, "?")
+        rq_line = f"- Redis quota:         {rq_pct}% ({rq_usage:,}/{rq_limit:,}) [{_emoji}]"
+    else:
+        rq_line = f"- Redis quota:         n/a (no usage observed this month) [{rq_status}]"
     return f"""\
 Vivo BI Dashboard — Automated Audit Alert
 Time: {ts_str}
@@ -722,6 +786,7 @@ Current system state:
 - Cache hit rate:      {sys_h.get('cache_hit_rate', '?')}%
 - RSS memory:          {sys_h.get('rss_mb', '?')}MB
 - HeavyGuard rejections: {sys_h.get('heavyguard_rejections', '?')}
+{rq_line}
 - Slowest endpoint:    {perf.get('slowest_endpoint', '?')} @ {perf.get('slowest_ms', '?')}ms
 - Countries with 0 data: {zero_countries or 'none'}
 - APIs unreachable:    {unreachable_apis or 'none'}
@@ -770,6 +835,20 @@ async def send_daily_summary(db: AsyncIOMotorDatabase) -> Dict[str, Any]:
     cty = latest.get("data_accuracy", {}) or {}
     conn = latest.get("connectivity", {}) or {}
 
+    # Iter 84c — Redis quota line in the daily summary.
+    rq_status = (sys_h.get("redis_quota_status") or "unknown").lower()
+    rq_pct = sys_h.get("redis_quota_pct")
+    rq_limit = sys_h.get("redis_quota_limit")
+    rq_usage = sys_h.get("redis_quota_usage")
+    if rq_pct is not None and rq_limit:
+        _emoji = {
+            "ok": "OK", "warning": "WARN", "critical": "CRIT",
+            "exhausted": "EXHAUSTED", "disabled": "OFF", "unknown": "?",
+        }.get(rq_status, "?")
+        rq_line = f"- Redis quota:           {rq_pct}% ({rq_usage:,}/{rq_limit:,}) [{_emoji}]"
+    else:
+        rq_line = f"- Redis quota:           n/a (no usage observed this month)"
+
     body = f"""\
 Vivo BI Dashboard — Daily Health Report
 Date: {now.strftime('%Y-%m-%d')}
@@ -787,6 +866,7 @@ Current system health:
 - Cache hit rate:        {sys_h.get('cache_hit_rate', '?')}%
 - RSS memory:            {sys_h.get('rss_mb', '?')}MB
 - Slowest endpoint (cached): {perf.get('slowest_endpoint', '?')} @ {perf.get('slowest_ms', '?')}ms
+{rq_line}
 - All 4 countries live:  {'Yes' if cty.get('all_non_zero') else 'No (' + ', '.join(c for c in ('kenya','uganda','rwanda','online') if (cty.get(c) or 0) <= 0) + ')'}
 - All APIs reachable:    {'Yes' if all(conn.values()) else 'No (' + ', '.join(k for k,v in conn.items() if not v) + ')'}
 
