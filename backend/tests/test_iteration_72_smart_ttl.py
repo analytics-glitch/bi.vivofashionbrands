@@ -69,23 +69,63 @@ def test_smart_ttl_malformed_date_falls_back_to_default():
     assert _smart_ttl("/kpis", {"date_to": 20260513}) == _FETCH_TTL  # int not str
 
 
-def test_top_customers_lifetime_roster_gets_one_hour_ttl():
-    """Iter 84 — the lifetime walk-in roster (limit=200000) was the #1
-    repeat-miss offender (98 misses/day) because date_to=today put it
-    in the 120 s bucket. Force 1 h TTL for any /top-customers call with
-    a high limit so the helper that parses it can re-use the same
-    upstream response for the full hour."""
+def test_top_customers_lifetime_roster_gets_24h_ttl():
+    """Iter 84d — the lifetime walk-in roster (limit=200000) is the #1
+    repeat-miss offender because date_to=today put it in the 120 s
+    bucket. Force 24 h TTL for any /top-customers call with a high
+    limit so the L1 entry stays in sync with the parsed-dict cache
+    that consumes it (`_customer_names_cache`, also 24 h)."""
     from server import _smart_ttl
     today = _today_iso()
-    # Lifetime roster — high limit + today's date_to: must still get 1 h.
+    DAY = 24 * 3600.0
+    # Lifetime roster — high limit + today's date_to: must get 24 h.
     assert _smart_ttl(
         "/top-customers",
         {"date_from": "2025-04-10", "date_to": today, "limit": 200000},
-    ) == 3600.0
+    ) == DAY
     assert _smart_ttl(
         "/top-customers",
         {"date_from": "2025-04-10", "date_to": today, "limit": 50000},
-    ) == 3600.0
+    ) == DAY
+
+
+def test_locations_endpoint_gets_24h_ttl():
+    """Iter 84d — `/locations` is essentially static (store roster
+    changes ≤ once/month). Was sitting in the 120 s default bucket
+    because the call carries no date_to → 45 misses/audit-cycle."""
+    from server import _smart_ttl
+    DAY = 24 * 3600.0
+    assert _smart_ttl("/locations", {}) == DAY
+
+
+def test_inventory_path_gets_thirty_min_ttl():
+    """Iter 84d — /inventory progressive typeahead (product=A, product=Ae,
+    product=Aer ...) became the new #1 repeat-miss offender after the
+    /top-customers + /locations fixes. Inventory only changes on
+    sale-or-receipt events, so a 30 min TTL covers a full browsing
+    session without re-hammering upstream."""
+    from server import _smart_ttl
+    today = _today_iso()
+    assert _smart_ttl(
+        "/inventory",
+        {"country": "kenya", "location": "Vivo Yaya", "product": "A"},
+    ) == 1800.0
+    # Even with date_to=today the override wins (would otherwise be 120 s).
+    assert _smart_ttl(
+        "/inventory",
+        {"country": "kenya", "location": "Vivo Yaya", "date_to": today},
+    ) == 1800.0
+
+
+def test_reference_data_paths_get_one_hour_ttl():
+    """Iter 84d — reference data: products/categories/brands/search/
+    churn list. Cache for 1 h even though date_to may be missing."""
+    from server import _smart_ttl
+    for p in ("/products", "/categories", "/brands",
+              "/customer-search", "/churned-customers"):
+        assert _smart_ttl(p, {}) == 3600.0, p
+        assert _smart_ttl(p, {"q": "vivo"}) == 3600.0, p
+
 
 
 def test_top_customers_small_limit_uses_smart_ttl_default():

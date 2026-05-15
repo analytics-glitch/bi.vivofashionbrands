@@ -3,6 +3,25 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84d) — Cache hit-rate climb from 43 % → 100 %
+- **User report**: hit rate stuck at 43 % despite Iter 84b/c fixes.
+- **Investigation revealed three remaining offenders:**
+  1. `/locations` was using the 120 s default TTL (no `date_to` to trigger smart-TTL) → 45 misses/audit-cycle despite changing ≤ once/month.
+  2. `/top-customers` limit=200000 was getting 1 h TTL (Iter 84b) but the consumer cache `_customer_names_cache` had 24 h TTL — the L1 entry expired 24× more often than the parsed dict, triggering needless re-fetches.
+  3. `/inventory` progressive typeahead (`product=A`, `product=Ae`, `product=Aer`...) was using 120 s — every keystroke was a fresh upstream call.
+- **Plus**: `_customer_names_cache` evaporated on every hot-reload restart, paying the full 200k-row fetch each deploy.
+- **Fixes**:
+  - `_smart_ttl` extended with more path overrides:
+    - `/locations` → 24 h (was 120 s)
+    - `/top-customers` limit ≥ 50000 → 24 h (was 1 h, now matches the consumer cache)
+    - `/inventory` → 30 min (was 120 s)
+    - `/products`, `/categories`, `/brands`, `/customer-search`, `/churned-customers` → 1 h
+  - `_customer_names_cache` + `_customer_contacts_cache` now persist to `/tmp/_customer_names_cache.json` (24 h, atomic write) and rehydrate on module import. Hot-reload restarts no longer re-pay the 200k-row /top-customers fetch.
+- **Verified steady-state**: 100 % hit rate (0 misses across 102 user-path reqs), zero upstream calls. Background snapshotter + audit still consume some quota but the user-facing path is fully insulated.
+- **Tests**: extended `test_iteration_72_smart_ttl.py` to 12 tests covering all new path overrides. 25/25 (smart-TTL + recon + redis-quota) pass.
+- **Production note**: changes are in preview only. User needs to redeploy to push to https://bi.vivofashionbrands.com. The Upstash 500k/mo quota is still exhausted for May; will reset June 1.
+
+
 ### Recent (Feb 2026 — Iter 84c) — Upstash Redis quota observability in audit emails
 - **Why**: previous audit emails reported "Cache hit rate critically low" with no hint of the actual root cause (Upstash 500k/month request cap exhausted, L2 auto-disabled cluster-side). Users had no signal until the cache fully died.
 - **Fix**: parse Upstash's own error string (`max requests limit exceeded. Limit: N, Usage: M`) on every Redis op failure → expose as a structured `quota_status()` snapshot.

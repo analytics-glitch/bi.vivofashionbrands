@@ -295,8 +295,15 @@ def _smart_ttl(path: str, clean: Dict[str, Any]) -> float:
       • `/top-customers` with `limit >= 50000` — the lifetime walk-in
         roster query. ~MB-sized payload; the helpers that consume it
         cache the parsed dict for 24 h, so refetching the raw payload
-        every 120 s is pure waste. Force 1 h TTL regardless of
-        `date_to`.
+        every 120 s is pure waste. Force 24 h TTL regardless of
+        `date_to` so the L1 entry doesn't expire before the consumer's
+        cache does (Iter 84d — was 1 h, repeatedly evicted out of
+        sync with `_customer_names_cache`).
+      • `/locations` — store roster, changes ≤ once/month. Force 24 h
+        TTL (Iter 84d — was sitting in the 120 s default bucket
+        because the call has no `date_to`, hammering upstream).
+      • `/products`, `/categories`, `/brands`, `/customer-search`,
+        `/churned-customers` — semi-static reference data. 1 h.
     """
     # Path-specific overrides (highest precedence).
     if path == "/top-customers":
@@ -305,7 +312,23 @@ def _smart_ttl(path: str, clean: Dict[str, Any]) -> float:
         except Exception:
             limit = 0
         if limit >= 50000:
-            return 3600.0  # 1 h — lifetime roster, only changes on new signups
+            return 24 * 3600.0  # 24 h — lifetime roster, only changes on new signups
+    if path in ("/locations",):
+        return 24 * 3600.0  # 24 h — store roster (Iter 84d)
+    if path in ("/products", "/categories", "/brands"):
+        return 3600.0  # 1 h — reference data
+    if path in ("/customer-search", "/churned-customers"):
+        # Search-style endpoints — cache for an hour, queries are
+        # typically deterministic but the result set shifts slowly.
+        return 3600.0
+    if path == "/inventory":
+        # Iter 84d — /inventory is the new #1 offender (~7 misses /
+        # store / audit-cycle from progressive typeahead queries like
+        # `product=A`, `product=Ae`, `product=Aer`...). Inventory only
+        # changes on sale-or-receipt events; a 30 min TTL covers a full
+        # browsing session without hammering upstream, and the
+        # snapshotter refreshes the master location index every cycle.
+        return 1800.0
 
     dt = clean.get("date_to")
     if not isinstance(dt, str) or len(dt) != 10:
@@ -3805,10 +3828,62 @@ async def get_customers_churn_rate(
 _customer_names_cache: Tuple[float, Dict[str, str]] = (0.0, {})
 _customer_contacts_cache: Tuple[float, Dict[str, Dict[str, bool]]] = (0.0, {})
 _CUSTOMER_NAMES_TTL = 60 * 60 * 24  # 24 hours — the lifetime walk-in roster only changes on new signups
+# Iter 84d — persist the parsed roster to disk so hot-reload doesn't
+# trigger a full /top-customers refetch every time we deploy.
+_CUSTOMER_NAMES_DISK = Path("/tmp/_customer_names_cache.json")
+_customer_names_disk_lock = asyncio.Lock()
+
+
+def _customer_names_load_from_disk() -> None:
+    """Rehydrate the in-memory roster from disk on import. Safe — silent
+    no-op if the file is missing, malformed, or expired."""
+    global _customer_names_cache, _customer_contacts_cache
+    try:
+        if not _CUSTOMER_NAMES_DISK.exists():
+            return
+        import json as _j, time as _t
+        raw = _j.loads(_CUSTOMER_NAMES_DISK.read_text())
+        ts = float(raw.get("ts") or 0)
+        if not ts or _t.time() - ts >= _CUSTOMER_NAMES_TTL:
+            return  # too old, let the next call refresh
+        names = raw.get("names") or {}
+        contacts = raw.get("contacts") or {}
+        if not isinstance(names, dict) or not isinstance(contacts, dict):
+            return
+        _customer_names_cache = (ts, names)
+        _customer_contacts_cache = (ts, contacts)
+        logger.info(
+            "[customer-names] rehydrated %d names from disk (age=%ds)",
+            len(names), int(_t.time() - ts),
+        )
+    except Exception as e:
+        logger.warning("[customer-names] disk rehydrate failed: %s", e)
+
+
+async def _customer_names_save_to_disk(names: Dict[str, str],
+                                        contacts: Dict[str, Dict[str, bool]],
+                                        ts: float) -> None:
+    """Fire-and-forget disk flush. Serialised so concurrent saves don't
+    truncate each other's writes."""
+    async with _customer_names_disk_lock:
+        try:
+            import json as _j
+            payload = _j.dumps({
+                "ts": ts, "names": names, "contacts": contacts,
+            })
+            tmp = _CUSTOMER_NAMES_DISK.with_suffix(".tmp")
+            tmp.write_text(payload)
+            tmp.replace(_CUSTOMER_NAMES_DISK)
+        except Exception as e:
+            logger.warning("[customer-names] disk save failed: %s", e)
+
+
+_customer_names_load_from_disk()  # rehydrate on module import
 
 
 async def _get_customer_name_lookup() -> Dict[str, str]:
-    """Returns customer_id → customer_name. Cached for 6h. Pulled from
+    """Returns customer_id → customer_name. Cached for 24h, persisted
+    to disk so pod restarts inherit the roster. Pulled from
     /top-customers with a 400-day look-back so we capture roughly every
     customer who has transacted in the past year. Without explicit date
     bounds, upstream defaults to a tiny "last few days" window and only
@@ -3865,8 +3940,12 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
             "has_email": bool(email and str(email).strip()),
         }
     logger.info("[customer-names] loaded %d names (%d are walk-in blanks)", len(out), blanks)
-    _customer_names_cache = (_time.time(), out)
-    _customer_contacts_cache = (_time.time(), contacts)
+    now = _time.time()
+    _customer_names_cache = (now, out)
+    _customer_contacts_cache = (now, contacts)
+    # Iter 84d — fire-and-forget disk flush so the next pod restart
+    # rehydrates instantly instead of repaying the 200k-row fetch.
+    asyncio.create_task(_customer_names_save_to_disk(out, contacts, now))
     return out
 
 
