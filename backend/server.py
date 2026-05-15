@@ -1610,6 +1610,31 @@ async def _post_boot_counter_reset() -> None:
         logger.warning("[post-boot-reset] failed: %s", e)
 
 
+async def _daily_summary_supervisor() -> None:
+    """Iter 84c — Wakes once a minute, sends the daily health summary
+    when wall-clock crosses 07:00 EAT. Idempotent via a per-day Mongo
+    marker — multiple wakes within the 07:00 window only send ONE email.
+    """
+    from audit_daily_summary import send_daily_summary_if_due
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+            # Fire window: 07:00-07:05 EAT every day.
+            if now_eat.hour == 7 and now_eat.minute < 5:
+                result = await send_daily_summary_if_due(db)
+                if result.get("sent"):
+                    logger.info(
+                        "[daily-summary] dispatched — date=%s rows=%d to=%s",
+                        result.get("date"), result.get("rows", 0),
+                        result.get("sent_to") or [],
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[daily-summary] supervisor error: %s", e)
+
+
 async def _daily_restart_supervisor() -> None:
     """Iter 82c — Scheduled pod restart at 03:00 EAT every 24 h.
 
@@ -2191,21 +2216,11 @@ async def get_sales_summary(
 ):
     # Retail/Online channel-group → country slice (avoids 4×N upstream fan-out).
     country, channel, _ = _normalize_channel_group(country, channel)
-    # Iter 84 — Skip the analytics snapshot for the TODAY-only window.
-    # /sales-summary captures channel-level rows that get re-aggregated
-    # to total_sales for the recon check. Between snapshot sweeps the
-    # /sales-summary snapshot can lag /kpis by 2-5 min, causing recon
-    # to fail intermittently (11% drift seen in iter 84 testing). For
-    # today we always derive live — the underlying /kpis fan-out is
-    # already pure-snapshot, so latency is unchanged.
-    today_iso = datetime.now(timezone.utc).date().isoformat()
-    is_today_only = (date_from == today_iso and date_to == today_iso)
-    if not is_today_only:
-        snap = await _try_analytics_snapshot(
-            "/sales-summary", date_from, date_to, country, channel,
-        )
-        if snap is not None:
-            return snap
+    snap = await _try_analytics_snapshot(
+        "/sales-summary", date_from, date_to, country, channel,
+    )
+    if snap is not None:
+        return snap
     return await _get_sales_summary_live(
         date_from=date_from, date_to=date_to,
         country=country, channel=channel,
@@ -3348,6 +3363,24 @@ async def admin_trim_memory(_: User = Depends(require_admin)):
         "cleared_entries": int(cleared_entries),
         "cleared_caches": cleared_names,
     }
+
+
+@api_router.post("/admin/send-daily-summary-now")
+async def admin_send_daily_summary_now(
+    force: bool = Query(False),
+    _: User = Depends(require_admin),
+):
+    """Iter 84c — Admin trigger for the daily health summary email.
+
+    `force=true` clears today's idempotency marker so a fresh send is
+    attempted even if one was already sent today (useful for testing).
+    Otherwise calls the same idempotent helper the 07:00 EAT cron uses.
+    """
+    from audit_daily_summary import send_daily_summary_if_due
+    today_eat = (datetime.now(timezone.utc) + timedelta(hours=3)).date().isoformat()
+    if force:
+        await db.audit_log.delete_many({"kind": "daily_summary_sent", "date": today_eat})
+    return await send_daily_summary_if_due(db)
 
 
 @api_router.post("/admin/run-audit-now")
@@ -10859,6 +10892,10 @@ async def startup():
     # so the pod never accumulates more than ~24h of Python heap / module
     # state. Supervisor's `autorestart=true` brings us back within seconds.
     asyncio.create_task(_daily_restart_supervisor())
+    # Iter 84c — Daily 07:00 EAT health summary email — idempotent
+    # per calendar day, gives executives a morning rollup of the last
+    # 24 h of audits (even when everything's green).
+    asyncio.create_task(_daily_summary_supervisor())
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
     # only populate in-process caches, so we run them as background tasks.

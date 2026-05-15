@@ -674,14 +674,11 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
         "email_dispatched": {"sent_to": [], "ok": False, "error": "not_attempted"},
     }
 
-    # Email policy: CRITICAL always; WARNING only if previous was WARNING.
-    should_email = False
-    if status == "CRITICAL":
-        should_email = True
-    elif status == "WARNING":
-        prev = await db.audit_log.find_one({}, sort=[("timestamp", -1)], projection={"_id": 0, "status": 1})
-        if prev and prev.get("status") == "WARNING":
-            should_email = True
+    # Email policy (Iter 84c):
+    #   • CRITICAL → always (red — admin must look)
+    #   • WARNING  → always (amber — auto-fixed but FYI; user opted in)
+    #   • HEALTHY  → never  (no signal needed)
+    should_email = status in ("CRITICAL", "WARNING")
 
     if should_email:
         subj_label = "CRITICAL" if status == "CRITICAL" else "WARNING"
