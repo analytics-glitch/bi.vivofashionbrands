@@ -3,6 +3,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { DateRangeProvider } from "@/contexts/DateRangeContext";
 import AuthCallback from "@/pages/AuthCallback";
 import Login from "@/pages/Login";
 import AppShell from "@/components/AppShell";
@@ -70,8 +71,10 @@ function App() {
     <div className="App">
       <BrowserRouter>
         <AuthProvider>
-          <Toaster position="top-right" richColors />
-          <AppRouter />
+          <DateRangeProvider>
+            <Toaster position="top-right" richColors />
+            <AppRouter />
+          </DateRangeProvider>
         </AuthProvider>
       </BrowserRouter>
     </div>

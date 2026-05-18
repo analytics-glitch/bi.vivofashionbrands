@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { api, formatKES, formatNumber, formatDate, today, daysAgo } from "@/lib/api";
+import React, { useEffect, useState } from "react";
+import { api, formatKES, formatNumber, formatDate } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RfmBadge } from "@/components/RfmBadge";
 import { DateRangePicker } from "@/components/DateRangePicker";
+import { useDateRange } from "@/contexts/DateRangeContext";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -80,14 +81,8 @@ export default function Overview() {
   const [channel, setChannel] = useState(null);
   const [returnTrend, setReturnTrend] = useState(null);
   const [winbackBusy, setWinbackBusy] = useState(false);
-  // Date range — controls the lookback window used by the dropoff forecast,
-  // channel attribution and new-customer query. Defaults to last 90d.
-  const [range, setRange] = useState({ from: daysAgo(89), to: today(), label: "Last 90 days" });
-  const windowDays = useMemo(() => {
-    const from = new Date(range.from);
-    const to = new Date(range.to);
-    return Math.max(1, Math.round((to - from) / 86400000) + 1);
-  }, [range.from, range.to]);
+  // Global date range (shared with Insights, Training, etc. — persisted to localStorage)
+  const { range, setRange, windowDays } = useDateRange();
 
   useEffect(() => {
     (async () => {

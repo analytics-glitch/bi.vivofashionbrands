@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useDateRange } from "@/contexts/DateRangeContext";
 import { api } from "@/lib/api";
+import { DateRangePicker } from "@/components/DateRangePicker";
 import {
   LayoutDashboard,
   Users,
@@ -52,6 +54,7 @@ export default function AppShell() {
   const searchTimer = useRef(null);
   const searchBoxRef = useRef(null);
   const notifsRef = useRef(null);
+  const { range, setRange } = useDateRange();
 
   // Load open follow-ups for the bell (best-effort, refresh every 2 min)
   useEffect(() => {
@@ -157,6 +160,18 @@ export default function AppShell() {
               </NavLink>
             ))}
           </nav>
+
+          {/* Global date range — shared across all analytics pages, persisted */}
+          <div className="hidden lg:block shrink-0 mr-1" data-testid="global-date-range">
+            <DateRangePicker
+              testid="global-date-picker"
+              value={{ from: range.from, to: range.to }}
+              onChange={(v) => setRange(v)}
+              defaultPreset="last_90"
+              align="end"
+              buttonClassName="h-9 px-2.5 text-xs"
+            />
+          </div>
 
           {/* Search */}
           <div ref={searchBoxRef} className="hidden md:block relative shrink-0" data-testid="global-search">

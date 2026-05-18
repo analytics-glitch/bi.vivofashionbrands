@@ -8,6 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { DateRangePicker } from "@/components/DateRangePicker";
+import { useDateRange } from "@/contexts/DateRangeContext";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -84,27 +85,38 @@ export default function Training() {
   const [trend, setTrend] = useState([]);
   const [facilitators, setFacilitators] = useState([]);
 
-  // Initial filter list load
+  // Global date range (shared with Overview, Insights, etc.)
+  const { range: gRange, setRange: setGRange } = useDateRange();
+
+  // Initial filter list load — clamp the global range to the data-availability window.
   useEffect(() => {
     (async () => {
       try {
         const { data } = await api.get("/training/filters");
+        const earliest = data.earliest_date || "";
+        const latest = data.latest_date || "";
         setFilters({
           categories: data.categories || [],
           training_names: data.training_names || [],
           departments: data.departments || [],
           delivery_methods: data.delivery_methods || [],
-          earliest_date: data.earliest_date || "",
-          latest_date: data.latest_date || "",
+          earliest_date: earliest,
+          latest_date: latest,
         });
-        setSel((s) => ({
-          ...s,
-          date_from: data.earliest_date || "",
-          date_to: data.latest_date || "",
-        }));
+        // Clamp global range into [earliest, latest]
+        const from = gRange.from && gRange.from > earliest ? gRange.from : earliest;
+        const to = gRange.to && gRange.to < latest ? gRange.to : latest;
+        setSel((s) => ({ ...s, date_from: from, date_to: to }));
       } catch { /* ignore */ }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When the user picks a different range here, push it up to the global context.
+  const updateGlobalRange = (next) => {
+    setSel((s) => ({ ...s, date_from: next.from, date_to: next.to }));
+    setGRange({ from: next.from, to: next.to, label: next.label });
+  };
 
   const params = useMemo(() => {
     const p = {};
@@ -204,7 +216,7 @@ export default function Training() {
               <DateRangePicker
                 testid="training-date-range"
                 value={{ from: sel.date_from, to: sel.date_to }}
-                onChange={({ from, to }) => setSel((s) => ({ ...s, date_from: from, date_to: to }))}
+                onChange={({ from, to, label }) => updateGlobalRange({ from, to, label })}
                 minDate={filters.earliest_date}
                 maxDate={filters.latest_date}
                 buttonClassName="w-full justify-start"

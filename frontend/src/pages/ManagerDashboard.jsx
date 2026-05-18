@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
 import { CohortsTab, OperationsTab } from "./InsightsTabs";
 import { DateRangePicker } from "@/components/DateRangePicker";
+import { useDateRange } from "@/contexts/DateRangeContext";
 
 function KPI({ label, value, sub, testid }) {
   return (
@@ -87,7 +88,20 @@ const NAVY = "#1F3864";
 const GOLD = "#C9A961";
 
 export default function ManagerDashboard() {
-  const [period, setPeriod] = useState({ from: mtdStart(), to: today(), label: "MTD" });
+  const { range: gRange, setRange: setGRange } = useDateRange();
+  // Keep a local period (which holds {from,to,label}) but sync it with the global range.
+  const [period, setPeriod] = useState(() => ({ from: gRange.from, to: gRange.to, label: gRange.label || "Custom" }));
+
+  // When the global range changes (eg. user picks a different range on Overview), reflect here.
+  useEffect(() => {
+    setPeriod({ from: gRange.from, to: gRange.to, label: gRange.label || "Custom" });
+  }, [gRange.from, gRange.to, gRange.label]);
+
+  // When user changes the picker here, push the change up to the global context.
+  const updatePeriod = (next) => {
+    setPeriod(next);
+    setGRange({ from: next.from, to: next.to, label: next.label });
+  };
   const [kpis, setKpis] = useState(null);
   const [byCountry, setByCountry] = useState([]);
   const [byChannel, setByChannel] = useState([]);
@@ -125,10 +139,10 @@ export default function ManagerDashboard() {
   }, [period]);
 
   const setRange = (key) => {
-    if (key === "MTD") setPeriod({ from: mtdStart(), to: today(), label: "MTD" });
-    else if (key === "YTD") setPeriod({ from: ytdStart(), to: today(), label: "YTD" });
-    else if (key === "LASTM") setPeriod({ ...prevMonthRange(), label: "Last month" });
-    else if (typeof key === "number") setPeriod({ from: daysAgo(key), to: today(), label: `${key}d` });
+    if (key === "MTD") updatePeriod({ from: mtdStart(), to: today(), label: "MTD" });
+    else if (key === "YTD") updatePeriod({ from: ytdStart(), to: today(), label: "YTD" });
+    else if (key === "LASTM") updatePeriod({ ...prevMonthRange(), label: "Last month" });
+    else if (typeof key === "number") updatePeriod({ from: daysAgo(key), to: today(), label: `${key}d` });
   };
 
   return (
@@ -146,7 +160,7 @@ export default function ManagerDashboard() {
           <DateRangePicker
             testid="manager-date-range"
             value={{ from: period.from, to: period.to }}
-            onChange={({ from, to, label }) => setPeriod({ from, to, label })}
+            onChange={({ from, to, label }) => updatePeriod({ from, to, label })}
             defaultPreset="mtd"
             align="end"
           />
