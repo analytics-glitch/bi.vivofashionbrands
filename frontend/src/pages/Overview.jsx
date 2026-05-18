@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
-import { api, formatKES, formatNumber, formatDate } from "@/lib/api";
+import React, { useEffect, useMemo, useState } from "react";
+import { api, formatKES, formatNumber, formatDate, today, daysAgo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RfmBadge } from "@/components/RfmBadge";
+import { DateRangePicker } from "@/components/DateRangePicker";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -79,6 +80,14 @@ export default function Overview() {
   const [channel, setChannel] = useState(null);
   const [returnTrend, setReturnTrend] = useState(null);
   const [winbackBusy, setWinbackBusy] = useState(false);
+  // Date range — controls the lookback window used by the dropoff forecast,
+  // channel attribution and new-customer query. Defaults to last 90d.
+  const [range, setRange] = useState({ from: daysAgo(89), to: today(), label: "Last 90 days" });
+  const windowDays = useMemo(() => {
+    const from = new Date(range.from);
+    const to = new Date(range.to);
+    return Math.max(1, Math.round((to - from) / 86400000) + 1);
+  }, [range.from, range.to]);
 
   useEffect(() => {
     (async () => {
@@ -86,8 +95,8 @@ export default function Overview() {
         const [a, b, d, ch, rt] = await Promise.all([
           api.get("/insights/overview"),
           api.get("/insights/purchase-frequency"),
-          api.get("/insights/dropoff-forecast?days=90"),
-          api.get("/bi/channel-attribution?days=90").catch(() => ({ data: { rows: [] } })),
+          api.get(`/insights/dropoff-forecast?days=${windowDays}`),
+          api.get(`/bi/channel-attribution?days=${windowDays}`).catch(() => ({ data: { rows: [] } })),
           api.get("/bi/return-rate-trend").catch(() => ({ data: { windows: [] } })),
         ]);
         setOv(a.data);
@@ -97,7 +106,7 @@ export default function Overview() {
         setReturnTrend(rt.data);
       } catch { /* ignore */ }
     })();
-  }, []);
+  }, [windowDays]);
 
   const runWinback = async () => {
     setWinbackBusy(true);
@@ -125,14 +134,27 @@ export default function Overview() {
 
   return (
     <div className="p-6 md:p-10 max-w-[1500px] mx-auto" data-testid="overview-page">
-      <div>
-        <div className="eyebrow">Executive</div>
-        <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Overview</h1>
-        <div className="gold-rule mt-4" />
-        <p className="text-sm text-[var(--vivo-muted)] mt-3 max-w-2xl">
-          Headline KPIs, new-customer momentum, purchase cadence and a drop-off forecast for
-          every new customer in the last 90 days.
-        </p>
+      <div className="flex items-start justify-between gap-6 flex-wrap">
+        <div>
+          <div className="eyebrow">Executive</div>
+          <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Overview</h1>
+          <div className="gold-rule mt-4" />
+          <p className="text-sm text-[var(--vivo-muted)] mt-3 max-w-2xl">
+            Headline KPIs, new-customer momentum, purchase cadence and a drop-off forecast for
+            every new customer in the selected window.
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1" data-testid="overview-date-range">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Date range</div>
+          <DateRangePicker
+            testid="overview-date-picker"
+            value={{ from: range.from, to: range.to }}
+            onChange={(v) => setRange(v)}
+            defaultPreset="last_90"
+            align="end"
+          />
+          <div className="text-[10px] text-[var(--vivo-muted)] mt-1">{windowDays} day{windowDays === 1 ? "" : "s"} lookback</div>
+        </div>
       </div>
 
       {/* Callouts */}
