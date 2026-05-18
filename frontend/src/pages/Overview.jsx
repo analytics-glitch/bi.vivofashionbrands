@@ -42,32 +42,45 @@ const BAND_STYLE = {
   low: { bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200", label: "Low risk" },
 };
 
-function DeltaChip({ value }) {
-  if (value === null || value === undefined) return <span className="text-xs text-[var(--vivo-muted)]">—</span>;
-  const up = value > 0;
+function DeltaChip({ value, inverted, compact, hint }) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return <span className="text-xs text-[var(--vivo-muted)]">—</span>;
+  }
   const flat = Math.abs(value) < 0.1;
-  const Icon = flat ? null : up ? TrendingUp : TrendingDown;
-  const color = flat ? "text-[var(--vivo-muted)]" : up ? "text-emerald-700" : "text-red-700";
+  const positive = inverted ? value < 0 : value > 0;
+  const negative = inverted ? value > 0 : value < 0;
+  const cls = flat
+    ? "text-[var(--vivo-muted)] bg-[var(--vivo-bg)] border-[var(--vivo-border)]"
+    : positive
+    ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+    : negative
+    ? "text-red-700 bg-red-50 border-red-200"
+    : "text-[var(--vivo-muted)] bg-[var(--vivo-bg)] border-[var(--vivo-border)]";
+  const arrow = flat ? "•" : positive ? "▲" : "▼";
   return (
-    <span className={`inline-flex items-center gap-1 text-xs font-mono-num ${color}`}>
-      {Icon && <Icon className="h-3 w-3" />}
-      {value > 0 ? "+" : ""}{value.toFixed(1)}%
+    <span
+      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-sm border ${cls}`}
+      title={hint || "vs prior 30 days"}
+    >
+      {arrow} {Math.abs(value).toFixed(1)}%
+      {!compact && hint && <span className="font-normal text-[9px] uppercase tracking-[0.1em] ml-0.5 opacity-70">{hint}</span>}
     </span>
   );
 }
 
-function Kpi({ label, value, delta, sub, icon: Icon, testid, color }) {
+function Kpi({ label, value, delta, deltaInverted, deltaHint, sub, icon: Icon, testid, color }) {
   return (
     <Card className="vivo-card p-5 rounded-sm" data-testid={testid}>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">{label}</div>
-        {Icon && <Icon className="h-4 w-4" style={{ color: color || "var(--vivo-navy)" }} />}
+        {delta !== undefined && delta !== null ? (
+          <DeltaChip value={delta} inverted={deltaInverted} hint={deltaHint} compact />
+        ) : (
+          Icon && <Icon className="h-4 w-4" style={{ color: color || "var(--vivo-navy)" }} />
+        )}
       </div>
       <div className="font-display text-3xl mt-2 font-mono-num">{value}</div>
-      <div className="mt-2 flex items-center gap-2">
-        {delta !== undefined && <DeltaChip value={delta} />}
-        {sub && <span className="text-xs text-[var(--vivo-muted)]">{sub}</span>}
-      </div>
+      {sub && <div className="mt-2 text-xs text-[var(--vivo-muted)]">{sub}</div>}
     </Card>
   );
 }
@@ -171,12 +184,12 @@ export default function Overview() {
       {/* KPI strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mt-8" data-testid="overview-kpis">
         <Kpi label="Total customers" value={ov ? formatNumber(ov.kpis.total_customers) : "—"} sub="All time" icon={Users} testid="kpi-total" color="#0F4D31" />
-        <Kpi label="New · 30d" value={ov ? formatNumber(ov.kpis.new_customers_30d) : "—"} delta={ov?.kpis.new_customers_delta_pct} sub="vs. prior 30d" icon={UserPlus} testid="kpi-new" color="#ED7C2A" />
-        <Kpi label="Active · 30d" value={ov ? formatNumber(ov.kpis.active_customers_30d) : "—"} delta={ov?.kpis.active_customers_delta_pct} sub="bought in last 30d" icon={Heart} testid="kpi-active" color="#5B8A6E" />
+        <Kpi label="New · 30d" value={ov ? formatNumber(ov.kpis.new_customers_30d) : "—"} delta={ov?.kpis.new_customers_delta_pct} deltaHint="vs prior 30d" sub="net new customers" icon={UserPlus} testid="kpi-new" color="#ED7C2A" />
+        <Kpi label="Active · 30d" value={ov ? formatNumber(ov.kpis.active_customers_30d) : "—"} delta={ov?.kpis.active_customers_delta_pct} deltaHint="vs prior 30d" sub="bought in last 30d" icon={Heart} testid="kpi-active" color="#5B8A6E" />
         <Kpi label="VIPs" value={ov ? formatNumber(ov.kpis.vip_customers) : "—"} sub={ov ? `${ov.kpis.at_risk_customers} at risk` : "—"} icon={ShieldAlert} testid="kpi-vip" color="#C9A961" />
         <Kpi label="Avg basket" value={ov ? formatKES(ov.kpis.avg_basket_kes) : "—"} sub="active customers" icon={Target} testid="kpi-basket" color="#0F4D31" />
-        <Kpi label="Messages · 30d" value={ov ? formatNumber(ov.kpis.messages_sent_30d) : "—"} delta={ov?.kpis.messages_delta_pct} sub="vs. prior 30d" icon={MessageSquare} testid="kpi-messages" color="#5B8A6E" />
-        <Kpi label="Social sentiment" value={ov ? `${ov.kpis.social_sentiment_net > 0 ? "+" : ""}${ov.kpis.social_sentiment_net}` : "—"} sub={ov ? `${ov.kpis.social_feedback_30d} posts · net +ve − −ve / total` : "—"} icon={Sparkles} testid="kpi-sentiment" color={ov?.kpis.social_sentiment_net >= 0 ? "#0F4D31" : "#E47979"} />
+        <Kpi label="Messages · 30d" value={ov ? formatNumber(ov.kpis.messages_sent_30d) : "—"} delta={ov?.kpis.messages_delta_pct} deltaHint="vs prior 30d" sub="WhatsApp + SMS" icon={MessageSquare} testid="kpi-messages" color="#5B8A6E" />
+        <Kpi label="Social sentiment" value={ov ? `${ov.kpis.social_sentiment_net > 0 ? "+" : ""}${ov.kpis.social_sentiment_net}` : "—"} sub={ov ? `${ov.kpis.social_feedback_30d} posts · net +ve − −ve` : "—"} icon={Sparkles} testid="kpi-sentiment" color={ov?.kpis.social_sentiment_net >= 0 ? "#0F4D31" : "#E47979"} />
         <Kpi label="Projected churn · 30d" value={drop ? formatNumber(drop.projected_churn_next_30d) : "—"} sub={drop ? `of ${drop.evaluated} recent new customers` : "—"} icon={AlertTriangle} testid="kpi-churn" color="#E47979" />
       </div>
 
