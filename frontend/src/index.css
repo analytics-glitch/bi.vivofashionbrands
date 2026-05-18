@@ -102,6 +102,8 @@ h1, h2, h3, h4, .font-display {
     }
     .vivo-divider { height: 1px; background: var(--vivo-border); width: 100%; }
     .gold-rule { height: 2px; width: 36px; background: var(--vivo-gold); border-radius: 2px; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
     /* Logo tile — orange square w/ white wordmark, like the BI dashboard */
     .vivo-logo-tile {
