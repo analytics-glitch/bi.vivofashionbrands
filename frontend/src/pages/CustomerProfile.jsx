@@ -62,11 +62,19 @@ export default function CustomerProfile() {
   const [tplId, setTplId] = useState("");
   const [msgBody, setMsgBody] = useState("");
   const [channel, setChannel] = useState("whatsapp");
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftVariants, setDraftVariants] = useState([]);
+  const [draftIntent, setDraftIntent] = useState("checkin");
+  const [moments, setMoments] = useState([]);
+  const [momentForm, setMomentForm] = useState({ type: "birthday", date: "", title: "", remind_days_before: 7 });
+  const [recording, setRecording] = useState(false);
+  const [recorder, setRecorder] = useState(null);
+  const [voiceUploading, setVoiceUploading] = useState(false);
 
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl, asg, us] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl, asg, us, mom] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -80,12 +88,14 @@ export default function CustomerProfile() {
         api.get(`/customers/${id}/timeline`).catch(() => ({ data: { events: [] } })),
         api.get(`/customers/${id}/assignment`).catch(() => ({ data: {} })),
         api.get(`/users`).catch(() => ({ data: [] })),
+        api.get(`/customers/${id}/moments`).catch(() => ({ data: [] })),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
       setNotes(n.data || []);
       setTasks(t.data || []);
       setMessages(m.data || []);
+      setMoments(mom.data || []);
       setPrefs({
         sizes: pr.data?.sizes || {},
         fits: pr.data?.fits || [],
@@ -636,7 +646,129 @@ export default function CustomerProfile() {
         </TabsContent>
 
         <TabsContent value="notes" className="mt-6">
-          <div className="flex justify-end mb-4">
+          {/* Customer Moments */}
+          <Card className="vivo-card p-5 rounded-sm mb-5" data-testid="moments-card">
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-[var(--vivo-gold)]" />
+                <div className="eyebrow">Moments</div>
+              </div>
+              <span className="text-[10px] text-[var(--vivo-muted)]">Birthdays · anniversaries · life events — auto-creates a reminder task before each</span>
+            </div>
+            {moments.length === 0 && (
+              <div className="text-xs text-[var(--vivo-muted)] mb-3">No moments logged yet.</div>
+            )}
+            {moments.length > 0 && (
+              <ul className="space-y-2 mb-4" data-testid="moments-list">
+                {moments.map((m) => (
+                  <li key={m.moment_id} className="flex items-center justify-between gap-3 border-b border-[var(--vivo-border)] pb-2 last:border-0">
+                    <div className="text-sm">
+                      <span className="font-medium">{m.title}</span>
+                      <span className="text-xs text-[var(--vivo-muted)] ml-2">{m.type} · {(m.date || "").slice(-5)}{m.recurring_annual ? " (yearly)" : ""}</span>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try { await api.delete(`/customers/${id}/moments/${m.moment_id}`); setMoments(moments.filter(x => x.moment_id !== m.moment_id)); }
+                        catch { toast.error("Could not remove"); }
+                      }}
+                      className="text-xs text-[var(--vivo-muted)] hover:text-red-600"
+                      data-testid={`moment-delete-${m.moment_id}`}
+                    ><Trash2 className="h-3.5 w-3.5" /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+              <div>
+                <Label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Type</Label>
+                <select
+                  className="mt-1 w-full h-9 px-2 rounded-sm border border-[var(--vivo-border)] bg-white text-sm"
+                  value={momentForm.type}
+                  onChange={(e) => setMomentForm({ ...momentForm, type: e.target.value })}
+                  data-testid="moment-type"
+                >
+                  <option value="birthday">Birthday</option>
+                  <option value="anniversary">Anniversary</option>
+                  <option value="graduation">Graduation</option>
+                  <option value="wedding">Wedding</option>
+                  <option value="baby">Baby</option>
+                  <option value="promotion">Promotion</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Date</Label>
+                <Input type="date" value={momentForm.date} onChange={(e) => setMomentForm({ ...momentForm, date: e.target.value })} className="mt-1 rounded-sm h-9" data-testid="moment-date" />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Title (optional)</Label>
+                <Input value={momentForm.title} onChange={(e) => setMomentForm({ ...momentForm, title: e.target.value })} className="mt-1 rounded-sm h-9" placeholder="e.g. 50th birthday" data-testid="moment-title" />
+              </div>
+              <Button
+                onClick={async () => {
+                  if (!momentForm.date) { toast.error("Date required"); return; }
+                  try {
+                    const r = await api.post(`/customers/${id}/moments`, { ...momentForm, recurring_annual: momentForm.type !== "custom" });
+                    setMoments([...moments, r.data]);
+                    setMomentForm({ type: "birthday", date: "", title: "", remind_days_before: 7 });
+                    toast.success("Moment added · reminder will fire " + r.data.remind_days_before + " days before");
+                  } catch { toast.error("Could not save"); }
+                }}
+                className="h-9 rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white"
+                data-testid="moment-save"
+              >
+                <Plus className="mr-1 h-4 w-4" /> Add
+              </Button>
+            </div>
+          </Card>
+
+          <div className="flex justify-end mb-4 gap-2">
+            <Button
+              onClick={async () => {
+                if (recording && recorder) {
+                  recorder.stop();
+                  return;
+                }
+                try {
+                  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                  const mr = new MediaRecorder(stream, { mimeType: "audio/webm" });
+                  const chunks = [];
+                  mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+                  mr.onstop = async () => {
+                    stream.getTracks().forEach(t => t.stop());
+                    setRecording(false);
+                    setRecorder(null);
+                    if (!chunks.length) return;
+                    const blob = new Blob(chunks, { type: "audio/webm" });
+                    const fd = new FormData();
+                    fd.append("audio", blob, `voice-${Date.now()}.webm`);
+                    setVoiceUploading(true);
+                    try {
+                      const r = await api.post(`/customers/${id}/voice-note`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+                      toast.success("Voice note saved + auto-tagged");
+                      setNotes([r.data, ...notes]);
+                    } catch (e) {
+                      toast.error("Voice upload failed: " + (e?.response?.data?.detail || e.message));
+                    }
+                    setVoiceUploading(false);
+                  };
+                  mr.start();
+                  setRecorder(mr);
+                  setRecording(true);
+                  toast.info("Recording… click again to stop", { duration: 3000 });
+                } catch (e) {
+                  toast.error("Mic permission denied or unsupported");
+                }
+              }}
+              disabled={voiceUploading}
+              variant="outline"
+              className={`h-11 rounded-sm ${recording ? "bg-red-600 text-white border-red-600 hover:bg-red-700" : "border-[var(--vivo-gold)] text-[var(--vivo-navy)]"}`}
+              data-testid="voice-record-button"
+              title={recording ? "Tap to stop & save" : "Dictate a voice note — Whisper transcribes + AI tags"}
+            >
+              <span className={`mr-2 inline-block w-2.5 h-2.5 rounded-full ${recording ? "bg-white animate-pulse" : "bg-red-500"}`} />
+              {voiceUploading ? "Transcribing…" : recording ? "Stop & save" : "Voice note"}
+            </Button>
             <Button onClick={() => setNoteOpen(true)} className="h-11 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="add-note-button">
               <Plus className="mr-2 h-4 w-4" /> Add note
             </Button>
@@ -649,8 +781,24 @@ export default function CustomerProfile() {
                 <Card key={n.note_id} className="vivo-card p-5 rounded-sm">
                   <div className="flex justify-between items-start gap-3">
                     <div className="flex-1">
-                      <div className="text-xs text-[var(--vivo-muted)]">{n.author_name} · {formatDate(n.created_at)}</div>
+                      <div className="text-xs text-[var(--vivo-muted)] flex items-center gap-2">
+                        {n.source === "voice" && <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] bg-[var(--vivo-gold)]/10 text-[var(--vivo-navy)] px-1.5 py-0.5 rounded-sm font-semibold">🎤 voice</span>}
+                        {n.author_name} · {formatDate(n.created_at)}
+                      </div>
                       <p className="mt-2 text-base leading-relaxed">{n.body}</p>
+                      {n.tags && (n.tags.interests?.length || n.tags.size_notes?.length || n.tags.follow_up) && (
+                        <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
+                          {(n.tags.interests || []).map((t, i) => (
+                            <span key={`i${i}`} className="bg-[var(--vivo-bg)] border border-[var(--vivo-border)] px-1.5 py-0.5 rounded-sm">💚 {t}</span>
+                          ))}
+                          {(n.tags.size_notes || []).map((t, i) => (
+                            <span key={`s${i}`} className="bg-amber-50 border border-amber-200 text-amber-800 px-1.5 py-0.5 rounded-sm">📏 {t}</span>
+                          ))}
+                          {n.tags.follow_up && (
+                            <span className="bg-[var(--vivo-navy)] text-white px-1.5 py-0.5 rounded-sm">→ {n.tags.follow_up}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <Button variant="ghost" size="icon" onClick={() => deleteNote(n.note_id)} aria-label="Delete note">
                       <Trash2 className="h-4 w-4 text-[var(--vivo-muted)]" />
@@ -1067,6 +1215,65 @@ export default function CustomerProfile() {
               <Label>Message</Label>
               <Textarea rows={5} value={msgBody} onChange={(e) => setMsgBody(e.target.value)} className="mt-1" data-testid="msg-body" />
               <p className="text-xs text-[var(--vivo-muted)] mt-2">Logs locally · BSP wires in via env once approved. Or hand off to WhatsApp app below.</p>
+            </div>
+
+            {/* AI Co-pilot */}
+            <div className="border border-[var(--vivo-gold)] rounded-sm p-3 bg-[var(--vivo-bg)]" data-testid="copilot-section">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Wand2 className="h-4 w-4 text-[var(--vivo-gold)]" />
+                  <span className="text-sm font-semibold">AI Co-pilot</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={draftIntent}
+                    onChange={(e) => setDraftIntent(e.target.value)}
+                    className="text-xs h-8 px-2 rounded-sm border border-[var(--vivo-border)] bg-white"
+                    data-testid="draft-intent"
+                  >
+                    <option value="checkin">Casual check-in</option>
+                    <option value="winback">Win-back</option>
+                    <option value="birthday">Birthday</option>
+                    <option value="new_arrivals">New arrivals</option>
+                    <option value="thank_you">Thank you</option>
+                  </select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={draftLoading}
+                    onClick={async () => {
+                      setDraftLoading(true);
+                      setDraftVariants([]);
+                      try {
+                        const r = await api.post(`/customers/${id}/draft-message`, { intent: draftIntent, tone: "warm" });
+                        setDraftVariants(r.data.variants || []);
+                      } catch { toast.error("Draft failed"); }
+                      setDraftLoading(false);
+                    }}
+                    className="rounded-sm bg-[var(--vivo-gold)] hover:bg-[var(--vivo-gold)]/90 text-[var(--vivo-navy)] font-semibold h-8"
+                    data-testid="draft-go"
+                  >
+                    {draftLoading ? "Drafting…" : "Draft 3 options"}
+                  </Button>
+                </div>
+              </div>
+              {draftVariants.length > 0 && (
+                <div className="mt-3 space-y-2" data-testid="draft-variants">
+                  {draftVariants.map((v, i) => (
+                    <button
+                      type="button"
+                      key={i}
+                      onClick={() => setMsgBody(v.text)}
+                      className="block w-full text-left p-3 bg-white rounded-sm border border-[var(--vivo-border)] hover:border-[var(--vivo-gold)] transition"
+                      data-testid={`draft-variant-${i}`}
+                    >
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)] mb-1">{v.label}</div>
+                      <div className="text-sm leading-relaxed italic">"{v.text}"</div>
+                    </button>
+                  ))}
+                  <p className="text-[11px] text-[var(--vivo-muted)] italic">Click a variant to load it into the message field.</p>
+                </div>
+              )}
             </div>
           </div>
           <DialogFooter className="flex-wrap gap-2">

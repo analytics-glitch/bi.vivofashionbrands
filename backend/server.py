@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -1144,18 +1144,24 @@ async def startup():
 
         async def _job():
             pages = await db.facebook_pages.find({}, {"_id": 0}).to_list(50)
-            if not pages:
-                return
-            for p in pages:
+            if pages:
+                for p in pages:
+                    try:
+                        await sync_facebook_page(db, p["page_id"], p["page_access_token"])
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Auto-sync failed for %s: %s", p.get("page_name"), exc)
                 try:
-                    await sync_facebook_page(db, p["page_id"], p["page_access_token"])
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Auto-sync failed for %s: %s", p.get("page_name"), exc)
+                    from social import classify_pending  # noqa: WPS433
+                    await classify_pending(db, limit=200)
+                except Exception:  # noqa: BLE001
+                    pass
             try:
-                from social import classify_pending  # noqa: WPS433
-                await classify_pending(db, limit=200)
-            except Exception:  # noqa: BLE001
-                pass
+                # Daily-ish moments scheduler — cheap, idempotent
+                r = await _run_moments_scheduler()
+                if r.get("tasks_created"):
+                    logger.info("Moments scheduler created %d follow-up tasks", r["tasks_created"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Moments scheduler error: %s", exc)
 
         _fb_scheduler = AsyncIOScheduler(timezone="UTC")
         _fb_scheduler.add_job(_job, "interval", minutes=interval_min, id="fb_sync", next_run_time=now_utc() + timedelta(seconds=20))
@@ -1837,6 +1843,271 @@ async def customer_brief(customer_id: str, refresh: bool = False, user: User = D
     )
     await _audit(user, "customer.brief", "customer", customer_id, None)
     return result
+
+
+# ---------------------------------------------------------------------- #
+#  Customer Moments — life events that auto-create follow-up tasks       #
+# ---------------------------------------------------------------------- #
+
+MOMENT_TYPES = {"birthday", "anniversary", "graduation", "wedding", "baby", "promotion", "custom"}
+
+
+class MomentBody(BaseModel):
+    type: str
+    date: str  # YYYY-MM-DD or MM-DD for recurring annual
+    title: Optional[str] = None
+    recurring_annual: bool = True
+    notes: Optional[str] = None
+    remind_days_before: int = 7
+
+
+@api.get("/customers/{customer_id}/moments")
+async def list_moments(customer_id: str, _: User = Depends(get_current_user)):
+    out = await db.customer_moments.find({"customer_id": customer_id}, {"_id": 0}).sort("date", 1).to_list(50)
+    return out
+
+
+@api.post("/customers/{customer_id}/moments")
+async def add_moment(customer_id: str, body: MomentBody, user: User = Depends(get_current_user)):
+    if body.type not in MOMENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. One of: {sorted(MOMENT_TYPES)}")
+    doc = {
+        "moment_id": new_id("mom_"),
+        "customer_id": customer_id,
+        "type": body.type,
+        "date": body.date,
+        "title": body.title or body.type.title(),
+        "recurring_annual": bool(body.recurring_annual),
+        "notes": body.notes,
+        "remind_days_before": max(0, min(30, int(body.remind_days_before))),
+        "created_by": user.user_id,
+        "created_at": iso(now_utc()),
+    }
+    await db.customer_moments.insert_one(dict(doc))
+    await _audit(user, "moment.add", "customer", customer_id, None)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/customers/{customer_id}/moments/{moment_id}")
+async def delete_moment(customer_id: str, moment_id: str, user: User = Depends(get_current_user)):
+    await db.customer_moments.delete_one({"moment_id": moment_id, "customer_id": customer_id})
+    await _audit(user, "moment.delete", "customer", customer_id, None)
+    return {"ok": True}
+
+
+async def _run_moments_scheduler() -> Dict[str, Any]:
+    """Background job: every morning, scan customer_moments for upcoming events
+    within `remind_days_before` and create a follow-up task per (moment, year)
+    that's idempotent so re-running the job won't duplicate."""
+    today_dt = now_utc().date()
+    created = 0
+    async for m in db.customer_moments.find({}, {"_id": 0}):
+        try:
+            base = datetime.strptime(m["date"][-10:] if len(m["date"]) >= 10 else m["date"], "%Y-%m-%d").date() if "-" in m["date"] else None
+            if base is None:
+                continue
+            if m.get("recurring_annual"):
+                # This year's instance of the moment
+                instance = base.replace(year=today_dt.year)
+                if instance < today_dt:
+                    instance = instance.replace(year=today_dt.year + 1)
+            else:
+                instance = base
+            remind_at = instance - timedelta(days=int(m.get("remind_days_before") or 7))
+            if today_dt < remind_at or today_dt > instance:
+                continue
+            # Idempotent key per moment-year
+            year_key = f"{m['moment_id']}:{instance.year}"
+            existing = await db.customer_tasks.find_one({"source_moment_key": year_key}, {"_id": 0})
+            if existing:
+                continue
+            # Find assignee
+            assignment = await db.customer_assignments.find_one({"customer_id": m["customer_id"]}, {"_id": 0}) or {}
+            task = {
+                "task_id": new_id("tsk_"),
+                "customer_id": m["customer_id"],
+                "title": f"{m.get('title') or m['type'].title()} reminder ({(instance - today_dt).days}d away)",
+                "due_date": instance.isoformat(),
+                "completed": False,
+                "source": "moment",
+                "source_moment_key": year_key,
+                "assignee_user_id": assignment.get("assignee_user_id"),
+                "assignee_name": assignment.get("assignee_name"),
+                "created_at": iso(now_utc()),
+            }
+            await db.customer_tasks.insert_one(dict(task))
+            created += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("moment scheduler error for %s: %s", m.get("moment_id"), exc)
+    return {"tasks_created": created}
+
+
+# ---------------------------------------------------------------------- #
+#  WhatsApp Co-pilot — AI drafts an outbound message for any intent      #
+# ---------------------------------------------------------------------- #
+
+class DraftMessageBody(BaseModel):
+    intent: str = "checkin"  # checkin | winback | birthday | new_arrivals | thank_you | custom
+    custom_prompt: Optional[str] = None
+    tone: str = "warm"  # warm | concise | playful | formal
+
+
+@api.post("/customers/{customer_id}/draft-message")
+async def draft_message(customer_id: str, body: DraftMessageBody, user: User = Depends(get_current_user)):
+    cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
+    if not cached:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    notes = await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(5)
+    last_msgs = await db.message_logs.find({"customer_id": customer_id}, {"_id": 0}).sort("sent_at", -1).to_list(3)
+    products = (await bi_get("/customer-products", {"customer_id": customer_id}) or [])[:5]
+
+    intent_prompts = {
+        "checkin": "Casual warm check-in. Not pushy. Reference something specific from her history if possible.",
+        "winback": "She hasn't shopped in a while. Express genuine warmth. Don't be salesy. Hint at something new she'd love.",
+        "birthday": "It's her birthday or near it. Celebrate her. Mention a small gift/perk if appropriate.",
+        "new_arrivals": "Tell her about new pieces that fit her style based on her purchase history.",
+        "thank_you": "Thank her for a recent purchase. Reference the specific items.",
+        "custom": f"Follow this brief from the associate: {body.custom_prompt or 'be warm and helpful'}",
+    }
+    intent_text = intent_prompts.get(body.intent, intent_prompts["checkin"])
+
+    sys = (
+        f"You are a senior stylist at Vivo Fashion Group (East Africa luxury fashion). "
+        f"You write WhatsApp messages to clients on behalf of {user.name}. "
+        f"Tone: {body.tone}. Use the client's first name. Keep it 2-4 sentences. "
+        f"NO emojis unless asked. NO generic 'how are you' fluff. NO hashtags. "
+        f"Reference real details from her data when relevant. End with a soft open-ended question. "
+        "Output STRICT JSON only: {\"variants\": [{\"label\": \"<short label>\", \"text\": \"<the message>\"}, ...]} "
+        "Always return exactly 3 variants with different angles."
+    )
+
+    payload = {
+        "intent": body.intent,
+        "intent_brief": intent_text,
+        "from_associate": user.name,
+        "profile": {
+            "first_name": (cached.get("customer_name") or "").split(" ")[0] or "there",
+            "full_name": cached.get("customer_name"),
+            "city": cached.get("city"),
+            "rfm_tier": cached.get("rfm_tier"),
+            "last_purchase_date": cached.get("last_purchase_date"),
+            "total_orders": cached.get("total_orders"),
+        },
+        "recent_purchases": [{
+            "name": p.get("product_name") or p.get("name"),
+            "brand": p.get("brand"),
+            "category": p.get("category"),
+            "date": p.get("order_date") or p.get("date"),
+        } for p in products],
+        "recent_notes": [n.get("body", "")[:160] for n in notes],
+        "recent_messages_we_sent": [m.get("body", "")[:120] for m in last_msgs],
+    }
+
+    variants = [{"label": "Default", "text": f"Hi {payload['profile']['first_name']}, hope you're doing well — let me know if you'd like help with anything new from Vivo."}]
+    llm_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if llm_key:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+            chat = LlmChat(
+                api_key=llm_key,
+                session_id=f"vivo-draft-{customer_id}-{int(now_utc().timestamp())}",
+                system_message=sys,
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            raw = await chat.send_message(UserMessage(text=_json.dumps(payload, ensure_ascii=False)))
+            m = _re.search(r"\{[\s\S]*\}", str(raw))
+            if m:
+                parsed = _json.loads(m.group(0))
+                if isinstance(parsed.get("variants"), list) and parsed["variants"]:
+                    variants = [{"label": str(v.get("label", "Variant"))[:40], "text": str(v.get("text", ""))[:500]} for v in parsed["variants"][:3]]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Draft LLM error for %s: %s", customer_id, exc)
+
+    await _audit(user, "message.draft", "customer", customer_id, None)
+    return {"variants": variants, "intent": body.intent, "tone": body.tone}
+
+
+# ---------------------------------------------------------------------- #
+#  Voice Notes — Whisper transcription + Claude tag extraction           #
+# ---------------------------------------------------------------------- #
+
+@api.post("/customers/{customer_id}/voice-note")
+async def voice_note(customer_id: str, audio: UploadFile = File(...), user: User = Depends(get_current_user)):
+    """Accept an audio recording, transcribe via Whisper, extract structured tags
+    via Claude, and save as a customer note. Returns transcript + tags."""
+    if audio.content_type not in {"audio/webm", "audio/mp3", "audio/mpeg", "audio/wav", "audio/x-wav", "audio/m4a", "audio/mp4", "audio/ogg", "audio/x-m4a"}:
+        # Allow it through — browser content-types vary
+        logger.info("voice-note content-type: %s", audio.content_type)
+
+    llm_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if not llm_key:
+        raise HTTPException(status_code=503, detail="EMERGENT_LLM_KEY not configured")
+
+    # Save to temp file (Whisper expects a file-like)
+    import tempfile
+    suffix = ".webm"
+    if audio.filename:
+        for ext in (".mp3", ".m4a", ".wav", ".webm", ".mp4", ".ogg"):
+            if audio.filename.lower().endswith(ext):
+                suffix = ext
+                break
+    raw = await audio.read()
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 25 MB limit")
+    transcript = ""
+    try:
+        from emergentintegrations.llm.openai import OpenAISpeechToText  # type: ignore
+        stt = OpenAISpeechToText(api_key=llm_key)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+            tf.write(raw)
+            tf.flush()
+            with open(tf.name, "rb") as fh:
+                resp = await stt.transcribe(file=fh, model="whisper-1", response_format="json")
+            transcript = (getattr(resp, "text", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Whisper transcription failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
+
+    # Extract structured tags from transcript via Claude
+    tags = {"interests": [], "size_notes": [], "sentiment": "neutral", "follow_up": None}
+    if transcript:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+            sys = (
+                "Extract structured shopping/styling signals from a store associate's voice memo about a client. "
+                "Output STRICT JSON: {\"interests\": [<short product types/categories>], "
+                "\"size_notes\": [<sizing/fit observations>], "
+                "\"sentiment\": \"positive|neutral|negative\", "
+                "\"follow_up\": \"<short action the associate should do, or null>\"}"
+            )
+            chat = LlmChat(api_key=llm_key, session_id=f"vivo-vn-{customer_id}-{int(now_utc().timestamp())}", system_message=sys
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            r = await chat.send_message(UserMessage(text=transcript))
+            m = _re.search(r"\{[\s\S]*\}", str(r))
+            if m:
+                p = _json.loads(m.group(0))
+                tags = {
+                    "interests": [str(x)[:80] for x in (p.get("interests") or [])[:6]],
+                    "size_notes": [str(x)[:80] for x in (p.get("size_notes") or [])[:4]],
+                    "sentiment": p.get("sentiment") if p.get("sentiment") in {"positive", "neutral", "negative"} else "neutral",
+                    "follow_up": (str(p["follow_up"])[:200] if p.get("follow_up") else None),
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Voice-note tagging failed: %s", exc)
+
+    # Persist as a customer note + return
+    note = {
+        "note_id": new_id("note_"),
+        "customer_id": customer_id,
+        "body": transcript,
+        "source": "voice",
+        "tags": tags,
+        "author_user_id": user.user_id,
+        "author_name": user.name,
+        "created_at": iso(now_utc()),
+    }
+    await db.customer_notes.insert_one(dict(note))
+    await _audit(user, "voice_note.add", "customer", customer_id, None)
+    return {k: v for k, v in note.items() if k != "_id"}
 
 
 @api.post("/customers/{customer_id}/forget")
