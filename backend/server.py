@@ -2369,8 +2369,8 @@ async def segment_filters(_: User = Depends(require_manager)):
     tiers = await db.customer_cache.distinct("rfm_tier")
     cities = await db.customer_cache.distinct("city")
     return {
-        "rfm_tiers": [t for t in sorted(tiers) if t],
-        "cities": [c for c in sorted(cities) if c][:200],
+        "rfm_tiers": sorted([t for t in tiers if t]),
+        "cities": sorted([c for c in cities if c])[:200],
     }
 
 
