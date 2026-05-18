@@ -13,10 +13,25 @@ import { CohortsTab, OperationsTab } from "./InsightsTabs";
 import { DateRangePicker } from "@/components/DateRangePicker";
 import { useDateRange } from "@/contexts/DateRangeContext";
 
-function KPI({ label, value, sub, testid }) {
+function KPI({ label, value, sub, delta, deltaInverted, testid }) {
+  // delta is a percentage. `deltaInverted` flips colors (e.g., for return rate where lower is better).
+  const showDelta = delta !== null && delta !== undefined && !Number.isNaN(delta);
+  const positive = deltaInverted ? delta < 0 : delta > 0;
+  const negative = deltaInverted ? delta > 0 : delta < 0;
+  const cls = positive ? "text-emerald-700 bg-emerald-50 border-emerald-200" :
+              negative ? "text-red-700 bg-red-50 border-red-200" :
+              "text-[var(--vivo-muted)] bg-[var(--vivo-bg)] border-[var(--vivo-border)]";
+  const arrow = positive ? "▲" : negative ? "▼" : "•";
   return (
     <div className="vivo-card p-6" data-testid={testid}>
-      <div className="eyebrow">{label}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="eyebrow">{label}</div>
+        {showDelta && (
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-sm border ${cls}`} data-testid={testid ? `${testid}-delta` : undefined}>
+            {arrow} {Math.abs(delta).toFixed(1)}%
+          </span>
+        )}
+      </div>
       <div className="font-display text-3xl mt-3 font-mono-num">{value}</div>
       {sub && <div className="text-xs text-[var(--vivo-muted)] mt-2">{sub}</div>}
     </div>
@@ -88,7 +103,7 @@ const NAVY = "#1F3864";
 const GOLD = "#C9A961";
 
 export default function ManagerDashboard() {
-  const { range: gRange, setRange: setGRange } = useDateRange();
+  const { range: gRange, setRange: setGRange, compare, compareOn } = useDateRange();
   // Keep a local period (which holds {from,to,label}) but sync it with the global range.
   const [period, setPeriod] = useState(() => ({ from: gRange.from, to: gRange.to, label: gRange.label || "Custom" }));
 
@@ -110,6 +125,7 @@ export default function ManagerDashboard() {
   const [churned, setChurned] = useState([]);
   const [internal, setInternal] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [compareKpis, setCompareKpis] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -137,6 +153,35 @@ export default function ManagerDashboard() {
       }
     })();
   }, [period]);
+
+  // Compare-period KPIs (only when compareOn is enabled).
+  useEffect(() => {
+    if (!compareOn || !compare?.from || !compare?.to) {
+      setCompareKpis(null);
+      return;
+    }
+    (async () => {
+      try {
+        const params = { date_from: compare.from, date_to: compare.to };
+        const r = await api.get("/bi/kpis", { params });
+        setCompareKpis(r.data);
+      } catch { setCompareKpis(null); }
+    })();
+  }, [compareOn, compare?.from, compare?.to]);
+
+  // Helpers to compute delta % between current and compare KPIs.
+  const deltaPct = (cur, prev) => {
+    if (cur === null || cur === undefined || prev === null || prev === undefined) return null;
+    const p = Number(prev);
+    if (!p) return null;
+    return ((Number(cur) - p) / Math.abs(p)) * 100;
+  };
+  const k_delta = {
+    net_sales: deltaPct(kpis?.net_sales, compareKpis?.net_sales),
+    total_orders: deltaPct(kpis?.total_orders, compareKpis?.total_orders),
+    avg_basket: deltaPct(kpis?.avg_basket_size, compareKpis?.avg_basket_size),
+    return_rate: deltaPct(kpis?.return_rate, compareKpis?.return_rate),
+  };
 
   const setRange = (key) => {
     if (key === "MTD") updatePeriod({ from: mtdStart(), to: today(), label: "MTD" });
@@ -187,10 +232,10 @@ export default function ManagerDashboard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
-        <KPI label={`Net sales · ${period.label}`} value={loading ? "—" : formatKES(kpis?.net_sales)} testid="manager-kpi-sales" />
-        <KPI label="Orders" value={loading ? "—" : formatNumber(kpis?.total_orders)} />
-        <KPI label="Avg basket" value={loading ? "—" : formatKES(kpis?.avg_basket_size)} />
-        <KPI label="Return rate" value={loading ? "—" : `${(kpis?.return_rate || 0).toFixed(1)}%`} />
+        <KPI label={`Net sales · ${period.label}`} value={loading ? "—" : formatKES(kpis?.net_sales)} delta={k_delta.net_sales} testid="manager-kpi-sales" />
+        <KPI label="Orders" value={loading ? "—" : formatNumber(kpis?.total_orders)} delta={k_delta.total_orders} />
+        <KPI label="Avg basket" value={loading ? "—" : formatKES(kpis?.avg_basket_size)} delta={k_delta.avg_basket} />
+        <KPI label="Return rate" value={loading ? "—" : `${(kpis?.return_rate || 0).toFixed(1)}%`} delta={k_delta.return_rate} deltaInverted />
       </div>
 
       <Tabs defaultValue="sales" className="mt-10">

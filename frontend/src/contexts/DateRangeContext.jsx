@@ -9,34 +9,82 @@ const defaultRange = () => ({
   label: "Last 90 days",
 });
 
+// Auto-compute the previous-period compare range for a given main range.
+export function priorPeriod(from, to) {
+  const f = new Date(from);
+  const t = new Date(to);
+  const span = Math.max(1, Math.round((t - f) / 86400000) + 1);
+  const prevTo = new Date(f);
+  prevTo.setDate(prevTo.getDate() - 1);
+  const prevFrom = new Date(prevTo);
+  prevFrom.setDate(prevFrom.getDate() - (span - 1));
+  const iso = (d) => d.toISOString().slice(0, 10);
+  return { from: iso(prevFrom), to: iso(prevTo), label: "Previous period" };
+}
+
 const loadFromStorage = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultRange();
+    if (!raw) {
+      const r = defaultRange();
+      return { range: r, compare: priorPeriod(r.from, r.to), compareOn: false };
+    }
     const v = JSON.parse(raw);
-    if (v && v.from && v.to) return { from: v.from, to: v.to, label: v.label || "Custom" };
+    if (v?.range?.from && v?.range?.to) {
+      return {
+        range: { from: v.range.from, to: v.range.to, label: v.range.label || "Custom" },
+        compare: v.compare?.from && v.compare?.to
+          ? { from: v.compare.from, to: v.compare.to, label: v.compare.label || "Previous period" }
+          : priorPeriod(v.range.from, v.range.to),
+        compareOn: !!v.compareOn,
+      };
+    }
   } catch { /* ignore */ }
-  return defaultRange();
+  const r = defaultRange();
+  return { range: r, compare: priorPeriod(r.from, r.to), compareOn: false };
 };
 
 const DateRangeContext = createContext(null);
 
 export function DateRangeProvider({ children }) {
-  const [range, setRangeState] = useState(loadFromStorage);
+  const [state, setState] = useState(loadFromStorage);
 
-  const setRange = useCallback((next) => {
-    setRangeState((prev) => {
-      const merged = { ...prev, ...next };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
-      return merged;
-    });
+  const persist = useCallback((next) => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
   }, []);
 
-  // Sync across browser tabs.
+  const setRange = useCallback((next) => {
+    setState((prev) => {
+      const merged = { ...prev.range, ...next };
+      // Auto-shift compare to "previous period" of the new main range.
+      const compare = priorPeriod(merged.from, merged.to);
+      const out = { ...prev, range: merged, compare };
+      persist(out);
+      return out;
+    });
+  }, [persist]);
+
+  const setCompare = useCallback((next) => {
+    setState((prev) => {
+      const merged = { ...prev.compare, ...next };
+      const out = { ...prev, compare: merged };
+      persist(out);
+      return out;
+    });
+  }, [persist]);
+
+  const setCompareOn = useCallback((on) => {
+    setState((prev) => {
+      const out = { ...prev, compareOn: !!on };
+      persist(out);
+      return out;
+    });
+  }, [persist]);
+
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
-        try { setRangeState(JSON.parse(e.newValue)); } catch { /* ignore */ }
+        try { setState(JSON.parse(e.newValue)); } catch { /* ignore */ }
       }
     };
     window.addEventListener("storage", onStorage);
@@ -44,11 +92,19 @@ export function DateRangeProvider({ children }) {
   }, []);
 
   const value = useMemo(() => {
-    const from = new Date(range.from);
-    const to = new Date(range.to);
+    const from = new Date(state.range.from);
+    const to = new Date(state.range.to);
     const days = Math.max(1, Math.round((to - from) / 86400000) + 1);
-    return { range, setRange, windowDays: days };
-  }, [range, setRange]);
+    return {
+      range: state.range,
+      compare: state.compare,
+      compareOn: state.compareOn,
+      windowDays: days,
+      setRange,
+      setCompare,
+      setCompareOn,
+    };
+  }, [state, setRange, setCompare, setCompareOn]);
 
   return <DateRangeContext.Provider value={value}>{children}</DateRangeContext.Provider>;
 }
@@ -56,8 +112,16 @@ export function DateRangeProvider({ children }) {
 export function useDateRange() {
   const ctx = useContext(DateRangeContext);
   if (!ctx) {
-    // Fallback in case provider isn't mounted (defensive — shouldn't happen in app)
-    return { range: defaultRange(), setRange: () => {}, windowDays: 90 };
+    const r = defaultRange();
+    return {
+      range: r,
+      compare: priorPeriod(r.from, r.to),
+      compareOn: false,
+      windowDays: 90,
+      setRange: () => {},
+      setCompare: () => {},
+      setCompareOn: () => {},
+    };
   }
   return ctx;
 }

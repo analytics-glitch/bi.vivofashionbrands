@@ -38,7 +38,7 @@ const NAV = [
   { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true },
   { to: "/audit", label: "Audit", icon: ShieldCheck, testid: "nav-audit", manager: true },
-  { to: "/data-quality", label: "Data quality", icon: Database, testid: "nav-data-quality", manager: true },
+  { to: "/data-quality", label: "Quality", icon: Database, testid: "nav-data-quality", manager: true },
 ];
 
 export default function AppShell() {
@@ -54,7 +54,7 @@ export default function AppShell() {
   const searchTimer = useRef(null);
   const searchBoxRef = useRef(null);
   const notifsRef = useRef(null);
-  const { range, setRange } = useDateRange();
+  const { range, setRange, compare, setCompare, compareOn, setCompareOn } = useDateRange();
 
   // Load open follow-ups for the bell (best-effort, refresh every 2 min)
   useEffect(() => {
@@ -132,49 +132,37 @@ export default function AppShell() {
       <header className="sticky top-0 z-40 bg-white border-b border-[var(--vivo-border)]" data-testid="top-nav">
         <div className="mx-auto max-w-[1600px] flex items-center h-16 px-4 md:px-6 gap-2">
           {/* Brand */}
-          <Link to="/dashboard" className="flex items-center gap-3 pr-4 mr-2 border-r border-[var(--vivo-border)] shrink-0" data-testid="brand-link">
-            <div className="vivo-logo-tile h-10 w-10 text-base">Vivo</div>
-            <div className="hidden lg:block leading-tight">
-              <div className="font-display text-base text-[var(--vivo-navy)] tracking-tight">Vivo CRM</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Clienteling · East Africa</div>
+          <Link to="/dashboard" className="flex items-center gap-2 pr-3 mr-1 border-r border-[var(--vivo-border)] shrink-0" data-testid="brand-link">
+            <div className="vivo-logo-tile h-9 w-9 text-sm">Vivo</div>
+            <div className="hidden 2xl:block leading-tight">
+              <div className="font-display text-sm text-[var(--vivo-navy)] tracking-tight">Vivo CRM</div>
+              <div className="text-[9px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Clienteling</div>
             </div>
           </Link>
 
           {/* Desktop nav */}
-          <nav className="hidden md:flex items-center gap-0.5 flex-1 overflow-x-auto no-scrollbar" data-testid="top-nav-items">
+          <nav className="hidden md:flex items-center gap-0 flex-1 overflow-x-auto no-scrollbar" data-testid="top-nav-items">
             {items.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 data-testid={item.testid}
                 className={({ isActive }) =>
-                  `inline-flex items-center gap-1.5 px-3 h-16 -mb-px text-sm whitespace-nowrap border-b-2 transition ${
+                  `inline-flex items-center gap-1.5 px-2.5 h-16 -mb-px text-[13px] whitespace-nowrap border-b-2 transition ${
                     isActive
                       ? "border-[var(--vivo-gold)] text-[var(--vivo-navy)] font-semibold"
                       : "border-transparent text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)]"
                   }`
                 }
               >
-                <item.icon className="h-3.5 w-3.5" />
+                <item.icon className="h-3.5 w-3.5 hidden xl:inline" />
                 {item.label}
               </NavLink>
             ))}
           </nav>
 
-          {/* Global date range — shared across all analytics pages, persisted */}
-          <div className="hidden lg:block shrink-0 mr-1" data-testid="global-date-range">
-            <DateRangePicker
-              testid="global-date-picker"
-              value={{ from: range.from, to: range.to }}
-              onChange={(v) => setRange(v)}
-              defaultPreset="last_90"
-              align="end"
-              buttonClassName="h-9 px-2.5 text-xs"
-            />
-          </div>
-
           {/* Search */}
-          <div ref={searchBoxRef} className="hidden md:block relative shrink-0" data-testid="global-search">
+          <div ref={searchBoxRef} className="hidden xl:block relative shrink-0" data-testid="global-search">
             <div className={`flex items-center gap-2 h-9 rounded-sm border transition ${searchOpen ? "border-[var(--vivo-navy)] bg-white w-72" : "border-[var(--vivo-border)] bg-[var(--vivo-bg)] w-44"}`}>
               <Search className="h-3.5 w-3.5 text-[var(--vivo-muted)] ml-2.5 shrink-0" />
               <input
@@ -322,6 +310,47 @@ export default function AppShell() {
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
+        </div>
+
+        {/* Date-range sub-toolbar — visible on all analytics pages */}
+        <div className="hidden md:flex items-center gap-2 px-4 md:px-6 h-12 border-t border-[var(--vivo-border)] bg-[var(--vivo-bg)]" data-testid="global-date-range">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)] mr-1">Period</span>
+          <DateRangePicker
+            testid="global-date-picker"
+            value={{ from: range.from, to: range.to }}
+            onChange={(v) => setRange(v)}
+            defaultPreset="last_90"
+            align="start"
+            buttonClassName="h-8 px-2.5 text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => setCompareOn(!compareOn)}
+            title={compareOn ? "Hide comparison" : "Compare to another period"}
+            className={`h-8 px-2.5 text-[10px] uppercase tracking-[0.15em] rounded-sm border transition ${
+              compareOn
+                ? "bg-[var(--vivo-navy)] text-white border-[var(--vivo-navy)]"
+                : "bg-white text-[var(--vivo-muted)] border-[var(--vivo-border)] hover:text-[var(--vivo-navy)]"
+            }`}
+            data-testid="compare-toggle"
+          >
+            vs
+          </button>
+          {compareOn && (
+            <DateRangePicker
+              testid="global-compare-picker"
+              value={{ from: compare.from, to: compare.to }}
+              onChange={(v) => setCompare(v)}
+              defaultPreset="custom"
+              align="start"
+              buttonClassName="h-8 px-2.5 text-xs"
+            />
+          )}
+          {compareOn && (
+            <span className="text-[10px] text-[var(--vivo-muted)] ml-1">
+              Auto-shifts when you change the main period
+            </span>
+          )}
         </div>
 
         {/* Mobile dropdown */}
