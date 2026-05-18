@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { DateRangePicker } from "@/components/DateRangePicker";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -196,26 +197,19 @@ export default function Training() {
           <Filter className="h-4 w-4 text-[var(--vivo-navy)]" />
           <div className="eyebrow">Filters</div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <div>
-            <label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">From</label>
-            <Input
-              type="date"
-              value={sel.date_from}
-              onChange={(e) => setSel((s) => ({ ...s, date_from: e.target.value }))}
-              data-testid="filter-date-from"
-              className="mt-1 rounded-sm"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">To</label>
-            <Input
-              type="date"
-              value={sel.date_to}
-              onChange={(e) => setSel((s) => ({ ...s, date_to: e.target.value }))}
-              data-testid="filter-date-to"
-              className="mt-1 rounded-sm"
-            />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="lg:col-span-2">
+            <label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Date range</label>
+            <div className="mt-1">
+              <DateRangePicker
+                testid="training-date-range"
+                value={{ from: sel.date_from, to: sel.date_to }}
+                onChange={({ from, to }) => setSel((s) => ({ ...s, date_from: from, date_to: to }))}
+                minDate={filters.earliest_date}
+                maxDate={filters.latest_date}
+                buttonClassName="w-full justify-start"
+              />
+            </div>
           </div>
           <div>
             <label className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Category</label>

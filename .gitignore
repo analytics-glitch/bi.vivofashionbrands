@@ -9,3 +9,4 @@ __pycache__/
 dist/
 build/
 frontend/node_modules/.cache/default-development/13.pack
+frontend/node_modules/.cache/default-development/3.pack

@@ -10,6 +10,7 @@ import { Sparkles, Facebook, Link as LinkIcon, RefreshCw, Trash2, ExternalLink, 
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from "recharts";
 import { CohortsTab, OperationsTab } from "./InsightsTabs";
+import { DateRangePicker } from "@/components/DateRangePicker";
 
 function KPI({ label, value, sub, testid }) {
   return (
@@ -141,24 +142,33 @@ export default function ManagerDashboard() {
             Source: BI <code className="text-[var(--vivo-text)]">{period.from} → {period.to}</code> · Africa/Nairobi
           </div>
         </div>
-        <div className="flex bg-white border border-[var(--vivo-border)] rounded-sm overflow-hidden" data-testid="period-toggle">
-          {[
-            ["MTD", "MTD"],
-            ["LASTM", "Last month"],
-            ["YTD", "YTD"],
-            [7, "7d"],
-            [30, "30d"],
-            [90, "90d"],
-          ].map(([k, l]) => (
-            <button
-              key={k}
-              onClick={() => setRange(k)}
-              className={`h-11 px-4 text-sm ${period.label === l ? "bg-[var(--vivo-navy)] text-white" : "text-[var(--vivo-muted)]"}`}
-              data-testid={`period-${k}`}
-            >
-              {l}
-            </button>
-          ))}
+        <div className="flex items-center gap-3" data-testid="period-toolbar">
+          <DateRangePicker
+            testid="manager-date-range"
+            value={{ from: period.from, to: period.to }}
+            onChange={({ from, to, label }) => setPeriod({ from, to, label })}
+            defaultPreset="mtd"
+            align="end"
+          />
+          <div className="flex bg-white border border-[var(--vivo-border)] rounded-sm overflow-hidden" data-testid="period-toggle">
+            {[
+              ["MTD", "MTD"],
+              ["LASTM", "Last month"],
+              ["YTD", "YTD"],
+              [7, "7d"],
+              [30, "30d"],
+              [90, "90d"],
+            ].map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setRange(k)}
+                className={`h-10 px-3 text-xs ${period.label === l ? "bg-[var(--vivo-navy)] text-white" : "text-[var(--vivo-muted)]"}`}
+                data-testid={`period-${k}`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
