@@ -874,10 +874,15 @@ async def get_audit(limit: int = 100, _: User = Depends(require_manager)):
 
 @api.get("/dashboard/me")
 async def dashboard_me(user: User = Depends(get_current_user)):
-    week_ago = (now_utc() - timedelta(days=7)).isoformat()
-    today_iso_str = now_utc().date().isoformat()
+    now_dt = now_utc()
+    week_ago = (now_dt - timedelta(days=7)).isoformat()
+    two_weeks_ago = (now_dt - timedelta(days=14)).isoformat()
+    today_iso_str = now_dt.date().isoformat()
     msgs_week = await db.message_logs.count_documents({"sender_user_id": user.user_id, "sent_at": {"$gte": week_ago}})
     customers_week = await db.message_logs.distinct("customer_id", {"sender_user_id": user.user_id, "sent_at": {"$gte": week_ago}})
+    # Prior 7d (8-14 days ago) for delta calc
+    msgs_prev = await db.message_logs.count_documents({"sender_user_id": user.user_id, "sent_at": {"$gte": two_weeks_ago, "$lt": week_ago}})
+    customers_prev = await db.message_logs.distinct("customer_id", {"sender_user_id": user.user_id, "sent_at": {"$gte": two_weeks_ago, "$lt": week_ago}})
     tasks_open = await db.customer_tasks.find(
         {"assignee_user_id": user.user_id, "completed": False},
         {"_id": 0},
@@ -891,15 +896,24 @@ async def dashboard_me(user: User = Depends(get_current_user)):
     # Daily outreach goal — per-user setting, default 5
     goal_doc = await db.outreach_goals.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
     daily_goal = int(goal_doc.get("daily_goal") or 5)
-    today_start = now_utc().date().isoformat()
+    today_start = now_dt.date().isoformat()
     contacts_today = len(await db.message_logs.distinct(
         "customer_id",
         {"sender_user_id": user.user_id, "sent_at": {"$gte": today_start}},
     ))
 
+    def _pct(cur, prev):
+        if not prev:
+            return None
+        return round((cur - prev) / abs(prev) * 100, 1)
+
     return {
         "messages_this_week": msgs_week,
+        "messages_prev_week": msgs_prev,
+        "messages_delta_pct": _pct(msgs_week, msgs_prev),
         "customers_contacted_this_week": len(customers_week),
+        "customers_contacted_prev_week": len(customers_prev),
+        "customers_delta_pct": _pct(len(customers_week), len(customers_prev)),
         "open_tasks": len(tasks_open),
         "overdue_tasks": len(overdue),
         "tasks": tasks_open,
@@ -923,7 +937,9 @@ async def update_outreach_goal(payload: Dict[str, int] = Body(...), user: User =
 
 @api.get("/dashboard/manager")
 async def dashboard_manager(_: User = Depends(require_manager)):
-    week_ago = (now_utc() - timedelta(days=7)).isoformat()
+    now_dt = now_utc()
+    week_ago = (now_dt - timedelta(days=7)).isoformat()
+    two_weeks_ago = (now_dt - timedelta(days=14)).isoformat()
     pipeline = [
         {"$match": {"sent_at": {"$gte": week_ago}}},
         {
@@ -942,10 +958,23 @@ async def dashboard_manager(_: User = Depends(require_manager)):
     open_tasks = await db.customer_tasks.count_documents({"completed": False})
     associates = await db.users.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
 
+    # Prior 7d for delta computation
+    prev_messages = await db.message_logs.count_documents({"sent_at": {"$gte": two_weeks_ago, "$lt": week_ago}})
+    prev_lookbooks = await db.lookbooks.count_documents({"created_at": {"$gte": two_weeks_ago, "$lt": week_ago}})
+
+    def _pct(cur, prev):
+        if not prev:
+            return None
+        return round((cur - prev) / abs(prev) * 100, 1)
+
     return {
         "totals": {
             "messages_week": total_messages,
+            "messages_prev_week": prev_messages,
+            "messages_delta_pct": _pct(total_messages, prev_messages),
             "lookbooks_week": total_lookbooks,
+            "lookbooks_prev_week": prev_lookbooks,
+            "lookbooks_delta_pct": _pct(total_lookbooks, prev_lookbooks),
             "open_tasks": open_tasks,
             "associates": len(associates),
         },

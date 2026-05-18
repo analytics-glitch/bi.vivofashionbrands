@@ -7,10 +7,29 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowRight, CheckCircle2, Search, Calendar, AlertTriangle, Sparkles, Cake } from "lucide-react";
 import { RfmBadge } from "@/components/RfmBadge";
 
-function KPI({ label, value, sub, testid }) {
+function KPI({ label, value, sub, delta, deltaInverted, testid }) {
+  const showDelta = delta !== null && delta !== undefined && !Number.isNaN(delta);
+  const positive = deltaInverted ? delta < 0 : delta > 0;
+  const negative = deltaInverted ? delta > 0 : delta < 0;
+  const flat = Math.abs(delta || 0) < 0.1;
+  const cls = !showDelta || flat
+    ? "text-[var(--vivo-muted)] bg-[var(--vivo-bg)] border-[var(--vivo-border)]"
+    : positive
+    ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+    : negative
+    ? "text-red-700 bg-red-50 border-red-200"
+    : "text-[var(--vivo-muted)] bg-[var(--vivo-bg)] border-[var(--vivo-border)]";
+  const arrow = flat ? "•" : positive ? "▲" : "▼";
   return (
     <div className="vivo-card p-6" data-testid={testid}>
-      <div className="eyebrow">{label}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="eyebrow">{label}</div>
+        {showDelta && (
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-sm border ${cls}`} title="vs previous 7 days">
+            {arrow} {Math.abs(delta).toFixed(1)}%
+          </span>
+        )}
+      </div>
       <div className="font-display text-4xl mt-3 font-mono-num">{value}</div>
       {sub && <div className="text-sm text-[var(--vivo-muted)] mt-2">{sub}</div>}
     </div>
@@ -82,8 +101,8 @@ export default function Dashboard() {
       <DailyGoalCard me={me} loading={loading} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-6">
-        <KPI label="Customers contacted · 7d" value={loading ? "—" : formatNumber(me?.customers_contacted_this_week || 0)} testid="kpi-customers-contacted" />
-        <KPI label="Messages sent · 7d" value={loading ? "—" : formatNumber(me?.messages_this_week || 0)} testid="kpi-messages" />
+        <KPI label="Customers contacted · 7d" value={loading ? "—" : formatNumber(me?.customers_contacted_this_week || 0)} delta={me?.customers_delta_pct} testid="kpi-customers-contacted" />
+        <KPI label="Messages sent · 7d" value={loading ? "—" : formatNumber(me?.messages_this_week || 0)} delta={me?.messages_delta_pct} testid="kpi-messages" />
         <Link to="/follow-ups" className="block" data-testid="kpi-tasks-link">
           <KPI label="Open follow-ups" value={loading ? "—" : formatNumber(me?.open_tasks || 0)} sub={me?.overdue_tasks ? `${me.overdue_tasks} overdue · view` : "view all"} testid="kpi-tasks" />
         </Link>

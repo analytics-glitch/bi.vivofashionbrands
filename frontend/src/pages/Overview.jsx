@@ -95,7 +95,7 @@ export default function Overview() {
   const [returnTrend, setReturnTrend] = useState(null);
   const [winbackBusy, setWinbackBusy] = useState(false);
   // Global date range (shared with Insights, Training, etc. — persisted to localStorage)
-  const { range, setRange, windowDays } = useDateRange();
+  const { range, setRange, compare, compareOn, windowDays } = useDateRange();
 
   useEffect(() => {
     (async () => {
@@ -184,11 +184,11 @@ export default function Overview() {
       {/* KPI strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mt-8" data-testid="overview-kpis">
         <Kpi label="Total customers" value={ov ? formatNumber(ov.kpis.total_customers) : "—"} sub="All time" icon={Users} testid="kpi-total" color="#0F4D31" />
-        <Kpi label="New · 30d" value={ov ? formatNumber(ov.kpis.new_customers_30d) : "—"} delta={ov?.kpis.new_customers_delta_pct} deltaHint="vs prior 30d" sub="net new customers" icon={UserPlus} testid="kpi-new" color="#ED7C2A" />
-        <Kpi label="Active · 30d" value={ov ? formatNumber(ov.kpis.active_customers_30d) : "—"} delta={ov?.kpis.active_customers_delta_pct} deltaHint="vs prior 30d" sub="bought in last 30d" icon={Heart} testid="kpi-active" color="#5B8A6E" />
+        <Kpi label={`New · ${windowDays}d`} value={ov ? formatNumber(ov.kpis.new_customers_30d) : "—"} delta={ov?.kpis.new_customers_delta_pct} deltaHint={compareOn ? "vs compare period" : "vs prior period"} sub="net new customers" icon={UserPlus} testid="kpi-new" color="#ED7C2A" />
+        <Kpi label={`Active · ${windowDays}d`} value={ov ? formatNumber(ov.kpis.active_customers_30d) : "—"} delta={ov?.kpis.active_customers_delta_pct} deltaHint={compareOn ? "vs compare period" : "vs prior period"} sub="bought in window" icon={Heart} testid="kpi-active" color="#5B8A6E" />
         <Kpi label="VIPs" value={ov ? formatNumber(ov.kpis.vip_customers) : "—"} sub={ov ? `${ov.kpis.at_risk_customers} at risk` : "—"} icon={ShieldAlert} testid="kpi-vip" color="#C9A961" />
-        <Kpi label="Avg basket" value={ov ? formatKES(ov.kpis.avg_basket_kes) : "—"} sub="active customers" icon={Target} testid="kpi-basket" color="#0F4D31" />
-        <Kpi label="Messages · 30d" value={ov ? formatNumber(ov.kpis.messages_sent_30d) : "—"} delta={ov?.kpis.messages_delta_pct} deltaHint="vs prior 30d" sub="WhatsApp + SMS" icon={MessageSquare} testid="kpi-messages" color="#5B8A6E" />
+        <Kpi label="Avg basket" value={ov ? formatKES(ov.kpis.avg_basket_kes) : "—"} delta={ov?.kpis.avg_basket_delta_pct} deltaHint={compareOn ? "vs compare period" : "vs prior period"} sub="active customers" icon={Target} testid="kpi-basket" color="#0F4D31" />
+        <Kpi label={`Messages · ${windowDays}d`} value={ov ? formatNumber(ov.kpis.messages_sent_30d) : "—"} delta={ov?.kpis.messages_delta_pct} deltaHint={compareOn ? "vs compare period" : "vs prior period"} sub="WhatsApp + SMS" icon={MessageSquare} testid="kpi-messages" color="#5B8A6E" />
         <Kpi label="Social sentiment" value={ov ? `${ov.kpis.social_sentiment_net > 0 ? "+" : ""}${ov.kpis.social_sentiment_net}` : "—"} sub={ov ? `${ov.kpis.social_feedback_30d} posts · net +ve − −ve` : "—"} icon={Sparkles} testid="kpi-sentiment" color={ov?.kpis.social_sentiment_net >= 0 ? "#0F4D31" : "#E47979"} />
         <Kpi label="Projected churn · 30d" value={drop ? formatNumber(drop.projected_churn_next_30d) : "—"} sub={drop ? `of ${drop.evaluated} recent new customers` : "—"} icon={AlertTriangle} testid="kpi-churn" color="#E47979" />
       </div>

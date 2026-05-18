@@ -396,88 +396,124 @@ def make_router(get_current_user, require_manager, db, audit_fn, bi_get):
     # 11. Overview — headline insights strip                                #
     # --------------------------------------------------------------------- #
 
-    @router.get("/overview")
-    async def overview(_: Any = Depends(require_manager)):
-        """Executive overview: headline KPIs + 30d trends + key callouts."""
-        now_dt = now_utc()
-        cutoff_30 = (now_dt - timedelta(days=30)).isoformat()
-        cutoff_60 = (now_dt - timedelta(days=60)).isoformat()
+    async def _compute_overview_kpis(date_from: str, date_to: str) -> Dict[str, Any]:
+        """Compute window-scoped KPIs (new customers, active, messages, sentiment)
+        for any [date_from, date_to] (ISO date strings). Used for both the main
+        period and the user-selected compare period."""
+        # Use full-day ISO bounds so we capture the entire `to` day.
+        lo = date_from + "T00:00:00+00:00" if "T" not in date_from else date_from
+        hi = date_to + "T23:59:59+00:00" if "T" not in date_to else date_to
 
-        # Customer-cache base
-        total_customers = await db.customer_cache.count_documents({})
-
-        # New this 30d / previous 30d
-        new_30 = await db.customer_cache.count_documents({"first_purchase_date": {"$gte": cutoff_30}})
-        new_prev = await db.customer_cache.count_documents({"first_purchase_date": {"$gte": cutoff_60, "$lt": cutoff_30}})
-        new_delta = _pct_delta(new_30, new_prev)
-
-        # Active 30d (bought in last 30d)
-        active_30 = await db.customer_cache.count_documents({"last_purchase_date": {"$gte": cutoff_30}})
-        active_prev = await db.customer_cache.count_documents({"last_purchase_date": {"$gte": cutoff_60, "$lt": cutoff_30}})
-        active_delta = _pct_delta(active_30, active_prev)
-
-        # RFM distribution
-        tier_dist = {}
-        async for t in db.customer_cache.aggregate([
-            {"$match": {"rfm_tier": {"$ne": None}}},
-            {"$group": {"_id": "$rfm_tier", "n": {"$sum": 1}}},
-        ]):
-            tier_dist[t["_id"]] = t["n"]
-
-        at_risk_count = tier_dist.get("at_risk", 0)
-        vip_count = tier_dist.get("vip", 0)
-
-        # Outreach 30d
-        messages_30 = await db.message_logs.count_documents({"sent_at": {"$gte": cutoff_30}})
-        messages_prev = await db.message_logs.count_documents({"sent_at": {"$gte": cutoff_60, "$lt": cutoff_30}})
-        messages_delta = _pct_delta(messages_30, messages_prev)
-
-        # Revenue est from cache (sum of total_sales of active-30d customers — proxy)
+        new_n = await db.customer_cache.count_documents({"first_purchase_date": {"$gte": date_from, "$lte": date_to}})
+        active_n = await db.customer_cache.count_documents({"last_purchase_date": {"$gte": date_from, "$lte": date_to}})
+        messages_n = await db.message_logs.count_documents({"sent_at": {"$gte": lo, "$lte": hi}})
         rev_rows = await db.customer_cache.aggregate([
-            {"$match": {"last_purchase_date": {"$gte": cutoff_30}}},
-            {"$group": {"_id": None, "lifetime_sum": {"$sum": "$total_sales"}, "avg_basket": {"$avg": "$avg_basket"}}},
+            {"$match": {"last_purchase_date": {"$gte": date_from, "$lte": date_to}}},
+            {"$group": {"_id": None, "avg_basket": {"$avg": "$avg_basket"}}},
         ]).to_list(1)
         avg_basket = float(rev_rows[0]["avg_basket"]) if rev_rows else 0.0
-
-        # Social sentiment 30d
         sent_dist: Dict[str, int] = defaultdict(int)
         async for s in db.social_feedback.aggregate([
-            {"$match": {"posted_at": {"$gte": cutoff_30}, "sentiment": {"$ne": None}}},
+            {"$match": {"posted_at": {"$gte": lo, "$lte": hi}, "sentiment": {"$ne": None}}},
             {"$group": {"_id": "$sentiment", "n": {"$sum": 1}}},
         ]):
             sent_dist[s["_id"]] = s["n"]
         sent_total = sum(sent_dist.values())
         sent_score = round(((sent_dist.get("positive", 0) - sent_dist.get("negative", 0)) / sent_total * 100), 1) if sent_total else 0.0
+        return {
+            "new_customers": new_n,
+            "active_customers": active_n,
+            "messages_sent": messages_n,
+            "avg_basket_kes": round(avg_basket, 0),
+            "social_sentiment_net": sent_score,
+            "social_feedback_count": sent_total,
+            "sentiment_distribution": dict(sent_dist),
+        }
 
-        # Callouts — small narrative badges
+    @router.get("/overview")
+    async def overview(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        compare_from: Optional[str] = None,
+        compare_to: Optional[str] = None,
+        _: Any = Depends(require_manager),
+    ):
+        """Executive overview: headline KPIs for any [date_from, date_to] window
+        with an optional compare window for deltas. Defaults to last 30d vs prior 30d."""
+        now_dt = now_utc()
+        # Defaults: last 30d vs prior 30d (preserves legacy behaviour).
+        df = date_from or (now_dt - timedelta(days=30)).date().isoformat()
+        dt = date_to or now_dt.date().isoformat()
+        if not (compare_from and compare_to):
+            # Auto-compute "previous period" of equal length.
+            d1 = datetime.fromisoformat(df).date()
+            d2 = datetime.fromisoformat(dt).date()
+            span_days = max(1, (d2 - d1).days + 1)
+            compare_to = (d1 - timedelta(days=1)).isoformat()
+            compare_from = (d1 - timedelta(days=span_days)).isoformat()
+
+        # Customer-cache base (always all-time)
+        total_customers = await db.customer_cache.count_documents({})
+
+        # Tier distribution (always all-time)
+        tier_dist: Dict[str, int] = {}
+        async for t in db.customer_cache.aggregate([
+            {"$match": {"rfm_tier": {"$ne": None}}},
+            {"$group": {"_id": "$rfm_tier", "n": {"$sum": 1}}},
+        ]):
+            tier_dist[t["_id"]] = t["n"]
+        at_risk_count = tier_dist.get("at_risk", 0)
+        vip_count = tier_dist.get("vip", 0)
+
+        # Main window + compare window
+        cur = await _compute_overview_kpis(df, dt)
+        prev = await _compute_overview_kpis(compare_from, compare_to)
+
+        new_delta = _pct_delta(cur["new_customers"], prev["new_customers"])
+        active_delta = _pct_delta(cur["active_customers"], prev["active_customers"])
+        messages_delta = _pct_delta(cur["messages_sent"], prev["messages_sent"])
+        sentiment_delta = round(cur["social_sentiment_net"] - prev["social_sentiment_net"], 1) if (cur["social_feedback_count"] and prev["social_feedback_count"]) else None
+        basket_delta = _pct_delta(cur["avg_basket_kes"], prev["avg_basket_kes"])
+
         callouts = []
         if new_delta is not None and new_delta > 15:
-            callouts.append({"tone": "positive", "text": f"New customers up {new_delta:+.0f}% vs. prior 30d"})
+            callouts.append({"tone": "positive", "text": f"New customers up {new_delta:+.0f}% vs. prior period"})
         elif new_delta is not None and new_delta < -15:
-            callouts.append({"tone": "warning", "text": f"New customers down {new_delta:+.0f}% vs. prior 30d"})
+            callouts.append({"tone": "warning", "text": f"New customers down {new_delta:+.0f}% vs. prior period"})
         if at_risk_count:
             callouts.append({"tone": "warning", "text": f"{at_risk_count} customers at risk — schedule win-backs"})
-        if sent_score < 0 and sent_total > 10:
-            callouts.append({"tone": "warning", "text": f"Social sentiment net {sent_score:+.0f} — check Inbox"})
+        if cur["social_sentiment_net"] < 0 and cur["social_feedback_count"] > 10:
+            callouts.append({"tone": "warning", "text": f"Social sentiment net {cur['social_sentiment_net']:+.0f} — check Inbox"})
 
         return {
             "generated_at": iso(now_dt),
+            "window": {"from": df, "to": dt},
+            "compare_window": {"from": compare_from, "to": compare_to},
             "kpis": {
                 "total_customers": total_customers,
-                "new_customers_30d": new_30,
+                # Window-scoped (use _30d suffix kept for FE backward-compat, but actually reflects
+                # whatever window the user selected)
+                "new_customers_30d": cur["new_customers"],
+                "new_customers_prev": prev["new_customers"],
                 "new_customers_delta_pct": new_delta,
-                "active_customers_30d": active_30,
+                "active_customers_30d": cur["active_customers"],
+                "active_customers_prev": prev["active_customers"],
                 "active_customers_delta_pct": active_delta,
                 "vip_customers": vip_count,
                 "at_risk_customers": at_risk_count,
-                "avg_basket_kes": round(avg_basket, 0),
-                "messages_sent_30d": messages_30,
+                "avg_basket_kes": cur["avg_basket_kes"],
+                "avg_basket_prev": prev["avg_basket_kes"],
+                "avg_basket_delta_pct": basket_delta,
+                "messages_sent_30d": cur["messages_sent"],
+                "messages_sent_prev": prev["messages_sent"],
                 "messages_delta_pct": messages_delta,
-                "social_sentiment_net": sent_score,
-                "social_feedback_30d": sent_total,
+                "social_sentiment_net": cur["social_sentiment_net"],
+                "social_sentiment_prev": prev["social_sentiment_net"],
+                "social_sentiment_delta": sentiment_delta,
+                "social_feedback_30d": cur["social_feedback_count"],
             },
             "tier_distribution": tier_dist,
-            "sentiment_distribution": dict(sent_dist),
+            "sentiment_distribution": cur["sentiment_distribution"],
             "callouts": callouts,
         }
 

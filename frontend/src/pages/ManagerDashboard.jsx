@@ -347,8 +347,8 @@ export default function ManagerDashboard() {
         <TabsContent value="associates" className="mt-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <KPI label="Associates" value={formatNumber(internal?.totals?.associates || 0)} testid="manager-kpi-associates" />
-            <KPI label="Messages · 7d" value={formatNumber(internal?.totals?.messages_week || 0)} />
-            <KPI label="Lookbooks · 7d" value={formatNumber(internal?.totals?.lookbooks_week || 0)} />
+            <KPI label="Messages · 7d" value={formatNumber(internal?.totals?.messages_week || 0)} delta={internal?.totals?.messages_delta_pct} />
+            <KPI label="Lookbooks · 7d" value={formatNumber(internal?.totals?.lookbooks_week || 0)} delta={internal?.totals?.lookbooks_delta_pct} />
             <KPI label="Open follow-ups" value={formatNumber(internal?.totals?.open_tasks || 0)} />
           </div>
 
