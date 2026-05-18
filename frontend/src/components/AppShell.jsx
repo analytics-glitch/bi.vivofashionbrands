@@ -25,6 +25,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PoweredFooter, ChangelogButton } from "@/components/Polish";
 
 const NAV = [
   { to: "/dashboard", label: "Today", icon: LayoutDashboard, testid: "nav-today" },
@@ -204,6 +205,7 @@ export default function AppShell() {
           </div>
 
           {/* Notifications bell */}
+          <ChangelogButton />
           <div ref={notifsRef} className="hidden md:block relative shrink-0" data-testid="notifications">
             <button
               type="button"
@@ -396,6 +398,7 @@ export default function AppShell() {
       <main className="min-w-0">
         <Outlet />
       </main>
+      <PoweredFooter />
     </div>
   );
 }

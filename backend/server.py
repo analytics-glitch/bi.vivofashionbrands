@@ -1720,6 +1720,125 @@ async def customer_nba(customer_id: str, user: User = Depends(get_current_user))
     return result
 
 
+@api.get("/customers/{customer_id}/brief")
+async def customer_brief(customer_id: str, refresh: bool = False, user: User = Depends(get_current_user)):
+    """AI-generated 'tell me everything I need to know about this customer in 10 seconds.'
+
+    Pulls profile + RFM + recent purchases + notes + messages + assignment,
+    sends to Claude, returns a structured executive brief. Cached 24h."""
+
+    cached = await db.customer_brief_cache.find_one({"customer_id": customer_id}, {"_id": 0})
+    if cached and not refresh:
+        age = now_utc() - datetime.fromisoformat(cached["computed_at"])
+        if age < timedelta(hours=24):
+            return cached["result"]
+
+    # Gather context — pull from local customer cache + BI products endpoint.
+    cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
+    if not cached:
+        # Warm cache on first access
+        big = await bi_get("/top-customers", {
+            "date_from": "2020-01-01",
+            "date_to": now_utc().date().isoformat(),
+            "limit": 2000,
+        }) or []
+        await _cache_customers(big)
+        cached = await db.customer_cache.find_one({"customer_id": customer_id}, {"_id": 0, "cached_at": 0})
+    if not cached:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    bi = cached
+    products = await bi_get("/customer-products", {"customer_id": customer_id}) or []
+    products = _filter_products(products)[:20] if products else []
+
+    notes = await db.customer_notes.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(10)
+    msgs = await db.message_logs.find({"customer_id": customer_id}, {"_id": 0}).sort("sent_at", -1).to_list(10)
+    tasks = await db.customer_tasks.find({"customer_id": customer_id, "completed": False}, {"_id": 0}).to_list(10)
+    assignment = await db.customer_assignments.find_one({"customer_id": customer_id}, {"_id": 0}) or {}
+    feedback = await db.social_feedback.find({"customer_id": customer_id, "sentiment": {"$ne": None}}, {"_id": 0}).sort("posted_at", -1).to_list(5)
+
+    context = {
+        "profile": {
+            "name": bi.get("customer_name") or "Customer",
+            "phone": bi.get("phone"),
+            "email": bi.get("email"),
+            "city": bi.get("city"),
+            "rfm_tier": bi.get("rfm_tier"),
+            "first_purchase_date": bi.get("first_purchase_date"),
+            "last_purchase_date": bi.get("last_purchase_date"),
+            "total_sales_kes": bi.get("total_sales"),
+            "total_orders": bi.get("total_orders"),
+            "avg_basket_kes": bi.get("avg_basket"),
+            "assignee": assignment.get("assignee_name"),
+        },
+        "recent_purchases": [{
+            "name": p.get("product_name") or p.get("name"),
+            "category": p.get("category"),
+            "brand": p.get("brand"),
+            "date": p.get("order_date") or p.get("date"),
+            "amount_kes": p.get("net_sales") or p.get("amount"),
+        } for p in products[:8]],
+        "recent_notes": [{"text": n.get("body", "")[:200], "at": n.get("created_at")} for n in notes[:5]],
+        "recent_messages": [{"channel": m.get("channel"), "body": (m.get("body") or "")[:160], "at": m.get("sent_at")} for m in msgs[:5]],
+        "open_tasks": [{"title": t.get("title") or t.get("name"), "due": t.get("due_date")} for t in tasks[:5]],
+        "recent_social_feedback": [{"sentiment": f.get("sentiment"), "body": (f.get("body") or "")[:120], "platform": f.get("platform")} for f in feedback[:3]],
+        "today": now_utc().date().isoformat(),
+    }
+
+    sys_prompt = (
+        "You are a senior client advisor at Vivo Fashion Group, a luxury East African fashion house. "
+        "You write executive briefs for store associates BEFORE they reach out to a client. "
+        "Tone: warm, observant, specific. No fluff. No generic compliments. Reference real signals from the data. "
+        "Output STRICT JSON only, no markdown, no preamble. Schema: { "
+        "\"summary\": \"<3-4 sentences: who she is, her shopping personality, what she likely needs now>\", "
+        "\"talking_points\": [<2-4 short bullets the associate can mention>], "
+        "\"recommended_action\": \"<one clear action — what to do TODAY>\", "
+        "\"urgency\": \"high\"|\"medium\"|\"low\", "
+        "\"opener\": \"<one warm WhatsApp-ready opener using her first name, 1-2 sentences>\", "
+        "\"flags\": [<optional, short list of things to be careful about (e.g. recent complaint, didn't respond last 3 msgs)>] }"
+    )
+
+    result = {
+        "summary": "Insufficient data — log a few notes or purchases to enable AI briefs.",
+        "talking_points": [],
+        "recommended_action": "wait",
+        "urgency": "low",
+        "opener": "",
+        "flags": [],
+    }
+    llm_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if llm_key:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+            chat = LlmChat(
+                api_key=llm_key,
+                session_id=f"vivo-brief-{customer_id}-{int(now_utc().timestamp())}",
+                system_message=sys_prompt,
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            raw = await chat.send_message(UserMessage(text=_json.dumps(context, ensure_ascii=False)))
+            text = str(raw).strip()
+            m = _re.search(r"\{[\s\S]*\}", text)
+            if m:
+                parsed = _json.loads(m.group(0))
+                result = {
+                    "summary": str(parsed.get("summary", ""))[:600],
+                    "talking_points": [str(x)[:200] for x in (parsed.get("talking_points") or [])[:5]],
+                    "recommended_action": str(parsed.get("recommended_action", ""))[:200],
+                    "urgency": parsed.get("urgency") if parsed.get("urgency") in {"high", "medium", "low"} else "medium",
+                    "opener": str(parsed.get("opener", ""))[:400],
+                    "flags": [str(x)[:160] for x in (parsed.get("flags") or [])[:4]],
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Brief LLM error for %s: %s", customer_id, exc)
+
+    await db.customer_brief_cache.update_one(
+        {"customer_id": customer_id},
+        {"$set": {"customer_id": customer_id, "result": result, "computed_at": iso(now_utc())}},
+        upsert=True,
+    )
+    await _audit(user, "customer.brief", "customer", customer_id, None)
+    return result
+
+
 @api.post("/customers/{customer_id}/forget")
 async def forget_customer(customer_id: str, request: Request, user: User = Depends(require_manager)):
     """Kenya-DPA 'right to be forgotten'. Anonymizes all our records.

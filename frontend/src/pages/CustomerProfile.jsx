@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X, Sparkles, AlertTriangle } from "lucide-react";
+import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X, Sparkles, AlertTriangle, Wand2, RefreshCw, ChevronRight } from "lucide-react";
 import { RfmBadge } from "@/components/RfmBadge";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -41,6 +41,9 @@ export default function CustomerProfile() {
   const [nba, setNba] = useState(null);
   const [nbaLoading, setNbaLoading] = useState(false);
   const [churn, setChurn] = useState(null);
+  const [brief, setBrief] = useState(null);
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [briefLoading, setBriefLoading] = useState(false);
   const [timeline, setTimeline] = useState([]);
   const [assignment, setAssignment] = useState({ assignee_user_id: null, assignee_name: null });
   const [users, setUsers] = useState([]);
@@ -295,6 +298,22 @@ export default function CustomerProfile() {
             </Button>
             <Button onClick={() => navigate(`/lookbooks/new?customer_id=${id}&customer_name=${encodeURIComponent(profile.customer_name || "")}`)} data-testid="action-create-lookbook" variant="outline" className="h-12 rounded-sm border-[var(--vivo-navy)] text-[var(--vivo-navy)] hover:bg-[var(--vivo-bg)]">
               <BookImage className="mr-2 h-4 w-4" /> New lookbook
+            </Button>
+            <Button
+              onClick={async () => {
+                setBriefOpen(true);
+                if (brief) return;
+                setBriefLoading(true);
+                try {
+                  const r = await api.get(`/customers/${id}/brief`);
+                  setBrief(r.data);
+                } catch { /* ignore */ }
+                setBriefLoading(false);
+              }}
+              data-testid="action-ai-brief"
+              className="h-12 rounded-sm bg-[var(--vivo-gold)] hover:bg-[var(--vivo-gold)]/90 text-[var(--vivo-navy)] font-semibold"
+            >
+              <Wand2 className="mr-2 h-4 w-4" /> AI brief
             </Button>
           </div>
         </div>
@@ -1103,6 +1122,125 @@ export default function CustomerProfile() {
             >
               Forget customer
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Brief dialog */}
+      <Dialog open={briefOpen} onOpenChange={setBriefOpen}>
+        <DialogContent className="max-w-2xl rounded-sm" data-testid="ai-brief-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-display flex items-center gap-2">
+              <Wand2 className="h-5 w-5 text-[var(--vivo-gold)]" />
+              AI brief · {profile?.customer_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-5 text-sm">
+            {briefLoading && (
+              <div className="space-y-3 animate-pulse">
+                <div className="h-3 w-full bg-[var(--vivo-border)] rounded" />
+                <div className="h-3 w-5/6 bg-[var(--vivo-border)] rounded" />
+                <div className="h-3 w-4/6 bg-[var(--vivo-border)] rounded" />
+                <div className="h-3 w-3/4 bg-[var(--vivo-border)] rounded mt-4" />
+                <div className="text-xs text-[var(--vivo-muted)] mt-2">Claude is reading her profile, last 10 messages, recent notes & purchases…</div>
+              </div>
+            )}
+            {!briefLoading && brief && (
+              <>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="eyebrow">Summary</span>
+                    {brief.urgency && (
+                      <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm font-semibold ${
+                        brief.urgency === "high" ? "bg-red-50 text-red-700 border border-red-200" :
+                        brief.urgency === "medium" ? "bg-amber-50 text-amber-800 border border-amber-200" :
+                        "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                      }`} data-testid="ai-brief-urgency">{brief.urgency}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setBriefLoading(true);
+                      setBrief(null);
+                      try {
+                        const r = await api.get(`/customers/${id}/brief`, { params: { refresh: true } });
+                        setBrief(r.data);
+                      } catch { /* ignore */ }
+                      setBriefLoading(false);
+                    }}
+                    className="text-xs text-[var(--vivo-navy)] hover:underline inline-flex items-center gap-1"
+                    data-testid="ai-brief-refresh"
+                    title="Force-refresh (bypasses 24h cache)"
+                  >
+                    <RefreshCw className="h-3 w-3" /> Refresh
+                  </button>
+                </div>
+                <p className="text-[15px] leading-relaxed text-[var(--vivo-text)]" data-testid="ai-brief-summary">{brief.summary}</p>
+
+                {brief.flags?.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-sm p-3" data-testid="ai-brief-flags">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-amber-700 mb-2 flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" /> Watch for
+                    </div>
+                    <ul className="space-y-1">
+                      {brief.flags.map((f, i) => (
+                        <li key={i} className="text-xs text-amber-900 flex gap-2"><span>•</span><span>{f}</span></li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {brief.talking_points?.length > 0 && (
+                  <div>
+                    <div className="eyebrow mb-2">Talking points</div>
+                    <ul className="space-y-2" data-testid="ai-brief-talking-points">
+                      {brief.talking_points.map((tp, i) => (
+                        <li key={i} className="flex gap-2 text-sm"><ChevronRight className="h-4 w-4 text-[var(--vivo-gold)] shrink-0 mt-0.5" /><span>{tp}</span></li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {brief.opener && (
+                  <div className="bg-[var(--vivo-bg)] border border-[var(--vivo-border)] rounded-sm p-4" data-testid="ai-brief-opener">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="eyebrow">Ready-to-send opener</div>
+                      <button
+                        type="button"
+                        onClick={() => { navigator.clipboard.writeText(brief.opener); toast.success("Opener copied"); }}
+                        className="text-xs text-[var(--vivo-navy)] hover:underline"
+                        data-testid="ai-brief-copy"
+                      >Copy</button>
+                    </div>
+                    <p className="text-sm leading-relaxed italic">"{brief.opener}"</p>
+                  </div>
+                )}
+
+                {brief.recommended_action && (
+                  <div className="border-l-2 border-[var(--vivo-gold)] pl-3 py-1">
+                    <div className="eyebrow">Recommended action</div>
+                    <p className="text-sm mt-1 font-medium" data-testid="ai-brief-action">{brief.recommended_action}</p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBriefOpen(false)} data-testid="ai-brief-close">Close</Button>
+            {brief?.opener && (
+              <Button
+                onClick={() => {
+                  setBriefOpen(false);
+                  setMsgBody(brief.opener);
+                  setMsgOpen(true);
+                }}
+                className="rounded-sm bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white"
+                data-testid="ai-brief-use-opener"
+              >
+                <MessageCircle className="mr-2 h-4 w-4" /> Use this opener
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
