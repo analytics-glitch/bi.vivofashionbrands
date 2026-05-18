@@ -2259,8 +2259,227 @@ async def customer_timeline(customer_id: str, _: User = Depends(get_current_user
             "detail": (s.get("body") or "")[:300],
         })
 
+    for lb in await db.lookbooks.find({"customer_id": customer_id}, {"_id": 0}).to_list(200):
+        events.append({
+            "kind": "lookbook",
+            "ts": lb.get("created_at"),
+            "label": f"Lookbook: {lb.get('title') or 'Untitled'}",
+            "detail": f"{len(lb.get('items') or [])} items · by {lb.get('created_by_name') or 'team'}",
+        })
+
+    for mom in await db.customer_moments.find({"customer_id": customer_id}, {"_id": 0}).to_list(50):
+        events.append({
+            "kind": "moment",
+            "ts": mom.get("created_at"),
+            "label": f"{mom.get('title') or mom.get('type', '').title()} · {mom.get('type')}",
+            "detail": (mom.get("notes") or "") + (f" · annual" if mom.get("recurring_annual") else "") + f" · reminds {mom.get('remind_days_before', 7)}d before",
+        })
+
     events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
-    return {"customer_id": customer_id, "events": events[:200]}
+    return {"customer_id": customer_id, "events": events[:300]}
+
+
+    events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    return {"customer_id": customer_id, "events": events[:300]}
+
+
+# ---------------------------------------------------------------------- #
+#  Smart Segment Builder — visual query → list of customers              #
+# ---------------------------------------------------------------------- #
+
+class SegmentQuery(BaseModel):
+    rfm_tiers: Optional[List[str]] = None         # ["vip", "loyal", ...]
+    cities: Optional[List[str]] = None
+    min_total_sales: Optional[float] = None
+    max_total_sales: Optional[float] = None
+    min_orders: Optional[int] = None
+    last_purchase_after: Optional[str] = None     # ISO date
+    last_purchase_before: Optional[str] = None    # ISO date
+    first_purchase_after: Optional[str] = None
+    first_purchase_before: Optional[str] = None
+    assigned_only: Optional[bool] = None          # only customers with an assignee
+    unassigned_only: Optional[bool] = None
+    not_contacted_days: Optional[int] = None      # haven't messaged them in N days
+    limit: int = 500
+
+
+def _build_segment_filter(q: SegmentQuery) -> Dict[str, Any]:
+    f: Dict[str, Any] = {}
+    if q.rfm_tiers:
+        f["rfm_tier"] = {"$in": q.rfm_tiers}
+    if q.cities:
+        f["city"] = {"$in": q.cities}
+    if q.min_total_sales is not None or q.max_total_sales is not None:
+        f["total_sales"] = {}
+        if q.min_total_sales is not None: f["total_sales"]["$gte"] = float(q.min_total_sales)
+        if q.max_total_sales is not None: f["total_sales"]["$lte"] = float(q.max_total_sales)
+    if q.min_orders is not None:
+        f["total_orders"] = {"$gte": int(q.min_orders)}
+    if q.last_purchase_after or q.last_purchase_before:
+        f["last_purchase_date"] = {}
+        if q.last_purchase_after: f["last_purchase_date"]["$gte"] = q.last_purchase_after
+        if q.last_purchase_before: f["last_purchase_date"]["$lte"] = q.last_purchase_before
+    if q.first_purchase_after or q.first_purchase_before:
+        f["first_purchase_date"] = {}
+        if q.first_purchase_after: f["first_purchase_date"]["$gte"] = q.first_purchase_after
+        if q.first_purchase_before: f["first_purchase_date"]["$lte"] = q.first_purchase_before
+    return f
+
+
+@api.post("/segments/preview")
+async def segment_preview(q: SegmentQuery, _: User = Depends(require_manager)):
+    """Return matching customers (capped) for a segment query — used by the
+    Segment Builder UI to give live counts as the user tweaks filters."""
+    f = _build_segment_filter(q)
+
+    # Optional post-filter for assignment & not-contacted
+    cursor = db.customer_cache.find(f, {"_id": 0, "cached_at": 0}).sort("total_sales", -1).limit(min(q.limit, 2000))
+    rows = await cursor.to_list(2000)
+
+    # Assignment filters
+    if q.assigned_only or q.unassigned_only:
+        assigned_ids = set(await db.customer_assignments.distinct("customer_id"))
+        if q.assigned_only:
+            rows = [r for r in rows if r["customer_id"] in assigned_ids]
+        if q.unassigned_only:
+            rows = [r for r in rows if r["customer_id"] not in assigned_ids]
+
+    # not_contacted_days filter (uses message_logs)
+    if q.not_contacted_days:
+        cutoff = (now_utc() - timedelta(days=int(q.not_contacted_days))).isoformat()
+        recent = set(await db.message_logs.distinct(
+            "customer_id",
+            {"sent_at": {"$gte": cutoff}},
+        ))
+        rows = [r for r in rows if r["customer_id"] not in recent]
+
+    rows = rows[:q.limit]
+    # Total count (pre-limit) via separate count_documents for accuracy
+    total = await db.customer_cache.count_documents(f)
+    return {
+        "total_matches": total,
+        "shown": len(rows),
+        "customers": rows,
+    }
+
+
+@api.get("/segments/filters")
+async def segment_filters(_: User = Depends(require_manager)):
+    """Available filter values to populate the Segment Builder dropdowns."""
+    tiers = await db.customer_cache.distinct("rfm_tier")
+    cities = await db.customer_cache.distinct("city")
+    return {
+        "rfm_tiers": [t for t in sorted(tiers) if t],
+        "cities": [c for c in sorted(cities) if c][:200],
+    }
+
+
+# ---------------------------------------------------------------------- #
+#  Mass-personalized Campaigns                                           #
+# ---------------------------------------------------------------------- #
+
+class CampaignDraftBody(BaseModel):
+    customer_ids: List[str]
+    template: str  # template body with placeholders like {first_name}, optional [[ai: brief instruction]]
+    intent: str = "campaign"
+    tone: str = "warm"
+
+
+@api.post("/campaigns/preview")
+async def campaign_preview(body: CampaignDraftBody, user: User = Depends(require_manager)):
+    """For each customer in the segment, expand placeholders AND optionally invoke
+    Claude on `[[ai: ...]]` blocks to personalize. Returns the rendered messages
+    so the manager can review before sending."""
+    if not body.customer_ids:
+        raise HTTPException(status_code=400, detail="No recipients")
+    customer_ids = list(dict.fromkeys(body.customer_ids))[:200]  # cap & dedupe
+    cursor = db.customer_cache.find({"customer_id": {"$in": customer_ids}}, {"_id": 0})
+    customers = {c["customer_id"]: c for c in await cursor.to_list(len(customer_ids))}
+
+    template = body.template or ""
+    ai_match = _re.search(r"\[\[ai:\s*(.+?)\s*\]\]", template, _re.DOTALL)
+    ai_instruction = ai_match.group(1).strip() if ai_match else None
+
+    llm_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    results: List[Dict[str, Any]] = []
+    for cid in customer_ids:
+        c = customers.get(cid) or {}
+        name = (c.get("customer_name") or "").strip() or "there"
+        first_name = name.split(" ")[0] or "there"
+        rendered = template
+        # Static placeholders
+        for k, v in {
+            "{first_name}": first_name,
+            "{full_name}": name,
+            "{city}": c.get("city") or "",
+            "{rfm_tier}": c.get("rfm_tier") or "",
+        }.items():
+            rendered = rendered.replace(k, str(v))
+
+        # AI block expansion
+        if ai_instruction and llm_key:
+            try:
+                from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+                sys = (
+                    "You are a Vivo Fashion Group stylist. Write a SINGLE concise WhatsApp-ready sentence "
+                    f"in a {body.tone} tone. Do not include greeting or signature. No emojis."
+                )
+                chat = LlmChat(
+                    api_key=llm_key,
+                    session_id=f"vivo-camp-{cid}-{int(now_utc().timestamp())}",
+                    system_message=sys,
+                ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+                ctx = {
+                    "instruction": ai_instruction,
+                    "client_first_name": first_name,
+                    "rfm_tier": c.get("rfm_tier"),
+                    "last_purchase_date": c.get("last_purchase_date"),
+                    "city": c.get("city"),
+                }
+                r = await chat.send_message(UserMessage(text=_json.dumps(ctx, ensure_ascii=False)))
+                personalized = str(r).strip().strip('"')[:280]
+                rendered = rendered.replace(ai_match.group(0), personalized)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Campaign AI error %s: %s", cid, exc)
+                rendered = rendered.replace(ai_match.group(0), "")
+
+        results.append({
+            "customer_id": cid,
+            "customer_name": name,
+            "phone": c.get("phone"),
+            "message": rendered.strip(),
+        })
+
+    await _audit(user, "campaign.preview", "campaign", "n/a", None)
+    return {"count": len(results), "messages": results}
+
+
+class CampaignSendBody(BaseModel):
+    messages: List[Dict[str, Any]]  # [{customer_id, message}]
+
+
+@api.post("/campaigns/send")
+async def campaign_send(body: CampaignSendBody, user: User = Depends(require_manager)):
+    """Logs each rendered message into message_logs (so it appears on the customer
+    timeline + Manager outreach stats). Actual BSP send is mocked — managers
+    can hand off via wa.me deeplinks from the timeline."""
+    sent = 0
+    for m in body.messages[:500]:
+        if not m.get("customer_id") or not m.get("message"):
+            continue
+        await db.message_logs.insert_one({
+            "message_id": new_id("msg_"),
+            "customer_id": m["customer_id"],
+            "channel": "whatsapp",
+            "body": m["message"],
+            "sender_user_id": user.user_id,
+            "sender_name": user.name,
+            "source": "campaign",
+            "sent_at": iso(now_utc()),
+        })
+        sent += 1
+    await _audit(user, "campaign.send", "campaign", f"n={sent}", None)
+    return {"sent": sent}
 
 
 @api.get("/customers/{customer_id}/churn-reasoning")
