@@ -49,6 +49,21 @@ _KPI_STALE_TTL = 86400  # 24 h — stale data beats a Network Error banner
 _KPI_STALE_PATH = Path("/tmp/_kpi_stale_cache.json")
 _kpi_stale_save_lock = asyncio.Lock()  # serialise concurrent disk flushes
 
+# Iter 85e — Per-cache LRU caps. Without these, the in-process caches
+# below grow unbounded as users browse, eventually pushing RSS above
+# 1.6 GB and tripping the audit's "RSS memory critically high" alert.
+# Sizes calibrated to the cardinality of each cache's key space — see
+# /app/backend/cache_bounds.py for rationale.
+from cache_bounds import evict_oldest  # noqa: E402
+_KPI_STALE_CACHE_MAX = 256
+_CHURN_FULL_CACHE_MAX = 8
+_L10_CACHE_MAX = 64
+_ALL_STYLES_CACHE_MAX = 32
+_SKU_BREAKDOWN_CACHE_MAX = 256
+_CURVE_CACHE_MAX = 256
+_STS_BY_ATTR_CACHE_MAX = 64
+_WEEKDAY_PATTERN_CACHE_MAX = 32
+
 # Passive auto-recovery (May 2026): when the cross-page reconciliation
 # check has been failing for >10 minutes, a background coroutine
 # proactively flushes the poisoned `/kpis` cache and rebuilds from
@@ -64,8 +79,16 @@ async def _kpi_stale_save_async() -> None:
     """Coroutine variant of `_kpi_stale_save` that holds a lock so
     concurrent fire-and-forget callers don't race on the tmp→final
     rename. Wrapped via `asyncio.create_task` from the hot path.
+
+    Iter 85e — also enforces the LRU cap on `_kpi_stale_cache` before
+    we persist to disk. Every write to that cache funnels through
+    `_kpi_stale_save_async`, so this is the single chokepoint that
+    keeps the in-process size bounded (default cap = 256 entries).
+    Sized for the dashboard's typical date×country×channel combos so
+    a logged-in user never evicts another user's hot stale cache.
     """
     async with _kpi_stale_save_lock:
+        evict_oldest(_kpi_stale_cache, max_entries=_KPI_STALE_CACHE_MAX)
         await asyncio.to_thread(_kpi_stale_save)
 
 
@@ -3830,6 +3853,7 @@ async def get_customers_churn_rate(
             )
             if isinstance(churned_list, list) and churned_list:
                 _churn_full_cache[churn_window_days] = (time.time(), churned_list)
+                evict_oldest(_churn_full_cache, max_entries=_CHURN_FULL_CACHE_MAX)
                 out["churn_source"] = "upstream_90d"
         except HTTPException:
             _churn_neg_cache[churn_window_days] = time.time()
@@ -6328,6 +6352,7 @@ async def get_footfall_weekday_pattern(
         "group_avg_by_weekday": group_out,
     }
     _weekday_pattern_cache[cache_key] = (_t.time(), data)
+    evict_oldest(_weekday_pattern_cache, max_entries=_WEEKDAY_PATTERN_CACHE_MAX)
     return data
 
 
@@ -7446,6 +7471,7 @@ async def analytics_sts_by_attribute(
         "by_size":  _build(sold_by_size,  stock_by_size,  "size"),
     }
     _sts_by_attr_cache[cache_key] = (_time.time(), payload)
+    evict_oldest(_sts_by_attr_cache, max_entries=_STS_BY_ATTR_CACHE_MAX)
     return payload
 
 
@@ -7790,6 +7816,7 @@ async def get_footfall_daily_calendar(
         "days": days_out,
     }
     _weekday_pattern_cache[cache_key] = (_t.time(), payload)
+    evict_oldest(_weekday_pattern_cache, max_entries=_WEEKDAY_PATTERN_CACHE_MAX)
     return payload
 
 
@@ -8241,6 +8268,7 @@ async def analytics_sor_new_styles_l10(
     if not candidates:
         payload: List[Dict[str, Any]] = []
         _l10_cache[cache_key] = (_time.time(), payload)
+        evict_oldest(_l10_cache, max_entries=_L10_CACHE_MAX)
         return payload
 
     # Per-candidate maps for the 6-month and 3-week snapshots.
@@ -8404,6 +8432,7 @@ async def analytics_sor_new_styles_l10(
     out = [r for r in out if (r["units_6m"] + r["soh_total"]) >= 50]
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _l10_cache[cache_key] = (_time.time(), out)
+    evict_oldest(_l10_cache, max_entries=_L10_CACHE_MAX)
     return out
 
 
@@ -8911,6 +8940,7 @@ async def analytics_sor_all_styles(
         })
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _all_styles_cache[cache_key] = (_time.time(), out)
+    evict_oldest(_all_styles_cache, max_entries=_ALL_STYLES_CACHE_MAX)
     return out
 
 
@@ -9082,6 +9112,8 @@ async def _compute_style_breakdowns(
 
     _sku_breakdown_cache[cache_key] = (now, sku_payload)
     _location_breakdown_cache[cache_key] = (now, loc_payload)
+    evict_oldest(_sku_breakdown_cache, max_entries=_SKU_BREAKDOWN_CACHE_MAX)
+    evict_oldest(_location_breakdown_cache, max_entries=_SKU_BREAKDOWN_CACHE_MAX)
     return sku_payload, loc_payload
 
 
@@ -9494,6 +9526,7 @@ async def analytics_style_sku_breakdown_bulk(
         # hit it instantly.
         ck = f"{sn}|{country or ''}|{channel or ''}"
         _sku_breakdown_cache[ck] = (now_ts, {"style_name": sn, "skus": rows})
+        evict_oldest(_sku_breakdown_cache, max_entries=_SKU_BREAKDOWN_CACHE_MAX)
 
         # Build & stamp the location-breakdown cache too — this is the
         # whole reason we extended the bulk endpoint. Identical logic to
@@ -9773,6 +9806,7 @@ async def analytics_new_styles_curve(
         "rows": out,
     }
     _curve_cache[cache_key] = (_time.time(), payload)
+    evict_oldest(_curve_cache, max_entries=_CURVE_CACHE_MAX)
     return payload
 
 
