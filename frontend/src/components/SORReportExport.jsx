@@ -4,6 +4,7 @@ import { api, fmtKES, fmtNum, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
+import LaunchMonthFilter, { filterByLaunchMonths } from "@/components/LaunchMonthFilter";
 import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 /**
@@ -33,6 +34,7 @@ const SORReport = () => {
   const [catSel, setCatSel] = useState([]);
   const [subcatSel, setSubcatSel] = useState([]);
   const [brandSel, setBrandSel] = useState([]);
+  const [launchMonthSel, setLaunchMonthSel] = useState([]);
   const [selectedStyle, setSelectedStyle] = useState(null);
   const [selectedColor, setSelectedColor] = useState(null);
   const [selectedSize, setSelectedSize] = useState(null);
@@ -90,7 +92,8 @@ const SORReport = () => {
   }, [rows]);
 
   const filtered = useMemo(() => {
-    return rows.filter((r) => {
+    const byLaunch = filterByLaunchMonths(rows, launchMonthSel);
+    return byLaunch.filter((r) => {
       if (catSel.length && !catSel.includes(r.category)) return false;
       if (subcatSel.length && !subcatSel.includes(r.subcategory)) return false;
       if (brandSel.length && !brandSel.includes(r.brand)) return false;
@@ -102,7 +105,7 @@ const SORReport = () => {
       }
       return true;
     });
-  }, [rows, search, catSel, subcatSel, brandSel]);
+  }, [rows, search, catSel, subcatSel, brandSel, launchMonthSel]);
 
   const stats = useMemo(() => {
     const totalSales = filtered.reduce((s, r) => s + (r.sales_6m || 0), 0);
@@ -271,14 +274,22 @@ const SORReport = () => {
               data-testid="sor-report-search"
             />
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <MultiSelect options={categories} value={catSel} onChange={setCatSel} placeholder="All Categories" testId="sor-cat-filter" />
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <MultiSelect options={subcategories} value={subcatSel} onChange={setSubcatSel} placeholder="All Subcategories" testId="sor-subcat-filter" />
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <MultiSelect options={brands} value={brandSel} onChange={setBrandSel} placeholder="All Brands" testId="sor-brand-filter" />
+          </div>
+          <div className="md:col-span-3">
+            <LaunchMonthFilter
+              rows={rows}
+              value={launchMonthSel}
+              onChange={setLaunchMonthSel}
+              testId="sor-launch-month-filter"
+            />
           </div>
         </div>
 

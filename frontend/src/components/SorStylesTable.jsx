@@ -5,6 +5,7 @@ import SortableTable from "@/components/SortableTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { categoryFor } from "@/lib/productCategory";
+import LaunchMonthFilter, { filterByLaunchMonths } from "@/components/LaunchMonthFilter";
 import { Calendar, MagnifyingGlass, Palette, Ruler, X } from "@phosphor-icons/react";
 
 /**
@@ -31,18 +32,20 @@ const SorStylesTable = ({
   const [search, setSearch] = useState("");
   const [showColor, setShowColor] = useState(false);
   const [showSize, setShowSize] = useState(false);
+  const [launchMonthSel, setLaunchMonthSel] = useState([]);
   // SKU drill-down cache: style_name -> { skus: [...], loading, error }.
   const [skuMap, setSkuMap] = useState({});
 
   const filtered = useMemo(() => {
+    const byLaunch = filterByLaunchMonths(rows, launchMonthSel);
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
+    if (!q) return byLaunch;
     const tokens = q.split(/\s+/).filter(Boolean);
-    return rows.filter((r) => {
+    return byLaunch.filter((r) => {
       const hay = `${r.style_name || ""} ${r.brand || ""} ${r.collection || ""}`.toLowerCase();
       return tokens.every((t) => hay.includes(t));
     });
-  }, [rows, search]);
+  }, [rows, search, launchMonthSel]);
 
   // When either toggle is on, fetch SKU breakdown for the first
   // `pageSize` visible rows that haven't been fetched yet. Uses the
@@ -352,6 +355,15 @@ const SorStylesTable = ({
           <Ruler size={13} weight={showSize ? "fill" : "regular"} />
           {showSize ? "Size on" : "+ Size"}
         </button>
+        <div className="min-w-[200px]">
+          <LaunchMonthFilter
+            rows={rows}
+            value={launchMonthSel}
+            onChange={setLaunchMonthSel}
+            testId={`${testId}-launch-month-filter`}
+            width={220}
+          />
+        </div>
         <span className="text-[11px] text-muted ml-auto">
           {filtered.length === rows.length
             ? `${rows.length} styles`
