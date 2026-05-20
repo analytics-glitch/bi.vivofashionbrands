@@ -324,7 +324,7 @@ const StoreDeepDive = ({
                         <div className="font-medium text-[12.5px] truncate">{name}</div>
                         <div className="text-[10.5px] text-muted">
                           {fmtNum(c.total_orders || c.orders)} orders
-                          {c.last_purchase && ` · last ${new Date(c.last_purchase).toLocaleDateString("en-GB")}`}
+                          {c.last_purchase && ` · last ${new Date(c.last_purchase).toLocaleDateString("en-GB", { timeZone: "Africa/Nairobi" })}`}
                         </div>
                       </div>
                       <div className="shrink-0 text-right">

@@ -94,7 +94,10 @@ const DateRangeButton = () => {
 
   const fmtCalInput = (d) => {
     if (!d) return "";
-    return d.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
+    return d.toLocaleDateString("en-US", {
+      month: "short", day: "2-digit", year: "numeric",
+      timeZone: "Africa/Nairobi",
+    });
   };
 
   const apply = () => {

@@ -274,13 +274,26 @@ export const clearApiCache = () => {
 
 // --- formatters ---
 // Currency formatter — prefixes every value with "KES " so the unit is
-// unambiguous on screen / in exports.
+// unambiguous on screen / in exports. Uses the compact 2-decimal form by
+// default (KES 1.21M, KES 8.82K) per user preference for KPI cards across
+// desktop and mobile. Use `fmtKESLong` when you need full precision for
+// tables, exports, or audit lines.
 export const fmtKES = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
+  const v = Number(n);
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return "KES " + (v / 1_000_000_000).toFixed(2) + "B";
+  if (abs >= 1_000_000) return "KES " + (v / 1_000_000).toFixed(2) + "M";
+  if (abs >= 1_000) return "KES " + (v / 1_000).toFixed(2) + "K";
+  return "KES " + Math.round(v).toLocaleString("en-US");
+};
+
+// Full-precision currency — keep for CSV/XLSX exports, audit lines, and
+// any place a reader needs the exact shilling figure.
+export const fmtKESLong = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
   return "KES " + Math.round(Number(n)).toLocaleString("en-US");
 };
-
-export const fmtKESLong = fmtKES;
 
 export const fmtNum = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "0";
@@ -328,10 +341,16 @@ export const fmtKESMobile = (n) => {
 
 export const fmtDate = (d) => {
   if (!d) return "";
+  // Force East Africa Time (UTC+3, Africa/Nairobi) so remote users always
+  // see the same day-of-month as in-country staff regardless of their
+  // device timezone. Without this a US-based viewer would see dates shifted
+  // back by up to 10 hours, which silently mis-aligns daily KPIs against
+  // the EOD cut-off used by the data pipeline.
   return new Date(d).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
     year: "numeric",
+    timeZone: "Africa/Nairobi",
   });
 };
 

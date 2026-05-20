@@ -3834,18 +3834,21 @@ async def get_customers_churn_rate(
     if not isinstance(churned_list, list):
         return out
 
-    # Slice by period
+    # Slice by period. `last_purchase_date` from upstream sometimes carries a
+    # trailing time component ("2024-08-12T13:00:00") — truncate to the date
+    # prefix so lexicographic comparison against YYYY-MM-DD bounds stays
+    # correct.
     churned_in_period = 0
     if date_from and date_to:
         for c in churned_list:
-            lp = c.get("last_purchase_date") or ""
+            lp = (c.get("last_purchase_date") or "")[:10]
             if date_from <= lp <= date_to:
                 churned_in_period += 1
     else:
         churned_in_period = len(churned_list)
 
     # Active customers in the same period (cheap call, ~2 s)
-    active = 0
+    active_in_period = 0
     try:
         cust_data = await fetch(
             "/customers",
@@ -3853,12 +3856,29 @@ async def get_customers_churn_rate(
             timeout_sec=10.0,
             max_attempts=2,
         )
-        active = int((cust_data or {}).get("total_customers") or 0)
+        active_in_period = int((cust_data or {}).get("total_customers") or 0)
     except Exception:
         pass
 
+    # Denominator hardening (P0 fix — Iter 85a):
+    # Previously we divided by `active_in_period` only, which produced
+    # churn_rate values >100% (observed: 40,088%) and `churned_customers`
+    # larger than the total customer base. Two reasons:
+    #   1. When the user picks a narrow recent period (e.g., last 30 days)
+    #      the active-in-period count is tiny while the churned list is
+    #      lifetime-wide. The two are not comparable.
+    #   2. Churned customers are *by definition* not in the active set for
+    #      the same period (they haven't purchased in 90+ days), so the
+    #      ratio's upper bound is unbounded — mathematically incoherent.
+    # The defensible base is the *addressable* customer pool: customers
+    # who interacted with us in the period (active) PLUS those who became
+    # churned during the period. This guarantees churn_rate ∈ [0, 100].
+    base = active_in_period + churned_in_period
+    rate = (churned_in_period / base * 100) if base else 0
     out["churned_customers"] = churned_in_period
-    out["churn_rate"] = round((churned_in_period / active * 100), 2) if active else 0
+    out["churn_rate"] = round(min(rate, 100.0), 2)
+    out["active_in_period"] = active_in_period
+    out["customer_base"] = base
     return out
 
 _customer_names_cache: Tuple[float, Dict[str, str]] = (0.0, {})

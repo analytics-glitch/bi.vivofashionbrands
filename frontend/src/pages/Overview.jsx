@@ -174,8 +174,8 @@ const Overview = () => {
       const i = iso(d);
       return api
         .get("/kpis", { params: { date_from: i, date_to: i, country: countries.length ? countries.join(",") : undefined, channel: channels.length ? channels.join(",") : undefined } })
-        .then((r) => ({ day: i, label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }), total_sales: r.data?.total_sales || 0, orders: r.data?.total_orders || 0 }))
-        .catch(() => ({ day: i, label: d.toLocaleDateString("en-GB"), total_sales: 0, orders: 0 }));
+        .then((r) => ({ day: i, label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Africa/Nairobi" }), total_sales: r.data?.total_sales || 0, orders: r.data?.total_orders || 0 }))
+        .catch(() => ({ day: i, label: d.toLocaleDateString("en-GB", { timeZone: "Africa/Nairobi" }), total_sales: 0, orders: 0 }));
     };
     Promise.all([fetchOne(base), fetchOne(sdlw), fetchOne(sdlm), fetchOne(sdly)])
       .then(([td, w, m, y]) => {
@@ -649,9 +649,9 @@ const Overview = () => {
           <div
             className="text-[11.5px] text-muted ml-auto"
             data-testid="last-refreshed"
-            title={lastUpdated.toLocaleString()}
+            title={lastUpdated.toLocaleString("en-GB", { timeZone: "Africa/Nairobi" })}
           >
-            Last refreshed: {lastUpdated.toLocaleTimeString()}
+            Last refreshed: {lastUpdated.toLocaleTimeString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit", second: "2-digit" })} EAT
           </div>
         )}
       </div>
@@ -1049,7 +1049,7 @@ const Overview = () => {
                         textAnchor={isMobile ? "end" : "middle"}
                         height={isMobile ? 48 : 30}
                         interval={0}
-                        tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", isMobile ? { day: "2-digit", month: "short" } : { weekday: "short", day: "2-digit", month: "short" })}
+                        tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", isMobile ? { day: "2-digit", month: "short", timeZone: "Africa/Nairobi" } : { weekday: "short", day: "2-digit", month: "short", timeZone: "Africa/Nairobi" })}
                       />
                       <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={isMobile ? 48 : 65} />
                       <Tooltip
@@ -1074,7 +1074,7 @@ const Overview = () => {
                   <ResponsiveContainer>
                     <LineChart data={dailyTotalSeries} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} />
+                      <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", timeZone: "Africa/Nairobi" })} />
                       <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} width={65} />
                       <Tooltip content={<ChartTooltip labelFormat={(l) => fmtDate(l)} formatters={{ "Total Sales": (v) => fmtKES(v), "Previous": (v) => fmtKES(v) }} />} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
