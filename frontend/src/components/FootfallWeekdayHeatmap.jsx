@@ -29,19 +29,36 @@ const COLD = [252, 245, 230];  // warm cream
 const HOT_FOOTFALL = [26, 92, 56];     // brand-deep green
 const HOT_CONVERSION = [245, 158, 11]; // amber — different story, different warmth
 const HOT_SHARE = [90, 58, 176];       // indigo — share-of-week is its own story
+const HOT_TURNIN = [185, 28, 28];      // crimson — turn-in is a "miss" intensity
+const HOT_OUTSIDE = [14, 116, 144];    // teal — outside traffic is its own dimension
 
 const hotForMode = (mode) =>
   mode === "conversion" ? HOT_CONVERSION
   : mode === "share" ? HOT_SHARE
+  : mode === "turnin" ? HOT_TURNIN
+  : mode === "outside" ? HOT_OUTSIDE
   : HOT_FOOTFALL;
 
-const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall }) => {
+const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall, hasOutside }) => {
   if (days === 0) {
     return (
       <div
         className="h-7 rounded-sm border border-dashed border-border/60 bg-white/40"
         title={`${loc} · ${weekdayLabel}: no data`}
       />
+    );
+  }
+  // Iter 84h — Turn-in / outside-traffic modes are valid only when the
+  // store has a pavement counter. If it doesn't, show an explicit "—"
+  // cell so the user knows it's "no data" not "0%".
+  if ((mode === "turnin" || mode === "outside") && !hasOutside) {
+    return (
+      <div
+        className="h-7 rounded-sm border border-dashed border-border/60 bg-white/40 flex items-center justify-center text-[10px] text-muted"
+        title={`${loc} · ${weekdayLabel}: no outside-traffic counter`}
+      >
+        —
+      </div>
     );
   }
   const max = Math.max(mode === "share" ? 0.5 : 1, maxValue);
@@ -53,16 +70,26 @@ const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall
   const tipValue =
     mode === "conversion" ? `${value.toFixed(1)}%` :
     mode === "share"      ? `${(value * 100).toFixed(1)}% of week (${fmtNum(absoluteFootfall)} avg)` :
+    mode === "turnin"     ? `${value.toFixed(1)}%` :
+    mode === "outside"    ? `${fmtNum(value)} pedestrians/day` :
                             fmtNum(value);
   const cellLabel =
     mode === "conversion" ? `${value.toFixed(1)}%` :
     mode === "share"      ? `${Math.round(value * 100)}%` :
+    mode === "turnin"     ? `${value.toFixed(1)}%` :
+    mode === "outside"    ? (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value)) :
                             (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value));
+  const modeLabel =
+    mode === "conversion" ? "CR" :
+    mode === "share"      ? "Share" :
+    mode === "turnin"     ? "Turn-in" :
+    mode === "outside"    ? "Outside" :
+                            "Footfall";
   return (
     <div
       className="h-7 rounded-sm flex items-center justify-center text-[10.5px] font-bold transition-transform hover:scale-[1.04]"
       style={{ background: color, color: textLight ? "white" : "#1f2937" }}
-      title={`${loc} · ${weekdayLabel}\n${mode === "conversion" ? "CR" : mode === "share" ? "Share" : "Footfall"}: ${tipValue}`}
+      title={`${loc} · ${weekdayLabel}\n${modeLabel}: ${tipValue}`}
       data-testid={`wkd-cell-${loc}-${weekdayLabel}`}
     >
       {cellLabel}
@@ -119,7 +146,11 @@ const FootfallWeekdayHeatmap = () => {
         maxValue: maxShare || 0.3, // e.g. a store with 30% of week on one day
       };
     }
-    const key = mode === "conversion" ? "avg_conversion_rate" : "avg_footfall";
+    const key =
+      mode === "conversion" ? "avg_conversion_rate" :
+      mode === "turnin"     ? "avg_turn_in_rate" :
+      mode === "outside"    ? "avg_outside_traffic" :
+                              "avg_footfall";
     let m = 0;
     top.forEach((r) => r.by_weekday.forEach((w) => {
       const v = w[key] || 0;
@@ -187,6 +218,8 @@ const FootfallWeekdayHeatmap = () => {
             ["footfall", "Footfall"],
             ["share", "% of week"],
             ["conversion", "Conversion"],
+            ["outside", "Outside"],
+            ["turnin", "Turn-in"],
           ].map(([k, lbl]) => (
             <button
               key={k}
@@ -211,43 +244,61 @@ const FootfallWeekdayHeatmap = () => {
               {w}
             </div>
           ))}
-          {rows.map((r) => (
-            <React.Fragment key={r.location}>
-              <div className="text-[11.5px] font-medium truncate pr-2 flex items-center" title={r.location}>
-                <span className="truncate">{r.location}</span>
-              </div>
-              {r.by_weekday.map((w, i) => {
-                const weekTotal = r._weekly_total || r.by_weekday.reduce((s, x) => s + (x.avg_footfall || 0), 0) || 1;
-                const cellValue =
-                  mode === "conversion" ? (w.avg_conversion_rate || 0) :
-                  mode === "share"      ? ((w.avg_footfall || 0) / weekTotal) :
-                                          (w.avg_footfall || 0);
-                return (
-                  <Cell
-                    key={i}
-                    value={cellValue}
-                    maxValue={maxValue}
-                    mode={mode}
-                    days={w.days}
-                    loc={r.location}
-                    weekdayLabel={WEEKDAY_SHORT[w.weekday]}
-                    absoluteFootfall={w.avg_footfall || 0}
-                  />
-                );
-              })}
-            </React.Fragment>
-          ))}
+          {rows.map((r) => {
+            const hasOutside = (r.total_outside_window || 0) > 0;
+            return (
+              <React.Fragment key={r.location}>
+                <div className="text-[11.5px] font-medium truncate pr-2 flex items-center" title={r.location}>
+                  <span className="truncate">{r.location}</span>
+                </div>
+                {r.by_weekday.map((w, i) => {
+                  const weekTotal = r._weekly_total || r.by_weekday.reduce((s, x) => s + (x.avg_footfall || 0), 0) || 1;
+                  const cellValue =
+                    mode === "conversion" ? (w.avg_conversion_rate || 0) :
+                    mode === "share"      ? ((w.avg_footfall || 0) / weekTotal) :
+                    mode === "turnin"     ? (w.avg_turn_in_rate || 0) :
+                    mode === "outside"    ? (w.avg_outside_traffic || 0) :
+                                            (w.avg_footfall || 0);
+                  return (
+                    <Cell
+                      key={i}
+                      value={cellValue}
+                      maxValue={maxValue}
+                      mode={mode}
+                      days={w.days}
+                      loc={r.location}
+                      weekdayLabel={WEEKDAY_SHORT[w.weekday]}
+                      absoluteFootfall={w.avg_footfall || 0}
+                      hasOutside={hasOutside}
+                    />
+                  );
+                })}
+              </React.Fragment>
+            );
+          })}
         </div>
       </div>
       <div className="mt-3 flex items-center gap-2 text-[10.5px] text-muted">
-        <span>{mode === "conversion" ? "Low CR" : mode === "share" ? "Low share" : "Quiet day"}</span>
+        <span>{
+          mode === "conversion" ? "Low CR" :
+          mode === "share"      ? "Low share" :
+          mode === "turnin"     ? "Low turn-in" :
+          mode === "outside"    ? "Quiet pavement" :
+                                  "Quiet day"
+        }</span>
         <div
           className="h-2.5 w-28 rounded-full"
           style={{
             background: `linear-gradient(to right, rgb(${COLD.join(",")}), rgb(${hotForMode(mode).join(",")}))`
           }}
         />
-        <span>{mode === "conversion" ? "High CR" : mode === "share" ? "High share" : "Peak day"}</span>
+        <span>{
+          mode === "conversion" ? "High CR" :
+          mode === "share"      ? "High share" :
+          mode === "turnin"     ? "High turn-in" :
+          mode === "outside"    ? "Busy pavement" :
+                                  "Peak day"
+        }</span>
         <span className="ml-auto">Dashed cell = no data</span>
       </div>
     </div>

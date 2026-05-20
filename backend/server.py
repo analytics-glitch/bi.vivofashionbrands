@@ -6108,10 +6108,10 @@ async def get_footfall_weekday_pattern(
 
     results = await asyncio.gather(*(_one_day(dd) for dd in dates))
 
-    # Aggregate: {location: {weekday: [ (footfall, orders, sales), ... ]}}
+    # Aggregate: {location: {weekday: [ (footfall, orders, sales, outside_traffic), ... ]}}
     from collections import defaultdict
-    loc_wk: Dict[str, Dict[int, List[Tuple[int, int, float]]]] = defaultdict(lambda: defaultdict(list))
-    group_wk: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    loc_wk: Dict[str, Dict[int, List[Tuple[int, int, float, int]]]] = defaultdict(lambda: defaultdict(list))
+    group_wk: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
     for day, rows in results:
         if not isinstance(rows, list):
             continue
@@ -6123,10 +6123,11 @@ async def get_footfall_weekday_pattern(
             ff = int(r.get("total_footfall") or 0)
             orders = int(r.get("orders") or 0)
             sales = float(r.get("total_sales") or 0.0)
-            if ff <= 0 and orders <= 0:
+            outside = int(r.get("outside_traffic") or 0)
+            if ff <= 0 and orders <= 0 and outside <= 0:
                 continue
-            loc_wk[loc][wk].append((ff, orders, sales))
-            group_wk[wk].append((ff, orders))
+            loc_wk[loc][wk].append((ff, orders, sales, outside))
+            group_wk[wk].append((ff, orders, outside))
 
     def avg(xs, i):
         vals = [x[i] for x in xs if x[i] is not None]
@@ -6137,26 +6138,49 @@ async def get_footfall_weekday_pattern(
         total_ff = sum(x[0] for x in xs)
         return (total_orders / total_ff * 100) if total_ff else 0.0
 
+    def turn_in_rate(xs, ff_idx: int = 0, outside_idx: int = 3):
+        """Iter 84h — Turn-in % is footfall ÷ outside traffic.
+        Returns None when outside traffic is unavailable (some stores
+        have no pavement counter); UI renders this as '—' instead of
+        0%."""
+        total_ff = sum(x[ff_idx] for x in xs)
+        total_outside = sum(x[outside_idx] for x in xs)
+        if not total_outside:
+            return None
+        return total_ff / total_outside * 100
+
     rows_out = []
     for loc, wk_map in loc_wk.items():
         by_weekday = []
-        all_samples: List[Tuple[int, int, float]] = []
+        all_samples: List[Tuple[int, int, float, int]] = []
         for wk in range(7):
             samples = wk_map.get(wk, [])
             by_weekday.append({
                 "weekday": wk,
                 "avg_footfall": round(avg(samples, 0), 1),
+                "avg_outside_traffic": round(avg(samples, 3), 1),
                 "avg_orders": round(avg(samples, 1), 1),
                 "avg_conversion_rate": round(conv_rate(samples), 2),
+                "avg_turn_in_rate": (
+                    round(turn_in_rate(samples), 2)
+                    if turn_in_rate(samples) is not None else None
+                ),
                 "days": len(samples),
             })
             all_samples.extend(samples)
         total_footfall = sum(s[0] for s in all_samples)
+        total_outside = sum(s[3] for s in all_samples)
         rows_out.append({
             "location": loc,
             "avg_footfall": round(avg(all_samples, 0), 1),
+            "avg_outside_traffic": round(avg(all_samples, 3), 1),
             "avg_conversion_rate": round(conv_rate(all_samples), 2),
+            "avg_turn_in_rate": (
+                round(total_footfall / total_outside * 100, 2)
+                if total_outside else None
+            ),
             "total_footfall_window": total_footfall,
+            "total_outside_window": total_outside,
             "by_weekday": by_weekday,
         })
     rows_out.sort(key=lambda r: r["total_footfall_window"], reverse=True)
@@ -6164,11 +6188,17 @@ async def get_footfall_weekday_pattern(
     group_out = []
     for wk in range(7):
         samples = group_wk.get(wk, [])
+        n_days = len(set(day for day, rs in results if day.weekday() == wk))
         group_out.append({
             "weekday": wk,
-            "avg_footfall": round(sum(s[0] for s in samples) / max(1, len(set(day for day, rs in results if day.weekday() == wk))), 1) if samples else 0,
+            "avg_footfall": round(sum(s[0] for s in samples) / max(1, n_days), 1) if samples else 0,
+            "avg_outside_traffic": round(sum(s[2] for s in samples) / max(1, n_days), 1) if samples else 0,
             "avg_conversion_rate": round(conv_rate(samples), 2),
-            "days": len(set(day for day, rs in results if day.weekday() == wk)),
+            "avg_turn_in_rate": (
+                round(turn_in_rate(samples, ff_idx=0, outside_idx=2), 2)
+                if turn_in_rate(samples, ff_idx=0, outside_idx=2) is not None else None
+            ),
+            "days": n_days,
         })
 
     data = {

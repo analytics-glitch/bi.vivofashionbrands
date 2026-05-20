@@ -26,6 +26,8 @@ import {
   Storefront,
   TrendUp,
   Warning,
+  UsersThree,
+  ArrowsInLineHorizontal,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -139,22 +141,36 @@ const Footfall = () => {
     //    The subtotal is computed from /sales-summary (authoritative) joined
     //    on store name, NOT from /footfall.total_sales (which disagrees with
     //    /sales-summary upstream — e.g. Junction 462,775 vs 477,275).
+    //  • `outside_traffic` / `turn_in_rate` (Iter 84h) — same scoping as
+    //    footfall. Turn-in % = Σ footfall ÷ Σ outside traffic across all
+    //    stores that report an outside-traffic figure. Stores without a
+    //    pavement counter (outside_traffic == 0 or null) are EXCLUDED
+    //    from BOTH the numerator and denominator so they don't drag
+    //    the rate down to a meaningless number.
     const footfall = scoped.reduce((s, r) => s + (r.total_footfall || 0), 0);
     let scopedOrders = 0;
     let scopedSales = 0;
+    let outsideTraffic = 0;
+    let footfallWithOutside = 0;
     for (const r of scoped) {
       const s = salesMap.get(r.location);
       if (s) {
         scopedOrders += s.orders || s.total_orders || 0;
         scopedSales += s.total_sales || 0;
       }
+      const ot = Number(r.outside_traffic || 0);
+      if (ot > 0) {
+        outsideTraffic += ot;
+        footfallWithOutside += Number(r.total_footfall || 0);
+      }
     }
     const conv = footfall ? (scopedOrders / footfall) * 100 : 0;
+    const turnIn = outsideTraffic ? (footfallWithOutside / outsideTraffic) * 100 : null;
     // Headline values come from shared KPI response:
     const orders = authoritativeKpis?.total_orders || 0;
     const sales = authoritativeKpis?.total_sales || 0;
     const abv = orders ? sales / orders : (authoritativeKpis?.avg_basket_size || 0);
-    return { footfall, orders, sales, conv, abv, scopedOrders, scopedSales };
+    return { footfall, orders, sales, conv, abv, scopedOrders, scopedSales, outsideTraffic, turnIn };
   }, [scoped, salesMap, authoritativeKpis]);
 
   const prevTotals = useMemo(() => {
@@ -168,15 +184,23 @@ const Footfall = () => {
     });
     const footfall = scopedPrev.reduce((s, r) => s + (r.total_footfall || 0), 0);
     let scopedOrders = 0;
+    let outsideTraffic = 0;
+    let footfallWithOutside = 0;
     for (const r of scopedPrev) {
       const s = prevSalesMap.get(r.location);
       if (s) scopedOrders += s.orders || s.total_orders || 0;
+      const ot = Number(r.outside_traffic || 0);
+      if (ot > 0) {
+        outsideTraffic += ot;
+        footfallWithOutside += Number(r.total_footfall || 0);
+      }
     }
     const conv = footfall ? (scopedOrders / footfall) * 100 : 0;
+    const turnIn = outsideTraffic ? (footfallWithOutside / outsideTraffic) * 100 : null;
     const orders = authoritativePrevKpis?.total_orders || 0;
     const sales = authoritativePrevKpis?.total_sales || 0;
     const abv = orders ? sales / orders : (authoritativePrevKpis?.avg_basket_size || 0);
-    return { footfall, orders, sales, conv, abv, scopedOrders };
+    return { footfall, orders, sales, conv, abv, scopedOrders, outsideTraffic, turnIn };
   }, [prev, countries, channels, channelCountry, prevSalesMap, authoritativePrevKpis]);
 
   const compareLbl = compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
@@ -210,12 +234,37 @@ const Footfall = () => {
       // since conversion is itself a %.
       const convDeltaPp = prevConv != null ? conversion - prevConv : null;
 
+      // Iter 84h — Outside Traffic + Turn-in Rate.
+      // Some stores have no pavement counter → outside_traffic=0/null →
+      // turn-in is undefined; we render '—' downstream. We keep the
+      // raw numbers on the row even when null so consumers can decide
+      // how to display.
+      const outside = Number(r.outside_traffic || 0);
+      const turnIn = outside > 0
+        ? ((r.total_footfall || 0) / outside) * 100
+        : null;
+      const prevOutside = Number(prevR?.outside_traffic || 0);
+      const prevTurnIn = prevOutside > 0
+        ? ((prevR?.total_footfall || 0) / prevOutside) * 100
+        : null;
+      // Turn-in change is in pp like conversion.
+      const turnInDeltaPp = (turnIn != null && prevTurnIn != null)
+        ? turnIn - prevTurnIn
+        : null;
+      const outsideDelta = prevOutside ? ((outside - prevOutside) / prevOutside) * 100 : null;
+
       return {
         ...r,
         orders,                  // authoritative
         total_sales: sales,      // authoritative
         conversion_rate: conversion,
         abv,
+        outside_traffic: outside,
+        turn_in_rate: turnIn,
+        prev_outside_traffic: prevOutside,
+        prev_turn_in_rate: prevTurnIn,
+        outside_delta: outsideDelta,
+        turn_in_delta_pp: turnInDeltaPp,
         prev_footfall: prevFootfall,
         prev_orders: prevOrders,
         prev_sales: prevSales,
@@ -273,6 +322,27 @@ const Footfall = () => {
   // No excluded list — user requested we include all locations.
   const excluded = useMemo(() => [], []);
 
+  // Iter 84h — Turn-in color buckets (green ≥15%, orange 8-14%, red <8%).
+  // Shared across the KPI card, table cell, weekday pattern, and the
+  // bottom-5 drill-down so the visual language is consistent.
+  const turnInPillClass = (val) => {
+    if (val == null) return "pill-neutral";
+    if (val >= 15) return "pill-green";
+    if (val >= 8) return "pill-amber";
+    return "pill-red";
+  };
+
+  // Bottom 5 stores by turn-in rate (worst performers — most actionable).
+  // Excludes stores without an outside-traffic counter (turn_in_rate=null).
+  const bottomFiveTurnIn = useMemo(() => {
+    return [...scopedEnriched]
+      .filter((r) => r.turn_in_rate != null)
+      .sort((a, b) => (a.turn_in_rate || 0) - (b.turn_in_rate || 0))
+      .slice(0, 5);
+  }, [scopedEnriched]);
+
+  const [showBottomTurnIn, setShowBottomTurnIn] = useState(false);
+
   return (
     <div className="space-y-6" data-testid="footfall-page">
       <div>
@@ -323,17 +393,52 @@ const Footfall = () => {
             <span><b>pp</b> = percentage points (used for conversion-rate changes)</span>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <KPICard
+              testId="ff-kpi-outside"
+              label="Outside Traffic"
+              sub="people who passed the store"
+              value={fmtNum(totals.outsideTraffic)}
+              icon={UsersThree}
+              delta={delta(totals.outsideTraffic, prevTotals.outsideTraffic)}
+              deltaLabel={compareLbl}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Lowest turn-in rates →", onClick: () => setShowBottomTurnIn(true) }}
+            />
             <KPICard
               testId="ff-kpi-total"
               accent
-              label="Total Footfall"
+              label="Footfall In"
               value={fmtNum(totals.footfall)}
               icon={Footprints}
               delta={delta(totals.footfall, prevTotals.footfall)}
               deltaLabel={compareLbl}
               showDelta={compareMode !== "none"}
               action={{ label: "By store", onClick: () => document.querySelector('[data-testid="ff-chart-footfall"]')?.scrollIntoView({ behavior: "smooth" }) }}
+            />
+            <KPICard
+              testId="ff-kpi-turnin"
+              label="Turn-in Rate"
+              sub="Footfall In ÷ Outside Traffic"
+              formula="Percentage of people passing the store who walked in"
+              value={
+                totals.turnIn != null ? (
+                  <span className={`${turnInPillClass(totals.turnIn)} text-[16px] px-2.5 py-0.5`}>
+                    {totals.turnIn.toFixed(1)}%
+                  </span>
+                ) : (
+                  <span className="text-muted">—</span>
+                )
+              }
+              icon={ArrowsInLineHorizontal}
+              delta={(() => {
+                if (compareMode === "none" || totals.turnIn == null || prevTotals.turnIn == null) return null;
+                // Turn-in is a %, so the meaningful delta is in pp.
+                return totals.turnIn - prevTotals.turnIn;
+              })()}
+              deltaLabel={compareLbl ? `${compareLbl} (pp)` : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Lowest performers →", onClick: () => setShowBottomTurnIn(true) }}
             />
             <KPICard
               testId="ff-kpi-orders"
@@ -491,6 +596,83 @@ const Footfall = () => {
           </div>
           </div>
 
+          {/* Iter 84h — Lowest turn-in rates drill-down. Triggered from
+              the Outside Traffic and Turn-in KPI cards. Stores without a
+              pavement counter are filtered out at the source so we don't
+              show "—" rows here. */}
+          {showBottomTurnIn && (
+            <div className="card-white p-5 border-l-4 border-red" data-testid="ff-bottom-turnin">
+              <SectionTitle
+                title="Lowest turn-in rates — bottom 5 stores"
+                subtitle="Stores converting the smallest share of pavement traffic into footfall. Action: investigate window display, signage, and welcome at the door."
+                action={
+                  <button
+                    onClick={() => setShowBottomTurnIn(false)}
+                    className="text-[11px] text-muted hover:text-foreground"
+                    data-testid="ff-bottom-turnin-close"
+                  >
+                    Hide
+                  </button>
+                }
+              />
+              {bottomFiveTurnIn.length === 0 ? <Empty /> : (
+                <div className="overflow-x-auto">
+                  <table className="w-full data" data-testid="ff-bottom-turnin-table">
+                    <thead>
+                      <tr>
+                        <th>Store</th>
+                        <th className="text-right">Outside Traffic</th>
+                        <th className="text-right">Footfall In</th>
+                        <th className="text-right">Turn-in Rate</th>
+                        {compareMode !== "none" && (
+                          <th className="text-right">vs Last Period</th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bottomFiveTurnIn.map((r, i) => (
+                        <tr key={r.location + i} data-testid={`ff-bottom-turnin-row-${i}`}>
+                          <td className="font-medium">
+                            <span className="inline-flex items-center gap-2">
+                              <Storefront size={14} className="text-muted" />
+                              {r.location}
+                            </span>
+                          </td>
+                          <td className="text-right num">{fmtNum(r.outside_traffic)}</td>
+                          <td className="text-right num">{fmtNum(r.total_footfall)}</td>
+                          <td className="text-right">
+                            <span className={turnInPillClass(r.turn_in_rate)}>
+                              {r.turn_in_rate.toFixed(1)}%
+                            </span>
+                          </td>
+                          {compareMode !== "none" && (
+                            <td className="text-right">
+                              {r.turn_in_delta_pp == null ? (
+                                <span className="text-muted text-[11px]">n/a</span>
+                              ) : (() => {
+                                const pp = r.turn_in_delta_pp;
+                                const pos = pp > 0.05;
+                                const neg = pp < -0.05;
+                                const cls = pos ? "text-[#059669]" : neg ? "text-[#dc2626]" : "text-muted";
+                                const arr = pos ? "▲" : neg ? "▼" : "—";
+                                const sign = pp > 0 ? "+" : "";
+                                return (
+                                  <span className={`${cls} font-semibold text-[11.5px] num`}>
+                                    {arr} {sign}{pp.toFixed(2)}pp
+                                  </span>
+                                );
+                              })()}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="card-white p-5" data-testid="ff-table">
             <SectionTitle
               title="Location-level breakdown"
@@ -520,7 +702,7 @@ const Footfall = () => {
             <SortableTable
               testId="ff-breakdown"
               exportName="footfall-breakdown.csv"
-              initialSort={{ key: "total_footfall", dir: "desc" }}
+              initialSort={{ key: "turn_in_rate", dir: "asc" }}
               columns={[
                 {
                   key: "location",
@@ -541,7 +723,31 @@ const Footfall = () => {
                   ),
                   csv: (r) => r.outlier ? `${r.location} [⚠ ${r.outlier.reason}]` : r.location,
                 },
-                { key: "total_footfall", label: "Footfall", numeric: true, render: (r) => fmtNum(r.total_footfall) },
+                {
+                  key: "outside_traffic",
+                  label: "Outside Traffic",
+                  numeric: true,
+                  // Sort stores without a pavement counter to the bottom by
+                  // returning -1 so ascending sort puts them last.
+                  sortValue: (r) => r.outside_traffic > 0 ? r.outside_traffic : -1,
+                  render: (r) => r.outside_traffic > 0
+                    ? <span className="num">{fmtNum(r.outside_traffic)}</span>
+                    : <span className="text-muted text-[11px]">—</span>,
+                  csv: (r) => r.outside_traffic || "",
+                },
+                { key: "total_footfall", label: "Footfall In", numeric: true, render: (r) => fmtNum(r.total_footfall) },
+                {
+                  key: "turn_in_rate",
+                  label: "Turn-in",
+                  numeric: true,
+                  // Same sort trick — stores with no counter sink to the
+                  // bottom on ascending sort (worst-first view).
+                  sortValue: (r) => r.turn_in_rate == null ? 999999 : r.turn_in_rate,
+                  render: (r) => r.turn_in_rate != null
+                    ? <span className={turnInPillClass(r.turn_in_rate)}>{r.turn_in_rate.toFixed(1)}%</span>
+                    : <span className="text-muted text-[11px]">—</span>,
+                  csv: (r) => r.turn_in_rate == null ? "" : r.turn_in_rate.toFixed(2),
+                },
                 ...(compareMode !== "none" ? [{
                   key: "footfall_delta",
                   label: "Δ Footfall",
