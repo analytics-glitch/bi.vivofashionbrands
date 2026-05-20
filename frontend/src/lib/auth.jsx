@@ -84,10 +84,11 @@ export const AuthProvider = ({ children }) => {
       const r = await api.get("/auth/me");
       setUser(r.data);
     } catch (err) {
+      const status = err?.response?.status;
       // Pending-approval users get a 403 on /me but their session is
       // still valid — fetch a status-only payload so we can render the
       // awaiting-approval screen instead of bouncing them to /login.
-      if (err?.response?.status === 403 && err?.response?.data?.detail?.startsWith?.("account_")) {
+      if (status === 403 && err?.response?.data?.detail?.startsWith?.("account_")) {
         try {
           const s = await api.get("/auth/me/status");
           setUser({ ...s.data, _restricted: true, _restrictionReason: err.response.data.detail });
@@ -95,14 +96,41 @@ export const AuthProvider = ({ children }) => {
           setUser(false);
           setStoredToken(null);
         }
-      } else {
+        return;
+      }
+      // 401 = the token is actually invalid (expired/revoked). Log out.
+      if (status === 401) {
         setUser(false);
         setStoredToken(null);
+        return;
       }
+      // 5xx / network error / no response — treat as transient. The
+      // user's session almost certainly still works; this is just a
+      // backend hiccup (circuit-breaker open on a tangential
+      // endpoint, brief 504 from the upstream BI proxy, brief
+      // disconnection, etc.). Wiping the token here logs every
+      // active user out for what is almost always a 30-second blip.
+      // The 30 s polling effect (line 132) will retry automatically.
+      // If we have NO existing user state yet (initial page load
+      // before login), we have to surface "anonymous" so the Login
+      // page renders — but we DO NOT clear a stored token, so the
+      // very next /auth/me call from Login or after the user
+      // intervenes will succeed without forcing a re-login.
+      // eslint-disable-next-line no-console
+      console.warn("[auth] /auth/me transient error — keeping session", err?.message || err);
+      setUser((prev) => prev || false);
+    }
+  }, []);
+
+  // Wrap the finally{setLoading(false)} separately so the early-
+  // return branches above still resolve the loading state.
+  const checkAuthAndStop = useCallback(async () => {
+    try {
+      await checkAuth();
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [checkAuth]);
 
   useEffect(() => {
     // CRITICAL: if returning from OAuth callback, skip the /me check.
@@ -111,8 +139,8 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
       return;
     }
-    checkAuth();
-  }, [checkAuth]);
+    checkAuthAndStop();
+  }, [checkAuthAndStop]);
 
   // Periodic auth re-validation. Without this, an admin who flips a
   // user's role / status / active flag has to wait until the user

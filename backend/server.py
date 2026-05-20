@@ -3653,10 +3653,35 @@ async def get_customers(
     )
     if snap is not None:
         return snap
-    return await _get_customers_live(
-        date_from=date_from, date_to=date_to,
-        country=country, channel=channel,
-    )
+    # Iter 84e — If the upstream /customers circuit-breaker is open OR
+    # the live path raises, return a friendly degraded payload instead
+    # of a 504. The user's screenshot showed the raw 504 detail string
+    # ("Upstream /customers circuit-breaker OPEN — failing fast, served
+    # from stale") leaking into the Customers page as a giant red
+    # banner. By short-circuiting here we keep the page renderable
+    # with zeroed metrics + an explicit `degraded: true` flag the UI
+    # can use to show a friendlier banner.
+    try:
+        return await _get_customers_live(
+            date_from=date_from, date_to=date_to,
+            country=country, channel=channel,
+        )
+    except HTTPException as e:
+        if e.status_code in (502, 503, 504):
+            logger.warning(
+                "[/customers] upstream degraded (%s) — serving graceful zeros", e.status_code,
+            )
+            return {
+                "total_customers": 0, "new_customers": 0, "repeat_customers": 0,
+                "returning_customers": 0, "churned_customers": 0,
+                "avg_customer_spend": 0, "avg_orders_per_customer": 0,
+                "avg_customer_spend_source": "degraded_upstream",
+                "churn_source": "degraded_upstream",
+                "churn_window_days": 90,
+                "degraded": True,
+                "degraded_reason": "upstream_unavailable",
+            }
+        raise
 
 
 async def _get_customers_live(
@@ -3841,7 +3866,8 @@ def _customer_names_load_from_disk() -> None:
     try:
         if not _CUSTOMER_NAMES_DISK.exists():
             return
-        import json as _j, time as _t
+        import json as _j
+        import time as _t
         raw = _j.loads(_CUSTOMER_NAMES_DISK.read_text())
         ts = float(raw.get("ts") or 0)
         if not ts or _t.time() - ts >= _CUSTOMER_NAMES_TTL:

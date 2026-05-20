@@ -3,6 +3,21 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84e) — Circuit-breaker banner + auth-logout hotfix
+- **User report (production)**: full-width red banner reading *"Upstream /customers circuit-breaker OPEN — failing fast, served from stale"* covering the page, AND users being signed out / unable to sign back in.
+- **Root cause #1 (banner)**: `Customers.jsx:198` was setting `error = e.response.data.detail`, which is the raw backend HTTPException detail. When the upstream `/customers` circuit-breaker tripped on production, that internal string leaked straight onto the page via `<ErrorBox>`.
+- **Root cause #2 (logout storm)**: `auth.jsx::checkAuth` treated ANY non-403-account error from `/auth/me` as "user is anonymous" → `setUser(false); setStoredToken(null)`. A transient 5xx from the backend (e.g., during the upstream storm) wiped every active user's token. They then bounced to /login → if login itself was also slow/timing out, they couldn't get back in.
+- **Fixes**:
+  - `auth.jsx` — distinguish status codes properly:
+    - 401 → really invalid token → clear it
+    - 403 account_* → restricted (existing flow)
+    - 5xx / network / no-response → **transient: keep the existing user, do NOT clear the token**. Logs a warning and lets the 30-s polling effect retry automatically.
+  - `Customers.jsx` — replace the `<ErrorBox>` of raw detail with a friendly amber banner ("Customer data is temporarily slow to load. Auto-refreshing in the background…"). Raw detail moved to the `title` attribute for support.
+  - **Backend `/customers`** — graceful degradation: when `_get_customers_live` raises 502/503/504, return zeroed metrics + `degraded: true` flag instead of propagating the HTTPException. The UI's friendly banner replaces the raw 504 message.
+- **Verified preview**: login + /auth/me + /customers all return HTTP 200, login page renders cleanly with no leaked technical text.
+- **Production note**: changes are preview-only — user needs to **redeploy** to push the auth-resilience + graceful banner to https://bi.vivofashionbrands.com.
+
+
 ### Recent (Feb 2026 — Iter 84d) — Cache hit-rate climb from 43 % → 100 %
 - **User report**: hit rate stuck at 43 % despite Iter 84b/c fixes.
 - **Investigation revealed three remaining offenders:**

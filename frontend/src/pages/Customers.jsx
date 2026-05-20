@@ -195,7 +195,20 @@ const Customers = () => {
         setLoading(false);
         touchLastUpdated();
       })
-      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message));
+      .catch((e) => {
+        if (cancelled) return;
+        // Hide internal circuit-breaker / stack-trace text from end
+        // users — they shouldn't see "Upstream /customers circuit-
+        // breaker OPEN — failing fast, served from stale". Surface the
+        // raw detail only via the title attribute so support staff
+        // can still inspect it.
+        setError({
+          friendly:
+            "Customer data is temporarily slow to load. Auto-refreshing in the background — you don't need to do anything.",
+          tech: e?.response?.data?.detail || e?.message || "unknown error",
+        });
+        setLoading(false);
+      });
 
     const rest = [
       ["top", api.get("/top-customers", {
@@ -465,7 +478,15 @@ const Customers = () => {
       )}
 
       {loading && <Loading />}
-      {error && <ErrorBox message={error} />}
+      {error && (
+        <div
+          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          title={typeof error === "object" ? `Tech detail (for support): ${error.tech}` : ""}
+          data-testid="customers-degraded-banner"
+        >
+          {typeof error === "object" ? error.friendly : (error || "Something went wrong.")}
+        </div>
+      )}
 
       {!loading && !error && cust && (
         <>
