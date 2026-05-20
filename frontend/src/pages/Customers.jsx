@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -74,6 +75,12 @@ const Delta = ({ curr, prev, invert }) => {
 const Customers = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
+  // Iter 85f — 30s auto-refresh + manual button. The Customers page used
+  // to be load-once-and-stick, so a stale 0-walk-in render from an
+  // earlier cache miss could persist until the user navigated away and
+  // back. The tick is folded into the fetch effect's dep array so the
+  // existing fetch pipeline runs on each cadence/manual-refresh.
+  const { tick: refreshTick, manualRefresh, lastRefreshed } = useAutoRefresh(30000);
   // Shared KPIs — used to compute Top N's % share of total sales.
   const { kpis } = useKpis();
 
@@ -320,7 +327,7 @@ const Customers = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN, refreshTick]);
 
   // PII reveal cascade — when the user verifies the reveal password the
   // /churned-customers AND /top-customers endpoints must be re-fetched
@@ -429,6 +436,30 @@ const Customers = () => {
           <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
             Customers
           </h1>
+          <div
+            className="mt-1 text-[11px] text-muted flex items-center gap-2"
+            data-testid="customers-refresh-strip"
+            title={lastRefreshed.toLocaleString("en-GB", { timeZone: "Africa/Nairobi" })}
+          >
+            <span>
+              Last refreshed: {lastRefreshed.toLocaleTimeString("en-GB", {
+                timeZone: "Africa/Nairobi",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })} EAT · auto every 30 s
+            </span>
+            <button
+              type="button"
+              onClick={manualRefresh}
+              data-testid="customers-manual-refresh-btn"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-white hover:bg-brand-soft/60 text-foreground/80 hover:text-foreground transition-colors text-[11px] font-medium"
+              title="Re-fetch this page now"
+            >
+              <ArrowsCounterClockwise size={11} weight="bold" />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* ---- Global PII reveal gate -------------------------------- */}
