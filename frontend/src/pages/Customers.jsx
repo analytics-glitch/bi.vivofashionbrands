@@ -912,6 +912,15 @@ const Customers = () => {
                       ⚠ partial sample
                     </div>
                   )}
+                  {walkIns.degraded && !walkIns.truncated && (
+                    <div
+                      className="mt-1 text-[10px] text-amber-700 cursor-help"
+                      data-testid="kpi-walk-ins-degraded"
+                      title="One or more upstream /orders chunks failed for this window. The partial result above is NOT cached — refresh the page in ~10 s for a clean rebuild."
+                    >
+                      ⚠ partial — refresh to rebuild
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

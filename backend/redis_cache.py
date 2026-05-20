@@ -73,6 +73,16 @@ _CONNECT_RETRY_AFTER_SEC = 60  # cooldown after a connection failure
 _DEFAULT_SOCKET_TIMEOUT = 3.0   # seconds — cap each op cleanly
 _VALUE_MAX_BYTES = 4 * 1024 * 1024  # 4 MB — Upstash free tier per-key limit
 
+# Iter 85c — Quota-exhausted cooldown. When Upstash tells us we've hit
+# the monthly request limit ("max requests limit exceeded. Limit: N,
+# Usage: N"), we MUST NOT keep retrying every 60 s — each retry itself
+# costs one request against the next month's allowance. Back off for 30
+# minutes; the audit service still surfaces the exhausted state in the
+# daily email so the user knows to top up. After the 30 min window we
+# probe once; if the quota is still capped we set another 30 min hold,
+# else we resume normal operation.
+_QUOTA_EXHAUSTED_COOLDOWN_SEC = 30 * 60
+
 
 class RedisCache:
     """Singleton-style wrapper around redis.asyncio. Never raises."""
@@ -242,10 +252,22 @@ class RedisCache:
         # every subsequent request pay the timeout. Re-enables auto.
         err_text = str(e)
         self._maybe_parse_quota(err_text)
-        logger.warning("[redis] %s failed (%s) — disabling for %ds",
-                       op, e, _CONNECT_RETRY_AFTER_SEC)
+        # Iter 85c — When Upstash returns a hard quota-exhausted error,
+        # extend the cooldown to 30 min. The default 60 s retry would
+        # otherwise burn one Upstash command per minute just to
+        # rediscover "still exhausted", deepening the hole.
+        if self._quota_exhausted:
+            cooldown = _QUOTA_EXHAUSTED_COOLDOWN_SEC
+            logger.warning(
+                "[redis] %s failed — quota EXHAUSTED (Limit=%s, Usage=%s) — disabling for %ds",
+                op, self._quota_limit, self._quota_usage, cooldown,
+            )
+        else:
+            cooldown = _CONNECT_RETRY_AFTER_SEC
+            logger.warning("[redis] %s failed (%s) — disabling for %ds",
+                           op, e, cooldown)
         self._client = None
-        self._disabled_until = time.time() + _CONNECT_RETRY_AFTER_SEC
+        self._disabled_until = time.time() + cooldown
 
     def quota_status(self) -> Dict[str, Any]:
         """Returns a snapshot of the Upstash request-quota state.

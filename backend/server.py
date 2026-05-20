@@ -4079,24 +4079,64 @@ async def _get_walk_ins_impl(
 
     chunks = _date_chunks(date_from, date_to)
 
-    # Fan out across (date-chunk × country × channel) combos in parallel.
-    tasks = []
-    for ch_range in chunks:
-        for c in (cs or [None]):
-            for ch in (chs or [None]):
-                p = {**base, **ch_range}
-                if c:
-                    p["country"] = c
-                if ch:
-                    p["channel"] = ch
-                tasks.append(_safe_fetch("/orders", p))
-    results = await asyncio.gather(*tasks)
+    # Iter 85b — Use `_orders_for_window` instead of raw `_safe_fetch` per
+    # chunk. Three big wins for free:
+    #   1. Split-on-failure recursion (Iter 84g) — a flaky 14-day chunk
+    #      bisects down to 1-day windows before giving up, so transient
+    #      upstream blips no longer silently drop walk-in rows.
+    #   2. 50k-cap auto-pagination — busy weeks above the upstream cap
+    #      no longer truncate.
+    #   3. NO caching of partial results — the only path that ever
+    #      writes to `_CUSTOMER_HIST_CACHE` requires `failed_chunks == 0`.
+    #
+    # We still preserve the country×channel fan-out (since /orders is
+    # case-sensitive on country and the helper accepts only one country
+    # at a time). The sidecar `_orders_window_last_status` tells us if
+    # the merged dataset was fully clean — which we surface to the FE
+    # as `degraded: true` so the user can be told "data may be stale,
+    # refresh in a moment" instead of silently seeing wrong numbers.
     rows: List[Dict[str, Any]] = []
-    for r in results:
-        if r:
-            rows.extend(r)
-    # Mark as truncated only if any chunk hit the upstream cap.
-    truncated = any(isinstance(r, list) and len(r) >= 50000 for r in results)
+    any_degraded = False
+    truncated = False
+    if not date_from or not date_to:
+        # Fall back to the old single-call path for callers that omit a
+        # window (rare; the FE always sends date_from / date_to).
+        tasks = []
+        for ch_range in chunks:
+            for c in (cs or [None]):
+                for ch in (chs or [None]):
+                    p = {**base, **ch_range}
+                    if c:
+                        p["country"] = c
+                    if ch:
+                        p["channel"] = ch
+                    tasks.append(_safe_fetch("/orders", p))
+        results = await asyncio.gather(*tasks)
+        for r in results:
+            if r:
+                rows.extend(r)
+        truncated = any(isinstance(r, list) and len(r) >= 50000 for r in results)
+    else:
+        # Resilient path — split-on-failure + status sidecar.
+        country_iter = cs if cs else [None]
+        channel_iter = chs if chs else [None]
+        owf_tasks = []
+        owf_keys: List[str] = []
+        for c in country_iter:
+            for ch in channel_iter:
+                owf_tasks.append(_orders_for_window(date_from, date_to, country=c, channel=ch))
+                owf_keys.append(f"{date_from}|{date_to}|{c or ''}|{ch or ''}")
+        owf_results = await asyncio.gather(*owf_tasks, return_exceptions=True)
+        for k, r in zip(owf_keys, owf_results):
+            if isinstance(r, Exception):
+                logger.warning("[walk-ins] _orders_for_window(%s) raised: %s", k, r)
+                any_degraded = True
+                continue
+            if isinstance(r, list):
+                rows.extend(r)
+                status = _orders_window_last_status.get(k) or {}
+                if status.get("degraded"):
+                    any_degraded = True
 
     # Filter to actual sales (drop returns/exchanges/refunds). Note: Kenya
     # uses sale_kind="sale", Uganda/Rwanda use "order" — we keep both.
@@ -4268,6 +4308,13 @@ async def _get_walk_ins_impl(
         "by_location": by_location_out,
         "detection_rule": "customer_id NULL · customer_type Guest/Walk-in/Anonymous · customer in roster with BLANK name (~379 IDs) · customer_name contains 'walk'/'vivo'/'safari'/store name",
         "truncated": truncated,
+        # Iter 85b — set when ANY chunk in the underlying /orders fan-out
+        # came back via the failure path. The result is still served (with
+        # whatever did succeed) so the UI never blanks, but the partial-
+        # result is intentionally NOT cached, so the next request rebuilds.
+        # Frontend can use this to render a "data may be incomplete —
+        # refreshing" banner instead of silently showing the wrong number.
+        "degraded": any_degraded,
     }
 
 
@@ -4526,6 +4573,14 @@ async def customer_frequency(
 # enough for the dashboard while the data only ticks once a day upstream.
 _CUSTOMER_HIST_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _CUSTOMER_HIST_TTL = 600  # 10 minutes
+
+# Iter 85b — Sidecar status for the LAST call to `_orders_for_window` per
+# cache_key. Lets callers like `/customers/walk-ins` know whether the
+# dataset they just got back was fully clean or had any chunk failures,
+# so they can surface a `degraded: true` flag in their own API response.
+# Keyed identically to `_CUSTOMER_HIST_CACHE`. Values are pure dicts —
+# safe for JSON serialisation if ever exposed via an admin endpoint.
+_orders_window_last_status: Dict[str, Dict[str, Any]] = {}
 def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] = None,
                       contact_lookup: Optional[Dict[str, Dict[str, bool]]] = None) -> bool:
     """Robust walk-in detector — must match `walk-ins` endpoint logic.
@@ -4616,6 +4671,15 @@ async def _orders_for_window(date_from: str, date_to: str, country: Optional[str
     cache_key = f"{date_from}|{date_to}|{country or ''}|{channel or ''}"
     cached = _CUSTOMER_HIST_CACHE.get(cache_key)
     if cached and (_time.time() - cached[0]) < _CUSTOMER_HIST_TTL:
+        # Cache hits are by construction fully clean — we never cache
+        # partial-failure results (see fix at end of this function).
+        _orders_window_last_status[cache_key] = {
+            "failed_chunks": 0,
+            "total_chunks": 0,
+            "degraded": False,
+            "checked_at": _time.time(),
+            "from_cache": True,
+        }
         return cached[1]
     df = datetime.strptime(date_from, "%Y-%m-%d").date()
     dt = datetime.strptime(date_to, "%Y-%m-%d").date()
@@ -4719,16 +4783,41 @@ async def _orders_for_window(date_from: str, date_to: str, country: Optional[str
             seen.add(key)
             deduped.append(r)
         out = deduped
-    # Only raise if EVERY chunk failed and we got nothing — otherwise cache
-    # and return the partial set so the analytics endpoints can compute
+    # Only raise if EVERY chunk failed and we got nothing — otherwise serve
+    # the partial set to THIS caller so the analytics endpoints can show
     # something useful from whatever did come back.
+    #
+    # Iter 85b — PERMANENT FIX for the "walk-ins regress after reload" bug:
+    # Previously a partial-failure result was cached for 10 min, so every
+    # subsequent caller within that window saw the truncated dataset. That
+    # was the root cause of `walk_in_orders` flipping from 82 → 1 between
+    # two consecutive page loads.
+    #
+    # The fix: only cache when the window came back fully clean. Partial
+    # results are returned to the current request (graceful degradation)
+    # but the next request rebuilds from upstream so we self-heal as soon
+    # as the flakiness passes. We also surface the failure status in a
+    # sidecar `_orders_window_last_status` dict so callers like
+    # `/customers/walk-ins` can flag `degraded: true` in their response.
+    _orders_window_last_status[cache_key] = {
+        "failed_chunks": failed_chunks,
+        "total_chunks": len(chunks),
+        "degraded": failed_chunks > 0,
+        "checked_at": _time.time(),
+    }
     if failed_chunks == len(chunks) and not out:
         raise HTTPException(status_code=503, detail="Upstream /orders unavailable — please retry in a moment.")
-    _CUSTOMER_HIST_CACHE[cache_key] = (_time.time(), out)
-    if len(_CUSTOMER_HIST_CACHE) > 32:
-        oldest = sorted(_CUSTOMER_HIST_CACHE.items(), key=lambda kv: kv[1][0])[:8]
-        for k, _ in oldest:
-            _CUSTOMER_HIST_CACHE.pop(k, None)
+    if failed_chunks == 0:
+        _CUSTOMER_HIST_CACHE[cache_key] = (_time.time(), out)
+        if len(_CUSTOMER_HIST_CACHE) > 32:
+            oldest = sorted(_CUSTOMER_HIST_CACHE.items(), key=lambda kv: kv[1][0])[:8]
+            for k, _ in oldest:
+                _CUSTOMER_HIST_CACHE.pop(k, None)
+    else:
+        logger.warning(
+            "[_orders_for_window] partial result NOT cached — %d/%d chunks failed (window=%s..%s c=%s ch=%s, %d rows kept)",
+            failed_chunks, len(chunks), date_from, date_to, country, channel, len(out),
+        )
     return out
 
 
