@@ -3,6 +3,18 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84f) — Customer page "computing…" tiles never settling
+- **User report**: Customers page shows three KPI tiles (Churned Customers, Churn Rate, Reactivation Rate) stuck on "computing…" indefinitely. Walk-Ins shows "Upstream unavailable".
+- **Root cause**: `/customers/churn-rate` hangs on the upstream `/churned-customers?limit=100000` call for the full 20 s upstream timeout (preview) or the axios 120 s default (production with breaker open). User reads this as "stuck forever".
+- **Additional bug**: race condition — if `/customers/churn-rate` resolved BEFORE `/customers`, the merge `setCust(prev => prev ? {...} : prev)` returned `null` and silently dropped the churn payload. Tile stayed on "computing" forever even after the call succeeded.
+- **Fixes**:
+  - **Backend** `/customers/churn-rate` — fast-fail when `/churned-customers` circuit-breaker is open. Returns `churn_source: "upstream_down_breaker"` immediately instead of paying the 20 s upstream timeout.
+  - **Frontend** `Customers.jsx` — `/customers/churn-rate` call now has a hard 25 s client-side timeout (was 120 s axios default). On timeout, `applyChurnToCust({churn_source: "upstream_down", ...})` flips the sentinel and the tile shows "0" instead of "…".
+  - **Frontend** race-safe merge: introduced `pendingChurn` local variable. If churn-rate resolves before /customers, the payload is stashed there and applied in the /customers `.then()` handler on arrival.
+- **Verified**: preview `/customers/churn-rate` first call returns in ~20 s with `upstream_down`, second call returns in 157 ms via the negative cache. UI tile flips to "0" within 25 s max instead of sitting forever.
+- **Production note**: changes are preview-only — user needs to redeploy. On production where `/churned-customers` breaker IS open, the fast-fail kicks in within ~1 s.
+
+
 ### Recent (Feb 2026 — Iter 84e) — Circuit-breaker banner + auth-logout hotfix
 - **User report (production)**: full-width red banner reading *"Upstream /customers circuit-breaker OPEN — failing fast, served from stale"* covering the page, AND users being signed out / unable to sign back in.
 - **Root cause #1 (banner)**: `Customers.jsx:198` was setting `error = e.response.data.detail`, which is the raw backend HTTPException detail. When the upstream `/customers` circuit-breaker tripped on production, that internal string leaked straight onto the page via `<ErrorBox>`.

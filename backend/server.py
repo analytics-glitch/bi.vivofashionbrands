@@ -3796,6 +3796,17 @@ async def get_customers_churn_rate(
         out["churn_source"] = "upstream_down_cached"
         return out
 
+    # Iter 84f — Fast-fail when the circuit-breaker is open. /churned-
+    # customers shares the upstream that just tripped the breaker, so
+    # spending 20 s on a guaranteed-fail request just keeps the
+    # frontend tile stuck on "computing…". Returning the negative
+    # answer immediately lets the Customers page settle into its
+    # "upstream_down" state within ~1 s instead of 20 s.
+    if _cb_is_open("/churned-customers"):
+        _churn_neg_cache[churn_window_days] = time.time()
+        out["churn_source"] = "upstream_down_breaker"
+        return out
+
     # Pull cached churned list (or fetch + cache)
     churned_list: Optional[List[Dict[str, Any]]] = None
     cached = _churn_full_cache.get(churn_window_days)

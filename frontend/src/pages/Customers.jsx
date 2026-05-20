@@ -186,12 +186,20 @@ const Customers = () => {
     const channel = channels.length ? channels.join(",") : undefined;
     const dateP = { date_from: dateFrom, date_to: dateTo, country, channel };
 
+    // Iter 84f — Race-safe churn merge: if /customers/churn-rate
+    // resolves BEFORE /customers (uncommon but possible when /customers
+    // is slow), stash the churn payload here and apply it as soon as
+    // /customers arrives. Without this, a fast churn-rate response
+    // gets dropped on the floor and the tile stays "computing" forever.
+    let pendingChurn = null;
+
     // Load the primary /customers payload FIRST so KPIs render immediately,
     // then fan out the rest of the slower calls without blocking each other.
     api.get("/customers", { params: dateP })
       .then((c) => {
         if (cancelled) return;
-        setCust(c.data);
+        const merged = pendingChurn ? { ...c.data, ...pendingChurn } : c.data;
+        setCust(merged);
         setLoading(false);
         touchLastUpdated();
       })
@@ -259,14 +267,39 @@ const Customers = () => {
     // it in parallel and merge into the existing cust state when ready —
     // the churn KPI tile renders a spinner via churn_source === "computing"
     // until this resolves.
-    api.get("/customers/churn-rate", { params: { date_from: dateFrom, date_to: dateTo } })
+    // Iter 84f — hard client-side timeout of 25 s. If the backend hasn't
+    // responded by then we assume upstream is dead and flip the
+    // sentinel to "upstream_down" so the tile shows "0" + the friendly
+    // copy instead of sitting on "computing…" for the full 120 s axios
+    // default. Also handle the merge-race: if /customers/churn-rate
+    // resolves BEFORE /customers, stash the result so the customers
+    // .then() handler can apply it on arrival.
+    const applyChurnToCust = (data) => {
+      setCust((prev) => {
+        if (!prev) {
+          // /customers hasn't resolved yet — stash, apply on arrival.
+          pendingChurn = { ...data, churned_last_90d: data.churned_customers };
+          return prev;
+        }
+        return { ...prev, ...data, churned_last_90d: data.churned_customers };
+      });
+    };
+    api.get("/customers/churn-rate", {
+      params: { date_from: dateFrom, date_to: dateTo },
+      timeout: 25000,
+    })
       .then((r) => {
         if (cancelled || !r.data) return;
-        setCust((prev) => prev ? { ...prev, ...r.data, churned_last_90d: r.data.churned_customers } : prev);
+        applyChurnToCust(r.data);
       })
       .catch(() => {
         if (cancelled) return;
-        setCust((prev) => prev ? { ...prev, churn_source: "upstream_down" } : prev);
+        applyChurnToCust({
+          churn_source: "upstream_down",
+          churned_customers: 0,
+          churn_rate: 0,
+          churn_window_days: 90,
+        });
       });
 
     // Walk-ins (anonymous transactions) — also slow on cold cache because
