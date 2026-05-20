@@ -3,6 +3,20 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84h) — Footfall page: Outside Traffic + Turn-in Rate
+- **What**: Two new KPI cards (Outside Traffic, Turn-in Rate) on `/footfall`, two new columns in the per-store breakdown table, two new modes in the weekday heatmap, plus a "Lowest turn-in rates →" drill-down panel.
+- **Backend** (`server.py::analytics_footfall_weekday_pattern`): now aggregates `avg_outside_traffic`, `avg_turn_in_rate`, and `total_outside_window` at both per-row and `group_avg_by_weekday` levels. The `/api/footfall` endpoint already exposed `outside_traffic` + `turn_in_rate` per store.
+- **Frontend** (`Footfall.jsx`, `FootfallWeekdayHeatmap.jsx`):
+  - Grid expanded 4 → 6 cards. Turn-in card uses a colored pill (green ≥15%, orange 8-14%, red <8%) with a tooltip explaining the metric.
+  - Per-store table default sort flipped to `turn_in_rate ASC` (worst-first, most actionable).
+  - New `ff-bottom-turnin` drill-down shows bottom 5 stores; closes via the Hide button.
+  - Heatmap gains 2 new modes (Outside, Turn-in) with their own color ramps (teal for Outside, crimson for Turn-in); cells render '—' when a store has no pavement counter.
+  - **Iter 84h.1 safety net**: turn-in >100% is rendered with a "⚠" suffix and a tooltip explaining "Likely a partial pavement-counter sample upstream" — keeps the data anomaly visible without silently capping the value.
+- **Verified**: testing agent reports 100% pass on all 7 definition-of-done items + 4/4 new backend pytest. Outside Traffic = 4,740 / Turn-in = 17.4% on the test day (correctly rendered green); Vivo Nakuru 4.5% sorted to top in red.
+- **Stores with no outside_traffic show '—' not '0%'** in both table and heatmap.
+- **Production note**: changes are preview-only — needs redeploy to push to https://bi.vivofashionbrands.com.
+
+
 ### Recent (Feb 2026 — Iter 84g) — `_orders_for_window` chunk-size + split-on-failure (fixes "SKU/Location drill-down doesn't match parent style total")
 - **User reports**:
   1. Products → SOR New Style L-10: parent shows 200 units, but expanding color/size variants shows only 20 (the SKU drill-down).

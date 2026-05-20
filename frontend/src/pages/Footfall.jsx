@@ -325,11 +325,29 @@ const Footfall = () => {
   // Iter 84h — Turn-in color buckets (green ≥15%, orange 8-14%, red <8%).
   // Shared across the KPI card, table cell, weekday pattern, and the
   // bottom-5 drill-down so the visual language is consistent.
+  // Iter 84h.1 — Anomaly badge for >100% rates. Upstream pavement
+  // counters occasionally report a partial-day sample (a 5-h window
+  // captured against a full-day footfall figure → derived turn-in
+  // exceeds 100%). The math is correct but the cell is visually
+  // misleading. We append a "⚠" suffix the user can hover to see the
+  // raw number — so the data-quality issue stays visible without
+  // silently capping it.
   const turnInPillClass = (val) => {
     if (val == null) return "pill-neutral";
+    if (val > 100) return "pill-amber";  // anomaly — render with caveat
     if (val >= 15) return "pill-green";
     if (val >= 8) return "pill-amber";
     return "pill-red";
+  };
+  const fmtTurnIn = (val) => {
+    if (val == null) return "—";
+    if (val > 100) return `${val.toFixed(1)}% ⚠`;
+    return `${val.toFixed(1)}%`;
+  };
+  const turnInTitle = (val) => {
+    if (val == null) return "";
+    if (val > 100) return `Raw turn-in: ${val.toFixed(1)}%. Likely a partial pavement-counter sample upstream (counter captured a shorter window than the footfall counter). Investigate counter calibration if persistent.`;
+    return "";
   };
 
   // Bottom 5 stores by turn-in rate (worst performers — most actionable).
@@ -423,8 +441,11 @@ const Footfall = () => {
               formula="Percentage of people passing the store who walked in"
               value={
                 totals.turnIn != null ? (
-                  <span className={`${turnInPillClass(totals.turnIn)} text-[16px] px-2.5 py-0.5`}>
-                    {totals.turnIn.toFixed(1)}%
+                  <span
+                    className={`${turnInPillClass(totals.turnIn)} text-[16px] px-2.5 py-0.5`}
+                    title={turnInTitle(totals.turnIn)}
+                  >
+                    {fmtTurnIn(totals.turnIn)}
                   </span>
                 ) : (
                   <span className="text-muted">—</span>
@@ -641,8 +662,8 @@ const Footfall = () => {
                           <td className="text-right num">{fmtNum(r.outside_traffic)}</td>
                           <td className="text-right num">{fmtNum(r.total_footfall)}</td>
                           <td className="text-right">
-                            <span className={turnInPillClass(r.turn_in_rate)}>
-                              {r.turn_in_rate.toFixed(1)}%
+                            <span className={turnInPillClass(r.turn_in_rate)} title={turnInTitle(r.turn_in_rate)}>
+                              {fmtTurnIn(r.turn_in_rate)}
                             </span>
                           </td>
                           {compareMode !== "none" && (
@@ -744,7 +765,7 @@ const Footfall = () => {
                   // bottom on ascending sort (worst-first view).
                   sortValue: (r) => r.turn_in_rate == null ? 999999 : r.turn_in_rate,
                   render: (r) => r.turn_in_rate != null
-                    ? <span className={turnInPillClass(r.turn_in_rate)}>{r.turn_in_rate.toFixed(1)}%</span>
+                    ? <span className={turnInPillClass(r.turn_in_rate)} title={turnInTitle(r.turn_in_rate)}>{fmtTurnIn(r.turn_in_rate)}</span>
                     : <span className="text-muted text-[11px]">—</span>,
                   csv: (r) => r.turn_in_rate == null ? "" : r.turn_in_rate.toFixed(2),
                 },
