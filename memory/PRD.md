@@ -3,6 +3,21 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+
+### Recent (Feb 2026 — Iter 85a) — Churn-rate math + compact KES + EAT timezone (P0 + P2 batch)
+- **P0 — Churn-rate >100% bug (`server.py::get_customers_churn_rate`)**:
+  - Upstream `/churned-customers` returns a **lifetime** churned list (~144,719 customers). Previous code divided that by the **period-active** count (e.g., 361 customers in a 30-day window), producing nonsense like `churn_rate = 40,088%` and `churned_customers > total customer base`.
+  - **Fix**: denominator now = `active_in_period + churned_in_period` (the *addressable* customer pool), rate clamped to `[0, 100]`. Also truncates `last_purchase_date` to `YYYY-MM-DD` prefix so timestamps like `2024-08-15T13:00:00Z` lex-compare correctly. New response fields: `active_in_period`, `customer_base`.
+  - **Tests**: `tests/test_iteration_85a_churn_rate.py` (3 mocked unit tests, all passing).
+- **P2 — Compact KES across all pages (`lib/api.js::fmtKES`)**:
+  - `fmtKES` now emits compact 2-decimal form (`KES 903.73K`, `KES 1.21M`, `KES 354.99M`, `KES 985`) by default. Desktop tiles previously showed `KES 1,212,662` long-form.
+  - `fmtKESLong` (new long-form helper) preserved for CSV/XLSX/audit exports.
+  - Verified live on Overview: 30/30 KPI tiles use the K/M/B suffix.
+- **P2 — EAT timezone forcing**:
+  - `fmtDate` in `lib/api.js`, `fmtCalInput` in `FilterBar.jsx`, the `last_purchase` chip in `StoreDeepDive.jsx`, and the trend chart tick formatters + "Last refreshed" timestamp in `Overview.jsx` now pass `{timeZone: "Africa/Nairobi"}` to `toLocaleDateString`/`toLocaleTimeString`. The Overview header now shows `EAT` explicitly.
+- **Production note**: preview-only — needs redeploy to surface on https://bi.vivofashionbrands.com.
+
+
 ### Recent (Feb 2026 — Iter 84h) — Footfall page: Outside Traffic + Turn-in Rate
 - **What**: Two new KPI cards (Outside Traffic, Turn-in Rate) on `/footfall`, two new columns in the per-store breakdown table, two new modes in the weekday heatmap, plus a "Lowest turn-in rates →" drill-down panel.
 - **Backend** (`server.py::analytics_footfall_weekday_pattern`): now aggregates `avg_outside_traffic`, `avg_turn_in_rate`, and `total_outside_window` at both per-row and `group_avg_by_weekday` levels. The `/api/footfall` endpoint already exposed `outside_traffic` + `turn_in_rate` per store.
