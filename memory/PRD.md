@@ -3,6 +3,23 @@
 ## Original Problem Statement
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
+### Recent (Feb 2026 — Iter 84g) — `_orders_for_window` chunk-size + split-on-failure (fixes "SKU/Location drill-down doesn't match parent style total")
+- **User reports**:
+  1. Products → SOR New Style L-10: parent shows 200 units, but expanding color/size variants shows only 20 (the SKU drill-down).
+  2. SOR "Where did it sell?" pane: parent shows 412 units, location list shows only 36.
+  3. Customers page avg spend / churn numbers look off.
+- **Single root cause for all three**: `_orders_for_window` used 30-day chunks against upstream `/orders`. Upstream returns 503/429/timeout on busy 30-day windows that contain >50k rows. Failed chunks were silently dropped — the SKU breakdown, location breakdown, avg-spend-by-customer-type, and recently-unchurned all rebuild from `/orders` line items, so they saw a TRUNCATED dataset while the parent endpoint `/top-skus` (upstream-aggregated, doesn't paginate /orders) saw the full picture.
+- **Diagnostic confirmation**: For style V0925015 over a 6-month Kenya window, 30-day chunks returned `[35699, 23012, 0(fail), 0(fail), 17812, 19504]` rows; switching to 15-day chunks recovered the missing periods (Jan 16-Mar 15: 161 additional units that were invisible to the variant breakdown).
+- **Fixes**:
+  - Reduce default chunk size 30d → **14d** in `_orders_for_window` (single setting flip).
+  - Add **split-on-failure** recursion: if a chunk raises (timeout/429/503), bisect into halves and retry. Recovers down to 1-day windows before giving up. Depth-limited to 4 to avoid pathological cases.
+  - Keep the existing 50k-cap pagination loop (Iter 84g initial) so a single sub-day window doesn't silently truncate either.
+  - Dedupe at the end by `(order_id, sku, color, size)` so a refetched boundary day can't double-count.
+- **Tests**: 6 unit tests in `test_iteration_84g_orders_pagination.py` — under-cap single call, cap-pagination, boundary dedup, max-iters safety, partial-failure return, AND **split-on-failure recovers smaller window** (the case the user reported).
+- **Production note**: changes are preview-only — needs **redeploy**. Production at https://bi.vivofashionbrands.com still shows truncated drill-downs.
+- **Customers page note**: same fix benefits `/analytics/avg-spend-by-customer-type` and `/analytics/recently-unchurned` which also use `_orders_for_window`. Numbers will reconcile after redeploy.
+
+
 ### Recent (Feb 2026 — Iter 84f) — Customer page "computing…" tiles never settling
 - **User report**: Customers page shows three KPI tiles (Churned Customers, Churn Rate, Reactivation Rate) stuck on "computing…" indefinitely. Walk-Ins shows "Upstream unavailable".
 - **Root cause**: `/customers/churn-rate` hangs on the upstream `/churned-customers?limit=100000` call for the full 20 s upstream timeout (preview) or the axios 120 s default (production with breaker open). User reads this as "stuck forever".

@@ -4581,6 +4581,16 @@ async def _orders_for_window(date_from: str, date_to: str, country: Optional[str
     On upstream 5xx, returns the partial result instead of bubbling
     HTTPException — analytics endpoints can still produce useful output
     from whatever chunks succeeded. If EVERY chunk fails we raise 503.
+
+    Iter 84g — Auto-paginate each chunk when upstream hits its 50k row
+    cap. Previously a single 30-day chunk silently lost rows on busy
+    months (>50k orders → only the first 50k came back, the rest were
+    invisible). This was the root cause of the "SKU drill-down totals
+    don't match the parent style totals" bug: `/top-skus` is upstream-
+    aggregated so it sees ALL the units, but `_orders_for_window`
+    rebuilds line items from `/orders` which truncated. Now we slide
+    `date_from` forward inside the chunk by 1 day after hitting a full
+    page, until we either get < limit or the chunk window ends.
     """
     import time as _time
     cache_key = f"{date_from}|{date_to}|{country or ''}|{channel or ''}"
@@ -4593,26 +4603,102 @@ async def _orders_for_window(date_from: str, date_to: str, country: Optional[str
     chs = _split_csv(channel)
     chunks: List[Tuple[date, date]] = []
     cur = df
+    # Iter 84g — Use 14-day chunks (was 30). Upstream `/orders` returns
+    # 503/timeout intermittently on 30-day windows that contain >50k
+    # rows; halving the window dramatically reduces those failures.
+    # Combined with the per-chunk auto-pagination below, this gets us
+    # the same total dataset without losing days when a single chunk
+    # fails.
+    CHUNK_DAYS = 14
     while cur <= dt:
-        end = min(cur + timedelta(days=29), dt)
+        end = min(cur + timedelta(days=CHUNK_DAYS - 1), dt)
         chunks.append((cur, end))
         cur = end + timedelta(days=1)
     out: List[Dict[str, Any]] = []
     failed_chunks = 0
+    CHUNK_LIMIT = 50000
+
+    async def _fetch_one(d1: date, d2: date, depth: int = 0) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch one chunk with auto-pagination + split-on-failure.
+
+        Returns (rows, ok). On upstream failure we recursively bisect
+        the window: 14d → 7d → 4d → 2d → 1d. This recovers data from
+        windows where upstream times out at the higher day count but
+        succeeds on a smaller one. Tested in production where 30-day
+        chunks failed but 15-day chunks succeeded for the same data.
+        """
+        local_rows: List[Dict[str, Any]] = []
+        cur_from = d1
+        max_iters = 32
+        while cur_from <= d2 and max_iters > 0:
+            max_iters -= 1
+            try:
+                rows = await _safe_fetch("/orders", {
+                    "date_from": cur_from.isoformat(),
+                    "date_to": d2.isoformat(),
+                    "limit": CHUNK_LIMIT,
+                    "country": cs[0] if len(cs) == 1 else None,
+                    "channel": chs[0] if len(chs) == 1 else None,
+                }) or []
+                local_rows.extend(rows)
+            except (HTTPException, Exception) as e:  # noqa: BLE001
+                # Split-on-failure: bisect the window and retry.
+                # Stop bisecting at 1-day windows (no more useful split).
+                if (d2 - cur_from).days <= 0 or depth >= 4:
+                    logger.warning(
+                        "[_orders_for_window] chunk %s..%s failed at depth %d: %s",
+                        cur_from, d2, depth, e,
+                    )
+                    return local_rows, False
+                mid = cur_from + timedelta(days=max(1, (d2 - cur_from).days // 2))
+                left_rows, left_ok = await _fetch_one(cur_from, mid - timedelta(days=1), depth + 1)
+                right_rows, right_ok = await _fetch_one(mid, d2, depth + 1)
+                local_rows.extend(left_rows)
+                local_rows.extend(right_rows)
+                # If either half succeeded, treat this fetch as partial-OK.
+                return local_rows, (left_ok or right_ok)
+            if len(rows) < CHUNK_LIMIT:
+                break
+            latest = max(
+                ((r.get("order_date") or "")[:10] for r in rows),
+                default="",
+            )
+            try:
+                next_from = datetime.strptime(latest, "%Y-%m-%d").date()
+            except Exception:
+                logger.warning(
+                    "[_orders_for_window] chunk %s..%s capped but no parseable date",
+                    d1, d2,
+                )
+                break
+            if next_from <= cur_from:
+                next_from = cur_from + timedelta(days=1)
+            cur_from = next_from
+        return local_rows, True
+
     for d1, d2 in chunks:
-        try:
-            rows = await _safe_fetch("/orders", {
-                "date_from": d1.isoformat(), "date_to": d2.isoformat(),
-                "limit": 50000,
-                "country": cs[0] if len(cs) == 1 else None,
-                "channel": chs[0] if len(chs) == 1 else None,
-            }) or []
-            out.extend(rows)
-        except HTTPException:
+        rows, ok = await _fetch_one(d1, d2)
+        out.extend(rows)
+        if not ok:
             failed_chunks += 1
-        except Exception as e:
-            logger.warning("[_orders_for_window] chunk %s..%s failed: %s", d1, d2, e)
-            failed_chunks += 1
+    # Iter 84g — Dedupe at the end. Two adjacent sub-fetches may share
+    # the boundary day, so the same order_id can appear twice. Key by
+    # (order_id, sku, color, size) which is the natural row identity.
+    if out:
+        seen: set = set()
+        deduped: List[Dict[str, Any]] = []
+        for r in out:
+            key = (
+                r.get("order_id") or r.get("id"),
+                r.get("sku") or "",
+                r.get("color_print") or r.get("color") or "",
+                r.get("size") or "",
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+        out = deduped
     # Only raise if EVERY chunk failed and we got nothing — otherwise cache
     # and return the partial set so the analytics endpoints can compute
     # something useful from whatever did come back.
