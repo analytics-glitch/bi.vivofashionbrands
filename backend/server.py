@@ -8403,6 +8403,9 @@ async def _get_style_first_last_sale(
         _style_dates_cache[cache_key] = (_time.time(), out)
         _style_sku_cache[cache_key] = (_time.time(), sku_out)
         logger.info(f"[style-dates] hydrated {len(out)} styles from curve cache (key={ck}); skus={len(sku_out)}")
+        # Iter 84i — also persist what curve-cache observed (same
+        # invariant: MIN over all observations).
+        asyncio.create_task(_persist_style_launch_dates(out))
         return out
 
     # ── Path 2: cold fan-out (rare — only if curve hasn't warmed) ──
@@ -8457,7 +8460,81 @@ async def _get_style_first_last_sale(
     _style_dates_cache[cache_key] = (_time.time(), out)
     _style_sku_cache[cache_key] = (_time.time(), sku_out)
     logger.info(f"[style-dates] cold fan-out → {len(out)} styles ({len(chunks)} chunks); skus={len(sku_out)}")
+    # Iter 84i — Persist `first_sale` to Mongo so it's preserved beyond
+    # the 180-day window. Styles that haven't sold in 180 days won't
+    # appear in subsequent fan-outs, so without this the launch_date
+    # would silently drop to null after 6 months. Upserting MIN keeps
+    # the earliest observation we've ever made; fire-and-forget so the
+    # response path isn't blocked on Mongo.
+    asyncio.create_task(_persist_style_launch_dates(out))
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Iter 84i — Mongo-backed style launch-date cache
+# ──────────────────────────────────────────────────────────────────────
+# Why a separate persistent layer? `_style_dates_cache` lives in-process
+# (30 min TTL) and only knows about styles seen in the LAST 180 days
+# (the helper's look-back window). For the SOR export, the user wants
+# the launch_date column populated for EVERY style — including ones
+# that haven't sold recently. Once a style has been observed at least
+# once with a first_sale date, we should remember it forever.
+async def _persist_style_launch_dates(observed: Dict[str, Tuple[str, str]]) -> None:
+    """Upsert MIN(first_sale_iso) for each style into Mongo. Idempotent —
+    safe to call from any code path that has a fresh `out` dict."""
+    if not observed:
+        return
+    try:
+        # Build bulk upserts: for each style, set first_sale_iso only if
+        # the new value is earlier than what's stored. Mongo's $min
+        # operator gives us exactly that semantic, atomic per-doc.
+        from pymongo import UpdateOne
+        ops = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for style, (first_iso, last_iso) in observed.items():
+            if not style or not first_iso:
+                continue
+            ops.append(UpdateOne(
+                {"style_name": style},
+                {
+                    "$min": {"first_sale_iso": first_iso},
+                    "$max": {"last_sale_iso": last_iso, "last_observed_at": now_iso},
+                    "$setOnInsert": {"created_at": now_iso},
+                },
+                upsert=True,
+            ))
+        if ops:
+            await db.style_launch_dates.bulk_write(ops, ordered=False)
+            logger.info("[style-dates] persisted %d styles to style_launch_dates", len(ops))
+    except Exception as e:
+        # Persistence is fire-and-forget; never break the calling
+        # endpoint just because the cache write failed.
+        logger.warning("[style-dates] persist failed: %s", e)
+
+
+async def _hydrate_launch_dates_from_mongo(
+    style_names: List[str],
+) -> Dict[str, str]:
+    """Return `{style_name: first_sale_iso}` for any styles that have a
+    persisted launch date in Mongo. Used by the SOR export to backfill
+    styles whose first sale is older than the 180-day fan-out window."""
+    if not style_names:
+        return {}
+    try:
+        cursor = db.style_launch_dates.find(
+            {"style_name": {"$in": style_names}},
+            {"_id": 0, "style_name": 1, "first_sale_iso": 1},
+        )
+        out: Dict[str, str] = {}
+        async for doc in cursor:
+            sn = doc.get("style_name")
+            fs = doc.get("first_sale_iso")
+            if sn and fs:
+                out[sn] = fs
+        return out
+    except Exception as e:
+        logger.warning("[style-dates] hydrate from mongo failed: %s", e)
+        return {}
 
 
 @api_router.get("/analytics/sor-all-styles")
@@ -8586,10 +8663,20 @@ async def analytics_sor_all_styles(
             if s in candidates and s not in sku_for_style and sk:
                 sku_for_style[s] = sk
 
+    # Iter 84i — Hydrate launch dates from the persistent Mongo cache.
+    # `style_dates` only knows about styles that traded in the last 180
+    # days. For older styles we look up the historically-observed
+    # first_sale_iso from `style_launch_dates` (populated incrementally
+    # by every previous run of `_get_style_first_last_sale`). This means
+    # the launch_date column is populated for any style we've EVER
+    # observed selling, not just the last 6 months.
+    persisted_launch = await _hydrate_launch_dates_from_mongo(list(candidates))
+
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
-    # age + launch_date; older styles fall back to the legacy "≥26 wks"
-    # behaviour so we don't have to fan out further into history.
+    # age + launch_date; older styles fall back to the persisted Mongo
+    # value (Iter 84i) so the export's launch_date column stays useful
+    # for the long-tail of catalog styles.
     out: List[Dict[str, Any]] = []
     for s in candidates:
         sm = six_m_map.get(s, {})
@@ -8643,6 +8730,27 @@ async def analytics_sor_all_styles(
             # explicitly so the FE can render "≥26w" if it wants to.
             age_weeks = 26.0
             launch_date_iso = None
+
+        # Iter 84i — If we have a persisted launch date in Mongo (from
+        # any past observation), use it. This is what makes the
+        # launch_date column populated for the long-tail catalog —
+        # styles that haven't sold in the last 180 days still get their
+        # historically-observed first sale. The persisted value is
+        # AUTHORITATIVE because Mongo retains MIN(first_sale_iso) over
+        # all runs — so it can only ever EARLIER-shift, never later.
+        persisted_first = persisted_launch.get(s)
+        if persisted_first:
+            if launch_date_iso is None or persisted_first < launch_date_iso:
+                launch_date_iso = persisted_first
+                # Recompute age from the (possibly earlier) launch date.
+                try:
+                    pf = datetime.fromisoformat(persisted_first).date()
+                    persisted_age_days = (today - pf).days
+                    # Don't shrink the cap — long-trading styles still
+                    # cap at 26 weeks for column comparability.
+                    age_weeks = min(persisted_age_days / 7.0, 26.0)
+                except Exception:
+                    pass
         # Weekly avg uses the actual age (capped at 26) so a 12-week
         # style isn't averaged across 26 — same convention as L-10.
         eff_weeks = max(age_weeks, 1.0)  # avoid /0 on freshly-launched styles
@@ -11150,6 +11258,14 @@ async def startup():
             # collection so stale docs reap themselves at 24 h.
             await db.analytics_snapshots.create_index(
                 "snapshot_at", expireAfterSeconds=86400, background=True,
+            )
+            # Iter 84i — persistent style launch-date cache. Unique
+            # index on style_name so the $min upsert is one-doc-per-
+            # style. No TTL — this collection is INTENTIONALLY long-
+            # lived: once we've observed a style's first sale, we
+            # never want to forget it.
+            await db.style_launch_dates.create_index(
+                "style_name", unique=True, background=True,
             )
             logger.info("[indexes] Mongo index audit complete")
         except Exception as e:
