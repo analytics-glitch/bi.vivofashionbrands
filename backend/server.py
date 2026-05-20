@@ -3667,7 +3667,13 @@ async def get_customers(
             country=country, channel=channel,
         )
     except HTTPException as e:
-        if e.status_code in (502, 503, 504):
+        # Iter 85d — also catch transient 429 (upstream rate-limit) and
+        # 500 (intermittent upstream errors). The Customers page should
+        # never flash a raw 429 detail string at end users — graceful
+        # zeros + a `degraded_reason` flag keeps the page renderable
+        # while the breaker waits for the upstream rate window to clear.
+        if e.status_code in (429, 500, 502, 503, 504):
+            reason = "upstream_rate_limited" if e.status_code == 429 else "upstream_unavailable"
             logger.warning(
                 "[/customers] upstream degraded (%s) — serving graceful zeros", e.status_code,
             )
@@ -3679,7 +3685,8 @@ async def get_customers(
                 "churn_source": "degraded_upstream",
                 "churn_window_days": 90,
                 "degraded": True,
-                "degraded_reason": "upstream_unavailable",
+                "degraded_reason": reason,
+                "degraded_status": e.status_code,
             }
         raise
 
