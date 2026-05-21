@@ -191,7 +191,22 @@ _FETCH_CACHE_BYTES = 0
 _CACHE_HITS_L1 = 0  # in-process dict cache
 _CACHE_HITS_L2 = 0  # cross-pod Redis cache
 _CACHE_HITS_MONGO_SNAPSHOT = 0  # Iter 82c — Mongo /kpis & analytics snapshot reads
-_CACHE_MISSES = 0   # had to call upstream
+# Iter 86d — granular counters per the upstream team's request, so
+# they can verify Phase 2-4 migrations actually displace BigQuery
+# calls. Each counter bumps on exactly one code path:
+#   _CACHE_HITS_MONGO_AGGREGATE → reads from orders_daily_snapshots
+#                                  (walk-ins, avg-spend, churn,
+#                                  frequency endpoints)
+#   _CACHE_HITS_MONGO_ROSTER    → reads from customer_lifetime_roster
+#                                  (customer-name lookup that backs
+#                                  the walk-in detector + Customers
+#                                  table)
+# `bigquery_hits` is exposed in the /admin/cache-stats response as
+# an alias for `_CACHE_MISSES` (every upstream call costs the BI API
+# team one BigQuery scan).
+_CACHE_HITS_MONGO_AGGREGATE = 0
+_CACHE_HITS_MONGO_ROSTER = 0
+_CACHE_MISSES = 0   # had to call upstream (= bigquery_hits)
 _CACHE_INFLIGHT_JOIN = 0  # joined an already-running request
 
 # Iter 86 — Last time a real USER request hit the FastAPI app. Bumped
@@ -3281,7 +3296,13 @@ async def admin_cache_stats():
                 legacy += 1
         else:
             legacy += 1
-    hits = _CACHE_HITS_L1 + _CACHE_HITS_L2 + _CACHE_HITS_MONGO_SNAPSHOT
+    hits = (
+        _CACHE_HITS_L1
+        + _CACHE_HITS_L2
+        + _CACHE_HITS_MONGO_SNAPSHOT
+        + _CACHE_HITS_MONGO_AGGREGATE  # Iter 86d
+        + _CACHE_HITS_MONGO_ROSTER     # Iter 86d
+    )
     # Inflight-joins are conceptually hits (we didn't re-call upstream),
     # so include them in the total too — otherwise a request that joined
     # an inflight refresh would count as a miss in the denominator.
@@ -3357,8 +3378,15 @@ async def admin_cache_stats():
             "l1_hits": _CACHE_HITS_L1,
             "l2_redis_hits": _CACHE_HITS_L2,
             "mongo_snapshot_hits": _CACHE_HITS_MONGO_SNAPSHOT,
+            # Iter 86d — granular Mongo counters so the upstream BI
+            # API team can verify the Phase 2-4 migrations actually
+            # displace BigQuery calls. Each counter bumps on exactly
+            # one code path (see comments at the top of server.py).
+            "mongo_aggregate_hits": _CACHE_HITS_MONGO_AGGREGATE,
+            "mongo_roster_hits": _CACHE_HITS_MONGO_ROSTER,
             "inflight_joins": _CACHE_INFLIGHT_JOIN,
             "misses": _CACHE_MISSES,
+            "bigquery_hits": _CACHE_MISSES,  # alias — same value, clearer name
             "hit_rate_pct": round(hit_rate, 1),
         },
         # Miss breakdown — answers "is the TTL still too short?".
@@ -4320,6 +4348,8 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
         from orders_aggregates import read_customer_name_lookup
         mongo_names, mongo_contacts = await read_customer_name_lookup(db)
         if mongo_names:
+            global _CACHE_HITS_MONGO_ROSTER
+            _CACHE_HITS_MONGO_ROSTER += 1
             _customer_names_cache = (_time.time(), mongo_names)
             _customer_contacts_cache = (_time.time(), mongo_contacts)
             logger.info(
@@ -4438,6 +4468,8 @@ async def _get_walk_ins_impl(
                 countries=cs or None, channels=chs or None,
             )
             if fast is not None:
+                global _CACHE_HITS_MONGO_AGGREGATE
+                _CACHE_HITS_MONGO_AGGREGATE += 1
                 # Cross-validate total_sales against /kpis (authoritative).
                 try:
                     kpi = await get_kpis(

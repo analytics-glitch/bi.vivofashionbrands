@@ -65,6 +65,130 @@ def test_build_daily_doc_walkin_only_when_flagged():
     assert doc["total_orders"] == 2
 
 
+def test_build_daily_doc_emits_by_customer_with_type():
+    """Iter 86d Phase 2 — every non-empty customer_id gets a row in
+    `by_customer` with type vote applied (Returning wins ties).
+    """
+    rows = [
+        {"order_id": "o1", "customer_id": "c1", "customer_type": "New",
+         "quantity": 2, "total_sales_kes": 1000.0, "pos_location_name": "L", "channel": "Retail"},
+        {"order_id": "o2", "customer_id": "c1", "customer_type": "Returning",
+         "quantity": 1, "total_sales_kes": 500.0, "pos_location_name": "L", "channel": "Retail"},
+        {"order_id": "o3", "customer_id": "c2", "customer_type": "New",
+         "quantity": 1, "total_sales_kes": 250.0, "pos_location_name": "L", "channel": "Retail"},
+    ]
+    doc = build_daily_doc(d="2026-05-20", country="Kenya", rows=rows, is_walk_in_fn=_is_walk)
+    by_c = {x["customer_id"]: x for x in doc["by_customer"]}
+    assert set(by_c.keys()) == {"c1", "c2"}
+    # c1 — 1 New, 1 Returning → tie → Returning wins.
+    assert by_c["c1"]["customer_type"] == "Returning"
+    assert by_c["c1"]["orders"] == 2
+    assert by_c["c1"]["sales_kes"] == 1500.0
+    assert by_c["c1"]["is_walk_in"] is False
+    # c2 — only New.
+    assert by_c["c2"]["customer_type"] == "New"
+    assert by_c["c2"]["orders"] == 1
+
+
+def test_build_daily_doc_skips_blank_customer_id_in_by_customer():
+    """Walk-in rows have customer_id="" — their data is already in
+    walk_in_* totals. Don't pollute by_customer with empty-key rows."""
+    rows = [
+        {"order_id": "o1", "customer_id": "", "quantity": 1,
+         "total_sales_kes": 100.0, "pos_location_name": "L", "channel": "Retail"},
+    ]
+    doc = build_daily_doc(d="2026-05-20", country="Kenya", rows=rows, is_walk_in_fn=_is_walk)
+    assert doc["by_customer"] == []
+    assert doc["walk_in_orders"] == 1
+
+
+def test_read_avg_spend_aggregates_correctly():
+    """Phase 2 reader rolls up per-customer across the window and
+    splits into New vs Returning buckets with the standard metrics."""
+    from orders_aggregates import read_avg_spend_aggregate
+    # Two days, all 4 countries — sparse data, only Kenya has customers.
+    base_doc = lambda d, c: {
+        "date": d, "country": c, "total_orders": 0, "total_units": 0,
+        "total_sales_kes": 0.0, "walk_in_orders": 0, "walk_in_units": 0,
+        "walk_in_sales_kes": 0.0, "by_location": [], "by_customer": [],
+    }
+    rows = []
+    for d in ("2026-05-19", "2026-05-20"):
+        for c in ("Kenya", "Uganda", "Rwanda", "Online"):
+            doc = base_doc(d, c)
+            if c == "Kenya":
+                # c1 (Returning): 1 order/day, 2 orders total, KES 3000 total
+                # c2 (New): 1 order on May 19 only, KES 800 total
+                if d == "2026-05-19":
+                    doc["by_customer"] = [
+                        {"customer_id": "c1", "customer_type": "Returning", "orders": 1, "units": 2, "sales_kes": 1000.0, "is_walk_in": False},
+                        {"customer_id": "c2", "customer_type": "New", "orders": 1, "units": 1, "sales_kes": 800.0, "is_walk_in": False},
+                    ]
+                else:
+                    doc["by_customer"] = [
+                        {"customer_id": "c1", "customer_type": "Returning", "orders": 1, "units": 3, "sales_kes": 2000.0, "is_walk_in": False},
+                    ]
+            rows.append(doc)
+    db = _fake_db(rows)
+    out = asyncio.run(read_avg_spend_aggregate(
+        db, date_from="2026-05-19", date_to="2026-05-20",
+        countries=None, channels=None,
+    ))
+    assert out is not None
+    assert out["source"] == "mongo_aggregate"
+    # c1 Returning: 1 customer, 2 orders, KES 3000.
+    assert out["returning"]["customers"] == 1
+    assert out["returning"]["orders"] == 2
+    assert out["returning"]["total_spend_kes"] == 3000.0
+    assert out["returning"]["avg_spend_per_customer_kes"] == 3000.0
+    assert out["returning"]["avg_orders_per_customer"] == 2.0
+    # c2 New: 1 customer, 1 order, KES 800.
+    assert out["new"]["customers"] == 1
+    assert out["new"]["orders"] == 1
+    assert out["new"]["total_spend_kes"] == 800.0
+
+
+def test_read_avg_spend_excludes_walkins():
+    """Walk-in entries in by_customer must be skipped — they belong to
+    the unattributed bucket, not New / Returning."""
+    from orders_aggregates import read_avg_spend_aggregate
+    base = {
+        "date": "2026-05-20", "country": "Kenya", "total_orders": 0, "total_units": 0,
+        "total_sales_kes": 0.0, "walk_in_orders": 0, "walk_in_units": 0,
+        "walk_in_sales_kes": 0.0, "by_location": [],
+        "by_customer": [
+            {"customer_id": "c1", "customer_type": "New", "orders": 1, "units": 1, "sales_kes": 500.0, "is_walk_in": False},
+            {"customer_id": "c2", "customer_type": "Returning", "orders": 3, "units": 5, "sales_kes": 9000.0, "is_walk_in": True},
+        ],
+    }
+    rows = [dict(base)]
+    for c in ("Uganda", "Rwanda", "Online"):
+        rows.append({**base, "country": c, "by_customer": []})
+    db = _fake_db(rows)
+    out = asyncio.run(read_avg_spend_aggregate(
+        db, date_from="2026-05-20", date_to="2026-05-20",
+        countries=None, channels=None,
+    ))
+    assert out["new"]["customers"] == 1
+    assert out["returning"]["customers"] == 0   # the walk-in c2 was excluded
+
+
+def test_read_avg_spend_returns_none_on_missing_day():
+    """Coverage check — falls through to live path if any (day, country)
+    missing."""
+    from orders_aggregates import read_avg_spend_aggregate
+    rows = [{"date": "2026-05-20", "country": "Kenya",
+             "total_orders": 0, "total_units": 0, "total_sales_kes": 0.0,
+             "walk_in_orders": 0, "walk_in_units": 0, "walk_in_sales_kes": 0.0,
+             "by_location": [], "by_customer": []}]  # Other 3 countries missing.
+    db = _fake_db(rows)
+    out = asyncio.run(read_avg_spend_aggregate(
+        db, date_from="2026-05-20", date_to="2026-05-20",
+        countries=None, channels=None,
+    ))
+    assert out is None
+
+
 def test_build_daily_doc_empty():
     doc = build_daily_doc(d="2026-05-20", country="Kenya", rows=[], is_walk_in_fn=_is_walk)
     assert doc["total_orders"] == 0

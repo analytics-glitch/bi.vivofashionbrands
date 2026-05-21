@@ -18,6 +18,7 @@ Endpoints:
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import logging
 
 from fastapi import Depends, Query, Request, HTTPException
 
@@ -269,7 +270,35 @@ async def analytics_avg_spend_by_customer_type(
     we count each customer ONCE per bucket (their majority type, with
     "Returning" winning ties). Walk-ins (customer_type=Guest OR no
     customer_id) are excluded.
+
+    Iter 86d (Phase 2) — FAST PATH: read from the pre-computed
+    `orders_daily_snapshots.by_customer` rollup. Eliminates the live
+    `/orders` fan-out (~12-18 upstream BigQuery calls per Customers
+    page load). Falls through to live path if the aggregate doesn't
+    have full coverage of the requested window.
     """
+    # Fast path — Mongo aggregate.
+    try:
+        from server import db as _db, _CACHE_HITS_MONGO_AGGREGATE  # noqa
+        import server as _srv
+        from orders_aggregates import read_avg_spend_aggregate
+        from server import _split_csv
+        cs = _split_csv(country)
+        chs = _split_csv(channel)
+        fast = await read_avg_spend_aggregate(
+            _db,
+            date_from=date_from, date_to=date_to,
+            countries=cs or None, channels=chs or None,
+        )
+        if fast is not None:
+            _srv._CACHE_HITS_MONGO_AGGREGATE += 1
+            return fast
+    except Exception as e:
+        # Any failure → fall through to the live path so we never
+        # serve a wrong answer because the aggregate path is broken.
+        logger = logging.getLogger(__name__)
+        logger.warning("[avg-spend] aggregate fast-path failed: %s", e)
+
     rows = await _orders_for_window(date_from, date_to, country, channel)
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _get_customer_contact_lookup_sync()

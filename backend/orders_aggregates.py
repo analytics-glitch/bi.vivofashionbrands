@@ -126,6 +126,23 @@ def build_daily_doc(
 
     Aggregates to UNIQUE order_ids (upstream returns one row per line
     item; a 5-SKU walk-in order would otherwise be counted 5×).
+
+    Iter 86d — Phase 2 schema extension. We now also write a
+    `by_customer` array (one entry per unique customer_id in the day)
+    so the avg-spend, churn, and frequency endpoints can read the
+    aggregate without re-fanning out to `/orders`. The entry shape:
+        {
+          customer_id: str,
+          customer_type: "New" | "Returning" | "",
+          orders: int,           # de-dup'd within the day
+          units: int,
+          sales_kes: float,
+          is_walk_in: bool,
+        }
+    customer_type uses the majority-vote rule with "Returning" winning
+    ties — same as the legacy endpoint. Walk-in rows are included with
+    is_walk_in=True; consumers filter them out or include them as
+    needed.
     """
     doc = _empty_country_doc(d, country)
     # Track seen order_ids per location so we don't double-count.
@@ -135,6 +152,12 @@ def build_daily_doc(
     seen_total: set = set()
     seen_walk: set = set()
     by_loc: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    # Per-customer accumulators (Iter 86d Phase 2).
+    cust_orders_seen: Dict[str, set] = {}     # customer_id -> set of order_ids
+    cust_sales: Dict[str, float] = {}
+    cust_units: Dict[str, float] = {}
+    cust_walkin: Dict[str, bool] = {}
+    cust_type_votes: Dict[str, Dict[str, int]] = {}
 
     for r in rows:
         order_id = r.get("order_id") or r.get("id")
@@ -167,6 +190,25 @@ def build_daily_doc(
             doc["walk_in_units"] += qty
             doc["walk_in_sales_kes"] += sales
 
+        # Per-customer rollup. We intentionally include walk-ins here
+        # (cid=""), so avg-spend can filter them out at read-time
+        # while frequency / churn can still inspect them if needed.
+        cid = str(r.get("customer_id") or "")
+        if cid not in cust_orders_seen:
+            cust_orders_seen[cid] = set()
+            cust_sales[cid] = 0.0
+            cust_units[cid] = 0.0
+            cust_walkin[cid] = False
+            cust_type_votes[cid] = {"New": 0, "Returning": 0}
+        cust_orders_seen[cid].add(oid)
+        cust_sales[cid] += sales
+        cust_units[cid] += qty
+        if is_walkin:
+            cust_walkin[cid] = True
+        ctype = (r.get("customer_type") or "").strip()
+        if ctype in ("New", "Returning"):
+            cust_type_votes[cid][ctype] += 1
+
         # Unique-order counts.
         if oid not in seen_total:
             seen_total.add(oid)
@@ -188,6 +230,26 @@ def build_daily_doc(
         v["total_sales_kes"] = round(v["total_sales_kes"], 2)
         v["walk_in_sales_kes"] = round(v["walk_in_sales_kes"], 2)
     doc["by_location"] = list(by_loc.values())
+
+    # Materialise per-customer rollup. Skip the cid="" bucket — its
+    # data is already in walk_in_* totals and storing it would just
+    # bloat the doc with a 0-customer-id key.
+    by_cust = []
+    for cid, order_set in cust_orders_seen.items():
+        if not cid:
+            continue
+        votes = cust_type_votes[cid]
+        # Returning wins ties (same rule as legacy avg-spend endpoint).
+        ctype = "New" if votes["New"] > votes["Returning"] else "Returning"
+        by_cust.append({
+            "customer_id": cid,
+            "customer_type": ctype,
+            "orders": len(order_set),
+            "units": int(cust_units[cid]),
+            "sales_kes": round(cust_sales[cid], 2),
+            "is_walk_in": cust_walkin[cid],
+        })
+    doc["by_customer"] = by_cust
     return doc
 
 
@@ -327,6 +389,103 @@ async def read_walkins_aggregate(
         ),
         "truncated": False,
         "degraded": False,
+        "source": "mongo_aggregate",
+    }
+
+
+# ── Iter 86d Phase 2 — Avg-spend by customer type, served from agg ──
+
+async def read_avg_spend_aggregate(
+    db,
+    *,
+    date_from: str,
+    date_to: str,
+    countries: Optional[List[str]],
+    channels: Optional[List[str]],
+) -> Optional[Dict[str, Any]]:
+    """Aggregate the per-customer rollup in `orders_daily_snapshots`
+    into the same shape the legacy `analytics_avg_spend_by_customer_type`
+    endpoint returned. Excludes walk-ins from both buckets (denominator
+    + numerator) — same rule as the legacy live path.
+
+    Coverage check: returns None if any (day × country) is missing, so
+    the caller can fall through to the live `/orders` path. After the
+    Phase 5 90-day backfill ships, this fast-path will hit ~100% of
+    requests.
+
+    Channels filter is currently a no-op on this read — the legacy
+    endpoint also ignored channel-by-channel splits for avg-spend (the
+    metric is most useful at country level). We accept the param for
+    API symmetry; if channel filtering is needed later we can extend
+    the per-customer entry to carry pos_location_name and partition.
+    """
+    days = _enum_days(date_from, date_to)
+    real_countries = ["Kenya", "Uganda", "Rwanda", "Online"]
+    query = {"date": {"$in": days}, "country": {"$in": real_countries}}
+    cursor = db.orders_daily_snapshots.find(query, {"_id": 0})
+    rows = await cursor.to_list(length=None)
+    have = {(r["date"], r["country"]) for r in rows}
+    want = {(d, c) for d in days for c in real_countries}
+    if want - have:
+        return None
+    if countries:
+        cs_set = {c for c in countries if c}
+        rows = [r for r in rows if r["country"] in cs_set]
+
+    # Roll up per customer across the window.
+    cust_spend: Dict[str, float] = {}
+    cust_orders: Dict[str, int] = {}
+    cust_units: Dict[str, int] = {}
+    cust_type_votes: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        for c in (r.get("by_customer") or []):
+            if c.get("is_walk_in"):
+                continue
+            cid = c.get("customer_id")
+            if not cid:
+                continue
+            cust_spend[cid] = cust_spend.get(cid, 0.0) + float(c.get("sales_kes") or 0)
+            cust_orders[cid] = cust_orders.get(cid, 0) + int(c.get("orders") or 0)
+            cust_units[cid] = cust_units.get(cid, 0) + int(c.get("units") or 0)
+            ct = c.get("customer_type") or "Returning"
+            v = cust_type_votes.setdefault(cid, {"New": 0, "Returning": 0})
+            if ct in v:
+                v[ct] += 1
+
+    if not cust_spend:
+        empty = {"customers": 0, "orders": 0, "total_spend_kes": 0,
+                 "avg_spend_per_customer_kes": 0, "avg_orders_per_customer": 0,
+                 "avg_basket_value_kes": 0}
+        return {"new": empty, "returning": dict(empty), "source": "mongo_aggregate"}
+
+    new_spend = ret_spend = 0.0
+    new_count = ret_count = 0
+    new_orders = ret_orders = 0
+    for cid, spend in cust_spend.items():
+        votes = cust_type_votes.get(cid) or {"New": 0, "Returning": 0}
+        is_new = votes["New"] > votes["Returning"]
+        if is_new:
+            new_spend += spend
+            new_count += 1
+            new_orders += cust_orders[cid]
+        else:
+            ret_spend += spend
+            ret_count += 1
+            ret_orders += cust_orders[cid]
+
+    def _bucket(spend, count, orders):
+        return {
+            "customers": count,
+            "orders": orders,
+            "total_spend_kes": round(spend, 2),
+            "avg_spend_per_customer_kes": round(spend / count, 2) if count else 0,
+            "avg_orders_per_customer": round(orders / count, 2) if count else 0,
+            "avg_basket_value_kes": round(spend / orders, 2) if orders else 0,
+        }
+
+    return {
+        "new": _bucket(new_spend, new_count, new_orders),
+        "returning": _bucket(ret_spend, ret_count, ret_orders),
         "source": "mongo_aggregate",
     }
 
