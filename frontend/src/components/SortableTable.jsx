@@ -19,9 +19,41 @@ const _flattenToText = (node) => {
   return "";
 };
 
-/** Download rows as CSV and show a success toast. */
+/** Download rows as CSV and show a success toast.
+ *
+ * Iter 86c — Hardened against React-element column labels. Several
+ * tables (Products SOR, New Styles Performance, Exports) use a
+ * component as the column's `label` (e.g. `<SORHeader />` carries the
+ * tooltip "Sell-Through % since launch"). The legacy code called
+ * `.replace()` directly on the label, which crashed with
+ * `TypeError: (c.label || c.key).replace is not a function` and
+ * silently broke the Export CSV button on those tables. The fix:
+ * flatten labels through the existing `_flattenToText` helper before
+ * doing any string ops. Any non-string `label` now degrades cleanly
+ * to its visible text (`"SOR %"`) instead of throwing.
+ */
 export const exportCSV = (rows, columns, filename = "export.csv") => {
-  const header = columns.map((c) => `"${(c.label || c.key).replace(/"/g, '""')}"`).join(",");
+  const header = columns
+    .map((c) => {
+      // Iter 86c — Label-source priority for CSV header cells:
+      //   1. Explicit `c.csvLabel` — opt-in plain-text override.
+      //   2. `c.label` flattened through `_flattenToText` if it's a
+      //      React element / array; raw if string/number.
+      //   3. Fallback to `c.key` so the export still works even when
+      //      a custom label component can't be flattened to text.
+      let text;
+      if (c.csvLabel != null) {
+        text = String(c.csvLabel);
+      } else if (typeof c.label === "string" || typeof c.label === "number") {
+        text = String(c.label);
+      } else if (c.label != null) {
+        text = _flattenToText(c.label) || String(c.key || "");
+      } else {
+        text = String(c.key || "");
+      }
+      return `"${text.replace(/"/g, '""')}"`;
+    })
+    .join(",");
   // Auto-detect percentage columns by checking the rendered text of the first
   // row. Any column whose render output ends with `%`, ` pp`, ` pts`, or ` pt`
   // is treated as a percentage and gets a `%` suffix in CSV (variance
