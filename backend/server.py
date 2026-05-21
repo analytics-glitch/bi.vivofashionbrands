@@ -10647,7 +10647,10 @@ async def _analytics_replenishment_report_impl(
             return (bn.upper(), 0, "")
         return (m.group(1).upper(), int(m.group(2)), m.group(3))
     def _sort_key(r):
-        return (r["pos_location"], _bin_natural(r.get("bin") or ""), r["product_name"], r["size"])
+        # Case-insensitive POS sort so 'Vivo Mama Ngina St' sorts
+        # naturally before 'Vivo MSA Digo Road' (default ASCII sort
+        # puts uppercase before lowercase).
+        return ((r["pos_location"] or "").casefold(), _bin_natural(r.get("bin") or ""), r["product_name"], r["size"])
     rows.sort(key=_sort_key)
     n = len(rows)
     n_owners = max(len(eff_owners), 1)

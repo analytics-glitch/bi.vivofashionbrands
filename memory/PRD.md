@@ -4,6 +4,17 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 87) — UI polish batch (P0): text wrap + replenishment sort + SOR Launch-year filter + Footfall Exploration table
+- **Long product names now wrap** across all SOR / catalog tables — removed `truncate` + `max-w + line-clamp` patterns and replaced with `white-space: normal; word-break: break-word; overflow-wrap: anywhere`. Touched: `SorStylesTable.jsx` (style name + brand/collection sub-line), `Products.jsx` (Top 20 / New styles / SOR by style), `SORReportExport.jsx` (master style_name + location pane title + location cell), `ReplenishmentReport.jsx` already wrapped.
+- **Daily Replenishment sort** (`server.py::_sort_key`) now: POS ASC (case-insensitive — Mama Ngina St precedes MSA Digo Road) → Bin ASC (natural sort via `_bin_natural`, so `G65 < G123`; empty bins sentinel-pushed to the end of each POS group) → product_name → size. Bin lookup moved BEFORE owner-assignment slice so each picker's contiguous range follows the new ordering.
+- **SOR All Styles now exposes the Launch Date column** (`showLaunchDate={true}` on `SorAllStyles.jsx` — was `false`). L-10 and the Exports SOR Report already had it.
+- **Launch-month filter supports whole-year shortcut** (`LaunchMonthFilter.jsx`): each year group now starts with a `__YEAR__:YYYY` "Whole year YYYY" option that includes ALL months of that year when ticked. `filterByLaunchMonths` updated to handle the new sentinel alongside the existing `__UNKNOWN__` one. Verified: tick "Whole year 2026" → all 2026-launched styles pass through; ticking specific months still works.
+- **Footfall Exploration Table** (`Footfall.jsx` → `[data-testid="ff-exploration-table"]`): new card with columns POS · Footfall In · Footfall In (last period) · Change % · Footfall Outside. The "last period" column ALWAYS populates (separate `/footfall` fetch for the auto-immediate-prior window — independent of the page-wide compare-mode). Sortable, CSV-exportable, mobile-card-friendly via shared `SortableTable`.
+- **Testing**: `testing_agent_v3_fork` confirmed 6/6 features pass at 100% (backend + frontend). Minor case-sensitivity nit on POS sort flagged and fixed in the same iteration.
+- **Production note**: preview-only — needs redeploy for https://bi.vivofashionbrands.com.
+
+
+
 ### Recent (Feb 2026 — Iter 85a) — Churn-rate math + compact KES + EAT timezone (P0 + P2 batch)
 - **P0 — Churn-rate >100% bug (`server.py::get_customers_churn_rate`)**:
   - Upstream `/churned-customers` returns a **lifetime** churned list (~144,719 customers). Previous code divided that by the **period-active** count (e.g., 361 customers in a 30-day window), producing nonsense like `churn_rate = 40,088%` and `churned_customers > total customer base`.
