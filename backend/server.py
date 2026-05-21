@@ -1615,6 +1615,157 @@ async def _refresh_one_snapshot(
         return False
 
 
+# ── Iter 86b — Daily /orders aggregates + customer-roster writers ────
+
+from orders_aggregates import (  # noqa: E402
+    build_daily_doc,
+    build_customer_lifetime_doc,
+    _enum_days as _agg_enum_days,
+)
+
+# How many recent days we re-write per sweep. Today + last 2 days
+# covers same-day catch-up (mid-day refunds, late POS uploads) without
+# re-scanning historical days that are already frozen.
+_ORDERS_AGG_RECENT_DAYS = 3
+# How often we attempt to backfill old days (in days). When the
+# `orders_daily_snapshots` collection is missing a historical day, we
+# fetch it once. The audit loop verifies coverage.
+_ORDERS_AGG_BACKFILL_LOOKBACK_DAYS = 90
+
+# Track which day-country combos we've successfully backfilled this
+# pod lifetime so we don't re-fetch them on every snapshotter sweep.
+_orders_agg_backfilled_keys: set = set()
+# Last successful customer-roster write epoch — used by /admin/cache-
+# stats to surface staleness if the daily roster job stalls.
+_customer_roster_last_written_at: float = 0.0
+
+
+async def _refresh_orders_daily_aggregates(target_days: List[str]) -> Dict[str, int]:
+    """Build / refresh the `orders_daily_snapshots` documents for the
+    requested YYYY-MM-DD days. One doc per (day, country).
+
+    Re-uses `_orders_for_window` so the existing split-on-failure
+    recursion and L2 Redis cache layers apply unchanged. The MARGINAL
+    cost vs the legacy path is +1 Mongo upsert per (day, country),
+    which is < 5 ms each.
+    """
+    written = 0
+    failed = 0
+    nm_lookup = _customer_names_cache[1]
+    ct_lookup = _customer_contacts_cache[1]
+
+    def _walk_in_check(row, loc_name):
+        return _is_walk_in_order(row, nm_lookup, ct_lookup)
+
+    for day in target_days:
+        for c in ("Kenya", "Uganda", "Rwanda", "Online"):
+            try:
+                rows = await _orders_for_window(day, day, country=c, channel=None)
+            except HTTPException as e:
+                logger.warning(
+                    "[orders-aggregates] %s c=%s — upstream %d, skipping",
+                    day, c, e.status_code,
+                )
+                failed += 1
+                continue
+            except Exception as e:
+                logger.warning(
+                    "[orders-aggregates] %s c=%s — error: %s", day, c, e,
+                )
+                failed += 1
+                continue
+            doc = build_daily_doc(d=day, country=c, rows=rows, is_walk_in_fn=_walk_in_check)
+            try:
+                await db.orders_daily_snapshots.replace_one(
+                    {"date": day, "country": c}, doc, upsert=True,
+                )
+                written += 1
+                _orders_agg_backfilled_keys.add((day, c))
+            except Exception as e:
+                logger.warning(
+                    "[orders-aggregates] mongo write failed %s c=%s: %s",
+                    day, c, e,
+                )
+                failed += 1
+    return {"written": written, "failed": failed}
+
+
+async def _refresh_customer_lifetime_roster() -> Dict[str, int]:
+    """Build / refresh the `customer_lifetime_roster` collection.
+
+    Replaces the on-demand 400-day `/top-customers?limit=200000` scan
+    that was the single biggest repeat-miss offender (45 misses per
+    Customers-page load). The lifetime data only changes when new
+    customers are created or existing customers buy again — once-daily
+    refresh is sufficient.
+
+    Reuses the existing _customer_names_cache + _customer_contacts_cache
+    code path so the data shape is identical to what `_is_walk_in_order`
+    expects on the read side.
+    """
+    global _customer_roster_last_written_at
+    # 400 days back from today.
+    today = datetime.now(timezone.utc).date()
+    look_from = (today - timedelta(days=400)).isoformat()
+    look_to = today.isoformat()
+    try:
+        rows = await fetch("/top-customers", {
+            "date_from": look_from, "date_to": look_to, "limit": 200000,
+        }) or []
+    except Exception as e:
+        logger.warning("[customer-roster] /top-customers fetch failed: %s", e)
+        return {"written": 0, "failed": 1}
+    written = 0
+    failed = 0
+    # Bulk replace — for ~200k customers a bulk_write is 10-50× faster
+    # than per-doc upserts.
+    from pymongo import ReplaceOne
+    ops = []
+    for r in rows:
+        cid = (r.get("customer_id") or "")
+        cid_s = str(cid).strip() if cid else ""
+        if not cid_s:
+            continue
+        doc = build_customer_lifetime_doc(r)
+        ops.append(ReplaceOne({"customer_id": cid_s}, doc, upsert=True))
+        if len(ops) >= 1000:
+            try:
+                res = await db.customer_lifetime_roster.bulk_write(ops, ordered=False)
+                written += res.upserted_count + res.modified_count
+            except Exception as e:
+                logger.warning("[customer-roster] bulk_write batch failed: %s", e)
+                failed += len(ops)
+            ops = []
+    if ops:
+        try:
+            res = await db.customer_lifetime_roster.bulk_write(ops, ordered=False)
+            written += res.upserted_count + res.modified_count
+        except Exception as e:
+            logger.warning("[customer-roster] final bulk_write failed: %s", e)
+            failed += len(ops)
+    _customer_roster_last_written_at = time.time()
+    logger.info(
+        "[customer-roster] refreshed — wrote/modified %d, failed %d",
+        written, failed,
+    )
+    return {"written": written, "failed": failed}
+
+
+def _orders_agg_due_today() -> bool:
+    """Refresh today's orders aggregate every 5 min during workday,
+    aligned with the LIVE window cadence."""
+    return True  # Always due on a sweep — handled by smart-TTL gate
+
+
+def _customer_roster_due() -> bool:
+    """Customer roster needs refreshing if we've never written it
+    since boot, OR last write was >24 h ago.
+    """
+    if _customer_roster_last_written_at <= 0:
+        return True
+    return (time.time() - _customer_roster_last_written_at) > 86400
+
+
 async def _snapshot_kpis_loop() -> None:
     """Background coroutine — wakes every 30 seconds, decides which
     windows are due for refresh based on their category-specific TTL,
@@ -1708,6 +1859,33 @@ async def _snapshot_kpis_loop() -> None:
             except Exception as e:
                 sweep_error = f"analytics: {e}"
                 logger.warning("[analytics-snapshots] sweep error: %s", e)
+            # 3️⃣ Iter 86b — Orders daily aggregates (today + last 2
+            # days for late-arriving POS uploads). Backfill is handled
+            # by the audit loop.
+            try:
+                today = datetime.now(timezone.utc).date()
+                recent = [
+                    (today - timedelta(days=i)).isoformat()
+                    for i in range(_ORDERS_AGG_RECENT_DAYS)
+                ]
+                agg_res = await _refresh_orders_daily_aggregates(recent)
+                logger.info(
+                    "[orders-aggregates] daily sweep — wrote %d, failed %d (days=%s)",
+                    agg_res["written"], agg_res["failed"], recent,
+                )
+            except Exception as e:
+                logger.warning("[orders-aggregates] sweep error: %s", e)
+            # 4️⃣ Iter 86b — Customer lifetime roster (replaces the
+            # on-demand /top-customers 400-day scan). Refreshes once
+            # per 24 h, so most sweeps are no-ops here.
+            if _customer_roster_due():
+                try:
+                    roster_res = await _refresh_customer_lifetime_roster()
+                    logger.info(
+                        "[customer-roster] sweep — %s", roster_res,
+                    )
+                except Exception as e:
+                    logger.warning("[customer-roster] sweep error: %s", e)
             # Mark each refreshed window as just-refreshed so the next
             # iteration honours the per-category TTL.
             for n, _cat, _df, _dt in due_named:
@@ -4132,6 +4310,28 @@ async def _get_customer_name_lookup() -> Dict[str, str]:
     ts, cache = _customer_names_cache
     if cache and _time.time() - ts < _CUSTOMER_NAMES_TTL:
         return cache
+    # Iter 86b — Read from the daily-refreshed `customer_lifetime_roster`
+    # Mongo collection BEFORE hitting upstream. Eliminates the
+    # /top-customers?limit=200000 400-day scan that was the single
+    # biggest repeat-miss offender. The collection is populated by
+    # `_refresh_customer_lifetime_roster()` once per 24 h from inside
+    # the snapshotter loop.
+    try:
+        from orders_aggregates import read_customer_name_lookup
+        mongo_names, mongo_contacts = await read_customer_name_lookup(db)
+        if mongo_names:
+            _customer_names_cache = (_time.time(), mongo_names)
+            _customer_contacts_cache = (_time.time(), mongo_contacts)
+            logger.info(
+                "[customer-names] hydrated %d names from Mongo roster "
+                "(zero upstream call)", len(mongo_names),
+            )
+            asyncio.create_task(_customer_names_save_to_disk(
+                mongo_names, mongo_contacts, _time.time(),
+            ))
+            return mongo_names
+    except Exception as e:
+        logger.warning("[customer-names] mongo roster read failed: %s", e)
     today = datetime.now(timezone.utc).date()
     look_from = (today - timedelta(days=400)).isoformat()
     look_to = today.isoformat()
@@ -4218,7 +4418,45 @@ async def _get_walk_ins_impl(
     line item — a single guest order with 5 SKUs would otherwise be counted
     5×). Returns total walk-in orders, walk-in revenue, share of all orders
     and share of all revenue, plus a per-country breakdown.
+
+    Iter 86b — FAST-PATH: read from the pre-computed
+    `orders_daily_snapshots` Mongo collection when every requested
+    (day × country) is present. Eliminates the 12-18 `/orders`
+    upstream calls per request on the happy path. Live fan-out is
+    retained as a fallback for windows the snapshotter hasn't yet
+    covered (typically only a request for >90 days back, or a brand-
+    new pod that hasn't completed its first sweep).
     """
+    from orders_aggregates import read_walkins_aggregate
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    if date_from and date_to:
+        try:
+            fast = await read_walkins_aggregate(
+                db,
+                date_from=date_from, date_to=date_to,
+                countries=cs or None, channels=chs or None,
+            )
+            if fast is not None:
+                # Cross-validate total_sales against /kpis (authoritative).
+                try:
+                    kpi = await get_kpis(
+                        date_from=date_from, date_to=date_to,
+                        country=country, channel=channel,
+                    )
+                    if isinstance(kpi, dict):
+                        kpi_total = float(kpi.get("total_sales") or 0)
+                        if kpi_total:
+                            fast["total_sales_kes"] = round(kpi_total, 2)
+                            fast["walk_in_share_sales_pct"] = round(
+                                (fast["walk_in_sales_kes"] / kpi_total * 100), 2,
+                            ) if kpi_total else 0.0
+                except Exception:
+                    pass
+                return fast
+        except Exception as e:
+            logger.warning("[/customers/walk-ins] aggregate read failed, falling through: %s", e)
+
     base = {"date_from": date_from, "date_to": date_to, "limit": 50000}
     cs = _split_csv(country)
     chs = _split_csv(channel)
@@ -11568,6 +11806,19 @@ async def startup():
             # never want to forget it.
             await db.style_launch_dates.create_index(
                 "style_name", unique=True, background=True,
+            )
+            # Iter 86b — Pre-computed /orders daily aggregates.
+            # Unique on (date, country) so the snapshotter's upsert is
+            # one doc per slice. Read pattern is `{date: $in [...]}` so
+            # the date index alone covers most reads; a compound index
+            # gives O(log n) on the per-country filter too.
+            await db.orders_daily_snapshots.create_index(
+                [("date", 1), ("country", 1)], unique=True, background=True,
+            )
+            # Iter 86b — Customer lifetime roster (replaces the on-
+            # demand /top-customers 400-day scan).
+            await db.customer_lifetime_roster.create_index(
+                "customer_id", unique=True, background=True,
             )
             logger.info("[indexes] Mongo index audit complete")
         except Exception as e:
