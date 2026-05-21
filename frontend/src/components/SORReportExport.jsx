@@ -323,7 +323,7 @@ const SORReport = () => {
                 rowClassName={(row) => row.style_name === selectedStyle ? "bg-amber-50/60" : ""}
                 columns={[
                   { key: "style_name", label: "Style Name", sortable: true,
-                    render: (r) => <span className="font-semibold">{r.style_name}</span> },
+                    render: (r) => <span className="font-semibold block max-w-[280px]" style={{ whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }} title={r.style_name}>{r.style_name}</span> },
                   { key: "category", label: "Category", sortable: true,
                     render: (r) => r.category || "—" },
                   { key: "subcategory", label: "Sub Category", sortable: true,
@@ -659,7 +659,7 @@ const LocationPane = ({ style, color, size, rows, loading, error, onClear, onCle
       <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-border">
         <div className="min-w-0">
           <div className="eyebrow">Where did it sell?</div>
-          <div className="font-bold text-[14px] truncate" title={style}>{style}</div>
+          <div className="font-bold text-[14px]" style={{ whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }} title={style}>{style}</div>
           {(color || size) && (
             <div className="mt-1 flex flex-wrap gap-1.5" data-testid="sor-loc-filter-pills">
               {color && (
@@ -731,7 +731,7 @@ const LocationPane = ({ style, color, size, rows, loading, error, onClear, onCle
                   : "";
                 return (
                   <tr key={r.location} className="border-b border-border/40 last:border-0">
-                    <td className="py-1.5 pr-2 truncate max-w-[160px]" title={r.location}>{r.location}</td>
+                    <td className="py-1.5 pr-2 max-w-[180px]" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.location}>{r.location}</td>
                     <td className="py-1.5 pr-2 text-right num">{fmtNum(r.units_6m)}</td>
                     <td className="py-1.5 pr-2 text-right num">{fmtNum(r.soh_total)}</td>
                     <td className={`py-1.5 pr-0 text-right num ${sorCls}`}>{sor.toFixed(1)}%</td>

@@ -1,0 +1,33 @@
+{
+  "summary": "Verified P0 batch: replenishment sort (POS asc + bin natural asc, empties last), Footfall Exploration table, Launch Date columns + Whole-year filter on SOR L-10 / SOR All Styles / Exports SOR Report, and long-name wrapping across Replenishments / Products / Exports SOR. All 6 features pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/replenishment-report", "issue": "POS ASC sort is case-sensitive (ASCII), so 'Vivo MSA Digo Road' (uppercase MSA) sorts before 'Vivo Mama Ngina St' (lowercase 'ama'). All other rows are correctly sorted. If a true natural alpha sort is desired, use case-insensitive comparison on pos_location in _sort_key."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: make POS ASC sort case-insensitive in analytics_replenishment_report so 'Vivo Mama Ngina St' precedes 'Vivo MSA Digo Road' (currently uppercase letters beat lowercase).",
+    "Documentation nit: the review request listed the SOR L-10 launch-month filter testid as 'sor-new-styles-l10-table-launch-month-filter' but the actual rendered testid is 'l10-table-launch-month-filter'. Either rename to match the spec or update the spec/docs so downstream tests don't break."
+  ],
+  "critical_code_review_comments": [
+    "Backend _bin_natural / _sort_key in server.py correctly mixes alpha + numeric chunks (AD52<AD61, E20<E126), with empty bins pushed last per POS — confirmed across multiple date windows.",
+    "Frontend wrapping is implemented uniformly via white-space:normal + word-break — verified via getComputedStyle on Replenishments, SOR L-10, SOR All Styles, Exports SOR Report and Catalog tables. No CSS line-clamp remnants on the touched columns.",
+    "LaunchMonthFilter '__YEAR__:' sentinel approach works: 'Whole year 2026' option appears in L-10 (only year in that 3-4-month window) and both 'Whole year 2025' + 'Whole year 2026' appear in SOR All Styles.",
+    "Footfall Exploration table uses immediate-prior period to populate 'Footfall In (last period)' regardless of compareMode — verified with compareMode=None defaults; non-zero values shown for all 27 stores."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (login worked, token returned)",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 6 P0 features verified working on https://bi-platform-2.preview.emergentagent.com. Key testids confirmed live: ff-exploration-table, ff-exploration, sor-all-styles-table-launch-month-filter, l10-table-launch-month-filter (NOTE: not 'sor-new-styles-l10-...' as the review request stated). Backend replenishment sort verified on 2026-04-01..15 and 2026-03-01..15 — both pass POS-asc + bin-natural-asc + empty-last invariants (Vivo Acacia rows AD52→AD61→B126→C37→C96→D80→E20→E126 confirms numeric-aware comparison). Only minor: pos_location sort is case-sensitive, not a blocker.",
+  "rca of the issue": "n/a — no bugs reproduced. Only minor case-sensitivity nuance in POS ASC sort noted above."
+}

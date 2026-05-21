@@ -93,7 +93,7 @@ const SorAllStyles = ({ brand }) => {
                 rows={enriched}
                 testId="sor-all-styles-table"
                 exportName="sor-all-styles.csv"
-                showLaunchDate={false}
+                showLaunchDate
               />
             )}
           </>

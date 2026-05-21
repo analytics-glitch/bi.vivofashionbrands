@@ -31,6 +31,11 @@ import MultiSelect from "@/components/MultiSelect";
  */
 
 export const UNKNOWN_LAUNCH = "__UNKNOWN__";
+/** Sentinel prefix for whole-year selections (e.g. `__YEAR__:2024`).
+ *  When present in the selection, filters include any row whose
+ *  launch_date falls anywhere in that year — convenience shortcut
+ *  so users can pick "all of 2024" without ticking 12 month boxes. */
+export const YEAR_PREFIX = "__YEAR__:";
 
 const MONTH_LABELS = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -49,9 +54,11 @@ const isoToYM = (iso) => {
   return `${m[1]}-${m[2]}`;
 };
 
-/** Build a year-grouped option list from a set of rows. Months are
- *  sorted newest-first (most-recent year on top, December → January
- *  within each year). An "Unknown" option is appended at the bottom. */
+/** Build a year-grouped option list from a set of rows. Each year
+ *  group starts with a "Whole year YYYY" toggle (sentinel value
+ *  `__YEAR__:YYYY`) so users can pick a whole year in one click,
+ *  followed by months sorted newest-first within that year. Years
+ *  themselves are listed newest-first; "Unknown" anchors the bottom. */
 export const getMonthOptions = (rows) => {
   const seen = new Set();
   let hasUnknown = false;
@@ -61,14 +68,32 @@ export const getMonthOptions = (rows) => {
     else hasUnknown = true;
   }
   const months = Array.from(seen).sort((a, b) => b.localeCompare(a));
-  const opts = months.map((ym) => {
-    const [y, m] = ym.split("-");
-    return {
-      value: ym,
-      label: `${MONTH_LABELS[parseInt(m, 10) - 1]} ${y}`,
+  // Bucket months by year so we can emit a "Whole year" sentinel at the
+  // top of each year section.
+  const byYear = new Map();
+  for (const ym of months) {
+    const [y] = ym.split("-");
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(ym);
+  }
+  const opts = [];
+  // Years iterate in the same newest-first order as `months`.
+  const years = Array.from(byYear.keys()); // already newest-first from `months`
+  for (const y of years) {
+    opts.push({
+      value: `${YEAR_PREFIX}${y}`,
+      label: `Whole year ${y}`,
       group: y,
-    };
-  });
+    });
+    for (const ym of byYear.get(y)) {
+      const [, m] = ym.split("-");
+      opts.push({
+        value: ym,
+        label: `${MONTH_LABELS[parseInt(m, 10) - 1]} ${y}`,
+        group: y,
+      });
+    }
+  }
   if (hasUnknown) {
     opts.push({
       value: UNKNOWN_LAUNCH,
@@ -79,17 +104,28 @@ export const getMonthOptions = (rows) => {
   return opts;
 };
 
-/** Apply a launch-month selection to a row list. Empty selection = no
- *  filtering (rows passed through unchanged). */
+/** Apply a launch-month / launch-year selection to a row list. Empty
+ *  selection = no filtering. */
 export const filterByLaunchMonths = (rows, selection) => {
   if (!selection || !selection.length) return rows;
   const wantsUnknown = selection.includes(UNKNOWN_LAUNCH);
-  const monthSet = new Set(selection.filter((v) => v !== UNKNOWN_LAUNCH));
-  if (!monthSet.size && !wantsUnknown) return rows;
+  const monthSet = new Set();
+  const yearSet = new Set();
+  for (const v of selection) {
+    if (v === UNKNOWN_LAUNCH) continue;
+    if (typeof v === "string" && v.startsWith(YEAR_PREFIX)) {
+      yearSet.add(v.slice(YEAR_PREFIX.length));
+    } else {
+      monthSet.add(v);
+    }
+  }
+  if (!monthSet.size && !yearSet.size && !wantsUnknown) return rows;
   return (rows || []).filter((r) => {
     const ym = isoToYM(r?.launch_date);
     if (!ym) return wantsUnknown;
-    return monthSet.has(ym);
+    if (monthSet.has(ym)) return true;
+    const [y] = ym.split("-");
+    return yearSet.has(y);
   });
 };
 

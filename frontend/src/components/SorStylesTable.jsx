@@ -187,22 +187,21 @@ const SorStylesTable = ({
       {
         key: "style_name", label: "Style Name", align: "left", mobilePrimary: true,
         render: (r) => (
-          <div className="max-w-[220px]">
-            {/* Clamp style name to 2 lines so very long names don't blow up
-                row height. Tooltip shows the full name on hover. */}
+          <div className="min-w-[180px] max-w-[320px]">
+            {/* Style names now wrap fully — no truncation. Tooltip kept
+                for accessibility. */}
             <div
-              className="font-medium leading-snug overflow-hidden"
+              className="font-medium leading-snug"
               style={{
-                display: "-webkit-box",
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: "vertical",
+                whiteSpace: "normal",
                 wordBreak: "break-word",
+                overflowWrap: "anywhere",
               }}
               title={r.style_name}
             >
               {r.style_name}
             </div>
-            <div className="text-[10.5px] text-muted mt-0.5 truncate" title={`${r.brand || "—"} · ${r.collection || "—"}`}>
+            <div className="text-[10.5px] text-muted mt-0.5" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>
               {r.brand || "—"} · {r.collection || "—"}
             </div>
             {r._sku_loading && <div className="text-[10.5px] text-muted italic mt-0.5">loading SKUs…</div>}

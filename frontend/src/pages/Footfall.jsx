@@ -50,6 +50,11 @@ const Footfall = () => {
 
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
+  // Auto-immediate-prior window — ALWAYS fetched (regardless of the
+  // global compare-mode) so the Footfall Exploration Table always has
+  // a "last period" column even when the page-wide comparison is OFF.
+  // Window length = (date_to - date_from). Shift back by that length.
+  const [explorationPrev, setExplorationPrev] = useState([]);
   const [locations, setLocations] = useState([]);
   const [salesRows, setSalesRows] = useState([]); // /sales-summary — authoritative per-location sales
   const [prevSalesRows, setPrevSalesRows] = useState([]);
@@ -58,6 +63,38 @@ const Footfall = () => {
 
   // Shared authoritative KPIs — identical across all pages.
   const { kpis: authoritativeKpis, prevKpis: authoritativePrevKpis, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
+
+  // Compute the auto-immediate-prior window for the Exploration Table.
+  // Independent of the page-wide compareMode so this table is ALWAYS
+  // populated. Length = (date_to - date_from + 1) days.
+  const explorationPrevRange = useMemo(() => {
+    if (!dateFrom || !dateTo) return null;
+    const [y1, m1, d1] = dateFrom.split("-").map((x) => parseInt(x, 10));
+    const [y2, m2, d2] = dateTo.split("-").map((x) => parseInt(x, 10));
+    const a = new Date(y1, m1 - 1, d1);
+    const b = new Date(y2, m2 - 1, d2);
+    const lenDays = Math.round((b - a) / 86_400_000) + 1;
+    if (!Number.isFinite(lenDays) || lenDays < 1) return null;
+    const pTo = new Date(a);
+    pTo.setDate(pTo.getDate() - 1);
+    const pFrom = new Date(pTo);
+    pFrom.setDate(pFrom.getDate() - (lenDays - 1));
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return { date_from: iso(pFrom), date_to: iso(pTo) };
+  }, [dateFrom, dateTo]);
+
+  // Dedicated fetch for the Exploration Table's "last period" column.
+  // We re-use the page's `prev` array when compareMode happens to coincide
+  // with the auto-immediate-prior window; otherwise fire a separate /footfall
+  // call. Skipped entirely when compareMode already targets the same window.
+  useEffect(() => {
+    if (!explorationPrevRange) { setExplorationPrev([]); return; }
+    let cancelled = false;
+    api.get("/footfall", { params: explorationPrevRange })
+      .then(({ data }) => { if (!cancelled) setExplorationPrev(data || []); })
+      .catch(() => { if (!cancelled) setExplorationPrev([]); });
+    return () => { cancelled = true; };
+  }, [explorationPrevRange?.date_from, explorationPrevRange?.date_to]);
 
   useEffect(() => {
     let cancelled = false;
@@ -360,6 +397,37 @@ const Footfall = () => {
   }, [scopedEnriched]);
 
   const [showBottomTurnIn, setShowBottomTurnIn] = useState(false);
+
+  // ---------------------------------------------------------------------
+  // Footfall Exploration Table — POS · Footfall In · Footfall In (last
+  // period) · Change % · Footfall Outside. Always shows a "last period"
+  // column regardless of the page-wide compareMode, by sourcing from
+  // `explorationPrev` (auto-immediate-prior window — see useEffect above).
+  // Scoped by the same country/channel filters as the rest of the page.
+  // ---------------------------------------------------------------------
+  const explorationPrevMap = useMemo(() => {
+    const m = new Map();
+    for (const r of explorationPrev || []) m.set(r.location, r);
+    return m;
+  }, [explorationPrev]);
+
+  const explorationRows = useMemo(() => {
+    return scoped.map((r) => {
+      const p = explorationPrevMap.get(r.location);
+      const prevFootfall = p?.total_footfall || 0;
+      const curr = r.total_footfall || 0;
+      const change = prevFootfall > 0
+        ? ((curr - prevFootfall) / prevFootfall) * 100
+        : (curr > 0 ? null : 0);  // no prior data → "—" unless current also 0
+      return {
+        location: r.location,
+        footfall_in: curr,
+        footfall_in_prev: prevFootfall,
+        change_pct: change,
+        footfall_outside: Number(r.outside_traffic || 0),
+      };
+    });
+  }, [scoped, explorationPrevMap]);
 
   return (
     <div className="space-y-6" data-testid="footfall-page">
@@ -693,6 +761,59 @@ const Footfall = () => {
               )}
             </div>
           )}
+
+          <div className="card-white p-5" data-testid="ff-exploration-table">
+            <SectionTitle
+              title={`Footfall Exploration · ${explorationRows.length} locations`}
+              subtitle={`Side-by-side compare: footfall in for the selected window vs the immediately preceding period of the same length${explorationPrevRange ? ` (${explorationPrevRange.date_from} → ${explorationPrevRange.date_to})` : ""}, plus pavement-level outside traffic for context.`}
+            />
+            {explorationRows.length === 0 ? <Empty /> : (
+              <SortableTable
+                testId="ff-exploration"
+                exportName="footfall-exploration.csv"
+                pageSize={50}
+                initialSort={{ key: "footfall_in", dir: "desc" }}
+                columns={[
+                  {
+                    key: "location", label: "POS", align: "left",
+                    render: (r) => (
+                      <span className="inline-flex items-center gap-2 font-medium">
+                        <Storefront size={14} className="text-muted" />
+                        {r.location}
+                      </span>
+                    ),
+                    csv: (r) => r.location,
+                  },
+                  {
+                    key: "footfall_in", label: "Footfall In", numeric: true,
+                    render: (r) => <span className="num">{fmtNum(r.footfall_in)}</span>,
+                    csv: (r) => r.footfall_in,
+                  },
+                  {
+                    key: "footfall_in_prev", label: "Footfall In (last period)", numeric: true,
+                    render: (r) => r.footfall_in_prev
+                      ? <span className="num text-muted">{fmtNum(r.footfall_in_prev)}</span>
+                      : <span className="text-muted text-[11px]">—</span>,
+                    csv: (r) => r.footfall_in_prev || "",
+                  },
+                  {
+                    key: "change_pct", label: "Change %", numeric: true,
+                    sortValue: (r) => r.change_pct == null ? -9999 : r.change_pct,
+                    render: (r) => <Delta value={r.change_pct} precision={1} />,
+                    csv: (r) => r.change_pct == null ? "" : r.change_pct.toFixed(2),
+                  },
+                  {
+                    key: "footfall_outside", label: "Footfall Outside", numeric: true,
+                    render: (r) => r.footfall_outside > 0
+                      ? <span className="num">{fmtNum(r.footfall_outside)}</span>
+                      : <span className="text-muted text-[11px]">—</span>,
+                    csv: (r) => r.footfall_outside || "",
+                  },
+                ]}
+                rows={explorationRows}
+              />
+            )}
+          </div>
 
           <div className="card-white p-5" data-testid="ff-table">
             <SectionTitle

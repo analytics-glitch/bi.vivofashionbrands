@@ -10620,12 +10620,35 @@ async def _analytics_replenishment_report_impl(
             "replenished": False,  # filled in by _overlay_repl_state
         })
 
-    # 6) Owner assignment — sort all lines alphabetically by POS, then split
-    # into N equal slices (N = effective owner roster size). Each owner
-    # gets exactly N/owners rows; one owner may span the boundary between
-    # two stores (acceptable per spec). Simple row-count division — equal
-    # pick volume by lines, not by units.
-    rows.sort(key=lambda r: (r["pos_location"], r["product_name"], r["size"]))
+    # 6) Bin lookup — strip H-prefixed bins (the loader already filters them
+    # out, so an empty result here means "no bin recorded in last stock take"
+    # which we leave blank rather than suppress the row). Performed BEFORE
+    # owner-assignment so we can sort by (POS, Bin) — rows without a bin
+    # sink to the bottom of each POS group.
+    bins_map = await bins_lookup.get_bins()
+    for r in rows:
+        r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
+
+    # 7) Owner assignment — sort all lines by POS ascending, then by Bin
+    # ascending (empty bins last), with product/size as a stable
+    # tiebreaker. Each owner gets a contiguous slice so they pick from
+    # one continuous POS range. Bin-second sort means a single picker
+    # walks the warehouse aisles in order instead of zig-zagging. Bin
+    # codes mix letters + numbers (e.g. "G65" / "G123") so we split into
+    # (alpha, numeric) tuples for natural sort — `G65` < `G123` instead
+    # of the lex-default `G123` < `G65`.
+    import re as _re_bin
+    def _bin_natural(bn: str):
+        if not bn:
+            # Sentinel keeps empty bins at the bottom of each POS group.
+            return ("~", 10**9, "")
+        m = _re_bin.match(r"^([A-Za-z]*)(\d+)(.*)$", bn)
+        if not m:
+            return (bn.upper(), 0, "")
+        return (m.group(1).upper(), int(m.group(2)), m.group(3))
+    def _sort_key(r):
+        return (r["pos_location"], _bin_natural(r.get("bin") or ""), r["product_name"], r["size"])
+    rows.sort(key=_sort_key)
     n = len(rows)
     n_owners = max(len(eff_owners), 1)
     base = n // n_owners
@@ -10642,15 +10665,8 @@ async def _analytics_replenishment_report_impl(
             owners_load[owner] += r["replenish"]
         cursor += slice_len
 
-    # 7) Bin lookup — strip H-prefixed bins (the loader already filters them
-    # out, so an empty result here means "no bin recorded in last stock take"
-    # which we leave blank rather than suppress the row).
-    bins_map = await bins_lookup.get_bins()
-    for r in rows:
-        r["bin"] = bins_lookup.lookup(bins_map, r["barcode"])
-
-    # 8) Rows already sorted by POS in step 6 — leave order intact so each
-    # owner's slice is contiguous in the table.
+    # 8) Rows already sorted by POS → Bin in step 7 — leave order intact
+    # so each owner's slice is contiguous in the table.
 
     payload = {
         "date_from": df.isoformat(),
