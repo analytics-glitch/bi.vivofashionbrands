@@ -1911,6 +1911,29 @@ async def _snapshot_kpis_loop() -> None:
 
         _last_sweep_done_at = time.time()
 
+        # Iter 87 — Passive RSS reclaim. After a productive sweep, fully-
+        # free pages in the glibc malloc arena are NOT returned to the
+        # kernel by default; gc.collect() releases Python objects but
+        # the underlying pages stay mapped (this is why "RSS still
+        # 2442 MB after trim" recurs). Calling malloc_trim(0) walks the
+        # arena and madvise()'s any 100%-free pages back, dropping
+        # container RSS to match the live working set.
+        #
+        # Cheap (~10 ms) and 100 % safe on glibc. On musl (Alpine) the
+        # AttributeError just falls through — no-op, no error.
+        #
+        # Gated to "only after a sweep that actually did work" so quiet
+        # 2-min throttle-skipped loops don't burn the syscall.
+        if (kpi_ok + analytics_ok) > 0:
+            try:
+                import ctypes  # stdlib
+                libc = ctypes.CDLL("libc.so.6")
+                if hasattr(libc, "malloc_trim"):
+                    libc.malloc_trim(0)
+            except Exception:
+                # musl / no-libc / sandboxed = silent no-op.
+                pass
+
         # Audit log — only when we actually refreshed something. Quiet
         # the noisy no-op rows that the throttled path would otherwise
         # add 30×/min.
@@ -3948,7 +3971,6 @@ async def admin_trim_memory(_: User = Depends(require_admin)):
     # Cheap (~10 ms) and 100 % safe on glibc; on musl (Alpine) it's a
     # no-op since ctypes.CDLL will just raise AttributeError which we
     # swallow.
-    rss_after_malloc_trim_mb = -1
     malloc_trim_ok = False
     try:
         import ctypes  # stdlib
