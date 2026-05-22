@@ -143,6 +143,24 @@ const CategoryAccordionTable = ({
       </div>
 
       <div className="space-y-2">
+        {/* Top column-header strip — matches the 8-col grid used by the
+            outer category-header buttons + inner sub-rows so EVERY
+            column header / total / row value lines up vertically.
+            Without this, users only saw column titles after expanding
+            a group, leaving the totals row visually unlabeled. */}
+        <div
+          className="grid grid-cols-[28px_1.3fr_0.9fr_0.9fr_0.9fr_0.9fr_1fr_1.1fr] gap-2 items-center px-3 py-2 bg-[#fed7aa] text-[10.5px] uppercase tracking-wide text-[#6b7280] font-semibold rounded-md"
+          data-testid="accordion-top-header"
+        >
+          <span />
+          <span className="text-left">Category</span>
+          <span className="text-right">Units Sold</span>
+          <span className="text-right">Inventory</span>
+          <span className="text-right">% Sales</span>
+          <span className="text-right">% Inventory</span>
+          <span className="text-right">Variance</span>
+          <span className="text-right">Risk Flag</span>
+        </div>
         {groups.map((g) => {
           const open = openSet.has(g.category);
           // Iter 78 — Risk Flag column uses the shared varianceFlag()
@@ -192,48 +210,56 @@ const CategoryAccordionTable = ({
               </button>
 
               {open && (
-                <div className="bg-white">
-                  <table className="w-full text-[12.5px]">
-                    <thead className="bg-[#fef9f0] text-[10.5px] uppercase tracking-wide text-[#6b7280]">
-                      <tr>
-                        <th className="text-left py-2 pl-9 pr-2">Subcategory</th>
-                        <th className="text-right py-2 px-2">Units Sold</th>
-                        <th className="text-right py-2 px-2">Inventory</th>
-                        <th className="text-right py-2 px-2">% Sales</th>
-                        <th className="text-right py-2 px-2">% Inventory</th>
-                        <th className="text-right py-2 px-3">Variance</th>
-                        <th className="text-right py-2 px-3">Risk Flag</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#fce6cc]">
-                      {g.items.map((r) => {
-                        const v = r.variance ?? 0;
-                        const subFlag = varianceFlag(v);
-                        const subFlagClass =
-                          Math.abs(v) <= 2 ? "pill-green" :
-                          Math.abs(v) <= 5 ? "pill-amber" :
-                          "pill-red";
-                        return (
-                          <tr key={r.subcategory} className="hover:bg-[#fff8ee]">
-                            <td className="py-2 pl-9 pr-2 text-[#0f3d24]">{r.subcategory}</td>
-                            <td className="py-2 px-2 text-right tabular-nums font-semibold">{fmtNum(r.units_sold)}</td>
-                            <td className="py-2 px-2 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
-                            <td className="py-2 px-2 text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_sold, 2)}</td>
-                            <td className="py-2 px-2 text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_stock, 2)}</td>
-                            {/* Iter 78 — match flat-table variance
-                                rendering (uses %) so users don't see
-                                two different formats on the same page. */}
-                            <td className="py-2 px-3 text-right tabular-nums">
-                              <VarianceCell value={v} />
-                            </td>
-                            <td className="py-2 px-3 text-right">
-                              <span className={subFlagClass}>{subFlag}</span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div className="bg-white" data-testid={`acc-rows-${g.category.toLowerCase().replace(/\s+/g, '-')}`}>
+                  {/* Inner header — same 8-col grid as the outer
+                      category-header button so every column lines up
+                      vertically across header → category row → sub
+                      rows. Previously this was an HTML <table> with
+                      `auto` widths, which drifted out of alignment
+                      with the outer CSS grid (visible as off-centre
+                      numbers in the screenshot the user shared). */}
+                  <div
+                    className="grid grid-cols-[28px_1.3fr_0.9fr_0.9fr_0.9fr_0.9fr_1fr_1.1fr] gap-2 px-3 py-2 bg-[#fef9f0] text-[10.5px] uppercase tracking-wide text-[#6b7280] border-t border-[#fcd9b6]"
+                    data-testid={`acc-rows-head-${g.category.toLowerCase().replace(/\s+/g, '-')}`}
+                  >
+                    <span />
+                    <span className="text-left">Subcategory</span>
+                    <span className="text-right">Units Sold</span>
+                    <span className="text-right">Inventory</span>
+                    <span className="text-right">% Sales</span>
+                    <span className="text-right">% Inventory</span>
+                    <span className="text-right">Variance</span>
+                    <span className="text-right">Risk Flag</span>
+                  </div>
+                  <div className="divide-y divide-[#fce6cc]">
+                    {g.items.map((r) => {
+                      const v = r.variance ?? 0;
+                      const subFlag = varianceFlag(v);
+                      const subFlagClass =
+                        Math.abs(v) <= 2 ? "pill-green" :
+                        Math.abs(v) <= 5 ? "pill-amber" :
+                        "pill-red";
+                      return (
+                        <div
+                          key={r.subcategory}
+                          className="grid grid-cols-[28px_1.3fr_0.9fr_0.9fr_0.9fr_0.9fr_1fr_1.1fr] gap-2 items-center px-3 py-2 text-[12.5px] hover:bg-[#fff8ee]"
+                        >
+                          <span />
+                          <span className="text-left text-[#0f3d24]">{r.subcategory}</span>
+                          <span className="text-right tabular-nums font-semibold">{fmtNum(r.units_sold)}</span>
+                          <span className="text-right tabular-nums">{fmtNum(r.current_stock)}</span>
+                          <span className="text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_sold, 2)}</span>
+                          <span className="text-right tabular-nums text-[#6b7280]">{fmtPct(r.pct_of_total_stock, 2)}</span>
+                          <span className="text-right tabular-nums">
+                            <VarianceCell value={v} />
+                          </span>
+                          <span className="text-right">
+                            <span className={subFlagClass}>{subFlag}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
