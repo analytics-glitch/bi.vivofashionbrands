@@ -538,7 +538,8 @@ async def run_audit(base_url: str, db: AsyncIOMotorDatabase, *, mode: str = "sch
                 trim_msg = (
                     f"freed {(tbody or {}).get('rss_delta_mb', 0)}MB "
                     f"({(tbody or {}).get('cleared_entries', 0)} entries, "
-                    f"{(tbody or {}).get('gc_freed', 0)} objs)"
+                    f"{(tbody or {}).get('gc_freed', 0)} objs, "
+                    f"malloc_trim={(tbody or {}).get('malloc_trim_called', False)})"
                 ) if tstatus == 200 else f"trim endpoint returned {tstatus}"
                 await asyncio.sleep(5)
                 sys_h3, breached3 = await _check_system_health(client, base_url, headers)

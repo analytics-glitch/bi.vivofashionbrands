@@ -3939,14 +3939,34 @@ async def admin_trim_memory(_: User = Depends(require_admin)):
     gc.collect()
     gc_freed = gc.collect()
 
+    # Iter 87 — release freed memory back to the OS.
+    # gc.collect() drops Python objects but the underlying glibc malloc
+    # arena KEEPS the pages in a free-list. Container RSS therefore
+    # stays high even though Python sees no live objects — exactly the
+    # "RSS still 2442MB after trim" symptom. malloc_trim(0) walks the
+    # arena and madvise()s any fully-free pages back to the kernel.
+    # Cheap (~10 ms) and 100 % safe on glibc; on musl (Alpine) it's a
+    # no-op since ctypes.CDLL will just raise AttributeError which we
+    # swallow.
+    rss_after_malloc_trim_mb = -1
+    malloc_trim_ok = False
+    try:
+        import ctypes  # stdlib
+        libc = ctypes.CDLL("libc.so.6")
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+            malloc_trim_ok = True
+    except Exception as e:
+        logger.warning("[trim-memory] malloc_trim unavailable: %s", e)
+
     try:
         rss_after = int(psutil.Process().memory_info().rss / (1024 * 1024))
     except Exception:
         rss_after = -1
 
     logger.warning(
-        "[trim-memory] RSS %dMB → %dMB (freed %d objs, cleared %d entries across %d caches)",
-        rss_before, rss_after, gc_freed, cleared_entries, len(cleared_names),
+        "[trim-memory] RSS %dMB → %dMB (freed %d objs, cleared %d entries across %d caches, malloc_trim=%s)",
+        rss_before, rss_after, gc_freed, cleared_entries, len(cleared_names), malloc_trim_ok,
     )
     return {
         "ok": True,
@@ -3956,6 +3976,7 @@ async def admin_trim_memory(_: User = Depends(require_admin)):
         "gc_freed": int(gc_freed),
         "cleared_entries": int(cleared_entries),
         "cleared_caches": cleared_names,
+        "malloc_trim_called": malloc_trim_ok,
     }
 
 
