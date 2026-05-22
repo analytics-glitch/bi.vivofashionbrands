@@ -333,6 +333,9 @@ async def read_walkins_aggregate(
         ) if bc["walk_in_orders"] else 0.0
         bc["walk_in_sales"] = round(bc["walk_in_sales"], 2)
         bc["total_sales"] = round(bc["total_sales"], 2)
+        # Iter 87 — alias walk_in_customers = walk_in_orders per spec
+        # (each anonymous transaction = 1 walk-in customer).
+        bc["walk_in_customers"] = bc["walk_in_orders"]
         by_country_out.append(bc)
 
     # By location breakdown — aggregate across days for the same loc.
@@ -368,11 +371,23 @@ async def read_walkins_aggregate(
         ) if v["walk_in_orders"] else 0.0
         v["walk_in_sales"] = round(v["walk_in_sales"], 2)
         v["total_sales"] = round(v["total_sales"], 2)
+        # Iter 87 — alias walk_in_customers (= walk_in_orders per spec).
+        v["walk_in_customers"] = v["walk_in_orders"]
+        # Also expose capture_rate_pct so the FE doesn't need to derive
+        # it (consistent shape between fast-path + slow-path).
+        v["capture_rate_pct"] = round(100.0 - v["walk_in_share_orders_pct"], 2) if v["total_orders"] else None
+        # Surface `channel` alias as the by_location renderer expects it.
+        if not v.get("channel"):
+            v["channel"] = v.get("pos_location_name", "")
         by_loc_out.append(v)
     by_loc_out.sort(key=lambda x: x["walk_in_orders"], reverse=True)
 
     return {
         "walk_in_orders": int(walk_orders),
+        # Iter 87 — alias for clarity: each walk-in transaction = 1
+        # walk-in customer (10 anonymous orders at a store = 10 walk-in
+        # customers).
+        "walk_in_customers": int(walk_orders),
         "walk_in_units": int(walk_units),
         "walk_in_sales_kes": round(walk_sales, 2),
         "walk_in_avg_basket_kes": round((walk_sales / walk_orders), 2) if walk_orders else 0.0,

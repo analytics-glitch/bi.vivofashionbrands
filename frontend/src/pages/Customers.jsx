@@ -673,11 +673,11 @@ const Customers = () => {
               {(() => {
                 const newC = cust.new_customers || 0;
                 const retC = (cust.returning_customers || 0) + (cust.repeat_customers || 0);
-                const wiC = walkIns?.walk_in_orders || 0;
+                const wiC = walkIns?.walk_in_customers ?? walkIns?.walk_in_orders ?? 0;
                 const totalC = newC + retC + wiC;
                 const prevNewC = custPrev?.new_customers || 0;
                 const prevRetC = (custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0);
-                const prevWiC = walkInsPrev?.walk_in_orders || 0;
+                const prevWiC = walkInsPrev?.walk_in_customers ?? walkInsPrev?.walk_in_orders ?? 0;
                 const prevTotalC = prevNewC + prevRetC + prevWiC;
                 return (
                   <>
@@ -910,12 +910,12 @@ const Customers = () => {
             <div
               className="card-white p-3.5 sm:p-5"
               data-testid="kpi-walk-ins"
-              title="Walk-ins = orders with no customer profile attached (Guest checkout / no phone or email captured at POS). Use this as a coaching signal — every walk-in is a missed opportunity to capture a contact for re-engagement."
+              title="Walk-in Customers = transactions with no customer profile attached (Guest checkout / no phone or email captured at POS). Counting rule: each anonymous transaction = 1 walk-in customer (10 walk-in orders at a store = 10 walk-in customers). Use this as a coaching signal — every walk-in is a missed opportunity to capture a contact for re-engagement."
             >
               <div className="flex items-center gap-2">
                 <UserCircle size={16} className="text-brand" />
-                <div className="eyebrow">Walk-ins</div>
-                <span title="Anonymous orders. Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                <div className="eyebrow">Walk-in Customers</div>
+                <span title="Anonymous transactions counted 1:1 as customers (each order = 1 walk-in customer). Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
               </div>
               {walkInsLoading || !walkIns ? (
                 <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
@@ -924,7 +924,7 @@ const Customers = () => {
               ) : (
                 <>
                   <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
-                    {fmtNum(walkIns.walk_in_orders)}
+                    {fmtNum(walkIns.walk_in_customers ?? walkIns.walk_in_orders)}
                     <span className="text-[13px] text-muted font-semibold ml-1">
                       ({(walkIns.walk_in_share_orders_pct || 0).toFixed(2)}%)
                     </span>
@@ -934,7 +934,7 @@ const Customers = () => {
                   </div>
                   {compareLbl && walkInsPrev && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <Delta curr={walkIns.walk_in_orders} prev={walkInsPrev.walk_in_orders} invert />
+                      <Delta curr={walkIns.walk_in_customers ?? walkIns.walk_in_orders} prev={walkInsPrev.walk_in_customers ?? walkInsPrev.walk_in_orders} invert />
                       <span className="text-[10px] text-muted">{compareLbl}</span>
                     </div>
                   )}
@@ -972,9 +972,9 @@ const Customers = () => {
           {walkIns && !walkIns._error && (walkIns.by_country || []).length > 0 && (
             <div className="card-white p-5" data-testid="walk-ins-by-country-card">
               <SectionTitle
-                title="Walk-ins · by country"
+                title="Walk-in Customers · by country"
                 subtitle={
-                  `Anonymous orders (no customer profile) per country. Detection: ${walkIns.detection_rule}. ` +
+                  `Anonymous transactions (no customer profile) per country, counted 1:1 as customers — 10 walk-in orders at a store = 10 walk-in customers. Detection: ${walkIns.detection_rule}. ` +
                   `Use this to coach store teams on contact capture — every walk-in is a missed re-engagement opportunity.` +
                   (walkIns.truncated ? " ⚠ Period exceeds upstream sample cap; counts may be slightly under-reported." : "")
                 }
@@ -985,11 +985,11 @@ const Customers = () => {
                 initialSort={{ key: "walk_in_orders", dir: "desc" }}
                 columns={[
                   { key: "country", label: "Country", align: "left" },
-                  { key: "walk_in_orders", label: "Walk-in Orders", numeric: true,
-                    render: (r) => fmtNum(r.walk_in_orders), csv: (r) => r.walk_in_orders },
+                  { key: "walk_in_orders", label: "Walk-in Customers", numeric: true,
+                    render: (r) => fmtNum(r.walk_in_customers ?? r.walk_in_orders), csv: (r) => r.walk_in_customers ?? r.walk_in_orders },
                   { key: "total_orders", label: "Transactions", numeric: true,
                     render: (r) => fmtNum(r.total_orders), csv: (r) => r.total_orders },
-                  { key: "walk_in_share_orders_pct", label: "% of Orders", numeric: true,
+                  { key: "walk_in_share_orders_pct", label: "% of Customers", numeric: true,
                     render: (r) => `${(r.walk_in_share_orders_pct || 0).toFixed(2)}%`,
                     csv: (r) => r.walk_in_share_orders_pct?.toFixed(2) },
                   { key: "walk_in_sales", label: "Walk-in Sales", numeric: true,
@@ -1005,9 +1005,11 @@ const Customers = () => {
                 rows={walkIns.by_country}
               />
               <p className="text-[11px] text-muted italic mt-2">
-                Group total: {fmtNum(walkIns.walk_in_orders)} walk-in orders / {fmtKES(walkIns.walk_in_sales_kes)} ·
-                {" "}{(walkIns.walk_in_share_orders_pct || 0).toFixed(2)}% of all orders ·
+                Group total: {fmtNum(walkIns.walk_in_customers ?? walkIns.walk_in_orders)} walk-in customers / {fmtKES(walkIns.walk_in_sales_kes)} ·
+                {" "}{(walkIns.walk_in_share_orders_pct || 0).toFixed(2)}% of all transactions ·
                 {" "}{(walkIns.walk_in_share_sales_pct || 0).toFixed(2)}% of revenue.
+                <br />
+                Counting rule: <strong>each anonymous transaction = 1 walk-in customer</strong> (10 walk-in orders at a store = 10 walk-in customers).
               </p>
             </div>
           )}
@@ -1019,7 +1021,8 @@ const Customers = () => {
                 title="Walk-in capture · by store"
                 subtitle={
                   `Capture rate = (1 − walk-in share). Higher is better — every captured contact unlocks re-engagement (SMS, email, loyalty). ` +
-                  `Group capture: ${walkIns.total_orders ? (100 - walkIns.walk_in_share_orders_pct).toFixed(2) : "100.00"}% (${fmtNum(walkIns.walk_in_orders)} walk-ins of ${fmtNum(walkIns.total_orders)} orders). ` +
+                  `Group capture: ${walkIns.total_orders ? (100 - walkIns.walk_in_share_orders_pct).toFixed(2) : "100.00"}% (${fmtNum(walkIns.walk_in_customers ?? walkIns.walk_in_orders)} walk-in customers of ${fmtNum(walkIns.total_orders)} transactions). ` +
+                  `Counting rule: each anonymous transaction = 1 walk-in customer. ` +
                   `Click any column header to sort — start with the worst capture rates and coach those store teams first.`
                 }
               />
@@ -1033,8 +1036,8 @@ const Customers = () => {
                     render: (r) => <span className="font-medium">{r.channel}</span> },
                   { key: "country", label: "Country", align: "left",
                     render: (r) => <span className="text-muted text-[11.5px]">{r.country || "—"}</span> },
-                  { key: "walk_in_orders", label: "Walk-ins", numeric: true,
-                    render: (r) => fmtNum(r.walk_in_orders), csv: (r) => r.walk_in_orders },
+                  { key: "walk_in_orders", label: "Walk-in Customers", numeric: true,
+                    render: (r) => fmtNum(r.walk_in_customers ?? r.walk_in_orders), csv: (r) => r.walk_in_customers ?? r.walk_in_orders },
                   { key: "total_orders", label: "Transactions", numeric: true,
                     render: (r) => fmtNum(r.total_orders), csv: (r) => r.total_orders },
                   { key: "walk_in_share_orders_pct", label: "Walk-in %", numeric: true,

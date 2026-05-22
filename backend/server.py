@@ -4877,6 +4877,8 @@ async def _get_walk_ins_impl(
         ws = b["walk_in_sales"]
         ts = b["total_sales"]
         b["walk_in_orders"] = wo
+        # Iter 87 — surface walk-in-as-customer count too (per spec).
+        b["walk_in_customers"] = wo
         b["total_orders"] = ao
         b["walk_in_share_orders_pct"] = round((wo / ao * 100), 2) if ao else 0.0
         b["walk_in_share_sales_pct"] = round((ws / ts * 100), 2) if ts else 0.0
@@ -4895,6 +4897,10 @@ async def _get_walk_ins_impl(
         ts = b["total_sales"]
         share = (wo / ao * 100) if ao else 0.0
         b["walk_in_orders"] = wo
+        # Iter 87 — also expose walk_in_customers (= walk_in_orders per
+        # the user-defined rule: each anonymous transaction = 1 walk-in
+        # customer).
+        b["walk_in_customers"] = wo
         b["total_orders"] = ao
         b["walk_in_sales"] = round(ws, 2)
         b["total_sales"] = round(ts, 2)
@@ -4926,6 +4932,13 @@ async def _get_walk_ins_impl(
 
     return {
         "walk_in_orders": walk_orders_n,
+        # Iter 87 — per-spec: each walk-in transaction counts as one
+        # walk-in customer (10 anonymous orders at a store = 10
+        # walk-in customers). Surfaced as a separate field so the
+        # frontend can label it semantically without us renaming the
+        # underlying `walk_in_orders` (kept for backward compat with
+        # historical snapshots / external consumers).
+        "walk_in_customers": walk_orders_n,
         "walk_in_units": walk_units,
         "walk_in_sales_kes": round(walk_sales, 2),
         "walk_in_avg_basket_kes": round((walk_sales / walk_orders_n), 2) if walk_orders_n else 0.0,
