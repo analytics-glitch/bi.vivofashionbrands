@@ -6378,11 +6378,19 @@ async def _analytics_ibt_warehouse_to_store_impl(
     # ship from the warehouse directly to customers. Surface only
     # bricks-and-mortar destinations so floor-replenishment teams aren't
     # confused by Shop Zetu / Online Safari rows.
+    #
+    # Iter 87 — exception: stores in `ONLINE_LOCATIONS_WITH_STOCK`
+    # (e.g. "Online - Shop Zetu") now hold physical inventory and DO
+    # qualify for IBTs. We check the allowlist first and skip the
+    # online-keyword filter for those locations.
     _ONLINE_DEST_KEYS = ("online", "shop zetu", "studio", "wholesale")
     for (style, store), units in sales_by_style_store.items():
         if units <= 0:
             continue
-        if any(k in (store or "").lower() for k in _ONLINE_DEST_KEYS):
+        _store_norm = (store or "").strip().lower()
+        if _store_norm not in ONLINE_LOCATIONS_WITH_STOCK and any(
+            k in _store_norm for k in _ONLINE_DEST_KEYS
+        ):
             continue
         # Skip if this (style, store) is already in the IBT recs.
         if (style, store) in ibt_dedup:
@@ -10442,11 +10450,30 @@ REPL_WH_FLOOR = 1  # WH must have > REPL_WH_FLOOR units to qualify
 
 def _is_online_channel(name: Optional[str]) -> bool:
     """True for any online / e-com channel — those don't need physical
-    replenishment from the warehouse to a shop floor."""
+    replenishment from the warehouse to a shop floor.
+
+    Iter 87 — exception: stores in `ONLINE_LOCATIONS_WITH_STOCK` (e.g.
+    "Online - Shop Zetu") now physically hold inventory, so they
+    qualify for IBTs, replenishment, and stock-related reports. They
+    are explicitly excluded from this online-channel check so the
+    downstream guards treat them like a regular bricks-and-mortar POS.
+    """
     if not name:
         return False
-    n = name.lower()
+    n = name.strip().lower()
+    if n in ONLINE_LOCATIONS_WITH_STOCK:
+        return False
     return ("online" in n) or ("ecom" in n) or ("e-com" in n) or ("shop-zetu" in n) or ("shopify" in n)
+
+
+# Iter 87 — explicit allowlist of "online" channels that ARE
+# stock-bearing physical fulfilment points. Per ops update: "Online -
+# Shop Zetu" now holds inventory and should appear in IBTs, daily
+# replenishment, SOR, and every stock/sales drill-down.
+# Add more here as new physical online locations are spun up.
+ONLINE_LOCATIONS_WITH_STOCK = {
+    "online - shop zetu",
+}
 
 _repl_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _REPL_TTL = 60 * 30  # 30 minutes
