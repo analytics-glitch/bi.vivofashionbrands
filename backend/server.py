@@ -3733,6 +3733,152 @@ async def admin_warm_snapshots_now(
     }
 
 
+@api_router.post("/admin/full-snapshot-rebuild")
+async def admin_full_snapshot_rebuild(
+    aggregate_days: int = Query(30, ge=1, le=180,
+        description="How many days back to rebuild orders_daily_snapshots for"),
+    include_roster: bool = Query(True,
+        description="Also rebuild customer_lifetime_roster"),
+    sync: bool = Query(False,
+        description="Block until done (~3-8 min); else queue + ack"),
+    _: User = Depends(require_admin),
+):
+    """Iter 87 — One-button "the upstream `all_sales_mat` was just
+    refreshed, wipe everything and rebuild" endpoint.
+
+    Use case: a data engineer backfilled a missing window into
+    BigQuery / Mongo (e.g. Apr 22 → May 20 gap). The dashboard was
+    serving zero-value snapshots produced during the gap; calling
+    `/admin/flush-kpi-cache` + `/admin/warm-snapshots-now` cleans the
+    KPI + analytics layer but LEAVES `orders_daily_snapshots`
+    (walk-ins / avg-spend source) and `customer_lifetime_roster`
+    still stale. This endpoint wipes + rebuilds ALL four layers.
+
+    Returns a queued ack by default; `sync=true` blocks for the full
+    sweep — only practical via the test harness because the ingress
+    will time out a browser request at 60 s.
+    """
+    async def _full_sweep() -> Dict[str, Any]:
+        started = time.perf_counter()
+        # ── Phase 1: WIPE every derived collection so nothing stale
+        # leaks through during the rebuild window.
+        kpi_cleared = analytics_cleared = orders_cleared = roster_cleared = 0
+        try:
+            kpi_cleared = (await db[_SNAPSHOT_COLL].delete_many({})).deleted_count
+        except Exception as e:
+            logger.warning("[full-rebuild] kpi wipe failed: %s", e)
+        try:
+            analytics_cleared = (await db[_ANALYTICS_SNAPSHOT_COLL].delete_many({})).deleted_count
+        except Exception as e:
+            logger.warning("[full-rebuild] analytics wipe failed: %s", e)
+        try:
+            orders_cleared = (await db.orders_daily_snapshots.delete_many({})).deleted_count
+        except Exception as e:
+            logger.warning("[full-rebuild] orders_daily wipe failed: %s", e)
+        if include_roster:
+            try:
+                roster_cleared = (await db.customer_lifetime_roster.delete_many({})).deleted_count
+            except Exception as e:
+                logger.warning("[full-rebuild] roster wipe failed: %s", e)
+        # In-memory + Redis + disk so nothing rehydrates the bad data.
+        _kpi_stale_cache.clear()
+        _FETCH_CACHE.clear()
+        try:
+            if _KPI_STALE_PATH.exists():
+                _KPI_STALE_PATH.unlink()
+        except Exception as e:
+            logger.warning("[full-rebuild] disk unlink failed: %s", e)
+        redis_cleared = 0
+        try:
+            from redis_cache import rc
+            redis_cleared = await rc.delete_prefix("/kpis")
+        except Exception as e:
+            logger.warning("[full-rebuild] redis prefix delete failed: %s", e)
+
+        # ── Phase 2: REBUILD kpi + analytics for every standard window.
+        windows = _standard_snapshot_windows()
+        kpi_tasks = [
+            _refresh_one_snapshot(df, dt, c, None)
+            for df, dt in windows for c in _SNAPSHOT_COUNTRIES
+        ]
+        kpi_results = await asyncio.gather(*kpi_tasks, return_exceptions=True)
+        kpi_written = sum(1 for r in kpi_results if r is True)
+        try:
+            analytics_results = await _refresh_analytics_snapshots(windows)
+            analytics_written = sum(1 for r in analytics_results if r is True)
+            analytics_total = len(analytics_results)
+        except Exception as e:
+            logger.warning("[full-rebuild] analytics rebuild failed: %s", e)
+            analytics_written = 0
+            analytics_total = 0
+
+        # ── Phase 3: REBUILD orders_daily_snapshots for the requested
+        # back-window. Walks day-by-day → upstream cost = N days × 4
+        # countries × ~1 BQ scan each (deduped by the snapshot layer
+        # below). Skips zero-result days silently — `_refresh_orders_
+        # daily_snapshots` already logs them.
+        today = datetime.now(timezone.utc).date()
+        target_days = [
+            (today - timedelta(days=i)).isoformat()
+            for i in range(1, aggregate_days + 1)
+        ]
+        try:
+            agg_result = await _refresh_orders_daily_aggregates(target_days)
+            agg_written = agg_result.get("written", 0)
+            agg_failed = agg_result.get("failed", 0)
+        except Exception as e:
+            logger.warning("[full-rebuild] orders_daily rebuild failed: %s", e)
+            agg_written = agg_failed = 0
+
+        # ── Phase 4: REBUILD customer lifetime roster (one big scan).
+        roster_written = 0
+        if include_roster:
+            try:
+                roster_result = await _refresh_customer_lifetime_roster()
+                roster_written = roster_result.get("written", 0)
+            except Exception as e:
+                logger.warning("[full-rebuild] roster rebuild failed: %s", e)
+
+        duration = round(time.perf_counter() - started, 2)
+        logger.warning(
+            "[full-rebuild] DONE in %.1fs · kpi=%d/%d · analytics=%d/%d · "
+            "orders_daily=%d (failed=%d) · roster=%d",
+            duration, kpi_written, len(kpi_results),
+            analytics_written, analytics_total,
+            agg_written, agg_failed, roster_written,
+        )
+        return {
+            "ok": True,
+            "wiped": {
+                "kpi_snapshots": kpi_cleared,
+                "analytics_snapshots": analytics_cleared,
+                "orders_daily_snapshots": orders_cleared,
+                "customer_lifetime_roster": roster_cleared,
+                "redis_keys": redis_cleared,
+            },
+            "rebuilt": {
+                "kpi": {"written": kpi_written, "total": len(kpi_results)},
+                "analytics": {"written": analytics_written, "total": analytics_total},
+                "orders_daily": {"written": agg_written, "failed": agg_failed,
+                                  "days_attempted": len(target_days) * 4},
+                "customer_lifetime_roster": roster_written,
+            },
+            "duration_sec": duration,
+        }
+
+    if sync:
+        return await _full_sweep()
+    asyncio.create_task(_full_sweep())
+    return {
+        "ok": True,
+        "queued": True,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "expected_completion_sec": 60 + (aggregate_days * 4 * 2) + (30 if include_roster else 0),
+        "note": "Watch /admin/cache-stats for snapshot counts ticking up as the rebuild lands.",
+    }
+
+
+
 @api_router.post("/admin/trim-memory")
 async def admin_trim_memory(_: User = Depends(require_admin)):
     """Iter 82 — Non-destructive memory trim for the "RSS critical"
