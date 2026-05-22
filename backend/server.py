@@ -1911,6 +1911,38 @@ async def _snapshot_kpis_loop() -> None:
                     )
                 except Exception as e:
                     logger.warning("[customer-roster] sweep error: %s", e)
+            # 5️⃣ Iter 87 Phase A — /inventory snapshot. Refreshes the
+            # Mongo-persisted full-inventory document every
+            # _INVENTORY_SNAPSHOT_TTL_SEC (30 min). Gated to "stale"
+            # so consecutive 2-min sweeps don't re-pay the BQ cost —
+            # only fires when the existing snapshot is older than the
+            # TTL OR missing entirely.
+            try:
+                last = await db[_INVENTORY_SNAPSHOT_COLL].find_one(
+                    {"_id": "full"}, {"fetched_at": 1, "_id": 0},
+                )
+                inv_due = True
+                if last and last.get("fetched_at"):
+                    f = last["fetched_at"]
+                    if isinstance(f, str):
+                        try:
+                            f = datetime.fromisoformat(f.replace("Z", "+00:00"))
+                        except Exception:
+                            f = None
+                    if f is not None:
+                        if f.tzinfo is None:
+                            f = f.replace(tzinfo=timezone.utc)
+                        age = (datetime.now(timezone.utc) - f).total_seconds()
+                        inv_due = age >= _INVENTORY_SNAPSHOT_TTL_SEC
+                if inv_due:
+                    inv_res = await _refresh_inventory_snapshot()
+                    logger.info(
+                        "[inv-snapshot] refresh — wrote %d rows in %.1fs",
+                        inv_res.get("row_count", 0),
+                        inv_res.get("duration_sec", 0),
+                    )
+            except Exception as e:
+                logger.warning("[inv-snapshot] sweep error: %s", e)
             # Mark each refreshed window as just-refreshed so the next
             # iteration honours the per-category TTL.
             for n, _cat, _df, _dt in due_named:
@@ -3220,7 +3252,21 @@ async def admin_cache_clear():
     _churn_full_cache.clear()
     _churn_neg_cache.clear()
     _FETCH_CACHE.clear()
-    return {"ok": True, "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache"]}
+    # Iter 87 Phase A — also wipe the Mongo-persisted inventory
+    # snapshot so the next read goes upstream. Admin "Refresh" is the
+    # right moment to invalidate (the user clicked it because they
+    # want fresh data).
+    inv_snap_cleared = 0
+    try:
+        res = await db[_INVENTORY_SNAPSHOT_COLL].delete_many({})
+        inv_snap_cleared = res.deleted_count if hasattr(res, "deleted_count") else 0
+    except Exception as e:
+        logger.warning("[cache-clear] inventory snapshot wipe failed: %s", e)
+    return {
+        "ok": True,
+        "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache"],
+        "inventory_snapshots_dropped": inv_snap_cleared,
+    }
 
 
 @api_router.post("/admin/flush-kpi-cache")
@@ -3808,6 +3854,13 @@ async def admin_full_snapshot_rebuild(
             orders_cleared = (await db.orders_daily_snapshots.delete_many({})).deleted_count
         except Exception as e:
             logger.warning("[full-rebuild] orders_daily wipe failed: %s", e)
+        # Iter 87 — also wipe inventory snapshots so the rebuild
+        # repopulates them from fresh upstream data.
+        inventory_cleared = 0
+        try:
+            inventory_cleared = (await db[_INVENTORY_SNAPSHOT_COLL].delete_many({})).deleted_count
+        except Exception as e:
+            logger.warning("[full-rebuild] inventory_snapshots wipe failed: %s", e)
         if include_roster:
             try:
                 roster_cleared = (await db.customer_lifetime_roster.delete_many({})).deleted_count
@@ -3872,13 +3925,23 @@ async def admin_full_snapshot_rebuild(
             except Exception as e:
                 logger.warning("[full-rebuild] roster rebuild failed: %s", e)
 
+        # ── Phase 5: REBUILD inventory snapshot (Iter 87 Phase A).
+        # Single Mongo doc holding the full fanned-out /inventory feed.
+        # Powers replenishment / IBT / SOR fast-path reads.
+        inv_written = 0
+        try:
+            inv_result = await _refresh_inventory_snapshot()
+            inv_written = inv_result.get("row_count", 0)
+        except Exception as e:
+            logger.warning("[full-rebuild] inventory rebuild failed: %s", e)
+
         duration = round(time.perf_counter() - started, 2)
         logger.warning(
             "[full-rebuild] DONE in %.1fs · kpi=%d/%d · analytics=%d/%d · "
-            "orders_daily=%d (failed=%d) · roster=%d",
+            "orders_daily=%d (failed=%d) · roster=%d · inventory=%d",
             duration, kpi_written, len(kpi_results),
             analytics_written, analytics_total,
-            agg_written, agg_failed, roster_written,
+            agg_written, agg_failed, roster_written, inv_written,
         )
         return {
             "ok": True,
@@ -3886,6 +3949,7 @@ async def admin_full_snapshot_rebuild(
                 "kpi_snapshots": kpi_cleared,
                 "analytics_snapshots": analytics_cleared,
                 "orders_daily_snapshots": orders_cleared,
+                "inventory_snapshots": inventory_cleared,
                 "customer_lifetime_roster": roster_cleared,
                 "redis_keys": redis_cleared,
             },
@@ -3895,6 +3959,7 @@ async def admin_full_snapshot_rebuild(
                 "orders_daily": {"written": agg_written, "failed": agg_failed,
                                   "days_attempted": len(target_days) * 4},
                 "customer_lifetime_roster": roster_written,
+                "inventory": {"row_count": inv_written},
             },
             "duration_sec": duration,
         }
@@ -7169,9 +7234,121 @@ WAREHOUSE_KEYS = (
     "online orders location",
 )
 
-# Simple in-memory cache for inventory fan-out (60s TTL).
+# Simple in-memory cache for inventory fan-out (60s TTL — L1 hot
+# layer in front of the new Mongo-persisted snapshot below).
 _inv_cache: Dict[str, Any] = {"ts": 0, "key": None, "data": None}
 _INV_TTL = 60.0
+
+# ── Iter 87 · Phase A — Mongo-persisted inventory snapshot ──
+# A 30-min TTL document in `inventory_snapshots` collection keyed by
+# (country, product). The full unfiltered scan (country="", product="")
+# is the dominant call shape (replenishment, IBT, SOR all use it), so
+# it gets its own row and serves every downstream call after the first
+# one within the TTL. Country/product-filtered calls fall through to
+# upstream because they're 1-2% of traffic and the filter combinations
+# explode the keyspace.
+#
+# Why Mongo instead of just raising _INV_TTL: a 30-min in-memory cache
+# would re-pay the ~3 GB fan-out cost on every pod restart, defeating
+# the savings during deploys / 03:00 EAT auto-restarts. Mongo persists
+# across pod lifecycle.
+#
+# Schema:
+#   {_id: "full" | f"c={country}",
+#    fetched_at: datetime,
+#    row_count: int,
+#    rows: List[Dict] (the same shape fetch_all_inventory returns)}
+_INVENTORY_SNAPSHOT_COLL = "inventory_snapshots"
+_INVENTORY_SNAPSHOT_TTL_SEC = 30 * 60  # 30 min — inventory shifts on
+                                       # every POS sale + nightly stock-take.
+                                       # 30 min is the longest window that
+                                       # keeps replenishment recommendations
+                                       # "operationally fresh" for floor teams.
+
+
+def _inventory_snapshot_id(country: Optional[str], product: Optional[str]) -> Optional[str]:
+    """Build the Mongo `_id` for the snapshot doc. Only the full
+    unfiltered shape and the country-only shapes are snapshotted —
+    product filters are too high-cardinality to be worth caching."""
+    if product:
+        return None  # do not snapshot product-filtered calls
+    if not country:
+        return "full"
+    return f"c={country.strip().lower()}"
+
+
+async def _read_inventory_snapshot(country: Optional[str], product: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    """Return the rows from a fresh Mongo snapshot, or None if none /
+    stale / unsupported shape (product filter, etc.)."""
+    sid = _inventory_snapshot_id(country, product)
+    if not sid:
+        return None
+    try:
+        doc = await db[_INVENTORY_SNAPSHOT_COLL].find_one(
+            {"_id": sid}, {"fetched_at": 1, "rows": 1, "_id": 0},
+        )
+    except Exception as e:
+        logger.warning("[inv-snapshot] read failed (%s): %s", sid, e)
+        return None
+    if not doc or not doc.get("fetched_at"):
+        return None
+    fetched = doc["fetched_at"]
+    if isinstance(fetched, str):
+        try:
+            fetched = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - fetched).total_seconds()
+    if age >= _INVENTORY_SNAPSHOT_TTL_SEC:
+        return None
+    return doc.get("rows") or []
+
+
+async def _write_inventory_snapshot(country: Optional[str], product: Optional[str],
+                                     rows: List[Dict[str, Any]]) -> bool:
+    """Persist the snapshot document. Only writes for supported shapes
+    (see `_inventory_snapshot_id`). Returns True on success."""
+    sid = _inventory_snapshot_id(country, product)
+    if not sid:
+        return False
+    try:
+        await db[_INVENTORY_SNAPSHOT_COLL].replace_one(
+            {"_id": sid},
+            {
+                "_id": sid,
+                "fetched_at": datetime.now(timezone.utc),
+                "row_count": len(rows),
+                "rows": rows,
+            },
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        logger.warning("[inv-snapshot] write failed (%s): %s", sid, e)
+        return False
+
+
+async def _refresh_inventory_snapshot() -> Dict[str, Any]:
+    """One-shot refresh: re-fetch the full unfiltered inventory and
+    persist to Mongo. Called from the heartbeat snapshotter every
+    sweep (the smart-TTL gate inside `fetch_all_inventory` keeps the
+    upstream cost capped at 1× per `_INVENTORY_SNAPSHOT_TTL_SEC`).
+    """
+    started = time.perf_counter()
+    # IMPORTANT: bypass the in-process 60 s cache so we always pay one
+    # fresh upstream sweep. `_inv_cache["ts"] = 0` triggers the slow
+    # path inside fetch_all_inventory.
+    _inv_cache["ts"] = 0
+    _inv_cache["key"] = None
+    rows = await fetch_all_inventory()
+    ok = await _write_inventory_snapshot(None, None, rows)
+    return {
+        "ok": bool(ok),
+        "row_count": len(rows),
+        "duration_sec": round(time.perf_counter() - started, 2),
+    }
 
 
 def is_warehouse_location(name: Optional[str]) -> bool:
@@ -7298,6 +7475,26 @@ async def fetch_all_inventory(
     if _inv_cache.get("key") == cache_key and (time.time() - _inv_cache.get("ts", 0)) < _INV_TTL:
         return _inv_cache["data"]
 
+    # Iter 87 Phase A — Mongo-persisted snapshot fast-path. Survives
+    # pod restarts and shaves the ~3 GB BQ scan off every cold caller
+    # (replenishment + IBT + SOR all hit this code path). Snapshotter
+    # refreshes every 30 min; this read returns None when the doc is
+    # missing or older than _INVENTORY_SNAPSHOT_TTL_SEC, letting the
+    # slow upstream fan-out below run as a fallback.
+    snap_rows = await _read_inventory_snapshot(country, product)
+    if snap_rows is not None:
+        global _CACHE_HITS_MONGO_SNAPSHOT
+        try:
+            _CACHE_HITS_MONGO_SNAPSHOT += 1
+        except NameError:
+            pass
+        # Re-warm the L1 60 s cache so sibling calls within the same
+        # pod don't pay the Mongo deserialise on every hit.
+        _inv_cache["ts"] = time.time()
+        _inv_cache["key"] = cache_key
+        _inv_cache["data"] = snap_rows
+        return snap_rows
+
     locs_raw = await fetch("/locations") or []
     # Merge in extra known-but-unlisted locations (e.g. Warehouse Finished Goods).
     locs_raw = list(locs_raw) + [e for e in EXTRA_INVENTORY_LOCATIONS if not any(loc.get("channel") == e["channel"] for loc in locs_raw)]
@@ -7346,6 +7543,12 @@ async def fetch_all_inventory(
     _inv_cache["ts"] = time.time()
     _inv_cache["key"] = cache_key
     _inv_cache["data"] = merged
+    # Iter 87 Phase A — persist the slow-path result to Mongo so sibling
+    # pods and the next pod-restart serve from snapshot. Only writes for
+    # supported shapes (full / country-only); product filters are skipped
+    # inside _write_inventory_snapshot.
+    if merged:
+        await _write_inventory_snapshot(country, product, merged)
     return merged
 
 
