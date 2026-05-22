@@ -644,14 +644,24 @@ async def fetch(
     # Frontend lowercases country codes; we Title-case here once and
     # never have to worry about it at every call site again.
     if "country" in clean and isinstance(clean["country"], str):
-        wants_lower = path.startswith("/inventory")
+        # /inventory casing — physical countries (Kenya/Uganda/Rwanda)
+        # need lowercase but the virtual "Online" country needs Title-
+        # case ("Online" returns 1,845 SKUs upstream, "online" returns
+        # 0). Iter 87: per-value casing — the fan-out across countries
+        # in one CSV correctly Title-cases just the Online slice.
+        def _inv_case(v: str) -> str:
+            return "Online" if v.strip().lower() == "online" else v.lower()
+        wants_inventory_casing = path.startswith("/inventory")
         v = clean["country"]
         if "," in v:
             parts = [p.strip() for p in v.split(",") if p.strip()]
-            normed = [p.lower() if wants_lower else _norm_country(p) for p in parts]
+            normed = [
+                _inv_case(p) if wants_inventory_casing else _norm_country(p)
+                for p in parts
+            ]
             clean["country"] = ",".join(normed)
         else:
-            clean["country"] = v.lower() if wants_lower else _norm_country(v)
+            clean["country"] = _inv_case(v) if wants_inventory_casing else _norm_country(v)
     cache_key = (path, tuple(sorted(clean.items()))) if cache else None
     # Compute the per-entry TTL once — used for both L1 freshness check
     # and the Redis TTL on write.
@@ -10619,12 +10629,18 @@ async def _analytics_replenishment_report_impl(
     if country:
         country_list = [country]
     else:
-        # Fan out across all 3 countries — keeps chunks well under the
+        # Fan out across all 4 countries — keeps chunks well under the
         # upstream 50k cap and guarantees no country is silently dropped
         # (the upstream defaults to Uganda when country is omitted, which
         # is why earlier versions of this report appeared Uganda-only).
         # Title-cased per upstream contract.
-        country_list = ["Kenya", "Uganda", "Rwanda"]
+        #
+        # Iter 87 — added "Online" so "Online - Shop Zetu" (which sits
+        # under country=Online) gets its sales picked up for the
+        # replenishment join. Without this, Shop Zetu inventory would
+        # show on the right (now that it flows) but no sold-units side
+        # → 0 replenishment rows for it.
+        country_list = ["Kenya", "Uganda", "Rwanda", "Online"]
 
     # Cap concurrency at 4 — upstream /orders 503s when we fan out 9-21
     # simultaneous calls (3 chunks × 3 countries for 7-day window, or 21 for
