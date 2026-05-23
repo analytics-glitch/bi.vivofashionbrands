@@ -618,6 +618,187 @@ async def admin_circuit_breaker_reset():
 # KES — `total_sales_kes`, `gross_sales_kes`, `net_sales_kes`,
 # `discounts_kes`, `returns_kes`, `product_price_kes`. The dashboard
 # must NOT apply any further conversion.
+
+# ─── Corrupt-entry registry (Iter 87 Phase B) ─────────────────────────
+# Upstream Odoo occasionally has data-entry errors (mistyped prices,
+# duplicated lines, etc.) that the data team cannot easily purge from
+# the source. We blocklist them here so EVERY downstream calculation
+# (KPIs, sales aggregates, top-customers, replenishment, etc.) sees a
+# corrected view.
+#
+# Each entry must specify:
+#   • date          (YYYY-MM-DD)
+#   • order_id      (string match against `order_id` and `order_name`)
+#   • product_token (case-insensitive substring matched against
+#                    product_title / product_name / variant_name —
+#                    catches the same defect even if the order id
+#                    differs on the line-item row)
+#   • impact        — explicit per-field correction to apply on
+#                     aggregate endpoints (kpis, sales-summary, etc.)
+#                     when the affected date falls in the queried range.
+#                     All monetary values in KES.
+CORRUPT_ENTRIES: List[Dict[str, Any]] = [
+    {
+        # Vivo Nakuru — shopping bag mis-priced at KES 712M.
+        # Reported by data team 2026-05-23. Confirmed: removing this
+        # one row brings the day's total from ~716M to KES 4,001,436.
+        "date": "2026-04-24",
+        "order_id": "16547",
+        "product_token": "shopping bag",
+        "country": "Kenya",
+        "channel": "Vivo Nakuru",
+        "impact": {
+            "total_sales": 712_000_000.0,
+            "gross_sales": 712_000_000.0,
+            "net_sales": 712_000_000.0,
+            "total_orders": 1,
+            "total_units": 1,
+        },
+    },
+]
+
+
+def _row_is_corrupt(r: Dict[str, Any]) -> bool:
+    """True if this /orders row matches any blocklisted entry.
+
+    Checked at the central fetch() layer so every consumer (walk-ins,
+    avg-spend, top-customers, IBT, replenishment, exports, …) sees a
+    clean stream. Cheap O(N_corrupt x N_rows) — registry is expected
+    to stay <20 entries; if it grows, swap for an index.
+    """
+    if not CORRUPT_ENTRIES:
+        return False
+    rid = (r.get("order_id") or r.get("order_name") or "")
+    rid_str = str(rid).strip().lower()
+    pt = (
+        r.get("product_title")
+        or r.get("product_name")
+        or r.get("variant_name")
+        or ""
+    )
+    pt_str = str(pt).lower()
+    for e in CORRUPT_ENTRIES:
+        eid = str(e.get("order_id", "")).strip().lower()
+        tok = str(e.get("product_token", "")).lower()
+        # Match if EITHER the order id or the product token matches.
+        # (Either alone is enough — order may appear without the bad
+        # line, or the bad line may appear under a different order id.)
+        if eid and rid_str == eid:
+            return True
+        if tok and tok in pt_str:
+            return True
+    return False
+
+
+def _filter_corrupt_rows(rows: Any) -> Any:
+    """Drop blocklisted rows from a /orders response in place. Returns
+    the same list reference so callers don't have to reassign. No-op
+    when the registry is empty or `rows` isn't a list."""
+    if not CORRUPT_ENTRIES or not isinstance(rows, list):
+        return rows
+    return [r for r in rows if isinstance(r, dict) and not _row_is_corrupt(r)]
+
+
+def _affecting_entries(date_from: Optional[str], date_to: Optional[str]) -> List[Dict[str, Any]]:
+    """Return the subset of CORRUPT_ENTRIES whose `date` falls within
+    [date_from, date_to] (inclusive). Used by `_apply_aggregate_correction`
+    to subtract bad-row impact from /kpis and similar aggregate
+    responses that we can't filter row-by-row."""
+    if not CORRUPT_ENTRIES:
+        return []
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    out = []
+    for e in CORRUPT_ENTRIES:
+        d = str(e.get("date", "")).strip()
+        if not d:
+            continue
+        if df and d < df:
+            continue
+        if dt and d > dt:
+            continue
+        out.append(e)
+    return out
+
+
+def _apply_aggregate_correction(
+    payload: Dict[str, Any],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Subtract the per-field impact of any blocklisted entry whose date
+    falls in [date_from, date_to] AND whose country/channel match (or
+    are unspecified by the caller). Recomputes derived ratios
+    (avg_basket_size, avg_selling_price, return_rate) so the FE never
+    sees a corrupted denominator.
+
+    Safe to call on any dict shape — unknown keys are skipped silently.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    affecting = _affecting_entries(date_from, date_to)
+    if not affecting:
+        return payload
+    # Filter further by country/channel when the caller is scoped.
+    if country:
+        affecting = [e for e in affecting
+                     if not e.get("country") or str(e["country"]).lower() == country.lower()]
+    if channel:
+        affecting = [e for e in affecting
+                     if not e.get("channel") or str(e["channel"]).lower() == channel.lower()]
+    if not affecting:
+        return payload
+    # Subtract each impact field — BUT only if the response actually
+    # contains the bad row signature (heuristic: total_sales must be at
+    # least 80 % of the largest single-field impact). This prevents
+    # over-correction when the upstream data team cleans the source
+    # AFTER the registry entry is added: subtracting 712M from a
+    # clean 4M total would clamp to 0 and corrupt every aggregate.
+    # Detection threshold is forgiving (80 %) so a small mis-estimate
+    # in the registry impact still triggers the correction.
+    for e in affecting:
+        impact = e.get("impact") or {}
+        # Sanity guard — does the payload look "still corrupt"?
+        biggest_money_impact = max(
+            (float(v) for k, v in impact.items()
+             if k in ("total_sales", "gross_sales", "net_sales") and isinstance(v, (int, float))),
+            default=0.0,
+        )
+        if biggest_money_impact > 0:
+            ts = payload.get("total_sales") or 0
+            if ts < biggest_money_impact * 0.8:
+                # Upstream value is smaller than the bad row — source
+                # has been cleaned. Skip the correction entirely so we
+                # don't drag totals to zero.
+                logger.info(
+                    "[corrupt-entry] skipping correction for %s/%s — "
+                    "upstream total_sales %s already < impact %s (looks cleaned)",
+                    e.get("date"), e.get("order_id"), ts, biggest_money_impact,
+                )
+                continue
+        for k, v in impact.items():
+            cur = payload.get(k)
+            if isinstance(cur, (int, float)) and isinstance(v, (int, float)):
+                new = cur - v
+                payload[k] = max(0, new) if isinstance(cur, int) else max(0.0, float(new))
+    # Recompute derived ratios where we have the inputs.
+    ts = payload.get("total_sales")
+    n_orders = payload.get("total_orders")
+    n_units = payload.get("total_units")
+    if isinstance(ts, (int, float)) and isinstance(n_orders, (int, float)) and n_orders:
+        payload["avg_basket_size"] = ts / n_orders
+    if isinstance(ts, (int, float)) and isinstance(n_units, (int, float)) and n_units:
+        payload["avg_selling_price"] = ts / n_units
+    gross = payload.get("gross_sales")
+    returns = payload.get("total_returns")
+    if isinstance(gross, (int, float)) and isinstance(returns, (int, float)) and gross:
+        payload["return_rate"] = (returns / gross) * 100
+    return payload
+
+
+
 async def fetch(
     path: str,
     params: Optional[Dict[str, Any]] = None,
@@ -696,6 +877,21 @@ async def fetch(
         if _rkey and entry_ttl >= 600:
             r_hit = await rc.get(_rkey)
             if r_hit is not None:
+                # Iter 87 Phase B — defensive filter on L2 hits. If
+                # Redis was populated by an older deploy that didn't
+                # know about the corrupt-entry registry, this re-applies
+                # the filter before serving so we never leak a stale
+                # bad row through the cross-pod cache.
+                if path == "/orders" or path.startswith("/orders?"):
+                    r_hit = _filter_corrupt_rows(r_hit)
+                elif path == "/kpis" and isinstance(r_hit, dict):
+                    r_hit = _apply_aggregate_correction(
+                        r_hit,
+                        clean.get("date_from"),
+                        clean.get("date_to"),
+                        country=clean.get("country"),
+                        channel=clean.get("channel"),
+                    )
                 # Populate the L1 dict so subsequent same-pod calls
                 # skip the Redis RTT. Use the smart TTL so we don't
                 # over-cache a today-window value lifted from Redis.
@@ -766,6 +962,22 @@ async def fetch(
                 logger.warning("[%s] empty/non-JSON body (status=%s, len=%d): %s — treating as transient",
                                path, resp.status_code, len(resp.content or b""), str(je)[:80])
                 data = []
+            # Iter 87 Phase B — drop blocklisted /orders rows AND apply
+            # aggregate corrections BEFORE caching, so every downstream
+            # reader (including snapshots and the L2 Redis mirror) sees
+            # a corrected stream. Applied unconditionally — even
+            # cache=False callers (like writes via _safe_fetch with
+            # bypass) get the corrected response.
+            if path == "/orders" or path.startswith("/orders?"):
+                data = _filter_corrupt_rows(data)
+            elif path == "/kpis" and isinstance(data, dict):
+                data = _apply_aggregate_correction(
+                    data,
+                    clean.get("date_from"),
+                    clean.get("date_to"),
+                    country=clean.get("country"),
+                    channel=clean.get("channel"),
+                )
             if cache_key is not None:
                 _FETCH_CACHE[cache_key] = (time.time(), data, entry_ttl)
                 # Iter 77 — running byte tally + size-aware eviction.
