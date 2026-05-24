@@ -48,11 +48,14 @@ def test_named_windows_have_categories():
 
 
 def test_live_windows_contain_today():
-    """The 3 LIVE windows must all end on today — that's what makes
-    them 'live'."""
+    """LIVE windows must all end on today — that's what makes them
+    'live'. Iter 87 Phase C added last_7/last_30 to the live set (they
+    extend to today and were starving the cache when daily-classed)."""
     today = datetime.now(timezone.utc).date().isoformat()
     live = [w for w in server._named_snapshot_windows() if w[1] == "live"]
-    assert len(live) == 3
+    assert len(live) == 5
+    names = {w[0] for w in live}
+    assert names == {"today", "mtd", "qtd", "last_7", "last_30"}
     for n, _cat, _df, dt in live:
         assert dt == today, f"LIVE window {n} should end today, got {dt}"
 
@@ -147,7 +150,9 @@ def test_user_activity_tracker_exists():
 
 def test_steady_state_only_live_windows_refresh():
     """After all 9 windows have been refreshed and we're 4 minutes into
-    the next sweep cycle, ONLY the 3 LIVE windows should be due."""
+    the next sweep cycle, ONLY the 5 LIVE windows should be due.
+    Iter 87 Phase C — last_7/last_30 are now LIVE alongside
+    today/mtd/qtd because they extend to today."""
     _reset()
     now = time.time()
     # Pretend the snapshotter just finished a full sweep 4 min ago.
@@ -182,7 +187,7 @@ def test_steady_state_only_live_windows_refresh():
     now2 = now + 120
     due2 = [n for n, cat, *_ in server._named_snapshot_windows()
             if server._window_is_due(n, cat, now2)]
-    assert set(due2) == {"today", "mtd", "qtd"}, (
+    assert set(due2) == {"today", "mtd", "qtd", "last_7", "last_30"}, (
         f"At 6 min, only LIVE windows should be due. Got: {due2}"
     )
 

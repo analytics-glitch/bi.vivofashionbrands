@@ -1721,8 +1721,15 @@ def _named_snapshot_windows() -> List[Tuple[str, str, str, str]]:
         ("mtd",        "live",       mtd_from.isoformat(),            today.isoformat()),
         ("qtd",        "live",       cur_q_start.isoformat(),         today.isoformat()),
         ("yesterday",  "daily",      yest.isoformat(),                yest.isoformat()),
-        ("last_7",     "daily",      l7.isoformat(),                  today.isoformat()),
-        ("last_30",    "daily",      l30.isoformat(),                 today.isoformat()),
+        # Iter 87 Phase C — last_7 and last_30 END AT TODAY so they
+        # contain live data; previously misclassified as "daily" which
+        # only refreshed once per day at 00:05 EAT, leaving the
+        # snapshot 12-23 h stale through the working day. /kpis then
+        # fell through to BigQuery on every L7/L30 user query, dragging
+        # the cache hit rate to ~63 %. Reclassified as "live" so they
+        # refresh every 5 min like Today/MTD/QTD.
+        ("last_7",     "live",       l7.isoformat(),                  today.isoformat()),
+        ("last_30",    "live",       l30.isoformat(),                 today.isoformat()),
         ("last_month", "historical", last_month_start.isoformat(),    last_month_end.isoformat()),
         ("last_week",  "historical", last_week_mon.isoformat(),       last_week_sun.isoformat()),
         ("last_q",     "historical", last_q_start.isoformat(),        last_q_end.isoformat()),
