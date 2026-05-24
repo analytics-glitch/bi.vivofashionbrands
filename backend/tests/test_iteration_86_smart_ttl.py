@@ -34,12 +34,13 @@ def _reset():
 # ── _named_snapshot_windows ──────────────────────────────────────────
 
 def test_named_windows_have_categories():
-    """Sanity — all 9 windows return a (name, category, df, dt) tuple."""
+    """Sanity — all 10 windows return a (name, category, df, dt) tuple.
+    Iter 87 Phase D added `ytd` as the 10th window."""
     windows = server._named_snapshot_windows()
-    assert len(windows) == 9
+    assert len(windows) == 10
     names = {n for n, *_ in windows}
     assert names == {
-        "today", "mtd", "qtd",
+        "today", "mtd", "qtd", "ytd",
         "yesterday", "last_7", "last_30",
         "last_month", "last_week", "last_q",
     }
@@ -50,12 +51,14 @@ def test_named_windows_have_categories():
 def test_live_windows_contain_today():
     """LIVE windows must all end on today — that's what makes them
     'live'. Iter 87 Phase C added last_7/last_30 to the live set (they
-    extend to today and were starving the cache when daily-classed)."""
+    extend to today and were starving the cache when daily-classed).
+    Iter 87 Phase D added ytd (the FE's default period — was the
+    largest single cache-miss source on prod)."""
     today = datetime.now(timezone.utc).date().isoformat()
     live = [w for w in server._named_snapshot_windows() if w[1] == "live"]
-    assert len(live) == 5
+    assert len(live) == 6
     names = {w[0] for w in live}
-    assert names == {"today", "mtd", "qtd", "last_7", "last_30"}
+    assert names == {"today", "mtd", "qtd", "ytd", "last_7", "last_30"}
     for n, _cat, _df, dt in live:
         assert dt == today, f"LIVE window {n} should end today, got {dt}"
 
@@ -187,7 +190,7 @@ def test_steady_state_only_live_windows_refresh():
     now2 = now + 120
     due2 = [n for n, cat, *_ in server._named_snapshot_windows()
             if server._window_is_due(n, cat, now2)]
-    assert set(due2) == {"today", "mtd", "qtd", "last_7", "last_30"}, (
+    assert set(due2) == {"today", "mtd", "qtd", "ytd", "last_7", "last_30"}, (
         f"At 6 min, only LIVE windows should be due. Got: {due2}"
     )
 

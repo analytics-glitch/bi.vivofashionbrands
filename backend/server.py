@@ -1715,11 +1715,19 @@ def _named_snapshot_windows() -> List[Tuple[str, str, str, str]]:
         last_q_start_month = (cur_q - 1) * 3 + 1
         last_q_start = today.replace(month=last_q_start_month, day=1)
         last_q_end = (today.replace(month=cur_q * 3 + 1, day=1) - timedelta(days=1))
+    today_first = today.replace(month=1, day=1)
     return [
         # name,        category,     date_from,                       date_to
         ("today",      "live",       today.isoformat(),               today.isoformat()),
         ("mtd",        "live",       mtd_from.isoformat(),            today.isoformat()),
         ("qtd",        "live",       cur_q_start.isoformat(),         today.isoformat()),
+        # Iter 87 Phase D — YTD is the DEFAULT period in the FE.
+        # Without a YTD snapshot, every Overview / Customers page-load
+        # under the default settings fell through to live BigQuery.
+        # That single miss-source accounted for the bulk of the 36 %
+        # cache hit rate observed on prod (Custom-range "1 Jan → today"
+        # = YTD — not the QTD or MTD windows we'd been snapshotting).
+        ("ytd",        "live",       today_first.isoformat(),         today.isoformat()),
         ("yesterday",  "daily",      yest.isoformat(),                yest.isoformat()),
         # Iter 87 Phase C — last_7 and last_30 END AT TODAY so they
         # contain live data; previously misclassified as "daily" which
