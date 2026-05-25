@@ -3527,7 +3527,15 @@ async def admin_flush_kpi_cache(_: User = Depends(require_admin)):
     redis_cleared = 0
     try:
         from redis_cache import rc
-        redis_cleared = await rc.delete_prefix("/kpis")
+        # Iter 87 Phase E — fix prefix. Redis keys are namespaced
+        # `vivo:fetch:/kpis:<md5>`, so the correct prefix to match every
+        # cached /kpis blob is "fetch:/kpis" (NOT "/kpis", which matched
+        # nothing because no key starts with that). Previous code
+        # silently reported `redis_cleared=0` and left stale /kpis blobs
+        # (comparison-range payloads, 1h+ TTL) live in Redis — that's
+        # what was making KPI cards show 0 / -100 % vs last month even
+        # after a full snapshot rebuild.
+        redis_cleared = await rc.delete_prefix("fetch:/kpis")
     except Exception as e:
         logger.warning("[flush-kpi-cache] redis prefix delete failed: %s", e)
     # Mongo `kpi_snapshots` — the "permanent fast" layer added in iter 67.
@@ -4104,7 +4112,15 @@ async def admin_full_snapshot_rebuild(
         redis_cleared = 0
         try:
             from redis_cache import rc
-            redis_cleared = await rc.delete_prefix("/kpis")
+            # Iter 87 Phase E — fix prefix. Redis keys are namespaced
+            # `vivo:fetch:/kpis:<md5>`, so the correct prefix to match every
+            # cached /kpis blob is "fetch:/kpis" (NOT "/kpis", which matched
+            # nothing because no key starts with that). Previous code
+            # silently reported `redis_cleared=0` and left stale /kpis blobs
+            # (comparison-range payloads, 1h+ TTL) live in Redis — that's
+            # what was making KPI cards show 0 / -100 % vs last month even
+            # after a full snapshot rebuild.
+            redis_cleared = await rc.delete_prefix("fetch:/kpis")
         except Exception as e:
             logger.warning("[full-rebuild] redis prefix delete failed: %s", e)
 
