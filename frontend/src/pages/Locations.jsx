@@ -556,6 +556,20 @@ const Locations = () => {
                 })}
               </div>
 
+              {/* Stock-to-Sales · by Subcategory — moved from the bottom
+                  of the page (iter 88b) so location-focused users see the
+                  merchandise-mix imbalance immediately below the store
+                  cards. This card runs its OWN date filter (independent of
+                  the page-wide one at the top) and defaults to the last
+                  30 days. */}
+              <StockToSalesBySubcategory
+                testIdPrefix="locations-sts-subcat"
+                exportNameFlat="locations-stock-to-sales-by-subcategory.csv"
+                exportNameGrouped="locations-stock-to-sales-by-subcategory-grouped.csv"
+                useOwnDates
+                defaultLookbackDays={30}
+              />
+
               <div className="card-white p-5" data-testid="abv-by-location">
                 <SectionTitle
                   title="Average Basket Value by Location"
@@ -701,17 +715,6 @@ const Locations = () => {
                   view. The tracker is self-fetching off /analytics/
                   monthly-targets so the date range is the current month. */}
               <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
-
-              {/* Stock-to-Sales · by Subcategory — duplicated from
-                  Products page (iter 65) so location-focused users can
-                  see the merchandise-mix imbalance without leaving the
-                  Locations view. Self-fetching; honours the global
-                  filters (date / country / channel / category). */}
-              <StockToSalesBySubcategory
-                testIdPrefix="locations-sts-subcat"
-                exportNameFlat="locations-stock-to-sales-by-subcategory.csv"
-                exportNameGrouped="locations-stock-to-sales-by-subcategory-grouped.csv"
-              />
             </>
 
           {/* Store deep-dive slide-over — the audit's "single biggest missed

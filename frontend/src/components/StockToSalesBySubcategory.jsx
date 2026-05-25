@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtNum, fmtPct } from "@/lib/api";
+import { api, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import { isMerchandise, categoryFor, MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
+import { CalendarBlank } from "@phosphor-icons/react";
 
 /**
  * Stock-to-Sales · by Subcategory — self-contained, drop-in component.
@@ -16,14 +17,65 @@ import { VarianceCell, varianceFlag } from "@/lib/variance";
  * Used by:
  *   • /products  — original location
  *   • /locations — duplicated per leadership ask (iter 65)
+ *
+ * Iter 88b — On the Locations page this component now runs in
+ * `useOwnDates` mode: it has its OWN date filter (independent of the
+ * page-wide one at the top) so users can scope subcategory mix to a
+ * different window than the rest of the page. Default lookback: 30 days.
  */
+const isoToday = () => new Date().toISOString().slice(0, 10);
+const isoDaysAgo = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+};
+
 const StockToSalesBySubcategory = ({
   testIdPrefix = "sts-subcat",
   exportNameFlat = "stock-to-sales-by-subcategory.csv",
   exportNameGrouped = "stock-to-sales-by-subcategory-grouped.csv",
   subtitleOverride,
+  // ── Iter 88b: standalone date-filter mode ─────────────────────────
+  // When true, the component ignores the global FilterBar dates and
+  // exposes its OWN date inputs (default lookback: `defaultLookbackDays`).
+  // Country / channel / category filters still come from the global
+  // bar — only the date window is independent.
+  useOwnDates = false,
+  defaultLookbackDays = 30,
 }) => {
-  const { dateFrom, dateTo, countries, channels, categories, dataVersion } = useFilters();
+  const globalFilters = useFilters();
+  const { countries, channels, categories, dataVersion } = globalFilters;
+
+  // Local date state — only used when useOwnDates is true.
+  const [localFrom, setLocalFrom] = useState(() => isoDaysAgo(defaultLookbackDays));
+  const [localTo, setLocalTo] = useState(() => isoToday());
+  const [presetKey, setPresetKey] = useState(`last_${defaultLookbackDays}`);
+
+  // Effective dates fed to the API call.
+  const dateFrom = useOwnDates ? localFrom : globalFilters.dateFrom;
+  const dateTo = useOwnDates ? localTo : globalFilters.dateTo;
+
+  const applyPreset = (key) => {
+    setPresetKey(key);
+    const today = isoToday();
+    let days;
+    switch (key) {
+      case "last_7": days = 7; break;
+      case "last_30": days = 30; break;
+      case "last_60": days = 60; break;
+      case "last_90": days = 90; break;
+      case "ytd": {
+        const y = new Date().getFullYear();
+        setLocalFrom(`${y}-01-01`);
+        setLocalTo(today);
+        return;
+      }
+      default: return; // "custom" — leave inputs as-is
+    }
+    setLocalFrom(isoDaysAgo(days));
+    setLocalTo(today);
+  };
+
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -72,6 +124,17 @@ const StockToSalesBySubcategory = ({
         title="Stock-to-Sales · by Subcategory"
         subtitle={subtitleOverride || "Granular view — one row per merchandise subcategory."}
       />
+      {useOwnDates && (
+        <DateFilterStrip
+          testIdPrefix={testIdPrefix}
+          presetKey={presetKey}
+          applyPreset={applyPreset}
+          localFrom={localFrom}
+          localTo={localTo}
+          setLocalFrom={(v) => { setPresetKey("custom"); setLocalFrom(v); }}
+          setLocalTo={(v) => { setPresetKey("custom"); setLocalTo(v); }}
+        />
+      )}
       <Loading label="Loading subcategory mix…" />
     </div>
   );
@@ -88,6 +151,17 @@ const StockToSalesBySubcategory = ({
         title="Stock-to-Sales · by Subcategory"
         subtitle={subtitleOverride || "Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."}
       />
+      {useOwnDates && (
+        <DateFilterStrip
+          testIdPrefix={testIdPrefix}
+          presetKey={presetKey}
+          applyPreset={applyPreset}
+          localFrom={localFrom}
+          localTo={localTo}
+          setLocalFrom={(v) => { setPresetKey("custom"); setLocalFrom(v); }}
+          setLocalTo={(v) => { setPresetKey("custom"); setLocalTo(v); }}
+        />
+      )}
       <div className="flex justify-end mb-2 -mt-1">
         <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid={`${testIdPrefix}-view-toggle`}>
           <button
@@ -154,5 +228,74 @@ const StockToSalesBySubcategory = ({
 
 // Avoid unused-import lint when MERCH_CATEGORIES is absent.
 void MERCH_CATEGORIES;
+// fmtDate is reserved for a future "data through DD MMM" caption — silence
+// the unused-import lint until then.
+void fmtDate;
+
+// ── Compact in-card date filter (iter 88b) ─────────────────────────
+// Renders a row of preset chips (Last 7/30/60/90 days · YTD · Custom)
+// alongside two native date inputs. Lives ONLY inside the card so it
+// does not affect any sibling component on the page.
+const PRESETS = [
+  ["last_7", "Last 7 days"],
+  ["last_30", "Last 30 days"],
+  ["last_60", "Last 60 days"],
+  ["last_90", "Last 90 days"],
+  ["ytd", "YTD"],
+];
+
+const DateFilterStrip = ({
+  testIdPrefix,
+  presetKey,
+  applyPreset,
+  localFrom,
+  localTo,
+  setLocalFrom,
+  setLocalTo,
+}) => (
+  <div
+    className="mb-3 -mt-1 rounded-lg border border-[#fcd9b6] bg-[#fffaf3] px-3 py-2 flex flex-wrap items-center gap-2"
+    data-testid={`${testIdPrefix}-date-filter`}
+  >
+    <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-brand-deep">
+      <CalendarBlank size={13} weight="bold" />
+      Date range
+    </span>
+    <div className="inline-flex flex-wrap gap-1">
+      {PRESETS.map(([k, lbl]) => (
+        <button
+          key={k}
+          type="button"
+          data-testid={`${testIdPrefix}-preset-${k}`}
+          onClick={() => applyPreset(k)}
+          className={`text-[11px] font-medium px-2 py-1 rounded-full border transition-colors ${
+            presetKey === k
+              ? "bg-brand text-white border-brand"
+              : "bg-white text-foreground/80 border-[#fcd9b6] hover:border-brand/40"
+          }`}
+        >
+          {lbl}
+        </button>
+      ))}
+    </div>
+    <div className="inline-flex items-center gap-1.5 ml-auto">
+      <input
+        type="date"
+        value={localFrom}
+        onChange={(e) => setLocalFrom(e.target.value)}
+        data-testid={`${testIdPrefix}-date-from`}
+        className="px-2 py-1 rounded-md border border-[#fcd9b6] bg-white text-[11.5px] outline-none focus:border-brand"
+      />
+      <span className="text-muted text-[12px]">→</span>
+      <input
+        type="date"
+        value={localTo}
+        onChange={(e) => setLocalTo(e.target.value)}
+        data-testid={`${testIdPrefix}-date-to`}
+        className="px-2 py-1 rounded-md border border-[#fcd9b6] bg-white text-[11.5px] outline-none focus:border-brand"
+      />
+    </div>
+  </div>
+);
 
 export default StockToSalesBySubcategory;
