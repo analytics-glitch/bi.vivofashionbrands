@@ -6662,12 +6662,31 @@ async def _analytics_ibt_warehouse_to_store_impl(
 
     # Index warehouse stock per style (sum across warehouse locations).
     wh_by_style: Dict[str, float] = defaultdict(float)
+    # Iter 87 Phase H — also collect the set of warehouse bins each
+    # style occupies, so the IBT report can surface a "Bin(s)" column
+    # next to the Style Name. Pickers no longer need to walk the
+    # warehouse hunting for the SKU. Uses the shared bins_lookup
+    # (same source the daily replenishment report uses) keyed by
+    # barcode. Preserves insertion order, deduplicates.
+    bins_map_for_ibt = await bins_lookup.get_bins()
+    wh_bins_by_style: Dict[str, List[str]] = {}
     for r in (inv or []):
         if not is_warehouse_location(r.get("location_name")):
             continue
         style = r.get("style_name")
         if style:
             wh_by_style[style] += float(r.get("available") or 0)
+            bc = r.get("barcode")
+            joined = bins_lookup.lookup(bins_map_for_ibt, bc)
+            if joined:
+                cur = wh_bins_by_style.setdefault(style, [])
+                # The lookup returns "BIN_A, BIN_B" already — fan back out
+                # so we can de-dupe across multiple barcodes of the same
+                # style ending up in different bins.
+                for bn in joined.split(","):
+                    bn_clean = bn.strip()
+                    if bn_clean and bn_clean not in cur:
+                        cur.append(bn_clean)
 
     # Index store stock per (style, store).
     store_stock: Dict[Tuple[str, str], float] = defaultdict(float)
@@ -6760,6 +6779,11 @@ async def _analytics_ibt_warehouse_to_store_impl(
         sor_match = next((r for r in (sor_rows or []) if r.get("style_name") == style), None)
         suggestions.append({
             "style_name": style,
+            # Iter 87 Phase H — warehouse bins for this style, joined
+            # with ", " and deduplicated. Empty string when the style
+            # has no warehouse barcode→bin mapping (e.g. brand-new SKUs
+            # not yet in the stock-take sheet).
+            "bins": ", ".join(wh_bins_by_style.get(style, [])),
             "brand": (sor_match or {}).get("brand") or store_brand.get((style, store), ""),
             "subcategory": (sor_match or {}).get("product_type") or "",
             "to_store": store,
@@ -11352,9 +11376,16 @@ async def _analytics_replenishment_report_impl(
         if not bn:
             # Sentinel keeps empty bins at the bottom of each POS group.
             return ("~", 10**9, "")
-        m = _re_bin.match(r"^([A-Za-z]*)(\d+)(.*)$", bn)
+        # Iter 87 Phase H — bins may now be comma-joined ("G65, K12").
+        # Sort by the FIRST bin in the list so a picker walking aisle
+        # order still gets a sensible sweep; secondary bins follow the
+        # primary on the printout.
+        first = bn.split(",", 1)[0].strip()
+        if not first:
+            return ("~", 10**9, "")
+        m = _re_bin.match(r"^([A-Za-z]*)(\d+)(.*)$", first)
         if not m:
-            return (bn.upper(), 0, "")
+            return (first.upper(), 0, "")
         return (m.group(1).upper(), int(m.group(2)), m.group(3))
     def _sort_key(r):
         # Case-insensitive POS sort so 'Vivo Mama Ngina St' sorts

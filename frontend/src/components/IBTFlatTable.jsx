@@ -154,8 +154,14 @@ export default function IBTFlatTable({
           cluster_match: s.cluster_match,
           // Iter 78 — owner is per-store so the stub row can already
           // carry it. Bin is per-barcode → blank until SKU rows load.
+          //
+          // Iter 87 Phase H — for warehouse-to-store flow we DO have a
+          // style-level aggregated bin list from the backend (`s.bins`,
+          // already joined with ", " and deduped). Show that on the
+          // stub row so floor teams see the warehouse zones BEFORE
+          // they expand to the per-SKU breakdown.
           owner: s.owner || "",
-          bin: "",
+          bin: s.bins || "",
           // Iter 78 — fixed-28-day Qty Sold for the From / To stores.
           // Only populated by the store-to-store endpoint; warehouse
           // flow leaves these blank because warehouses don't book sales.

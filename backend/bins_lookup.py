@@ -2,15 +2,16 @@
 
 The sheet at
   https://docs.google.com/spreadsheets/d/1QwXsJUZthhDVL-yo1ru0pvizJiXYFQOi-BeMfKlPDxs
-on tab "Copy of Stock take - 28/03/2026" has 3 column-pairs side-by-side
-(barcode | location), separated by 2 empty columns each. We fetch the public
-CSV export, fold the 3 pairs into one (barcode, bin) list, and skip any bins
-whose label starts with "H" (per business rule — those are end-of-life bins
-and must NOT appear on the daily replenishment report).
+on tab gid=1405111046 has a 2-column shape (BARCODE,LOCATION). One physical
+unit per row, so a single barcode can appear in multiple bins. We collect
+every distinct bin per barcode and return them joined with ", " on
+lookup. **No bin is excluded** — every label (including H-prefixed)
+ships through to the daily replenishment pick list and the warehouse-
+to-store IBT report.
 
-This is a snapshot-style dataset (a stock take from 28/03/2026), so an
-in-process cache with a lazy first-call refresh is fine. Operators can force a
-refresh via /api/admin/refresh-bins.
+This is a snapshot-style dataset (a stock take), so an in-process cache
+with a 24 h refresh is fine. Operators can force a refresh via
+/api/admin/refresh-bins.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import csv
 import io
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set
 
 import httpx
 
@@ -28,8 +29,7 @@ logger = logging.getLogger(__name__)
 SHEET_ID = "1QwXsJUZthhDVL-yo1ru0pvizJiXYFQOi-BeMfKlPDxs"
 # Updated 2026-05-05 — operations switched to a cleaner 2-column
 # (barcode, location) stock-take tab. GID changed from 563816019
-# (old 6-col "Copy of Stock take" layout). The H-prefix exclusion
-# rule still applies.
+# (old 6-col "Copy of Stock take" layout).
 SHEET_GID = "1405111046"
 SHEET_CSV_URL = (
     f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
@@ -37,6 +37,10 @@ SHEET_CSV_URL = (
 )
 TTL_SECONDS = 60 * 60 * 24  # 24 hours — stock take is a daily snapshot
 
+# Iter 87 Phase H — value is now a "bin string" already joined with
+# ", " so all callers can render it as-is (no extra logic at the
+# consumer site). The internal builder uses an ordered set of bins
+# per barcode (insertion-order preserved, deduplicated) before joining.
 _cache: Dict[str, str] = {}
 _cache_ts: float = 0.0
 _lock = asyncio.Lock()
@@ -79,28 +83,39 @@ async def _fetch() -> Dict[str, str]:
         resp = await client.get(SHEET_CSV_URL)
         resp.raise_for_status()
         text = resp.text
-    out: Dict[str, str] = {}
-    skipped = 0
+    # Build ordered-unique bin sets per barcode. dict.fromkeys preserves
+    # insertion order while deduplicating — first-seen-first display, no
+    # repeats like "G65,G65,G65" for a barcode with 3 units in G65.
+    bins_per_bc: Dict[str, List[str]] = {}
     reader = csv.reader(io.StringIO(text))
+    multi_bin_count = 0
     for row in reader:
         for bc, bn in _row_pairs(row):
-            # Business rule: bins prefixed with "H" are excluded — they're
-            # end-of-life zones that should never be replenished from.
-            if bn.upper().startswith("H"):
-                skipped += 1
-                continue
-            # Last-write-wins is fine; the same barcode can appear many times
-            # (one row per physical unit on the floor) but the bin is the
-            # location and we want a representative bin per barcode.
-            out[bc] = bn
+            # Iter 87 Phase H — H-prefix exclusion REMOVED per ops
+            # request 2026-05-25. Every bin (including end-of-life
+            # "H*" zones) now ships through to the pick list so floor
+            # teams see the complete physical inventory location.
+            cur = bins_per_bc.get(bc)
+            if cur is None:
+                bins_per_bc[bc] = [bn]
+            elif bn not in cur:
+                cur.append(bn)
+                if len(cur) == 2:
+                    multi_bin_count += 1
+    # Materialise to a flat barcode → "BIN_A, BIN_B" string so consumers
+    # don't need any join logic.
+    out: Dict[str, str] = {bc: ", ".join(bins) for bc, bins in bins_per_bc.items()}
     logger.info(
-        "[bins] loaded %d barcode→bin entries (skipped %d H-bins)", len(out), skipped
+        "[bins] loaded %d barcode entries (%d have multiple bins)",
+        len(out), multi_bin_count,
     )
     return out
 
 
 async def get_bins(refresh: bool = False) -> Dict[str, str]:
-    """Returns the current barcode→bin map, refreshing if stale or asked."""
+    """Returns the current barcode → joined-bin-string map. Each value
+    is already comma-separated (", "), deduplicated, insertion-order
+    preserved. Refreshes lazily after `TTL_SECONDS` or if `refresh=True`."""
     global _cache, _cache_ts
     now = time.time()
     if not refresh and _cache and (now - _cache_ts) < TTL_SECONDS:
@@ -119,7 +134,8 @@ async def get_bins(refresh: bool = False) -> Dict[str, str]:
 
 
 def lookup(bins: Dict[str, str], barcode: Optional[str]) -> str:
-    """Convenience helper used by the replenishment endpoint."""
+    """Convenience helper used by replenishment + IBT endpoints. Returns
+    a pre-joined "BIN_A, BIN_B" string (or "" if barcode unknown)."""
     if not barcode:
         return ""
     return bins.get(str(barcode).strip(), "")
