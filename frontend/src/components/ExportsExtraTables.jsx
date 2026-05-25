@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtNum, fmtKES } from "@/lib/api";
+import { api, fmtNum, fmtKES, fmtKESLong } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
@@ -57,34 +57,40 @@ export const StoreKpisExport = () => {
   if (!data || !data.rows?.length) return <Empty label="No store KPIs for this period." />;
 
   // 27 columns: stick the first (POS Location) so it stays visible while scrolling.
+  // Iter 87 — Store-KPIs export switched ALL monetary columns to
+  // `fmtKESLong` so figures display in FULL (KES 12,345,678) instead
+  // of the compact "12.35M" form. CSV export inherits the raw numeric
+  // value via the `csv` accessor (SortableTable looks at row[key]
+  // unmodified when no `csv` override is set — which is what we want
+  // for spreadsheets).
   const columns = [
     { key: "pos_location", label: "POS Location", align: "left",
       render: (r) => <span className="font-medium whitespace-nowrap">{r.pos_location}</span> },
-    { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => fmtKES(r.total_sales) },
-    { key: "total_sales_ly", label: "Total Sales LY", numeric: true, render: (r) => fmtKES(r.total_sales_ly) },
-    { key: "yoy_revenue_pct", label: "YoY Rev Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_revenue_pct} /> },
-    { key: "total_sales_lm", label: "Total Sales LM", numeric: true, render: (r) => fmtKES(r.total_sales_lm) },
-    { key: "mom_revenue_pct", label: "MoM Rev Δ", numeric: true, render: (r) => <DeltaCell value={r.mom_revenue_pct} /> },
-    { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-    { key: "units_sold_ly", label: "Units LY", numeric: true, render: (r) => fmtNum(r.units_sold_ly) },
-    { key: "yoy_units_pct", label: "YoY Units Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_units_pct} /> },
-    { key: "footfall", label: "Footfall", numeric: true, render: (r) => fmtNum(r.footfall) },
-    { key: "footfall_ly", label: "Footfall LY", numeric: true, render: (r) => fmtNum(r.footfall_ly) },
-    { key: "yoy_footfall_pct", label: "YoY Footfall Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_footfall_pct} /> },
-    { key: "transactions", label: "Transactions", numeric: true, render: (r) => fmtNum(r.transactions) },
-    { key: "transactions_ly", label: "Transactions LY", numeric: true, render: (r) => fmtNum(r.transactions_ly) },
-    { key: "yoy_transactions_pct", label: "YoY Tx Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_transactions_pct} /> },
-    { key: "basket_value", label: "B.Value", numeric: true, render: (r) => fmtKES(r.basket_value) },
-    { key: "basket_value_ly", label: "B.Value LY", numeric: true, render: (r) => fmtKES(r.basket_value_ly) },
-    { key: "yoy_basket_value_pct", label: "YoY B.Value Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_basket_value_pct} /> },
-    { key: "asp", label: "ASP", numeric: true, render: (r) => fmtKES(r.asp) },
-    { key: "asp_ly", label: "ASP LY", numeric: true, render: (r) => fmtKES(r.asp_ly) },
-    { key: "yoy_asp_pct", label: "YoY ASP Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_asp_pct} /> },
-    { key: "msi", label: "MSI", numeric: true, render: (r) => (r.msi ?? 0).toFixed(2) },
-    { key: "msi_ly", label: "MSI LY", numeric: true, render: (r) => (r.msi_ly ?? 0).toFixed(2) },
-    { key: "yoy_msi_pct", label: "YoY MSI Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_msi_pct} /> },
-    { key: "conv_rate", label: "Conv Rate", numeric: true, render: (r) => fmtPct(r.conv_rate) },
-    { key: "yoy_conv_pp", label: "YoY Conv (pp)", numeric: true, render: (r) => <DeltaCell value={r.yoy_conv_pp} suffix="pp" /> },
+    { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => fmtKESLong(r.total_sales), csv: (r) => r.total_sales },
+    { key: "total_sales_ly", label: "Total Sales LY", numeric: true, render: (r) => fmtKESLong(r.total_sales_ly), csv: (r) => r.total_sales_ly },
+    { key: "yoy_revenue_pct", label: "YoY Rev Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_revenue_pct} />, csv: (r) => r.yoy_revenue_pct },
+    { key: "total_sales_lm", label: "Total Sales LM", numeric: true, render: (r) => fmtKESLong(r.total_sales_lm), csv: (r) => r.total_sales_lm },
+    { key: "mom_revenue_pct", label: "MoM Rev Δ", numeric: true, render: (r) => <DeltaCell value={r.mom_revenue_pct} />, csv: (r) => r.mom_revenue_pct },
+    { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
+    { key: "units_sold_ly", label: "Units LY", numeric: true, render: (r) => fmtNum(r.units_sold_ly), csv: (r) => r.units_sold_ly },
+    { key: "yoy_units_pct", label: "YoY Units Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_units_pct} />, csv: (r) => r.yoy_units_pct },
+    { key: "footfall", label: "Footfall", numeric: true, render: (r) => fmtNum(r.footfall), csv: (r) => r.footfall },
+    { key: "footfall_ly", label: "Footfall LY", numeric: true, render: (r) => fmtNum(r.footfall_ly), csv: (r) => r.footfall_ly },
+    { key: "yoy_footfall_pct", label: "YoY Footfall Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_footfall_pct} />, csv: (r) => r.yoy_footfall_pct },
+    { key: "transactions", label: "Transactions", numeric: true, render: (r) => fmtNum(r.transactions), csv: (r) => r.transactions },
+    { key: "transactions_ly", label: "Transactions LY", numeric: true, render: (r) => fmtNum(r.transactions_ly), csv: (r) => r.transactions_ly },
+    { key: "yoy_transactions_pct", label: "YoY Tx Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_transactions_pct} />, csv: (r) => r.yoy_transactions_pct },
+    { key: "basket_value", label: "B.Value", numeric: true, render: (r) => fmtKESLong(r.basket_value), csv: (r) => r.basket_value },
+    { key: "basket_value_ly", label: "B.Value LY", numeric: true, render: (r) => fmtKESLong(r.basket_value_ly), csv: (r) => r.basket_value_ly },
+    { key: "yoy_basket_value_pct", label: "YoY B.Value Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_basket_value_pct} />, csv: (r) => r.yoy_basket_value_pct },
+    { key: "asp", label: "ASP", numeric: true, render: (r) => fmtKESLong(r.asp), csv: (r) => r.asp },
+    { key: "asp_ly", label: "ASP LY", numeric: true, render: (r) => fmtKESLong(r.asp_ly), csv: (r) => r.asp_ly },
+    { key: "yoy_asp_pct", label: "YoY ASP Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_asp_pct} />, csv: (r) => r.yoy_asp_pct },
+    { key: "msi", label: "MSI", numeric: true, render: (r) => (r.msi ?? 0).toFixed(2), csv: (r) => r.msi },
+    { key: "msi_ly", label: "MSI LY", numeric: true, render: (r) => (r.msi_ly ?? 0).toFixed(2), csv: (r) => r.msi_ly },
+    { key: "yoy_msi_pct", label: "YoY MSI Δ", numeric: true, render: (r) => <DeltaCell value={r.yoy_msi_pct} />, csv: (r) => r.yoy_msi_pct },
+    { key: "conv_rate", label: "Conv Rate", numeric: true, render: (r) => fmtPct(r.conv_rate), csv: (r) => r.conv_rate },
+    { key: "yoy_conv_pp", label: "YoY Conv (pp)", numeric: true, render: (r) => <DeltaCell value={r.yoy_conv_pp} suffix="pp" />, csv: (r) => r.yoy_conv_pp },
   ];
 
   return (

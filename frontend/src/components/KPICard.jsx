@@ -39,6 +39,11 @@ const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => 
 export const KPICard = ({
   label,
   value,
+  // NEW (Iter 87) — when the displayed `value` is compact (e.g.
+  // "KES 1.31M"), pass the full-precision string here so the card's
+  // hover-tooltip can surface the exact figure. Falls back to the
+  // value itself when omitted (back-compat).
+  valueFull = null,
   sub,
   icon: Icon,
   testId,
@@ -102,7 +107,22 @@ export const KPICard = ({
     }
   };
   const ActionIcon = action?.icon || ArrowRight;
-  const titleTip = formula || (typeof value === "string" ? value : undefined);
+  // Iter 87 — hover tooltip composition:
+  //   • Always include the full-precision figure when supplied
+  //     (`valueFull`), so users hovering a "KES 1.31M" tile see
+  //     "KES 1,310,617" verbatim. Stacked with the formula description
+  //     when both are present.
+  //   • Fallback to plain formula → plain value → undefined.
+  let titleTip;
+  if (valueFull && formula) {
+    titleTip = `${valueFull}\n\n${formula}`;
+  } else if (valueFull) {
+    titleTip = String(valueFull);
+  } else if (formula) {
+    titleTip = formula;
+  } else if (typeof value === "string") {
+    titleTip = value;
+  }
   return (
     <div
       className={`${accent ? "card-accent" : "card-white"} ${small ? "p-3 sm:p-4" : "p-3.5 sm:p-5"} hover-lift fade-in`}
@@ -134,6 +154,7 @@ export const KPICard = ({
       <div
         className={`mt-3 kpi-value num ${small ? "text-[16px] sm:text-[20px]" : "text-[18px] sm:text-[22px] md:text-[28px]"} break-words leading-tight`}
         data-testid={`${testId}-value`}
+        title={valueFull || (typeof value === "string" ? value : undefined)}
       >
         {value}
       </div>

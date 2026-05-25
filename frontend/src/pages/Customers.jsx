@@ -187,7 +187,14 @@ const Customers = () => {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Iter 87 — only show the full-page loading skeleton on the FIRST
+    // load (or when filters change → user expects a fresh render). On
+    // the silent 30 s auto-refresh tick, we KEEP the existing render
+    // and refresh data in the background so the page doesn't blink.
+    // The freshness pill below the header is the user-visible signal
+    // that a refresh happened.
+    const isFirstLoad = !cust;
+    if (isFirstLoad) setLoading(true);
     setError(null);
     const country = countries.length === 1 ? countries[0] : undefined;
     const channel = channels.length ? channels.join(",") : undefined;
@@ -313,8 +320,17 @@ const Customers = () => {
     // it fans /orders out per ≤30-day chunk. Fetch in parallel; tile shows
     // "computing…" until ready. Compare-period payload only fetched when
     // the user has chosen a comparison.
-    setWalkIns(null);
-    setWalkInsPrev(null);
+    //
+    // Iter 87 — do NOT reset to null on the auto-refresh tick. Keeping
+    // the previous payload visible while the new one fetches removes
+    // the "blink" the user complained about. Only reset on first load
+    // OR when filters change (filter-change resets state explicitly
+    // up the tree via dateFrom/dateTo/etc — those filter dependencies
+    // re-enter this effect with a different signature).
+    if (isFirstLoad) {
+      setWalkIns(null);
+      setWalkInsPrev(null);
+    }
     setWalkInsLoading(true);
     api.get("/customers/walk-ins", { params: dateP })
       .then((r) => { if (!cancelled) setWalkIns(r.data || null); })

@@ -5,6 +5,7 @@ import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCa
 import {
   api,
   fmtKES,
+  fmtKESLong,
   fmtKESMobile,
   fmtNum,
   fmtPct,
@@ -720,34 +721,34 @@ const Overview = () => {
       {!kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} icon={CurrencyCircleDollar}
+            <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} valueFull={fmtKESLong(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="How much money came in this period (before subtracting returns)."
               delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "See by location", to: "/locations" }}
               prefetch={pf("/locations")} />
-            <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} icon={Coins}
+            <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} valueFull={fmtKESLong(kpis.net_sales)} icon={Coins}
               formula="Total Sales minus refunds. The cash you actually kept."
               delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/ceo-report#returns" }} />
-            <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} icon={ShoppingCart}
+            <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="How many separate purchases were made."
               delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Order-level export", to: "/exports" }}
               prefetch={pf("/exports")} />
-            <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} icon={Package}
+            <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
               formula="How many individual items left the shelves."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }}
               prefetch={pf("/products")} />
             {!isOnlineOnly && (
-              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
                 action={{ label: "Footfall by store", to: "/footfall" }}
                 prefetch={pf("/footfall")} />
             )}
             {!isOnlineOnly && (
-              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} icon={Target}
+              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
                 action={{ label: "Which stores dropped?", to: "/footfall" }}
@@ -756,17 +757,25 @@ const Overview = () => {
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3" data-testid="sub-kpi-row">
+            {/* Iter 87 — ABV and ASP now show the FULL shilling figure
+                inline (not compacted). User explicitly asked for the
+                exact value to avoid rounding ambiguity when comparing
+                across days. */}
             <KPICard small testId="kpi-abv" label="ABV" sub="Average Basket Value"
               formula="What a typical customer spends per visit. Higher means people are buying more in one go."
-              value={kfmt(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)} icon={Basket}
+              value={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
+              valueFull={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
+              icon={Basket}
               delta={delta("avg_basket_size")} deltaLabel={compareLbl}
-              prevValue={prev("avg_basket_size", kfmt)}
+              prevValue={prev("avg_basket_size", fmtKESLong)}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-asp" label="ASP" sub="Average Selling Price"
               formula="The average price of every item sold. Tells you whether you're moving premium pieces or basics."
-              value={kfmt(kpis.avg_selling_price)} icon={ChartBar}
+              value={fmtKESLong(kpis.avg_selling_price)}
+              valueFull={fmtKESLong(kpis.avg_selling_price)}
+              icon={ChartBar}
               delta={delta("avg_selling_price")} deltaLabel={compareLbl}
-              prevValue={prev("avg_selling_price", kfmt)}
+              prevValue={prev("avg_selling_price", fmtKESLong)}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-msi" label="MSI" sub="Items per basket"
               formula="How many items the average customer takes home in one purchase."
@@ -781,13 +790,13 @@ const Overview = () => {
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-rr" label="Return Rate" sub="Share of sales sent back"
               formula="Out of every 100 KES we sold, how much came back as refunds. Lower is better."
-              value={fmtPct(kpis.return_rate, 2)} icon={Percent}
+              value={fmtPct(kpis.return_rate, 2)} valueFull={`${Number(kpis.return_rate || 0).toFixed(4)}%`} icon={Percent}
               higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
               prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
               showDelta={compareMode !== "none"}
               action={{ label: "Locations w/ highest returns", to: "/locations" }}
               prefetch={pf("/locations")} />
-            <KPICard small testId="kpi-returns" label="Return Amount" sub="Refunds in cash" value={kfmt(kpis.total_returns)} icon={ArrowUUpLeft}
+            <KPICard small testId="kpi-returns" label="Return Amount" sub="Refunds in cash" value={kfmt(kpis.total_returns)} valueFull={fmtKESLong(kpis.total_returns)} icon={ArrowUUpLeft}
               formula="Total cash refunded to customers, counted on the day they originally bought it."
               higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
               prevValue={prev("total_returns", kfmt)}
