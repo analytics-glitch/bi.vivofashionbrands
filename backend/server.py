@@ -4621,48 +4621,19 @@ async def _get_customers_live(
     # so a flaky upstream /churned-customers (503 after 26 s on limit=100000)
     # doesn't block the entire Customers page. The frontend fetches it in
     # parallel and merges into the same `cust` state.
+    #
+    # Iter 88a — TRUST UPSTREAM /customers. The previous local override that
+    # recomputed avg_customer_spend and total_customers from
+    # `analytics/avg-spend-by-customer-type` produced WRONG results because
+    # the latter relies on the upstream per-order `customer_type` field
+    # (which is unreliable for Odoo POS data — only Shopify rows are
+    # tagged correctly). That mis-classified ~95% of new customers as
+    # returning. Upstream `/customers` already runs the canonical
+    # "first-ever purchase falls in window" logic against the full
+    # purchase history, so we now pass its payload through untouched
+    # for all segmentation counts and the overall avg_customer_spend.
     if data:
-        # ---- Trust-critical override: recompute avg_customer_spend locally ----
-        # Two bugs to fix:
-        #   1. Upstream /customers returns an `avg_customer_spend` that in
-        #      some months is ~10× the correct value (observed: 116,887 in
-        #      Apr vs 11,939 in Mar — a scale drift, not a real 880% growth).
-        #   2. Computing it as `total_sales ÷ total_customers` mixes a
-        #      walk-in-INCLUDED numerator with a walk-in-EXCLUDED
-        #      denominator (upstream's /customers count is identified-only,
-        #      while /kpis total_sales includes anonymous walk-in revenue).
-        #      That inflated the tile to KES 9,695 when New + Returning
-        #      averaged to ~8,340.
-        # The defensible definition is `identified_total_sales ÷ identified_customers`,
-        # which matches the New + Returning weighted average shown in the
-        # Customer Loyalty section. We get those numbers from the same
-        # walk-in-excluded /analytics/avg-spend-by-customer-type pipeline.
-        try:
-            if date_from and date_to:
-                from routes.customer_analytics import analytics_avg_spend_by_customer_type
-                spend = await analytics_avg_spend_by_customer_type(
-                    date_from=date_from, date_to=date_to,
-                    country=country, channel=channel,
-                    user=type("U", (), {"role": "admin"})(),
-                )
-                new_b = (spend or {}).get("new") or {}
-                ret_b = (spend or {}).get("returning") or {}
-                identified_sales = (new_b.get("total_spend_kes") or 0) + (ret_b.get("total_spend_kes") or 0)
-                identified_count = (new_b.get("customers") or 0) + (ret_b.get("customers") or 0)
-                if identified_count and identified_sales:
-                    data["avg_customer_spend"] = round(identified_sales / identified_count, 2)
-                    data["avg_customer_spend_source"] = "recomputed_local_identified"
-                    # Also align total_customers with the identified count
-                    # so retention denominators on the page agree.
-                    data["total_customers"] = identified_count
-                else:
-                    data["avg_customer_spend_source"] = "upstream_unverified"
-            else:
-                data["avg_customer_spend_source"] = "upstream_unverified"
-        except Exception as e:
-            logger.warning("[/customers] avg_customer_spend recompute failed: %s", e)
-            data["avg_customer_spend_source"] = "upstream_unverified"
-
+        data["avg_customer_spend_source"] = "upstream_canonical"
         # Surface a "computing" sentinel so the UI can render a spinner on the
         # churn tile while /customers/churn-rate resolves separately.
         data["churn_source"] = "computing"

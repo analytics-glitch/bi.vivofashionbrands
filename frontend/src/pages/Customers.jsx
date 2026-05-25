@@ -162,7 +162,6 @@ const Customers = () => {
   const [byLocPrev, setByLocPrev] = useState([]);
   const [topSkus, setTopSkus] = useState([]);
   const [retention, setRetention] = useState(null);
-  const [spendByType, setSpendByType] = useState(null);
   const [repeatCustomers, setRepeatCustomers] = useState([]);
   const [repeatCustomersLoading, setRepeatCustomersLoading] = useState(false);
   const [unchurned, setUnchurned] = useState(null);
@@ -254,7 +253,12 @@ const Customers = () => {
       // the upstream /customer-frequency repeat-rate which over-counts
       // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
       ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
-      ["spendByType", api.get("/analytics/avg-spend-by-customer-type", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
+      // Iter 88a — /analytics/avg-spend-by-customer-type fetch removed.
+      // The Customer Loyalty section now pulls New/Returning/Repeat
+      // counts and Avg Spend / ABV directly from the upstream /customers
+      // payload (the `cust` state). Local recomputation produced wrong
+      // results because the upstream per-order `customer_type` field is
+      // unreliable for Odoo POS rows.
       // Identified customers with ≥2 distinct orders in the window — drives
       // the "Repeat Customers Detail" expandable table.
       ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
@@ -263,7 +267,7 @@ const Customers = () => {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
       topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
-      retention: setRetention, spendByType: setSpendByType,
+      retention: setRetention,
       repeatCustomers: setRepeatCustomers,
     };
     setRepeatCustomersLoading(true);
@@ -1321,139 +1325,104 @@ const Customers = () => {
 
                 {curTotal === 0 ? <UpstreamNotReady /> : (
                   <>
-                    {/* ---- Supporting KPI strip ---- */}
+                    {/* ---- Supporting KPI strip ----
+                        Iter 88a — All segmentation counts pulled DIRECTLY from
+                        the upstream /customers payload (`cust`). Upstream is
+                        the single source of truth for "New" / "Returning" /
+                        "Repeat" — see backend note in _get_customers_live.
+                        The legacy /analytics/customer-retention recomputation
+                        is no longer used here because it relied on the
+                        unreliable per-order `customer_type` field (Odoo POS
+                        rows are untagged) and undercounted new customers by
+                        ~95%. */}
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
-                      {/* NEW dedicated Retention Rate card — identified-only,
-                          excludes walk-ins. This is the canonical retention
-                          number the leadership team cares about. The Repeat
-                          Purchase Rate card next to it preserves the legacy
-                          metric so users can spot the gap. */}
                       <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-retention-rate">
-                        <div className="eyebrow text-[#1a5c38]">Retention Rate</div>
+                        <div className="eyebrow text-[#1a5c38]">Repeat Customer Rate</div>
                         <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-retention-rate-value">
-                          {retention ? `${retention.repeat_rate_pct.toFixed(1)}%` : "—"}
+                          {cust?.total_customers
+                            ? `${((cust.repeat_customers || 0) / cust.total_customers * 100).toFixed(1)}%`
+                            : "—"}
                         </div>
                         <div className="text-[10.5px] text-muted mt-0.5">
-                          {retention
-                            ? <>{fmtNum(retention.repeat_customers)} of {fmtNum(retention.total_customers)} <span className="font-semibold">identified</span> customers · walk-ins excluded</>
-                            : "computing identified-only rate (~30s on cold cache)…"}
+                          {cust
+                            ? <>{fmtNum(cust.repeat_customers || 0)} of {fmtNum(cust.total_customers || 0)} customers · source: <span className="font-semibold">/customers</span></>
+                            : "loading…"}
                         </div>
                       </div>
-                      <div className="rounded-xl border border-border p-3" data-testid="kpi-repeat-rate">
-                        <div className="eyebrow">Repeat Purchase Rate <span className="text-[9px] text-muted">(legacy)</span></div>
-                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-repeat-rate-value">
-                          {repeatRate.toFixed(1)}%
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-new-count">
+                        <div className="eyebrow">New Customers</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-new-count-value">
+                          {fmtNum(cust?.new_customers || 0)}
                         </div>
-                        <div className="text-[10.5px] text-muted mt-0.5" title="Of all customers in the selected period (walk-ins excluded), the percentage with 2+ orders. Reflects the same buckets shown in the chart above.">
-                          walk-ins excluded · {fmtNum(curTotal)} customers
+                        <div className="text-[10.5px] text-muted mt-0.5">
+                          {cust?.total_customers
+                            ? `${((cust.new_customers || 0) / cust.total_customers * 100).toFixed(1)}% of base · first purchase in period`
+                            : "first purchase in period"}
                         </div>
-                        {hasCompare && (
-                          <div className={`text-[11px] font-semibold mt-0.5 ${repeatRateDelta >= 0 ? "text-brand" : "text-danger"}`}>
-                            {repeatRateDelta >= 0 ? "▲" : "▼"} {Math.abs(repeatRateDelta).toFixed(1)}pp {compareLbl}
-                          </div>
-                        )}
                       </div>
-                      <div className="rounded-xl border border-border p-3" data-testid="kpi-orders-per-returning">
-                        <div className="eyebrow">Avg Orders / Returning Customer</div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-returning-count">
+                        <div className="eyebrow">Returning Customers</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-returning-count-value">
+                          {fmtNum(cust?.returning_customers || 0)}
+                        </div>
+                        <div className="text-[10.5px] text-muted mt-0.5">
+                          {cust?.total_customers
+                            ? `${((cust.returning_customers || 0) / cust.total_customers * 100).toFixed(1)}% of base · prior purchase history`
+                            : "prior purchase history"}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-orders-per-customer">
+                        <div className="eyebrow">Avg Orders / Customer</div>
                         <div className="font-extrabold text-[18px] num mt-0.5">
-                          {(retention?.avg_orders_per_returner ?? avgOrdersPerReturning).toFixed(2)}
+                          {(cust?.avg_orders_per_customer || 0).toFixed(2)}
                         </div>
-                        <div className="text-[11px] text-muted mt-0.5">customers with ≥2 orders</div>
-                      </div>
-                      <div className="rounded-xl border border-border p-3" data-testid="kpi-vip-count">
-                        <div className="eyebrow">VIP (5+ orders)</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5">
-                          {fmtNum(retention?.vip_customers ?? (data[4]?.count || 0))}
-                        </div>
-                        <div className="text-[11px] text-muted mt-0.5">
-                          {(retention?.total_customers || curTotal) ? (((retention?.vip_customers ?? (data[4]?.count || 0)) / (retention?.total_customers || curTotal)) * 100).toFixed(1) : "0.0"}% of base
-                        </div>
+                        <div className="text-[11px] text-muted mt-0.5">overall · source: /customers</div>
                       </div>
                     </div>
 
-                    {/* ---- Avg spend per customer split (Overall + New vs Returning) ---- */}
-                    {spendByType && (() => {
-                      const nCust = spendByType.new.customers || 0;
-                      const rCust = spendByType.returning.customers || 0;
-                      const nSpend = spendByType.new.total_spend_kes || 0;
-                      const rSpend = spendByType.returning.total_spend_kes || 0;
-                      const nOrders = spendByType.new.orders || 0;
-                      const rOrders = spendByType.returning.orders || 0;
-                      const totalCust = nCust + rCust;
-                      const totalSpend = nSpend + rSpend;
-                      const totalOrders = nOrders + rOrders;
-                      const overallAvgSpend = totalCust ? totalSpend / totalCust : 0;
-                      const overallOrders = totalCust ? totalOrders / totalCust : 0;
-                      // Avg Basket Value = spend per order (matches the ABV tile on /overview).
-                      const nABV = spendByType.new.avg_basket_value_kes || 0;
-                      const rABV = spendByType.returning.avg_basket_value_kes || 0;
-                      const overallABV = totalOrders ? totalSpend / totalOrders : 0;
+                    {/* ---- Avg spend per customer (Overall) ----
+                        Iter 88a — Source: upstream /customers. The previous
+                        per-bucket "New ABV / Returning ABV" split was
+                        produced by a local recomputation that relied on the
+                        unreliable per-order `customer_type` field. Removed.
+                        Per-basket Overall ABV is derived as
+                          avg_customer_spend ÷ avg_orders_per_customer
+                        which equals total_spend ÷ total_orders (identical
+                        to the Overview ABV tile). */}
+                    {cust && (() => {
+                      const spend = cust.avg_customer_spend || 0;
+                      const ordersPerCust = cust.avg_orders_per_customer || 0;
+                      const totalCust = cust.total_customers || 0;
+                      const overallABV = ordersPerCust ? spend / ordersPerCust : 0;
+                      const totalSpend = spend * totalCust;
+                      const totalOrders = ordersPerCust * totalCust;
                       return (
-                      <>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3" data-testid="spend-by-type">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4" data-testid="spend-by-type">
                         <div
                           className="rounded-xl border-2 border-brand/40 bg-brand/5 p-3"
-                          title={`Overall Avg Spend = (New spend + Returning spend) ÷ (New + Returning customers)\n= (${fmtKES(nSpend)} + ${fmtKES(rSpend)}) ÷ (${fmtNum(nCust)} + ${fmtNum(rCust)})\n= ${fmtKES(totalSpend)} ÷ ${fmtNum(totalCust)}\n= ${fmtKES(overallAvgSpend)}`}
+                          title={`Overall Avg Spend / Customer = ${fmtKES(spend)}\nSource: GET /api/customers (upstream canonical)\nTotal customers: ${fmtNum(totalCust)} · Implied total spend: ${fmtKES(totalSpend)}`}
                         >
                           <div className="flex items-center justify-between">
-                            <div className="eyebrow text-brand-deep">Overall · Avg Spend / Cust</div>
+                            <div className="eyebrow text-brand-deep">Avg Spend / Customer</div>
                             <span className="text-[10px] font-bold uppercase bg-brand/15 text-brand-deep px-1.5 py-0.5 rounded-full">
                               {fmtNum(totalCust)} customers
                             </span>
                           </div>
                           <div className="font-extrabold text-[20px] num mt-1 text-brand-deep" data-testid="kpi-spend-overall">
-                            {fmtKES(overallAvgSpend)}
+                            {fmtKES(spend)}
                           </div>
                           <div className="text-[11px] text-muted mt-0.5">
-                            weighted · {overallOrders.toFixed(2)} orders / cust
-                            · {fmtKES(totalSpend)} total
+                            {ordersPerCust.toFixed(2)} orders / cust · source: /customers
                           </div>
                         </div>
-                        <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="eyebrow text-emerald-800">New customers</div>
-                            <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(nCust)} customers
-                            </span>
-                          </div>
-                          <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-spend-new">
-                            {fmtKES(spendByType.new.avg_spend_per_customer_kes)}
-                          </div>
-                          <div className="text-[11px] text-muted mt-0.5">
-                            avg spend · {spendByType.new.avg_orders_per_customer.toFixed(2)} orders / cust
-                            · {fmtKES(nSpend)} total
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-blue-300 bg-blue-50/40 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="eyebrow text-blue-800">Returning customers</div>
-                            <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(rCust)} customers
-                            </span>
-                          </div>
-                          <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-spend-returning">
-                            {fmtKES(spendByType.returning.avg_spend_per_customer_kes)}
-                          </div>
-                          <div className="text-[11px] text-muted mt-0.5">
-                            avg spend · {spendByType.returning.avg_orders_per_customer.toFixed(2)} orders / cust
-                            · {fmtKES(rSpend)} total
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* ---- ABV (per-basket) reconciliation row ----
-                          Matches the ABV tile on the Overview page.
-                          Overall ABV = (New spend + Returning spend) ÷ (New orders + Returning orders)
-                          = orders-weighted average of New ABV and Returning ABV. */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" data-testid="abv-by-type">
                         <div
                           className="rounded-xl border-2 border-amber-400 bg-amber-50/50 p-3"
-                          title={`Overall ABV = total identified spend ÷ total identified orders\n= ${fmtKES(totalSpend)} ÷ ${fmtNum(totalOrders)} orders\n= ${fmtKES(overallABV)}\n\nThis is the orders-weighted average of New ABV (${fmtKES(nABV)}) and Returning ABV (${fmtKES(rABV)}). It matches the ABV tile on the Overview page (identified orders only — walk-ins excluded).`}
+                          title={`Overall ABV (per basket) = Avg Spend / Avg Orders per Customer\n= ${fmtKES(spend)} ÷ ${ordersPerCust.toFixed(2)}\n= ${fmtKES(overallABV)}\nMatches the ABV tile on the Overview page.`}
                         >
                           <div className="flex items-center justify-between">
-                            <div className="eyebrow text-amber-900">Overall · ABV (per basket)</div>
+                            <div className="eyebrow text-amber-900">Overall ABV (per basket)</div>
                             <span className="text-[10px] font-bold uppercase bg-amber-200/70 text-amber-900 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(totalOrders)} orders
+                              {fmtNum(Math.round(totalOrders))} orders
                             </span>
                           </div>
                           <div className="font-extrabold text-[20px] num mt-1 text-amber-900" data-testid="kpi-abv-overall">
@@ -1463,36 +1432,7 @@ const Customers = () => {
                             spend ÷ orders · matches Overview ABV
                           </div>
                         </div>
-                        <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="eyebrow text-emerald-800">New · ABV</div>
-                            <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(nOrders)} orders
-                            </span>
-                          </div>
-                          <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-abv-new">
-                            {fmtKES(nABV)}
-                          </div>
-                          <div className="text-[11px] text-muted mt-0.5">
-                            avg basket · {fmtKES(nSpend)} ÷ {fmtNum(nOrders)} orders
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-blue-300 bg-blue-50/40 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="eyebrow text-blue-800">Returning · ABV</div>
-                            <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
-                              {fmtNum(rOrders)} orders
-                            </span>
-                          </div>
-                          <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-abv-returning">
-                            {fmtKES(rABV)}
-                          </div>
-                          <div className="text-[11px] text-muted mt-0.5">
-                            avg basket · {fmtKES(rSpend)} ÷ {fmtNum(rOrders)} orders
-                          </div>
-                        </div>
                       </div>
-                      </>
                       );
                     })()}
 

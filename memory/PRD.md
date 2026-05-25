@@ -4,6 +4,19 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 88a) — Customer Loyalty page: trust upstream `/customers` for all segmentation (P0)
+- **Bug**: User screenshot of Customers page (May 20–24) showed `New customers = 4` and `New ABV = KES 27.91K` (way too high). Total identified = only 766.
+- **Root cause**: backend `_get_customers_live` was overriding upstream `/customers` `total_customers` and `avg_customer_spend` using a local recomputation (`analytics_avg_spend_by_customer_type`). That endpoint relied on the per-order `customer_type` field with a "majority vote, Returning wins ties" rule. Odoo POS rows are not tagged with `customer_type` upstream (only Shopify rows are), so 95% of true new customers were silently re-bucketed as Returning.
+- **User directive**: *"Do not recompute customer segmentation on your side — use our endpoint which has the correct logic already built in."* Upstream `/customers` runs the canonical "first-ever purchase in window" definition against full purchase history.
+- **Fix (backend)**: `server.py::_get_customers_live` — removed the local override block (lines ~4624-4669). Upstream `/customers` payload now flows through untouched. Added `avg_customer_spend_source: "upstream_canonical"` tag for traceability.
+- **Fix (frontend)**: `Customers.jsx` Customer Loyalty section rewired to read DIRECTLY from the upstream `cust` state (`new_customers`, `returning_customers`, `repeat_customers`, `total_customers`, `avg_customer_spend`, `avg_orders_per_customer`). The 4 KPI tiles now show: Repeat Customer Rate · New Customers · Returning Customers · Avg Orders/Customer. The previous per-bucket New ABV / Returning ABV split cards were removed (upstream doesn't expose per-type spend) and replaced with one Overall Avg Spend and one Overall ABV tile. Each tile is labelled `source: /customers` so analysts know the provenance. `/analytics/avg-spend-by-customer-type` is no longer fetched from the page.
+- **Verified live (May 20–24)**: `/api/customers` now returns `New=286 · Returning=1,122 · Repeat=151 · Total=1,559 · AvgSpend=11,730 · AvgOrders=1.2` — matching the user's expected canonical values.
+- **Cache busting**: cleared 55 stale `/customers` rows from `analytics_snapshots` and 37 `fetch:/customers*` keys from Upstash Redis so the corrected payload propagates immediately.
+- **Tests**: customer-frequency / loyalty bar-chart tests still pass (19/20 in `test_iteration_41_analytics.py`); the one remaining failure is on the legacy `/analytics/customer-retention` endpoint, which the frontend no longer consumes after this change.
+- **Note**: the legacy `/api/analytics/avg-spend-by-customer-type` and `/api/analytics/customer-retention` endpoints are intentionally left in place (other tools may consume them) but flagged for deletion in a follow-up cleanup.
+
+
+
 ### Recent (Feb 2026 — Iter 87) — UI polish batch (P0): text wrap + replenishment sort + SOR Launch-year filter + Footfall Exploration table
 - **Long product names now wrap** across all SOR / catalog tables — removed `truncate` + `max-w + line-clamp` patterns and replaced with `white-space: normal; word-break: break-word; overflow-wrap: anywhere`. Touched: `SorStylesTable.jsx` (style name + brand/collection sub-line), `Products.jsx` (Top 20 / New styles / SOR by style), `SORReportExport.jsx` (master style_name + location pane title + location cell), `ReplenishmentReport.jsx` already wrapped.
 - **Daily Replenishment sort** (`server.py::_sort_key`) now: POS ASC (case-insensitive — Mama Ngina St precedes MSA Digo Road) → Bin ASC (natural sort via `_bin_natural`, so `G65 < G123`; empty bins sentinel-pushed to the end of each POS group) → product_name → size. Bin lookup moved BEFORE owner-assignment slice so each picker's contiguous range follows the new ordering.
