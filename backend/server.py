@@ -3479,6 +3479,15 @@ async def admin_cache_clear():
     _churn_full_cache.clear()
     _churn_neg_cache.clear()
     _FETCH_CACHE.clear()
+    # Iter 87 Phase F — also wipe the in-memory replenishment cache.
+    # The pick list is computed once and frozen for 30 min so picker
+    # assignments don't shift mid-shift. But if the underlying sales
+    # data was wrong (upstream backfill, corrupt rows, etc.) and an
+    # admin clicks Refresh, the 30-min lock would keep serving the
+    # poisoned pick list for up to half an hour. Clear it so the next
+    # /replenishment-report call recomputes from corrected data.
+    repl_cleared = len(_repl_cache)
+    _repl_cache.clear()
     # Iter 87 Phase A — also wipe the Mongo-persisted inventory
     # snapshot so the next read goes upstream. Admin "Refresh" is the
     # right moment to invalidate (the user clicked it because they
@@ -3491,8 +3500,9 @@ async def admin_cache_clear():
         logger.warning("[cache-clear] inventory snapshot wipe failed: %s", e)
     return {
         "ok": True,
-        "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache"],
+        "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache", "replenishment"],
         "inventory_snapshots_dropped": inv_snap_cleared,
+        "replenishment_entries_dropped": repl_cleared,
     }
 
 
@@ -4104,6 +4114,14 @@ async def admin_full_snapshot_rebuild(
         # In-memory + Redis + disk so nothing rehydrates the bad data.
         _kpi_stale_cache.clear()
         _FETCH_CACHE.clear()
+        # Iter 87 Phase F — wipe the in-memory replenishment pick-list
+        # cache too. The pick list is computed once per 30 min from
+        # SALES + INVENTORY; if either was wrong when the cache was
+        # warmed, every request inside that window keeps serving the
+        # bad list. Clearing here forces a recompute on the next call,
+        # using the freshly-rebuilt snapshots below.
+        repl_cleared = len(_repl_cache)
+        _repl_cache.clear()
         try:
             if _KPI_STALE_PATH.exists():
                 _KPI_STALE_PATH.unlink()
@@ -4195,6 +4213,7 @@ async def admin_full_snapshot_rebuild(
                 "inventory_snapshots": inventory_cleared,
                 "customer_lifetime_roster": roster_cleared,
                 "redis_keys": redis_cleared,
+                "replenishment_cache_entries": repl_cleared,
             },
             "rebuilt": {
                 "kpi": {"written": kpi_written, "total": len(kpi_results)},
