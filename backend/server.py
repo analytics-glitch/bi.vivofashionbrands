@@ -5338,6 +5338,40 @@ async def get_top_customers(
     return await mask_and_audit(rows, user=user, endpoint="/top-customers", request_ip=_client_ip(request))
 
 
+@api_router.get("/customer-type-spend")
+async def get_customer_type_spend(
+    date_from: str,
+    date_to: str,
+    country: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Per-segment (New / Returning) spend + ABV.
+
+    Iter 88c — Thin proxy to upstream `/customer-type-spend`. The
+    upstream endpoint applies the canonical "first-ever purchase in
+    window = New" rule (the same one `/customers` uses for the
+    new_customers count). We MUST NOT recompute segmentation locally
+    — see the Iter 88a note on _get_customers_live for the rationale.
+
+    Returns a list of two dicts (one per segment) with keys:
+        customer_segment · customers · orders · total_sales ·
+        spend_per_customer · avg_basket_value
+
+    Country filter is forwarded as-is. Multi-country fan-out is NOT
+    supported here because per-segment totals do not aggregate
+    cleanly across countries (a customer's first-ever-purchase date
+    is global). If the user picks 2+ countries on the frontend, we
+    fall back to no country filter (upstream returns the full pool).
+    """
+    cs = _split_csv(country)
+    upstream_country = cs[0] if len(cs) == 1 else None
+    rows = await _safe_fetch("/customer-type-spend", {
+        "date_from": date_from, "date_to": date_to,
+        "country": upstream_country,
+    }) or []
+    return rows
+
+
 @api_router.get("/customer-search")
 async def customer_search(request: Request, q: str, reveal: bool = False, user=Depends(get_current_user)):
     if not q or not q.strip():

@@ -162,6 +162,7 @@ const Customers = () => {
   const [byLocPrev, setByLocPrev] = useState([]);
   const [topSkus, setTopSkus] = useState([]);
   const [retention, setRetention] = useState(null);
+  const [typeSpend, setTypeSpend] = useState(null);
   const [repeatCustomers, setRepeatCustomers] = useState([]);
   const [repeatCustomersLoading, setRepeatCustomersLoading] = useState(false);
   const [unchurned, setUnchurned] = useState(null);
@@ -253,12 +254,14 @@ const Customers = () => {
       // the upstream /customer-frequency repeat-rate which over-counts
       // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
       ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
-      // Iter 88a — /analytics/avg-spend-by-customer-type fetch removed.
-      // The Customer Loyalty section now pulls New/Returning/Repeat
-      // counts and Avg Spend / ABV directly from the upstream /customers
-      // payload (the `cust` state). Local recomputation produced wrong
-      // results because the upstream per-order `customer_type` field is
-      // unreliable for Odoo POS rows.
+      // Iter 88c — Per-segment spend / ABV from the upstream
+      // /customer-type-spend endpoint. Upstream applies the canonical
+      // "first-ever purchase in window = New" rule (the same one
+      // /customers uses for new_customers count), so the New ABV /
+      // Returning ABV split agrees with the New / Returning customer
+      // counts shown elsewhere on the page. Country is forwarded only
+      // when exactly one country is selected (see backend note).
+      ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country } }).catch(() => ({ data: null }))],
       // Identified customers with ≥2 distinct orders in the window — drives
       // the "Repeat Customers Detail" expandable table.
       ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
@@ -268,6 +271,7 @@ const Customers = () => {
       np: setNewProducts, cw: setCrosswalk, prev: setCustPrev, freqPrev: setFreqPrev,
       topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
       retention: setRetention,
+      typeSpend: setTypeSpend,
       repeatCustomers: setRepeatCustomers,
     };
     setRepeatCustomersLoading(true);
@@ -1433,6 +1437,97 @@ const Customers = () => {
                           </div>
                         </div>
                       </div>
+                      );
+                    })()}
+
+                    {/* ---- Per-segment Spend / Customer + ABV (New vs Returning) ----
+                        Iter 88c — Sourced from upstream `/customer-type-spend`
+                        which applies the canonical "first-ever purchase in
+                        window = New" rule. Two rows of 2 cards each:
+                          Row 1 — Spend per Customer (revenue ÷ customers)
+                          Row 2 — Avg Basket Value (revenue ÷ orders)
+                        Cards stay hidden until typeSpend resolves so the page
+                        doesn't flash empty placeholders. */}
+                    {typeSpend && Array.isArray(typeSpend) && typeSpend.length > 0 && (() => {
+                      const newSeg = typeSpend.find((r) => (r.customer_segment || "").toLowerCase() === "new") || {};
+                      const retSeg = typeSpend.find((r) => (r.customer_segment || "").toLowerCase() === "returning") || {};
+                      return (
+                        <>
+                          {/* Spend / Customer */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3" data-testid="spend-by-segment">
+                            <div
+                              className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3"
+                              title={`New customers — Spend per Customer\n= ${fmtKES(newSeg.total_sales)} ÷ ${fmtNum(newSeg.customers)} customers\n= ${fmtKES(newSeg.spend_per_customer)}\n\nSource: GET /api/customer-type-spend\nDefinition: first-ever purchase in the selected window`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="eyebrow text-emerald-800">New · Spend / Customer</div>
+                                <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
+                                  {fmtNum(newSeg.customers || 0)} customers
+                                </span>
+                              </div>
+                              <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-spend-new">
+                                {fmtKES(newSeg.spend_per_customer || 0)}
+                              </div>
+                              <div className="text-[11px] text-muted mt-0.5">
+                                {fmtKES(newSeg.total_sales || 0)} total · source: /customer-type-spend
+                              </div>
+                            </div>
+                            <div
+                              className="rounded-xl border border-blue-300 bg-blue-50/40 p-3"
+                              title={`Returning customers — Spend per Customer\n= ${fmtKES(retSeg.total_sales)} ÷ ${fmtNum(retSeg.customers)} customers\n= ${fmtKES(retSeg.spend_per_customer)}\n\nSource: GET /api/customer-type-spend\nDefinition: prior purchase history before the window`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="eyebrow text-blue-800">Returning · Spend / Customer</div>
+                                <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
+                                  {fmtNum(retSeg.customers || 0)} customers
+                                </span>
+                              </div>
+                              <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-spend-returning">
+                                {fmtKES(retSeg.spend_per_customer || 0)}
+                              </div>
+                              <div className="text-[11px] text-muted mt-0.5">
+                                {fmtKES(retSeg.total_sales || 0)} total · source: /customer-type-spend
+                              </div>
+                            </div>
+                          </div>
+                          {/* Avg Basket Value (ABV) */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4" data-testid="abv-by-segment">
+                            <div
+                              className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-3"
+                              title={`New customers — Avg Basket Value\n= ${fmtKES(newSeg.total_sales)} ÷ ${fmtNum(newSeg.orders)} orders\n= ${fmtKES(newSeg.avg_basket_value)}\n\nSource: GET /api/customer-type-spend`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="eyebrow text-emerald-800">New · ABV (per basket)</div>
+                                <span className="text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
+                                  {fmtNum(newSeg.orders || 0)} orders
+                                </span>
+                              </div>
+                              <div className="font-extrabold text-[20px] num mt-1 text-emerald-900" data-testid="kpi-abv-new">
+                                {fmtKES(newSeg.avg_basket_value || 0)}
+                              </div>
+                              <div className="text-[11px] text-muted mt-0.5">
+                                avg basket · source: /customer-type-spend
+                              </div>
+                            </div>
+                            <div
+                              className="rounded-xl border border-blue-300 bg-blue-50/40 p-3"
+                              title={`Returning customers — Avg Basket Value\n= ${fmtKES(retSeg.total_sales)} ÷ ${fmtNum(retSeg.orders)} orders\n= ${fmtKES(retSeg.avg_basket_value)}\n\nSource: GET /api/customer-type-spend`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="eyebrow text-blue-800">Returning · ABV (per basket)</div>
+                                <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
+                                  {fmtNum(retSeg.orders || 0)} orders
+                                </span>
+                              </div>
+                              <div className="font-extrabold text-[20px] num mt-1 text-blue-900" data-testid="kpi-abv-returning">
+                                {fmtKES(retSeg.avg_basket_value || 0)}
+                              </div>
+                              <div className="text-[11px] text-muted mt-0.5">
+                                avg basket · source: /customer-type-spend
+                              </div>
+                            </div>
+                          </div>
+                        </>
                       );
                     })()}
 
