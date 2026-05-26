@@ -5575,17 +5575,22 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
       2. customer_type tagged Guest / walk-in / anonymous.
       3. customer_id resolves to a blank-name row in /top-customers
          (the walk-in roster — ~379 such IDs).
-      4. NEITHER phone NOR email known anywhere — checked across both
-         the /orders row itself AND the /top-customers roster. This is
-         the canonical ops definition: "a walk-in is a customer without
-         both phone number and email".
-      5. customer_name contains "walk" (covers walk-in, walkin, walk in).
-      6. customer_name contains "vivo" / "safari" — staff sometimes
+      4. customer_name contains "walk" (covers walk-in, walkin, walk in).
+      5. customer_name contains "vivo" / "safari" — staff sometimes
          enter the brand or store name as the customer.
-      7. customer_name matches the POS / store / location name.
+      6. customer_name matches the POS / store / location name.
 
-    `name_lookup` and `contact_lookup` should be passed by callers that
-    have warmed `_get_customer_name_lookup` already.
+    Iter 88e (2026-05-25) — the legacy "no phone AND no email anywhere"
+    rule was REMOVED. It was misclassifying ~896 real Odoo POS
+    customers (out of 3,162 with no contact details on file) as
+    walk-ins. Customers with a customer_id ARE trackable across
+    orders for retention / repeat analysis regardless of whether
+    they have phone or email — they are "Incomplete Profile", not
+    walk-ins. The `contact_lookup` argument is still accepted for
+    backwards-compatibility with callers but no longer consulted.
+
+    `name_lookup` should be passed by callers that have warmed
+    `_get_customer_name_lookup` already.
     """
     cid = r.get("customer_id")
     if cid is None or (isinstance(cid, str) and not cid.strip()):
@@ -5595,23 +5600,13 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
         return True
     cid_s = str(cid).strip()
     nm_lookup = name_lookup if name_lookup is not None else _customer_names_cache[1]
-    ct_lookup = contact_lookup if contact_lookup is not None else _customer_contacts_cache[1]
+    # Iter 88e — contact_lookup intentionally unused (kept in signature
+    # to avoid touching every call site). The previous "no phone AND
+    # no email anywhere" rule false-positived on Incomplete-Profile
+    # customers; see docstring above.
+    _ = contact_lookup  # noqa: F841 — signature compatibility
     if cid_s in nm_lookup and not nm_lookup[cid_s]:
         # Known customer in the roster but with blank name = walk-in.
-        return True
-    # Rule 4 — "no phone AND no email" anywhere. Check the row first,
-    # then the roster. If both come up empty, it's a walk-in regardless
-    # of whether we found the cid in the roster at all (a customer not
-    # in top-customers and with no contact on the order row is by
-    # definition unreachable / anonymous).
-    row_phone = r.get("customer_phone") or r.get("phone")
-    row_email = r.get("customer_email") or r.get("email")
-    has_row_phone = bool(row_phone and str(row_phone).strip())
-    has_row_email = bool(row_email and str(row_email).strip())
-    contact = ct_lookup.get(cid_s) or {}
-    has_roster_phone = bool(contact.get("has_phone"))
-    has_roster_email = bool(contact.get("has_email"))
-    if not (has_row_phone or has_row_email or has_roster_phone or has_roster_email):
         return True
     cname = (r.get("customer_name") or nm_lookup.get(cid_s, "") or "").strip().lower()
     if not cname:
