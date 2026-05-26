@@ -31,6 +31,7 @@ const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
 const Allocations = React.lazy(() => import("@/pages/Allocations"));
 const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
+const MorningBrief = React.lazy(() => import("@/pages/MorningBrief"));
 
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
@@ -91,6 +92,7 @@ function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
               <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+              <Route path="/morning-brief" element={<ProtectedShell pageId="morning-brief"><MorningBrief /></ProtectedShell>} />
               <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
               <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
               <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />

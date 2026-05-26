@@ -9,7 +9,7 @@
  * only pages use the `admin-` prefix.
  */
 
-const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details", "feedback"];
+const VIEWER = ["overview", "locations", "footfall", "customers", "customer-details", "feedback", "morning-brief"];
 // Store managers see ONLY: Locations (retail), Exports (inventory only),
 // IBT, Feedback. Per-page filters enforced inside the page components.
 const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"];

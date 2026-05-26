@@ -5376,6 +5376,78 @@ async def get_customer_type_spend(
     return rows
 
 
+# ─── Morning Brief proxy (iter 88j, 2026-05-26) ───
+# Separate Cloud Run service from the main Vivo BI API. Returns an
+# AI-generated narrative + raw data for a given (brief_date, country)
+# combination. The upstream regenerates the LLM brief once per day, so
+# we cache the response for 1 hour on our side to keep round-trips low.
+MORNING_BRIEF_BASE = os.environ.get(
+    "MORNING_BRIEF_BASE",
+    "https://vivo-morning-brief-666430550422.europe-west1.run.app",
+)
+
+
+@api_router.get("/morning-brief")
+async def get_morning_brief(
+    brief_date: str,
+    country: str = "Kenya",
+    user=Depends(get_current_user),
+):
+    """Thin proxy to the Morning Brief Cloud Run service.
+
+    Args:
+        brief_date: YYYY-MM-DD — defaults to today on the frontend.
+        country: required by upstream; defaults to Kenya.
+
+    Response shape (unchanged from upstream):
+        { date, brief (markdown), data: { sales, stores, category_mix,
+          top_styles, declining, new_styles, stock_alerts, dead_stock,
+          customers, zero_sales } }
+
+    Caching: 1 hour Redis TTL keyed on (brief_date, country). The
+    upstream generates the LLM brief once per day so an hourly refresh
+    is more than enough.
+    """
+    cache_key = f"morning-brief:{brief_date}:{country}"
+    if rc.enabled:
+        cached = await rc.get(cache_key)
+        if cached is not None:
+            return cached
+    url = f"{MORNING_BRIEF_BASE}/morning-brief"
+    params = {"brief_date": brief_date, "country": country}
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status == 404:
+            # No brief generated yet — bubble through as 404.
+            raise HTTPException(
+                status_code=404,
+                detail=f"No Morning Brief has been generated for {brief_date} in {country} yet.",
+            )
+        # 5xx from upstream — surface a clean user-facing message.
+        logger.warning("[morning-brief] upstream %d for %s/%s", status, brief_date, country)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Morning Brief service is temporarily unavailable "
+                f"(upstream returned {status}). Please try again in a few minutes."
+            ),
+        )
+    except Exception as e:
+        logger.error("[morning-brief] fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Morning Brief unavailable: {e}")
+    if rc.enabled:
+        # 1 hour TTL — upstream regenerates the brief once per day, so an
+        # hourly invalidation cycle keeps the page warm without re-firing
+        # the LLM behind us.
+        asyncio.create_task(rc.set(cache_key, data, 3600))
+    return data
+
+
 @api_router.get("/customer-search")
 async def customer_search(request: Request, q: str, reveal: bool = False, user=Depends(get_current_user)):
     if not q or not q.strip():
