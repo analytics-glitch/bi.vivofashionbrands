@@ -5085,48 +5085,29 @@ async def _get_walk_ins_impl(
     name_lookup = await _get_customer_name_lookup()
 
     def _is_walk_in(r: Dict[str, Any]) -> bool:
-        # Walk-in rules (any one match):
-        #   1. No customer_id (null / empty) — anonymous transaction.
-        #   2. customer_type tagged guest / walk-in / anonymous in upstream.
-        #   3. customer_id resolves to a customer with EMPTY name in the
-        #      upstream customer database — that IS the walk-in roster
-        #      (~379 such IDs vs 2 named "walker"). Most reliable signal.
-        #   4. customer_name contains "walk" — covers "walk in", "walkin",
-        #      "walk-in".
-        #   5. customer_name contains "vivo" / "safari" — staff sometimes
-        #      enter the brand or store name when no real customer is
-        #      present.
-        #   6. customer_name matches the POS / store / location name.
+        # Iter 88f — Final ruleset per ops directive. The only valid
+        # walk-in definition is `customer_id` null/empty (Rule 1).
+        # Rules 5 (name contains "walk") and 6 (name contains
+        # "vivo"/"safari") are retained as name-pattern catch-alls for
+        # staff-entered placeholder names. Dropped: Rule 2 (upstream
+        # customer_type — unreliable for Odoo POS line items), Rule 3
+        # (blank-name in roster — that's an Incomplete Profile, still
+        # trackable), Rule 7 (store-name token match — false positives).
+        # See `_is_walk_in_order` docstring for the full rationale.
         cid = r.get("customer_id")
         if cid is None or (isinstance(cid, str) and not cid.strip()):
             return True
-        ctype = (r.get("customer_type") or "").strip().lower()
-        if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
-            return True
         cid_s = str(cid).strip()
-        if cid_s in name_lookup and not name_lookup[cid_s]:
-            # Known customer in the roster but with blank name = walk-in.
-            return True
         cname = (r.get("customer_name") or name_lookup.get(cid_s, "") or "").strip().lower()
         if not cname:
-            # cid is in the roster with a real name → genuine identified
-            # customer, not a walk-in. (If cid is NOT in the roster we
-            # treat it as identified too — safer to under-count walk-ins
-            # than over-count.)
+            # Customer with an id but no name = Incomplete Profile,
+            # NOT walk-in. They are still trackable across orders.
             return False
         cname_clean = cname.replace("-", " ").replace("_", " ")
         if "walk" in cname_clean:
             return True
         if "vivo" in cname_clean or "safari" in cname_clean:
             return True
-        loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
-        if loc:
-            loc_clean = loc.replace("-", " ").replace("_", " ")
-            if cname_clean == loc_clean:
-                return True
-            tokens = [t for t in loc_clean.split() if len(t) >= 4 and t not in ("vivo", "safari", "mall", "shop", "store")]
-            if any(t in cname_clean for t in tokens):
-                return True
         return False
 
     # Aggregate: walk-in orders & revenue, total orders & revenue, by country
@@ -5567,63 +5548,53 @@ _CUSTOMER_HIST_TTL = 600  # 10 minutes
 _orders_window_last_status: Dict[str, Dict[str, Any]] = {}
 def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] = None,
                       contact_lookup: Optional[Dict[str, Dict[str, bool]]] = None) -> bool:
-    """Robust walk-in detector — must match `walk-ins` endpoint logic.
+    """Canonical walk-in detector — must match the inner `_is_walk_in()`
+    in /customers/walk-ins.
 
-    A walk-in is any sale that can't be tied to a real, contactable
-    customer. Triggers if ANY of:
-      1. No customer_id at all.
-      2. customer_type tagged Guest / walk-in / anonymous.
-      3. customer_id resolves to a blank-name row in /top-customers
-         (the walk-in roster — ~379 such IDs).
-      4. customer_name contains "walk" (covers walk-in, walkin, walk in).
-      5. customer_name contains "vivo" / "safari" — staff sometimes
-         enter the brand or store name as the customer.
-      6. customer_name matches the POS / store / location name.
+    Iter 88f (2026-05-26) — Final ruleset per ops directive:
+        Rule 1: customer_id null/empty → walk-in
+        Rule 5: customer_name contains "walk" → walk-in (free-text catch-all)
+        Rule 6: customer_name contains "vivo" / "safari" → walk-in
+                (staff sometimes enter the brand name)
 
-    Iter 88e (2026-05-25) — the legacy "no phone AND no email anywhere"
-    rule was REMOVED. It was misclassifying ~896 real Odoo POS
-    customers (out of 3,162 with no contact details on file) as
-    walk-ins. Customers with a customer_id ARE trackable across
-    orders for retention / repeat analysis regardless of whether
-    they have phone or email — they are "Incomplete Profile", not
-    walk-ins. The `contact_lookup` argument is still accepted for
-    backwards-compatibility with callers but no longer consulted.
+    Everything else (missing name, missing contact, blank-name roster
+    entry, store-name token match, upstream customer_type tag) is now
+    treated as an **Incomplete Profile** and STAYS in retention /
+    repeat / churn / segmentation analytics.
 
-    `name_lookup` should be passed by callers that have warmed
-    `_get_customer_name_lookup` already.
+    REMOVED rules (kept here as documentation):
+      Rule 2 — `customer_type` ∈ {Guest, walk-in, anonymous}: dropped
+        because the upstream per-order `customer_type` field is unreliable
+        for Odoo POS line items (store_id = vivofashiongroup) — observed
+        3,673 "Returning" tags for only 1,731 distinct orders. Shopify
+        guest checkouts still get caught by Rule 1 (they have no
+        customer_id), so this drop has no false-negative effect.
+      Rule 3 — blank-name roster entry: dropped because a customer_id
+        IS trackable across orders even if their name is empty.
+      Rule 7 — store-name token match: dropped; the false-positive risk
+        on names that legitimately share a token with the POS location
+        outweighs the catch.
+
+    `name_lookup` / `contact_lookup` arguments are kept for backwards
+    compatibility with the snapshot builder; they are no longer used.
     """
     cid = r.get("customer_id")
     if cid is None or (isinstance(cid, str) and not cid.strip()):
         return True
-    ctype = (r.get("customer_type") or "").strip().lower()
-    if ctype in ("guest", "walk-in", "walkin", "walk in", "anonymous"):
-        return True
+    # Rules 5 & 6 — name-pattern catch-alls.
     cid_s = str(cid).strip()
     nm_lookup = name_lookup if name_lookup is not None else _customer_names_cache[1]
-    # Iter 88e — contact_lookup intentionally unused (kept in signature
-    # to avoid touching every call site). The previous "no phone AND
-    # no email anywhere" rule false-positived on Incomplete-Profile
-    # customers; see docstring above.
     _ = contact_lookup  # noqa: F841 — signature compatibility
-    if cid_s in nm_lookup and not nm_lookup[cid_s]:
-        # Known customer in the roster but with blank name = walk-in.
-        return True
     cname = (r.get("customer_name") or nm_lookup.get(cid_s, "") or "").strip().lower()
     if not cname:
+        # Iter 88f — Empty name with a valid customer_id is an
+        # "Incomplete Profile" customer, NOT a walk-in.
         return False
     cname_clean = cname.replace("-", " ").replace("_", " ")
     if "walk" in cname_clean:
         return True
     if "vivo" in cname_clean or "safari" in cname_clean:
         return True
-    loc = (r.get("pos_location_name") or r.get("channel") or "").strip().lower()
-    if loc:
-        loc_clean = loc.replace("-", " ").replace("_", " ")
-        if cname_clean == loc_clean:
-            return True
-        tokens = [t for t in loc_clean.split() if len(t) >= 4 and t not in ("vivo", "safari", "mall", "shop", "store")]
-        if any(t in cname_clean for t in tokens):
-            return True
     return False
 
 
