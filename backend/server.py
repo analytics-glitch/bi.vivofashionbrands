@@ -3498,11 +3498,47 @@ async def admin_cache_clear():
         inv_snap_cleared = res.deleted_count if hasattr(res, "deleted_count") else 0
     except Exception as e:
         logger.warning("[cache-clear] inventory snapshot wipe failed: %s", e)
+    # Iter 88k — also wipe stale `analytics_snapshots` rows for the
+    # frequently-poisoned endpoints. We saw production /customers
+    # serve a zero-blob (total=0, new=0, returning=0) for May 20-24
+    # because a transient upstream blip got snapshotted before the
+    # canonical totals returned. Admin "Refresh" / cache-clear must
+    # also drop these so the next call re-fetches upstream.
+    analytics_snap_cleared = 0
+    try:
+        # _id format is `<endpoint>|<from>|<to>|<country>|<channel>` —
+        # see `_get_or_set_analytics_snapshot`. Match by endpoint prefix.
+        affected_prefixes = [
+            "/customers|", "/customers/walk-ins|",
+            "/analytics/customer-retention|",
+            "/analytics/avg-spend-by-customer-type|",
+            "/analytics/recently-unchurned|",
+            "/customer-type-spend|",
+        ]
+        for prefix in affected_prefixes:
+            res = await db.analytics_snapshots.delete_many(
+                {"_id": {"$regex": f"^{re.escape(prefix)}"}}
+            )
+            cnt = res.deleted_count if hasattr(res, "deleted_count") else 0
+            analytics_snap_cleared += cnt
+    except Exception as e:
+        logger.warning("[cache-clear] analytics snapshot wipe failed: %s", e)
+    # Iter 88k — also drop Redis fetch:/customers* keys so the L2
+    # cache layer matches.
+    redis_cleared = 0
+    if rc.enabled:
+        try:
+            for prefix in ("fetch:/customers", "fetch:/orders", "fetch:/top-customers"):
+                redis_cleared += await rc.delete_prefix(prefix)
+        except Exception as e:
+            logger.warning("[cache-clear] redis prefix wipe failed: %s", e)
     return {
         "ok": True,
-        "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache", "replenishment"],
+        "cleared": ["inventory", "churn_full", "churn_neg", "fetch_cache", "replenishment", "analytics_snapshots", "redis_fetch_prefixes"],
         "inventory_snapshots_dropped": inv_snap_cleared,
         "replenishment_entries_dropped": repl_cleared,
+        "analytics_snapshots_dropped": analytics_snap_cleared,
+        "redis_keys_dropped": redis_cleared,
     }
 
 
