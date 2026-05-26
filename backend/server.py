@@ -4762,6 +4762,34 @@ _CUSTOMER_NAMES_TTL = 60 * 60 * 24  # 24 hours — the lifetime walk-in roster o
 _CUSTOMER_NAMES_DISK = Path("/tmp/_customer_names_cache.json")
 _customer_names_disk_lock = asyncio.Lock()
 
+# ─── Walk-in classifier blocklist & allowlist (iter 88g, 2026-05-26) ───
+# Curated by ops on 2026-05-26 after Rule-3 fix exposed remaining
+# Odoo placeholder accounts. Stored as STRINGS because upstream
+# customer_id values come back as strings on some endpoints.
+#
+# BLOCKLIST: known Odoo store-placeholder / walk-in roster IDs. Any
+# order linked to one of these IDs is treated as a walk-in regardless
+# of name / contact data.
+_WALK_IN_BLOCKLIST_IDS: frozenset = frozenset({
+    "443574", "443576", "443577", "443578", "443579", "443580",
+    "443581", "443585", "443588", "443590", "443591", "443592",
+    "443593", "443594", "443595", "443596", "443599", "443601",
+    "443602", "446641", "450638", "450730", "450801", "451689",
+    "451973", "452139", "109502", "443571", "443572",
+})
+# ALLOWLIST: legitimate identified customers whose names contain
+# "vivo" / "safari" — must NEVER trip the secondary name-substring
+# rules (5 & 6). Checked BEFORE the blocklist + name rules.
+_WALK_IN_ALLOWLIST_IDS: frozenset = frozenset({
+    "452539",  # Irene Safari
+    "453075",  # SAMANTHA VIVO
+    "453287",  # Shaheeda vivo
+    "446304",  # ORANJE SAFARIS
+    "448374",  # Safaricom Limited
+})
+
+
+
 
 def _customer_names_load_from_disk() -> None:
     """Rehydrate the in-memory roster from disk on import. Safe — silent
@@ -5085,23 +5113,18 @@ async def _get_walk_ins_impl(
     name_lookup = await _get_customer_name_lookup()
 
     def _is_walk_in(r: Dict[str, Any]) -> bool:
-        # Iter 88f — Final ruleset per ops directive. The only valid
-        # walk-in definition is `customer_id` null/empty (Rule 1).
-        # Rules 5 (name contains "walk") and 6 (name contains
-        # "vivo"/"safari") are retained as name-pattern catch-alls for
-        # staff-entered placeholder names. Dropped: Rule 2 (upstream
-        # customer_type — unreliable for Odoo POS line items), Rule 3
-        # (blank-name in roster — that's an Incomplete Profile, still
-        # trackable), Rule 7 (store-name token match — false positives).
-        # See `_is_walk_in_order` docstring for the full rationale.
+        # Iter 88g — see `_is_walk_in_order` docstring for the canonical
+        # rule order. Keep this in sync.
         cid = r.get("customer_id")
         if cid is None or (isinstance(cid, str) and not cid.strip()):
             return True
         cid_s = str(cid).strip()
+        if cid_s in _WALK_IN_ALLOWLIST_IDS:
+            return False
+        if cid_s in _WALK_IN_BLOCKLIST_IDS:
+            return True
         cname = (r.get("customer_name") or name_lookup.get(cid_s, "") or "").strip().lower()
         if not cname:
-            # Customer with an id but no name = Incomplete Profile,
-            # NOT walk-in. They are still trackable across orders.
             return False
         cname_clean = cname.replace("-", " ").replace("_", " ")
         if "walk" in cname_clean:
@@ -5551,44 +5574,45 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
     """Canonical walk-in detector — must match the inner `_is_walk_in()`
     in /customers/walk-ins.
 
-    Iter 88f (2026-05-26) — Final ruleset per ops directive:
+    Iter 88g (2026-05-26) — Ruleset:
+        Allowlist (checked FIRST, short-circuits): customers in
+            `_WALK_IN_ALLOWLIST_IDS` are legitimate identified
+            customers whose names happen to contain "vivo"/"safari"
+            and must NEVER be flagged as walk-ins.
         Rule 1: customer_id null/empty → walk-in
-        Rule 5: customer_name contains "walk" → walk-in (free-text catch-all)
+        Blocklist: customer_id ∈ `_WALK_IN_BLOCKLIST_IDS` (known
+            Odoo store placeholder / walk-in roster IDs) → walk-in
+        Rule 5: customer_name contains "walk" → walk-in
         Rule 6: customer_name contains "vivo" / "safari" → walk-in
-                (staff sometimes enter the brand name)
+                (secondary catch for FUTURE staff-entered placeholders
+                that aren't yet in the blocklist — the allowlist
+                guard above prevents real customers from tripping
+                this rule)
 
-    Everything else (missing name, missing contact, blank-name roster
-    entry, store-name token match, upstream customer_type tag) is now
-    treated as an **Incomplete Profile** and STAYS in retention /
-    repeat / churn / segmentation analytics.
+    Removed (iter 88e/88f): the legacy customer_type / blank-name-
+    roster / store-name-token / no-contact rules — see git blame for
+    rationale.
 
-    REMOVED rules (kept here as documentation):
-      Rule 2 — `customer_type` ∈ {Guest, walk-in, anonymous}: dropped
-        because the upstream per-order `customer_type` field is unreliable
-        for Odoo POS line items (store_id = vivofashiongroup) — observed
-        3,673 "Returning" tags for only 1,731 distinct orders. Shopify
-        guest checkouts still get caught by Rule 1 (they have no
-        customer_id), so this drop has no false-negative effect.
-      Rule 3 — blank-name roster entry: dropped because a customer_id
-        IS trackable across orders even if their name is empty.
-      Rule 7 — store-name token match: dropped; the false-positive risk
-        on names that legitimately share a token with the POS location
-        outweighs the catch.
-
-    `name_lookup` / `contact_lookup` arguments are kept for backwards
-    compatibility with the snapshot builder; they are no longer used.
+    `name_lookup` / `contact_lookup` are kept in the signature for
+    backwards compatibility; only `name_lookup` is actually consulted.
     """
     cid = r.get("customer_id")
     if cid is None or (isinstance(cid, str) and not cid.strip()):
         return True
-    # Rules 5 & 6 — name-pattern catch-alls.
     cid_s = str(cid).strip()
+    # Allowlist short-circuit — real customers with "vivo"/"safari" in
+    # their legitimate name.
+    if cid_s in _WALK_IN_ALLOWLIST_IDS:
+        return False
+    # Blocklist — known Odoo store placeholder / walk-in roster IDs.
+    if cid_s in _WALK_IN_BLOCKLIST_IDS:
+        return True
     nm_lookup = name_lookup if name_lookup is not None else _customer_names_cache[1]
     _ = contact_lookup  # noqa: F841 — signature compatibility
     cname = (r.get("customer_name") or nm_lookup.get(cid_s, "") or "").strip().lower()
     if not cname:
-        # Iter 88f — Empty name with a valid customer_id is an
-        # "Incomplete Profile" customer, NOT a walk-in.
+        # Empty name with a valid (non-blocklisted) customer_id = Incomplete
+        # Profile, NOT walk-in. Still trackable across orders.
         return False
     cname_clean = cname.replace("-", " ").replace("_", " ")
     if "walk" in cname_clean:
