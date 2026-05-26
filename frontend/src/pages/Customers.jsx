@@ -687,29 +687,34 @@ const Customers = () => {
             <div
               className="card-accent p-3.5 sm:p-5"
               data-testid="kpi-total"
-              title="Total Customers in period = New + Returning + Walk-ins. Walk-ins are anonymous orders (no customer profile) — added so the headline reflects every shopper, not just identified ones."
+              title="Total Identified Customers in period — sourced directly from upstream /customers (canonical first-purchase-date segmentation). Walk-ins are shown separately as they are anonymous orders that cannot be tied to a unique customer."
             >
               <div className="flex items-center gap-2">
                 <Users size={16} />
                 <div className="eyebrow text-white/80">Total Customers (in period)</div>
-                <span title="New + Returning + Walk-ins. Walk-ins are guest checkouts with no customer profile attached." className="text-white/60 text-[10px] cursor-help">ⓘ</span>
+                <span title="Identified customers only — New + Returning + Repeat. Walk-ins (anonymous orders) are shown on the dedicated Walk-in Customers tile." className="text-white/60 text-[10px] cursor-help">ⓘ</span>
               </div>
               {(() => {
+                // Iter 88h — Total Customers now reads DIRECTLY from
+                // upstream /customers (canonical). The previous math
+                // (New + Returning + Repeat + Walk-ins) double-counted
+                // because the upstream `total_customers` already equals
+                // New + Returning + Repeat, AND walk-ins are anonymous
+                // orders not unique customers — so adding them on top
+                // inflates the headline by the walk-in count.
                 const newC = cust.new_customers || 0;
                 const retC = (cust.returning_customers || 0) + (cust.repeat_customers || 0);
                 const wiC = walkIns?.walk_in_customers ?? walkIns?.walk_in_orders ?? 0;
-                const totalC = newC + retC + wiC;
-                const prevNewC = custPrev?.new_customers || 0;
-                const prevRetC = (custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0);
-                const prevWiC = walkInsPrev?.walk_in_customers ?? walkInsPrev?.walk_in_orders ?? 0;
-                const prevTotalC = prevNewC + prevRetC + prevWiC;
+                const totalC = cust.total_customers || (newC + retC);
+                const prevTotalC = custPrev?.total_customers
+                  || ((custPrev?.new_customers || 0) + (custPrev?.returning_customers || 0) + (custPrev?.repeat_customers || 0));
                 return (
                   <>
                     <div className="mt-2 text-[22px] sm:text-[28px] font-extrabold num leading-tight">
                       {fmtNum(totalC)}
                     </div>
                     <div className="mt-1 text-[10.5px] text-white/85 leading-snug">
-                      {fmtNum(newC)} new · {fmtNum(retC)} returning · {fmtNum(wiC)} walk-in
+                      {fmtNum(newC)} new · {fmtNum(retC)} returning · {fmtNum(wiC)} walk-in <span className="text-white/60">(separate)</span>
                     </div>
                     {compareLbl && prevTotalC > 0 && (
                       <div className="mt-1"><Delta curr={totalC} prev={prevTotalC} /></div>
