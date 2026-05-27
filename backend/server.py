@@ -1575,9 +1575,21 @@ async def _try_analytics_snapshot(
         age_sec = (datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)).total_seconds()
         if age_sec > _snapshot_ttl_for(country):
             return None
+        snap_data = doc.get("data")
+        # Iter 88l — Reject a poisoned snapshot from a previous deploy
+        # where the empty-write guard didn't catch a degraded zero blob.
+        # `degraded: True` is set ONLY by the route's degraded fallback,
+        # never by a healthy response, so its presence is an unambiguous
+        # signal to discard and re-fetch live.
+        if isinstance(snap_data, dict) and snap_data.get("degraded") is True:
+            try:
+                await db[_ANALYTICS_SNAPSHOT_COLL].delete_one({"_id": snap_id})
+            except Exception:
+                pass
+            return None
         global _CACHE_HITS_MONGO_SNAPSHOT
         _CACHE_HITS_MONGO_SNAPSHOT += 1
-        return doc.get("data")
+        return snap_data
     except Exception as e:
         logger.warning("[analytics-snapshot] read failed %s: %s", endpoint, e)
         return None
@@ -1613,11 +1625,30 @@ async def _save_analytics_snapshot(
             # Heuristic — treat all-zero numeric values as empty.
             if not d:
                 return True
+            # Iter 88l — Explicit degraded-payload short-circuit. The
+            # /customers route degrades to a zero blob with `degraded:
+            # True` on upstream 429/5xx. Without this check, the
+            # `churn_window_days: 90` + `degraded: True` scalars made
+            # the heuristic miss the zero blob and persist it for 5 min,
+            # which is exactly what poisoned production after a brief
+            # upstream blip. NEVER snapshot a payload tagged degraded.
+            if d.get("degraded") is True:
+                return True
             try:
+                # Skip non-quantitative metadata keys when judging
+                # emptiness — `*_source`, `degraded_*`, `churn_window_*`
+                # are descriptive flags, not the metric we're caching.
+                _SKIP_KEYS = {
+                    "churn_window_days", "degraded", "degraded_reason",
+                    "degraded_status", "_age_sec",
+                }
                 return all(
                     (v is None) or (isinstance(v, (int, float)) and v == 0)
                     for k, v in d.items()
-                    if not k.startswith("_") and not isinstance(v, (list, dict, str))
+                    if not k.startswith("_")
+                    and not k.endswith("_source")
+                    and k not in _SKIP_KEYS
+                    and not isinstance(v, (list, dict, str, bool))
                 )
             except Exception:
                 return False

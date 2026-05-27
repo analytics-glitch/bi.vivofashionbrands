@@ -578,6 +578,32 @@ const Customers = () => {
 
       {!loading && !error && cust && (
         <>
+          {/* Iter 88l — Upstream-degraded banner. When `/api/customers`
+              cannot reach upstream (429 / 5xx) the backend returns a
+              zeroed payload tagged `degraded: true` instead of failing
+              the whole page. Surface that clearly so users don't read
+              "0 new · 0 returning" as real data. Walk-in numbers come
+              from a separate Mongo-snapshot pipeline so they still
+              show correctly during the degraded window. */}
+          {cust.degraded && (
+            <div
+              className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-900 flex items-start gap-2"
+              data-testid="customers-upstream-degraded-banner"
+            >
+              <span className="font-bold mt-0.5">⚠️</span>
+              <div>
+                <div className="font-semibold">
+                  Customer counts temporarily unavailable
+                </div>
+                <div className="text-[12px] text-amber-800 mt-0.5">
+                  The Vivo BI upstream returned {cust.degraded_status || "an error"} for this date range.
+                  Identified-customer tiles (New / Returning / Avg Spend) are showing zeros until the
+                  next successful refresh. Walk-in counts are unaffected — they come from a separate
+                  Mongo snapshot pipeline. Auto-retrying every 30s.
+                </div>
+              </div>
+            </div>
+          )}
           {/* ---- Search bar ---- */}
           <div className="card-white p-4" data-testid="customer-search-card">
             <SectionTitle
