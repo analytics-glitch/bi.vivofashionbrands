@@ -32,6 +32,8 @@ import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 import RedisStatusPill from "@/components/RedisStatusPill";
 import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
+import UpstreamHealthPill from "@/components/UpstreamHealthPill";
+import BackendUrlWarningPill from "@/components/BackendUrlWarningPill";
 import CacheStatsPill from "@/components/CacheStatsPill";
 
 const tabs = [
@@ -315,6 +317,8 @@ const TopNav = () => {
           <ArrowClockwise size={15} weight="bold" />
         </button>
         <NotificationBell />
+        <BackendUrlWarningPill />
+        <UpstreamHealthPill />
         <ReconciliationStatusPill />
         <CacheStatsPill />
         <RedisStatusPill />

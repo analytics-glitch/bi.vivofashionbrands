@@ -536,6 +536,11 @@ _INFLIGHT: Dict[tuple, asyncio.Future] = {}
 # a real outage from wedging the dashboard for minutes at a time.
 _CB_FAILS: Dict[str, int] = {}        # path-prefix → consecutive failure count
 _CB_OPEN_UNTIL: Dict[str, float] = {} # path-prefix → unix-ts breaker stays open
+# Iter 88m — last successful upstream fetch timestamp (unix epoch).
+# Stamped by `fetch()` on every 2xx response. Read by the Topbar's
+# Upstream Health pill (via /api/admin/snapshot-freshness) to render a
+# green/amber/red dot at a glance.
+_LAST_UPSTREAM_SUCCESS_TS: float = 0.0
 _CB_FAIL_THRESHOLD = 2
 _CB_RECOVERY_S = 30.0
 
@@ -996,6 +1001,10 @@ async def fetch(
                 if _rkey and entry_ttl >= 600:
                     asyncio.create_task(rc.set(_rkey, data, int(entry_ttl)))
             _cb_record_success(path)
+            # Iter 88m — stamp upstream-health timestamp on every 2xx
+            # so the Topbar dot turns green within seconds of recovery.
+            global _LAST_UPSTREAM_SUCCESS_TS
+            _LAST_UPSTREAM_SUCCESS_TS = time.time()
             if my_future is not None and not my_future.done():
                 my_future.set_result(data)
                 _INFLIGHT.pop(cache_key, None)
@@ -3987,10 +3996,33 @@ async def admin_snapshot_freshness():
             return {"age_sec": None, "fresh": False}
         ts = doc["snapshot_at"].replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - ts).total_seconds()
+        # Iter 88m — also report upstream-health so the Topbar can
+        # show a green/amber/red dot at a glance. Two signals:
+        #   1. Any circuit-breaker currently open ⇒ red
+        #   2. Last successful upstream fetch age ⇒ green/amber based
+        #      on `_LAST_UPSTREAM_SUCCESS_TS` (a monotonic-ish epoch
+        #      stamped by `fetch()` after every 2xx upstream response).
+        open_breakers = sorted(_CB_OPEN_UNTIL.keys()) if any(
+            until > time.time() for until in _CB_OPEN_UNTIL.values()
+        ) else []
+        last_upstream_ok = globals().get("_LAST_UPSTREAM_SUCCESS_TS") or 0
+        upstream_age = int(time.time() - last_upstream_ok) if last_upstream_ok else None
+        upstream_status = (
+            "red" if open_breakers
+            else "green" if upstream_age is not None and upstream_age <= 120
+            else "amber" if upstream_age is not None and upstream_age <= 600
+            else "red" if upstream_age is not None
+            else "unknown"
+        )
         return {
             "age_sec": int(age),
             "fresh": age <= _SNAPSHOT_FRESH_TTL_SEC_ALL,
             "snapshot_at": ts.isoformat(),
+            "upstream": {
+                "status": upstream_status,
+                "last_success_age_sec": upstream_age,
+                "open_breakers": open_breakers,
+            },
         }
     except Exception as e:
         logger.warning("[snapshot-freshness] failed: %s", e)
