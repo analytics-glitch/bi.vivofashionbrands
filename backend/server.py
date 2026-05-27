@@ -6748,7 +6748,26 @@ async def analytics_ibt_warehouse_to_store(
                         key=lambda r: r.get("missed_sales_risk", 0),
                         reverse=True,
                     )
-                    return per_country[:limit]
+                    # Iter 88n — dedup by (style_name, to_store) across
+                    # per-country snapshots. When the same destination
+                    # appears in two countries' inventory feed (e.g.
+                    # "Online - Shop Zetu" is reachable from both Kenya
+                    # and the Online country segmentation) the same
+                    # (style, to_store) pair could be emitted twice.
+                    # Keep the FIRST occurrence (highest missed_sales_risk
+                    # since the list is already sorted) and drop the
+                    # rest. Without this guard the ops team saw the
+                    # same SKU recommended twice to the same store on
+                    # the IBT warehouse-to-store table.
+                    seen_pairs: set = set()
+                    deduped_cw: List[Any] = []
+                    for r in per_country:
+                        key = (r.get("style_name"), r.get("to_store"))
+                        if key in seen_pairs:
+                            continue
+                        seen_pairs.add(key)
+                        deduped_cw.append(r)
+                    return deduped_cw[:limit]
                 # Fall through to live if no per-country snapshots are
                 # populated yet (very early after a cold pod restart).
             else:
@@ -6963,6 +6982,23 @@ async def _analytics_ibt_warehouse_to_store_impl(
             "missed_sales_risk": shortfall_risk,
         })
     suggestions.sort(key=lambda r: r["missed_sales_risk"], reverse=True)
+    # Iter 88n — defensive (style, to_store) dedup. The inner loop is
+    # keyed by a unique (style, store) dict so duplicates shouldn't
+    # arise here, but if the loop is ever refactored or if the upstream
+    # /orders feed emits two rows for the same pair under different
+    # POS aliases, keep only the first (highest missed_sales_risk)
+    # occurrence so the ops table never shows two rows for the same
+    # SKU → store. Belt-and-braces with the chain-wide dedup in the
+    # router function above.
+    seen_pairs_live: set = set()
+    deduped_live: List[Dict[str, Any]] = []
+    for r in suggestions:
+        key = (r.get("style_name"), r.get("to_store"))
+        if key in seen_pairs_live:
+            continue
+        seen_pairs_live.add(key)
+        deduped_live.append(r)
+    suggestions = deduped_live
     final_wh = suggestions[: int(limit)]
     if skipped_via_repl:
         logger.info(
