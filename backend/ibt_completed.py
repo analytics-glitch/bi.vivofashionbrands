@@ -55,9 +55,17 @@ class CompleteMoveBody(BaseModel):
     to_store: str
     units_to_move: int = Field(..., ge=1)
     actual_units_moved: int = Field(..., ge=1)
-    po_number: str = Field(..., min_length=1, max_length=200)
-    completed_by_name: str = Field(..., min_length=1, max_length=200)
-    transfer_date: str  # YYYY-MM-DD
+    # Iter 88t (2026-05-27) — `po_number` and `completed_by_name` are
+    # now OPTIONAL. The warehouse→store IBT flow ships a one-click
+    # "Done" button (no modal), so the backend supplies sensible
+    # defaults when these are omitted: po_number defaults to
+    # "IBT-<flow>-<YYYYMMDD>-<short-id>" and completed_by_name to the
+    # authenticated user's name (set by the route handler). The
+    # store→store flow still surfaces the modal for the operator to
+    # capture audit details — that path supplies both fields.
+    po_number: Optional[str] = Field(None, max_length=200)
+    completed_by_name: Optional[str] = Field(None, max_length=200)
+    transfer_date: Optional[str] = None  # YYYY-MM-DD; defaults to today
     suggested_date: Optional[str] = None  # defaults to today if absent
     flow: str = Field("store_to_store", pattern="^(store_to_store|warehouse_to_store)$")
     # Optional SKU-level identifiers — present when the user clicks Mark
@@ -117,13 +125,19 @@ async def complete_move(body: CompleteMoveBody, user: User = Depends(get_current
     """
     if body.actual_units_moved > body.units_to_move:
         raise HTTPException(400, "actual_units_moved cannot exceed units_to_move")
-    completed_at = _parse_date(body.transfer_date)
-    suggested_at = _parse_date(body.suggested_date) if body.suggested_date else datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Iter 88t — default transfer_date / po_number / completed_by_name
+    # when omitted (one-click "Done" flow on warehouse→store IBT).
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    completed_at = _parse_date(body.transfer_date) if body.transfer_date else today
+    suggested_at = _parse_date(body.suggested_date) if body.suggested_date else today
     if completed_at < suggested_at:
         raise HTTPException(400, "transfer_date cannot be earlier than suggested_date")
     days_lapsed = (completed_at.date() - suggested_at.date()).days
 
     fid = str(uuid.uuid4())
+    short_id = fid.split("-")[0]
+    po_number = (body.po_number or "").strip() or f"IBT-{body.flow}-{completed_at.strftime('%Y%m%d')}-{short_id}"
+    completed_by_name = (body.completed_by_name or "").strip() or (user.name or user.email or "system")
     doc = {
         "id": fid,
         "style_name": body.style_name,
@@ -136,8 +150,8 @@ async def complete_move(body: CompleteMoveBody, user: User = Depends(get_current
         "suggested_at": suggested_at,
         "completed_at": completed_at,
         "days_lapsed": days_lapsed,
-        "po_number": body.po_number.strip(),
-        "completed_by_name": body.completed_by_name.strip(),
+        "po_number": po_number,
+        "completed_by_name": completed_by_name,
         "completed_by_user_id": user.user_id,
         "flow": body.flow,
         "sku": body.sku,

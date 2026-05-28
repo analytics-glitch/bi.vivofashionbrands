@@ -328,7 +328,38 @@ const IBT = () => {
             dateFrom={dateFrom}
             dateTo={dateTo}
             countries={countries}
-            onMarkDone={(r) => setDoneModalRow({ ...r, flow: "warehouse_to_store" })}
+            onMarkDone={async (r) => {
+              // Iter 88t — One-click "Done" for warehouse→store IBT.
+              // Skips the modal entirely; the backend fills in PO#,
+              // completed-by name, and transfer date with sensible
+              // defaults. The store→store flow still uses the modal
+              // (it surfaces the audit fields the picker fills in by
+              // hand).
+              try {
+                await api.post("/ibt/complete", {
+                  style_name: r.style_name,
+                  brand: r.brand || null,
+                  subcategory: r.subcategory || null,
+                  from_store: r.from_store,
+                  to_store: r.to_store,
+                  units_to_move: Number(r.units_to_move || r.suggested_units || 1),
+                  actual_units_moved: Number(r.units_to_move || r.suggested_units || 1),
+                  flow: "warehouse_to_store",
+                  sku: r.sku || null,
+                  color: r.color || null,
+                  size: r.size || null,
+                  barcode: r.barcode || null,
+                });
+                // Trigger the completed-moves list + parent SKU-keys
+                // refresh so the row vanishes from the live table.
+                setCompletedRefresh((k) => k + 1);
+              } catch (e) {
+                // Surface failure inline so the row isn't silently lost.
+                // eslint-disable-next-line no-console
+                console.error("[IBT warehouse→store] one-click done failed:", e);
+                alert(e?.response?.data?.detail || e?.message || "Failed to mark as done");
+              }
+            }}
             completedSkuKeys={completedSkuKeys}
           />
 

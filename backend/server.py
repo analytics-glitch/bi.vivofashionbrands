@@ -5164,7 +5164,9 @@ async def _compute_incomplete_profile(
         # IDs not in roster at all → fully incomplete.
         for cid in chunk:
             if cid not in seen_in_roster:
-                no_name.add(cid); no_phone.add(cid); no_email.add(cid)
+                no_name.add(cid)
+                no_phone.add(cid)
+                no_email.add(cid)
                 incomplete_ids.add(cid)
     n_ident = len(identified)
     return {
@@ -7263,6 +7265,46 @@ async def _analytics_ibt_warehouse_to_store_impl(
         seen_pairs_live.add(key)
         deduped_live.append(r)
     suggestions = deduped_live
+    # Iter 88t (2026-05-27) — exclude (barcode/sku, store) pairs that
+    # are ALREADY in today's warehouse→store Replenishment list. Per
+    # ops: "if any sku/barcode is in replenishment from warehouse to
+    # store, remove it in IBT for that same store". Avoids the picker
+    # seeing the same SKU recommended via two parallel flows. We
+    # match on barcode first (most reliable), falling back to sku
+    # when barcode is missing.
+    try:
+        repl_pairs: set = set()
+        repl_resp = await _analytics_replenishment_report_impl(
+            date_from=date_from, date_to=date_to,
+            country=cs[0] if len(cs) == 1 else None,
+            user=None,
+        )
+        for rr in (repl_resp.get("rows") or []) if isinstance(repl_resp, dict) else []:
+            store = (rr.get("pos_location") or "").strip()
+            if not store:
+                continue
+            bc = (rr.get("barcode") or "").strip()
+            sk = (rr.get("sku") or "").strip()
+            if bc:
+                repl_pairs.add(("BC", bc, store))
+            if sk:
+                repl_pairs.add(("SK", sk, store))
+        if repl_pairs:
+            before = len(suggestions)
+            suggestions = [
+                s for s in suggestions
+                if not (
+                    (s.get("barcode") and ("BC", str(s["barcode"]).strip(), s.get("to_store")) in repl_pairs)
+                    or (s.get("sku") and ("SK", str(s["sku"]).strip(), s.get("to_store")) in repl_pairs)
+                )
+            ]
+            removed = before - len(suggestions)
+            if removed:
+                logger.info(
+                    "[ibt-wh] excluded %d rows already in Replenishment list", removed,
+                )
+    except Exception as e:
+        logger.info("[ibt-wh] Replenishment exclusion skipped: %s", e)
     final_wh = suggestions[: int(limit)]
     if skipped_via_repl:
         logger.info(
