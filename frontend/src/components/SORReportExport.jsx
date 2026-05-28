@@ -337,12 +337,25 @@ const SORReport = () => {
                     render: (r) => fmtNum(r.units_6m) },
                   { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
                     render: (r) => fmtNum(r.units_3w) },
+                  // Iter 89c — Weekly Avg + WoC promoted next to SOH
+                  // for visibility. WoC formula uses 3-month burn rate
+                  // and the launch-date / age are keyed on style_number
+                  // (see backend `sor-all-styles` for the math).
+                  { key: "weekly_avg", label: "Weekly Avg", sortable: true, align: "right",
+                    render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
                   { key: "units_since_launch", label: "Units Since Launch", sortable: true, align: "right",
                     render: (r) => fmtNum(r.units_since_launch) },
                   { key: "soh_total", label: "SOH", sortable: true, align: "right",
                     render: (r) => fmtNum(r.soh_total) },
                   { key: "soh_wh", label: "SOH WH", sortable: true, align: "right",
                     render: (r) => fmtNum(r.soh_wh) },
+                  { key: "woc", label: "WoC", sortable: true, align: "right",
+                    sortValue: (r) => r.woc == null ? 9999 : r.woc,
+                    render: (r) => {
+                      if (r.woc == null) return <span className="text-muted">—</span>;
+                      const cls = r.woc < 4 ? "text-emerald-600 font-bold" : r.woc < 12 ? "text-emerald-500" : r.woc < 26 ? "text-amber-600" : "text-rose-600";
+                      return <span className={cls}>{r.woc.toFixed(1)}w</span>;
+                    } },
                   { key: "pct_in_wh", label: "% In WH", sortable: true, align: "right",
                     render: (r) => `${r.pct_in_wh.toFixed(1)}%` },
                   { key: "asp_6m", label: "ASP 6M", sortable: true, align: "right",
@@ -369,14 +382,6 @@ const SORReport = () => {
                     } },
                   { key: "launch_date", label: "Launch", sortable: true,
                     render: (r) => r.launch_date ? fmtDate(r.launch_date) : "—" },
-                  { key: "weekly_avg", label: "Weekly Avg", sortable: true, align: "right",
-                    render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
-                  { key: "woc", label: "WoC", sortable: true, align: "right",
-                    render: (r) => {
-                      if (r.woc == null) return "—";
-                      const cls = r.woc < 12 ? "text-rose-600 font-bold" : r.woc < 26 ? "" : "text-amber-600";
-                      return <span className={cls}>{r.woc.toFixed(1)}w</span>;
-                    } },
                   { key: "style_age_weeks", label: "Age (W)", sortable: true, align: "right",
                     render: (r) => `${r.style_age_weeks.toFixed(1)}w` },
                 ]}

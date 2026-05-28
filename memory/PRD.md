@@ -4,6 +4,19 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89c) — SOR tables: Weeks-of-Cover + style-number-keyed launch/age (P0)
+- **User ask**: "Add weeks of cover in these. Also Style launch date, weeks of cover, Age should be based on style number not style name."
+- **Backend changes** (`/app/backend/server.py`):
+  - `_get_style_first_last_sale` — now ALSO populates a sibling `_style_number_dates_cache` keyed on the SKU-derived style number (7-digit prefix). Both the curve-cache hot path and the cold /orders fan-out compute first/last per style_number alongside the per-style_name map. Same TTL.
+  - `/analytics/sor-all-styles` — joins each row's launch_date / age / days_since_last_sale on the per-`style_number` map (falls back to per-`style_name` when no SKU was harvested). Fetches a new 3-month top-skus aggregation for WoC denominator.
+  - `/analytics/sor-new-styles-l10` — same treatment. Per-style_number first/last accumulated during the /orders fan-out; 3-month top-skus added for WoC.
+  - **WoC formula** changed from `units_6m / age_weeks` (long-tail average) to `units_3m / min(13, age_weeks)` — tighter window reflects current sell-through (option 2b chosen by user).
+- **Frontend changes**:
+  - `components/SorStylesTable.jsx` (Products → SOR All Styles, SOR L-10) — Weekly Avg + WoC promoted next to SOH so they're visible without horizontal scrolling. WoC shows "—" for dead-stock (SOH > 0, 0 recent sales) per user directive 4b. Style Age (W) stays at the right edge.
+  - `components/SORReportExport.jsx` (Exports → SOR Report) — same reorder: Weekly Avg right after Units 3W, WoC right after SOH WH. Removed duplicate columns at the tail.
+- **Verified live**: `/api/analytics/sor-all-styles` returns 1821 styles, 1397 with positive WoC. Sample: `Vivo Keza` SOH 14, weekly_avg 12.46/wk → 1.1w cover (green); `Vivo Dalia` SOH 11, weekly_avg 0.31/wk → 35.8w cover (red). L-10 endpoint also rebuilt and returns 50 rows with correct style_number / launch_date pairings.
+
+
 ### Recent (Feb 2026 — Iter 89b) — Warehouse IBT "Mark As Done" not moving to Completed Moves list (P0 bug fix)
 - **Bug**: User reported clicking "Mark As Done" on a warehouse→store IBT row didn't move the SKU to the Completed Moves list (and didn't disappear from the live transfer list).
 - **Reproduction**: Logged in as admin, clicked Done on a warehouse SKU row. Backend `POST /api/ibt/complete` returned 200 and the row was persisted in `ibt_completed_moves` (verified via direct Mongo query). But the live list still showed the row and the Completed Moves Report did not refresh.

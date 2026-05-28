@@ -236,8 +236,24 @@ const SorStylesTable = ({
       { key: "sales_6m",     label: "Sales 6M",     numeric: true, render: (r) => <span className="font-bold">{fmtKES(r.sales_6m)}</span>, csv: (r) => r.sales_6m },
       { key: "units_6m",     label: "Units 6M",     numeric: true, render: (r) => fmtNum(r.units_6m) },
       { key: "units_3w",     label: "Units 3W",     numeric: true, render: (r) => <span className={r.units_3w === 0 ? "text-red-700" : ""}>{fmtNum(r.units_3w)}</span>, csv: (r) => r.units_3w },
+      // Iter 89c — Weekly Avg + WoC promoted next to SOH so the user
+      // can read "how much stock, how long will it last" without
+      // horizontal scrolling to the far right of the table. WoC is
+      // computed off the last-3-month burn rate (see backend
+      // `sor-all-styles`) so it reflects current sell-through.
+      { key: "weekly_avg",   label: "Weekly Avg",   numeric: true, render: (r) => (r.weekly_avg || 0).toFixed(1), csv: (r) => r.weekly_avg },
       { key: "soh_total",    label: "SOH",          numeric: true, render: (r) => fmtNum(Math.round(r.soh_total)), csv: (r) => r.soh_total },
       { key: "soh_wh",       label: "SOH W/H",      numeric: true, render: (r) => fmtNum(Math.round(r.soh_wh)), csv: (r) => r.soh_wh },
+      {
+        key: "woc", label: "WOC", numeric: true,
+        sortValue: (r) => r.woc == null ? 9999 : r.woc,
+        render: (r) => {
+          if (r.woc == null) return <span className="text-muted">—</span>;
+          const cls = r.woc < 4 ? "pill-green" : r.woc < 12 ? "pill-amber" : "pill-red";
+          return <span className={cls}>{r.woc.toFixed(1)}w</span>;
+        },
+        csv: (r) => r.woc,
+      },
       {
         key: "pct_in_wh", label: "% In WH", numeric: true,
         sortValue: (r) => r.pct_in_wh,
@@ -282,17 +298,6 @@ const SorStylesTable = ({
       });
     }
     cols.push(
-      { key: "weekly_avg",      label: "Weekly Avg",      numeric: true, render: (r) => (r.weekly_avg || 0).toFixed(1), csv: (r) => r.weekly_avg },
-      {
-        key: "woc", label: "WOC", numeric: true,
-        sortValue: (r) => r.woc == null ? 9999 : r.woc,
-        render: (r) => {
-          if (r.woc == null) return <span className="pill-neutral text-[10px]">∞</span>;
-          const cls = r.woc < 4 ? "pill-green" : r.woc < 12 ? "pill-amber" : "pill-red";
-          return <span className={cls}>{r.woc.toFixed(1)}w</span>;
-        },
-        csv: (r) => r.woc,
-      },
       { key: "style_age_weeks", label: "Style Age (W)",   numeric: true, render: (r) => `${(r.style_age_weeks || 0).toFixed(1)}w`, csv: (r) => r.style_age_weeks },
     );
     return cols;

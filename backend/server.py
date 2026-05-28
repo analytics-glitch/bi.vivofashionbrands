@@ -9880,11 +9880,13 @@ async def analytics_sor_new_styles_l10(
                         merged[s]["collection"] = r.get("collection")
         return list(merged.values())
 
-    band_skus, before_band_skus, six_m_skus, three_w_skus, inventory = await asyncio.gather(
+    band_skus, before_band_skus, six_m_skus, three_w_skus, three_m_skus, inventory = await asyncio.gather(
         _topskus(launch_from.isoformat(), launch_to.isoformat()),
         _topskus("2020-01-01", (launch_from - timedelta(days=1)).isoformat()),
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
+        # Iter 89c — 3-month window for WoC (matches sor-all-styles).
+        _topskus((today - timedelta(days=90)).isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
     )
 
@@ -9903,6 +9905,10 @@ async def analytics_sor_new_styles_l10(
     }
     three_w_map: Dict[str, Dict[str, Any]] = {
         r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates
+    }
+    # Iter 89c — 3-month map for WoC denominator.
+    three_m_map: Dict[str, Dict[str, Any]] = {
+        r.get("style_name"): r for r in three_m_skus if r.get("style_name") in candidates
     }
 
     # Inventory: split by warehouse vs store, capture a representative SKU
@@ -9963,6 +9969,11 @@ async def analytics_sor_new_styles_l10(
 
     first_date: Dict[str, str] = {}
     last_date: Dict[str, str] = {}
+    # Iter 89c — also accumulate per-style_number first/last so a
+    # legitimate re-issue / split-by-style-number doesn't share its
+    # launch date with a same-named predecessor.
+    first_date_sn: Dict[str, str] = {}
+    last_date_sn: Dict[str, str] = {}
     for chunk in order_chunks:
         if isinstance(chunk, Exception):
             logger.warning("[sor-new-styles-l10] orders chunk failed: %s", chunk)
@@ -9980,15 +9991,30 @@ async def analytics_sor_new_styles_l10(
                 last_date[s] = d
             # Fallback style-number lookup — useful when a style has 0
             # current inventory (so the inventory pass found no SKU).
-            if s not in sku_for_style and o.get("sku"):
-                sku_for_style[s] = o["sku"]
+            sku = o.get("sku")
+            if s not in sku_for_style and sku:
+                sku_for_style[s] = sku
+            # Iter 89c — per-style_number tracking.
+            if sku:
+                sn = extract_style_number(sku)
+                if sn:
+                    if sn not in first_date_sn or d < first_date_sn[sn]:
+                        first_date_sn[sn] = d
+                    if sn not in last_date_sn or d > last_date_sn[sn]:
+                        last_date_sn[sn] = d
 
     out: List[Dict[str, Any]] = []
     for s in candidates:
-        if s not in first_date:
+        # Iter 89c — Prefer per-style_number date lookup. Falls back to
+        # style_name when no SKU was harvested for this style.
+        sn_lookup = extract_style_number(sku_for_style.get(s, ""))
+        fd = first_date_sn.get(sn_lookup) if sn_lookup else None
+        if not fd:
+            fd = first_date.get(s)
+        if not fd:
             continue  # no orders found in window — skip
         try:
-            launch_d = datetime.fromisoformat(first_date[s]).date()
+            launch_d = datetime.fromisoformat(fd).date()
         except Exception:
             continue
         # Re-confirm the strict launch-window guard. The /top-skus band
@@ -9998,8 +10024,11 @@ async def analytics_sor_new_styles_l10(
         if age_days < 90 or age_days > 122:
             continue
 
+        ld_iso = last_date_sn.get(sn_lookup) if sn_lookup else None
+        if not ld_iso:
+            ld_iso = last_date.get(s, fd)
         try:
-            last_d = datetime.fromisoformat(last_date.get(s, first_date[s])).date()
+            last_d = datetime.fromisoformat(ld_iso).date()
         except Exception:
             last_d = launch_d
 
@@ -10017,10 +10046,14 @@ async def analytics_sor_new_styles_l10(
         denom = units_6m + soh_total
         sor_6m = (units_6m / denom * 100.0) if denom > 0 else 0.0
 
-        # Weekly average — use age-of-style as the divisor instead of a
-        # flat 26 weeks, since these styles are 12–17 weeks old.
+        # Iter 89c — WoC uses last-3-month burn rate (matches
+        # sor-all-styles convention). For L-10 the style age is 12–17
+        # weeks so the 3m window aligns with the full life of the
+        # style — divide by min(13, age_weeks).
         age_weeks = age_days / 7.0
-        weekly_avg = (units_6m / age_weeks) if age_weeks > 0 else 0.0
+        units_3m = float((three_m_map.get(s) or {}).get("units_sold") or 0)
+        woc_window_weeks = min(13.0, max(age_weeks, 1.0))
+        weekly_avg = units_3m / woc_window_weeks if woc_window_weeks > 0 else 0.0
         woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
 
         units_3w = float((three_w_map.get(s) or {}).get("units_sold") or 0)
@@ -10092,6 +10125,11 @@ _STYLE_DATES_TTL = 60 * 30  # 30 minutes
 # style_number column is correct even for styles that no longer hold
 # stock (no inventory row to pull a SKU from).
 _style_sku_cache: Dict[str, Tuple[float, Dict[str, str]]] = {}
+# Iter 89c — Per-style_number first/last sale dates. Same shape as
+# `_style_dates_cache` but keyed on the 7-digit SKU prefix so SOR
+# endpoints can join launch_date / age / WOC on style_number — more
+# stable than style_name across re-issues / typo variants.
+_style_number_dates_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
 
 
 async def _get_style_first_last_sale(
@@ -10102,6 +10140,12 @@ async def _get_style_first_last_sale(
     """Return `{style_name: (first_sale_iso, last_sale_iso)}` for every
     style with at least one sale in the last `days` days. Cached for
     30 min per (country, channel, days) so repeat callers share work.
+
+    Iter 89c — Also populates a sibling `_style_number_dates_cache`
+    keyed on the SKU-derived style number, so SOR endpoints can join
+    launch_date / age / woc by style_number instead of style_name (the
+    more stable identifier — same style name can legitimately exist
+    across seasons under different style numbers).
 
     Implementation strategy (for cost-control):
       1. **First**, try to read the result from the existing
@@ -10153,6 +10197,11 @@ async def _get_style_first_last_sale(
         rows = (payload or {}).get("rows") or []
         out: Dict[str, Tuple[str, str]] = {}
         sku_out: Dict[str, str] = {}
+        # Iter 89c — per-style_number first/last lookup. Built by
+        # re-deriving the SKU prefix from each row's representative sku
+        # so callers can look up dates on the more-stable style_number
+        # key instead of style_name.
+        num_out: Dict[str, Tuple[str, str]] = {}
         for row in rows:
             s = row.get("style_name")
             first = row.get("first_sale")
@@ -10171,9 +10220,18 @@ async def _get_style_first_last_sale(
             out[s] = (first, last_iso)
             if row.get("sku"):
                 sku_out[s] = row["sku"]
+                sn = extract_style_number(row["sku"])
+                if sn:
+                    cur = num_out.get(sn)
+                    if cur is None:
+                        num_out[sn] = (first, last_iso)
+                    else:
+                        cf, cl = cur
+                        num_out[sn] = (min(cf, first), max(cl, last_iso))
         _style_dates_cache[cache_key] = (_time.time(), out)
         _style_sku_cache[cache_key] = (_time.time(), sku_out)
-        logger.info(f"[style-dates] hydrated {len(out)} styles from curve cache (key={ck}); skus={len(sku_out)}")
+        _style_number_dates_cache[cache_key] = (_time.time(), num_out)
+        logger.info(f"[style-dates] hydrated {len(out)} styles ({len(num_out)} style-numbers) from curve cache (key={ck}); skus={len(sku_out)}")
         # Iter 84i — also persist what curve-cache observed (same
         # invariant: MIN over all observations).
         asyncio.create_task(_persist_style_launch_dates(out))
@@ -10205,6 +10263,8 @@ async def _get_style_first_last_sale(
     )
     out: Dict[str, Tuple[str, str]] = {}
     sku_out: Dict[str, str] = {}
+    # Iter 89c — sibling map keyed on style_number (SKU prefix).
+    num_out: Dict[str, Tuple[str, str]] = {}
     for chunk in chunk_results:
         if isinstance(chunk, Exception):
             logger.warning("[style-dates] chunk failed: %s", chunk)
@@ -10226,11 +10286,27 @@ async def _get_style_first_last_sale(
                 if d_iso > last:
                     last = d_iso
                 out[s] = (first, last)
-            if s not in sku_out and r.get("sku"):
-                sku_out[s] = r["sku"]
+            sku = r.get("sku")
+            if s not in sku_out and sku:
+                sku_out[s] = sku
+            # Iter 89c — also accumulate per-style_number first/last.
+            if sku:
+                sn = extract_style_number(sku)
+                if sn:
+                    cur_n = num_out.get(sn)
+                    if cur_n is None:
+                        num_out[sn] = (d_iso, d_iso)
+                    else:
+                        nf, nl = cur_n
+                        if d_iso < nf:
+                            nf = d_iso
+                        if d_iso > nl:
+                            nl = d_iso
+                        num_out[sn] = (nf, nl)
     _style_dates_cache[cache_key] = (_time.time(), out)
     _style_sku_cache[cache_key] = (_time.time(), sku_out)
-    logger.info(f"[style-dates] cold fan-out → {len(out)} styles ({len(chunks)} chunks); skus={len(sku_out)}")
+    _style_number_dates_cache[cache_key] = (_time.time(), num_out)
+    logger.info(f"[style-dates] cold fan-out → {len(out)} styles, {len(num_out)} style-numbers ({len(chunks)} chunks); skus={len(sku_out)}")
     # Iter 84i — Persist `first_sale` to Mongo so it's preserved beyond
     # the 180-day window. Styles that haven't sold in 180 days won't
     # appear in subsequent fan-outs, so without this the launch_date
@@ -10329,6 +10405,12 @@ async def analytics_sor_all_styles(
 
     today = datetime.now(timezone.utc).date()
     six_m_from = today - timedelta(days=180)
+    # Iter 89c — 3-month window (~13 weeks) drives the Weeks-of-Cover
+    # calculation. The 6-month window stays for SOR % and sales totals
+    # but WoC needs to reflect "this season's burn rate", not "the
+    # whole half-year average" — otherwise styles that ramped recently
+    # look like they have more cover than they really do.
+    three_m_from = today - timedelta(days=90)
     three_w_from = today - timedelta(days=21)
     cs = _split_csv(country)
     chs = _split_csv(channel)
@@ -10369,10 +10451,12 @@ async def analytics_sor_all_styles(
     # cap is plenty for a fashion catalog where SKUs rarely outlive a year.
     lifetime_from = today - timedelta(days=1095)
 
-    six_m_skus, three_w_skus, lifetime_skus, inventory, style_dates = await asyncio.gather(
+    six_m_skus, three_w_skus, lifetime_skus, three_m_skus, inventory, style_dates = await asyncio.gather(
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
         _topskus(lifetime_from.isoformat(), today.isoformat()),
+        # Iter 89c — 3-month aggregation drives the WoC weekly_avg.
+        _topskus(three_m_from.isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
         _get_style_first_last_sale(country, channel, days=180),
     )
@@ -10382,6 +10466,7 @@ async def analytics_sor_all_styles(
     six_m_map = {r.get("style_name"): r for r in six_m_skus if r.get("style_name") in candidates}
     three_w_map = {r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates}
     lifetime_map = {r.get("style_name"): r for r in lifetime_skus if r.get("style_name") in candidates}
+    three_m_map = {r.get("style_name"): r for r in three_m_skus if r.get("style_name") in candidates}
 
     # Original price = modal unit price observed across the lifetime
     # /top-skus pull (gross_sales ÷ units_sold ≈ ASP at full price for
@@ -10434,6 +10519,19 @@ async def analytics_sor_all_styles(
             if s in candidates and s not in sku_for_style and sk:
                 sku_for_style[s] = sk
 
+    # Iter 89c — Pull the sibling per-style_number date map populated
+    # by `_get_style_first_last_sale` (above). Same scope (country /
+    # channel) and TTL — keyed identically.
+    _sn_cs = _split_csv(country)
+    _sn_chs = _split_csv(channel)
+    _sn_only_country = _sn_cs[0] if len(_sn_cs) == 1 else None
+    _sn_only_channel = _sn_chs[0] if len(_sn_chs) == 1 else None
+    _sn_key = f"{_sn_only_country or ''}|{_sn_only_channel or ''}|180"
+    style_number_dates: Dict[str, Tuple[str, str]] = {}
+    _sn_cached = _style_number_dates_cache.get(_sn_key)
+    if _sn_cached:
+        style_number_dates = _sn_cached[1]
+
     # Iter 84i — Hydrate launch dates from the persistent Mongo cache.
     # `style_dates` only knows about styles that traded in the last 180
     # days. For older styles we look up the historically-observed
@@ -10476,7 +10574,19 @@ async def analytics_sor_all_styles(
         # strings; only styles that actually traded in the window are
         # present, so absence => style is older than 180 days OR sold
         # zero in the period (and won't be in `candidates` either).
-        dates = style_dates.get(s)
+        #
+        # Iter 89c — Prefer the per-`style_number` lookup over the
+        # per-`style_name` one. style_number is the more-stable
+        # identifier (a style name can be reused across re-issues; the
+        # SKU prefix can't). Falls back to the style_name map when we
+        # couldn't derive a SKU for this style (legacy / accessory
+        # rows with non-conforming SKUs).
+        sn_for_lookup = extract_style_number(sku_for_style.get(s, ""))
+        dates = None
+        if sn_for_lookup and sn_for_lookup in style_number_dates:
+            dates = style_number_dates[sn_for_lookup]
+        if dates is None:
+            dates = style_dates.get(s)
         if dates:
             first_iso, last_iso = dates
             try:
@@ -10522,10 +10632,18 @@ async def analytics_sor_all_styles(
                     age_weeks = min(persisted_age_days / 7.0, 26.0)
                 except Exception:
                     pass
-        # Weekly avg uses the actual age (capped at 26) so a 12-week
-        # style isn't averaged across 26 — same convention as L-10.
-        eff_weeks = max(age_weeks, 1.0)  # avoid /0 on freshly-launched styles
-        weekly_avg = units_6m / eff_weeks
+        # Iter 89c — Weeks-of-Cover uses the **last 3 months** (≈13
+        # weeks) burn rate instead of the 6-month / age-based rate.
+        # Tighter window means WoC is responsive to the current sell
+        # rate — a style that ramped recently shows tight cover; a
+        # style that's tailing off shows lots of cover. The launch-age
+        # cap is still applied so freshly-launched styles (< 13w old)
+        # use their actual age as the divisor, not a flat 13w.
+        units_3m = float((three_m_map.get(s) or {}).get("units_sold") or 0)
+        # Window length: min(13 weeks, actual style age). Styles older
+        # than 13w divide by exactly 13; younger styles by their age.
+        woc_window_weeks = min(13.0, max(age_weeks, 1.0))
+        weekly_avg = units_3m / woc_window_weeks if woc_window_weeks > 0 else 0.0
         woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
         units_3w = float(tw.get("units_sold") or 0)
         # Days since last sale: prefer the real /orders-derived date when
