@@ -2,13 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import RebuildSnapshotsButton from "@/components/RebuildSnapshotsButton";
 import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
-  MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy, ArrowRight,
+  MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy, ArrowRight, Warning,
 } from "@phosphor-icons/react";
 import {
   BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip, LabelList,
@@ -483,6 +484,7 @@ const Customers = () => {
               <ArrowsCounterClockwise size={11} weight="bold" />
               Refresh
             </button>
+            <RebuildSnapshotsButton />
           </div>
         </div>
 
@@ -1020,6 +1022,60 @@ const Customers = () => {
                   </button>
                 </>
               )}
+            </div>
+            {/* ---- Incomplete Profile (Iter 88p) ----
+                Identified customers (have a customer_id) but missing
+                name / phone / email — a data-quality / capture-discipline
+                gap, NOT a walk-in. Each gap is a missed marketing
+                opportunity. Drives store-manager coaching. */}
+            <div
+              className="card-white p-3.5 sm:p-5 border-l-4 border-l-amber-400"
+              data-testid="kpi-incomplete-profile"
+              title="Incomplete Profile = identified customers (have a customer_id) but with at least one missing field (name, phone, or email). They ARE trackable for retention — but you can't market to them. Use this as a capture-discipline metric for store managers."
+            >
+              <div className="flex items-center gap-2">
+                <Warning size={16} weight="bold" className="text-amber-500" />
+                <div className="eyebrow">Incomplete Profile</div>
+                <span title="Customers with customer_id but missing name / phone / email. Source: /api/customers/walk-ins.incomplete_profile (same data pass as walk-in detection)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+              </div>
+              {walkInsLoading || !walkIns?.incomplete_profile ? (
+                <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
+              ) : (() => {
+                const ip = walkIns.incomplete_profile;
+                const cust = ip.customers || 0;
+                const idTotal = ip.identified_total || 0;
+                const pct = ip.share_pct || 0;
+                return (
+                  <>
+                    <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-amber-800">
+                      {fmtNum(cust)}
+                      <span className="text-[13px] text-muted font-semibold ml-1">
+                        ({pct.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="text-[10.5px] text-muted mt-0.5 leading-snug">
+                      of {fmtNum(idTotal)} identified · gap in name / phone / email
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1 text-[10px]" data-testid="kpi-incomplete-profile-breakdown">
+                      {ip.no_name > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                          {fmtNum(ip.no_name)} no name
+                        </span>
+                      )}
+                      {ip.no_phone > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-semibold">
+                          {fmtNum(ip.no_phone)} no phone
+                        </span>
+                      )}
+                      {ip.no_email > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-semibold">
+                          {fmtNum(ip.no_email)} no email
+                        </span>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
 

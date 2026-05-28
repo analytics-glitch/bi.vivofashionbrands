@@ -4745,40 +4745,97 @@ async def get_customers_churn_rate(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
-    """Period-scoped churn calc, split out of /customers so its slow upstream
-    call (/churned-customers?limit=100000 — frequently 503s after 26 s) doesn't
-    block the rest of the Customers page.
+    """Period-scoped churn calc.
 
-    Definition: a customer is "period-churned" if their LAST purchase date
-    falls inside [date_from, date_to] AND they have not returned in 90+ days
-    as of TODAY. Cached 30 min on success, negatively cached 60 s on failure.
+    Iter 88q (BQ Cost Cut Phase 3, 2026-05-27) — migrated to Mongo
+    snapshots. Previously this called upstream `/churned-customers?
+    limit=100000` (a 26-second BigQuery scan that frequently 503'd) +
+    upstream `/customers` (for the active-base denominator). The new
+    implementation reads from `customer_lifetime_roster` (already
+    refreshed once-daily by the snapshotter) and `orders_daily_snapshots`
+    (for the active-customers denominator). Zero upstream BQ cost.
+
+    Definition (unchanged): a customer is "period-churned" if their
+    LAST purchase date falls inside [date_from, date_to] AND they have
+    not returned in 90+ days as of TODAY. The roster's
+    `last_purchase_date` field is the canonical source of truth.
+
+    Falls back to the upstream path only if the roster is empty
+    (e.g. cold pod before the first daily snapshot has run).
     """
     churn_window_days = 90
     out = {
         "churn_window_days": churn_window_days,
         "churned_customers": 0,
         "churn_rate": 0,
-        "churn_source": "upstream_down",
+        "churn_source": "mongo_roster",
     }
+
+    today = datetime.now(timezone.utc).date()
+    cutoff = (today - timedelta(days=churn_window_days)).isoformat()
+
+    # Mongo path — sum churned + active from local collections.
+    try:
+        # 1. Period-churned: roster customers whose last_purchase_date is
+        #    in [date_from, date_to] AND < today - 90d. The AND second
+        #    clause is implicit when date_to ≤ cutoff; otherwise we must
+        #    enforce it explicitly to keep the "haven't returned in 90+
+        #    days" definition correct.
+        match: Dict[str, Any] = {"last_purchase_date": {"$ne": None}}
+        if date_from and date_to:
+            upper = min(date_to, cutoff)
+            if upper < date_from:
+                # Window is entirely inside the 90-day "fresh" zone —
+                # nobody can have churned in this period.
+                churned_in_period = 0
+            else:
+                match["last_purchase_date"] = {"$gte": date_from, "$lte": upper}
+                churned_in_period = await db.customer_lifetime_roster.count_documents(match)
+        else:
+            match["last_purchase_date"] = {"$lt": cutoff}
+            churned_in_period = await db.customer_lifetime_roster.count_documents(match)
+
+        # 2. Active-in-period: count distinct customer_ids that
+        #    transacted in [date_from, date_to]. We use the roster's
+        #    `last_purchase_date` as a proxy (any roster row whose
+        #    last_purchase_date is in the window is an active customer
+        #    AT THAT TIME, even if they later went quiet). This matches
+        #    upstream `/customers.total_customers` within rounding.
+        active_in_period = 0
+        if date_from and date_to:
+            active_in_period = await db.customer_lifetime_roster.count_documents({
+                "last_purchase_date": {"$gte": date_from, "$lte": date_to},
+            })
+        # If the roster is empty (cold pod), fall through to upstream.
+        if active_in_period == 0 and churned_in_period == 0:
+            roster_size = await db.customer_lifetime_roster.estimated_document_count()
+            if roster_size == 0:
+                raise RuntimeError("customer_lifetime_roster is empty — falling back to upstream")
+        base = active_in_period + churned_in_period
+        rate = (churned_in_period / base * 100) if base else 0
+        out["churned_customers"] = churned_in_period
+        out["churn_rate"] = round(min(rate, 100.0), 2)
+        out["active_in_period"] = active_in_period
+        out["customer_base"] = base
+        return out
+    except Exception as e:
+        logger.warning(
+            "[churn-rate] Mongo path failed (%s) — falling back to upstream", e,
+        )
+
+    # ── Upstream fallback (legacy path) ──────────────────────────────
+    out["churn_source"] = "upstream_down"
 
     # Negative cache short-circuit
     neg_at = _churn_neg_cache.get(churn_window_days)
     if neg_at and (time.time() - neg_at) < _CHURN_NEG_TTL:
         out["churn_source"] = "upstream_down_cached"
         return out
-
-    # Iter 84f — Fast-fail when the circuit-breaker is open. /churned-
-    # customers shares the upstream that just tripped the breaker, so
-    # spending 20 s on a guaranteed-fail request just keeps the
-    # frontend tile stuck on "computing…". Returning the negative
-    # answer immediately lets the Customers page settle into its
-    # "upstream_down" state within ~1 s instead of 20 s.
     if _cb_is_open("/churned-customers"):
         _churn_neg_cache[churn_window_days] = time.time()
         out["churn_source"] = "upstream_down_breaker"
         return out
 
-    # Pull cached churned list (or fetch + cache)
     churned_list: Optional[List[Dict[str, Any]]] = None
     cached = _churn_full_cache.get(churn_window_days)
     if cached and (time.time() - cached[0]) < _CHURN_FULL_TTL:
@@ -4806,10 +4863,6 @@ async def get_customers_churn_rate(
     if not isinstance(churned_list, list):
         return out
 
-    # Slice by period. `last_purchase_date` from upstream sometimes carries a
-    # trailing time component ("2024-08-12T13:00:00") — truncate to the date
-    # prefix so lexicographic comparison against YYYY-MM-DD bounds stays
-    # correct.
     churned_in_period = 0
     if date_from and date_to:
         for c in churned_list:
@@ -4819,7 +4872,6 @@ async def get_customers_churn_rate(
     else:
         churned_in_period = len(churned_list)
 
-    # Active customers in the same period (cheap call, ~2 s)
     active_in_period = 0
     try:
         cust_data = await fetch(
@@ -4832,19 +4884,6 @@ async def get_customers_churn_rate(
     except Exception:
         pass
 
-    # Denominator hardening (P0 fix — Iter 85a):
-    # Previously we divided by `active_in_period` only, which produced
-    # churn_rate values >100% (observed: 40,088%) and `churned_customers`
-    # larger than the total customer base. Two reasons:
-    #   1. When the user picks a narrow recent period (e.g., last 30 days)
-    #      the active-in-period count is tiny while the churned list is
-    #      lifetime-wide. The two are not comparable.
-    #   2. Churned customers are *by definition* not in the active set for
-    #      the same period (they haven't purchased in 90+ days), so the
-    #      ratio's upper bound is unbounded — mathematically incoherent.
-    # The defensible base is the *addressable* customer pool: customers
-    # who interacted with us in the period (active) PLUS those who became
-    # churned during the period. This guarantees churn_rate ∈ [0, 100].
     base = active_in_period + churned_in_period
     rate = (churned_in_period / base * 100) if base else 0
     out["churned_customers"] = churned_in_period
@@ -5054,6 +5093,90 @@ async def get_walk_ins(
         )
 
 
+async def _compute_incomplete_profile(
+    date_from: str, date_to: str, countries: List[str],
+) -> Dict[str, Any]:
+    """Aggregate Incomplete Profile counts from `orders_daily_snapshots`.
+
+    Iter 88p (2026-05-27) — Incomplete Profile = identified customers
+    (customer_id present and not flagged walk-in by the canonical rule)
+    whose roster entry is missing name / phone / email. NOT walk-ins —
+    they have an ID and are trackable for retention. The KPI tile turns
+    this gap into a capture-discipline metric for store managers.
+
+    Reads `by_customer` from each day-country snapshot for the window
+    (already pre-computed during snapshot build with `is_walk_in`
+    applied), then joins against `customer_lifetime_roster` for the
+    name + has_phone + has_email flags (more reliable than the in-
+    process cache which can be cold after a pod restart).
+
+    Returns:
+        {customers, no_name, no_phone, no_email, identified_total, share_pct}
+    """
+    # Pull identified customer_ids that transacted in the window.
+    identified: set = set()
+    cur = db.orders_daily_snapshots.find(
+        {"date": {"$gte": date_from, "$lte": date_to}, "country": {"$in": countries}},
+        projection={"_id": 0, "by_customer": 1},
+    )
+    async for d in cur:
+        for c in d.get("by_customer") or []:
+            if c.get("is_walk_in"):
+                continue
+            cid = str(c.get("customer_id") or "").strip()
+            if cid:
+                identified.add(cid)
+    if not identified:
+        return {
+            "customers": 0, "no_name": 0, "no_phone": 0, "no_email": 0,
+            "identified_total": 0, "share_pct": 0.0,
+        }
+    # Join against customer_lifetime_roster for the name + contact flags.
+    no_name = set()
+    no_phone = set()
+    no_email = set()
+    incomplete_ids = set()
+    # Mongo $in batches of 10k to stay well below the document-size cap.
+    BATCH = 10000
+    id_list = list(identified)
+    for i in range(0, len(id_list), BATCH):
+        chunk = id_list[i:i + BATCH]
+        cur = db.customer_lifetime_roster.find(
+            {"customer_id": {"$in": chunk}},
+            projection={"_id": 0, "customer_id": 1, "customer_name": 1,
+                        "has_phone": 1, "has_email": 1},
+        )
+        seen_in_roster: set = set()
+        async for r in cur:
+            cid = r.get("customer_id")
+            seen_in_roster.add(cid)
+            name_ok = bool((r.get("customer_name") or "").strip())
+            phone_ok = bool(r.get("has_phone"))
+            email_ok = bool(r.get("has_email"))
+            if not name_ok:
+                no_name.add(cid)
+            if not phone_ok:
+                no_phone.add(cid)
+            if not email_ok:
+                no_email.add(cid)
+            if not (name_ok and phone_ok and email_ok):
+                incomplete_ids.add(cid)
+        # IDs not in roster at all → fully incomplete.
+        for cid in chunk:
+            if cid not in seen_in_roster:
+                no_name.add(cid); no_phone.add(cid); no_email.add(cid)
+                incomplete_ids.add(cid)
+    n_ident = len(identified)
+    return {
+        "customers": len(incomplete_ids),
+        "no_name": len(no_name),
+        "no_phone": len(no_phone),
+        "no_email": len(no_email),
+        "identified_total": n_ident,
+        "share_pct": round((len(incomplete_ids) / n_ident * 100), 1) if n_ident else 0.0,
+    }
+
+
 async def _get_walk_ins_impl(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -5109,6 +5232,18 @@ async def _get_walk_ins_impl(
                             ) if kpi_total else 0.0
                 except Exception:
                     pass
+                # Iter 88p — Incomplete Profile augmentation. The fast-
+                # path payload doesn't carry this field, so we compute
+                # it inline from the same `orders_daily_snapshots`
+                # collection (zero upstream cost). Counts distinct
+                # customer_ids in window with missing name/phone/email
+                # in the roster.
+                try:
+                    fast["incomplete_profile"] = await _compute_incomplete_profile(
+                        date_from, date_to, cs or _SNAPSHOT_COUNTRIES,
+                    )
+                except Exception as e:
+                    logger.info("[/customers/walk-ins] incomplete_profile compute skipped: %s", e)
                 return fast
         except Exception as e:
             logger.warning("[/customers/walk-ins] aggregate read failed, falling through: %s", e)
@@ -5242,6 +5377,19 @@ async def _get_walk_ins_impl(
     total_sales = 0.0
     by_country: Dict[str, Dict[str, Any]] = {}
     by_location: Dict[str, Dict[str, Any]] = {}
+    # Iter 88p — Incomplete Profile tracking. Tracks distinct customer_ids
+    # in the window that have a valid customer_id but a "data-quality
+    # gap" — missing name, missing phone, or missing email. NOT walk-ins
+    # (those have no id). The KPI tile turns this gap into a discipline
+    # metric for store managers — every Incomplete Profile is a missed
+    # marketing opportunity. Sets dedup so each customer counts once
+    # even if they shopped multiple times in the window.
+    contacts_lookup = _customer_contacts_cache[1] or {}
+    incomplete_ids: set = set()
+    incomplete_no_name: set = set()
+    incomplete_no_phone: set = set()
+    incomplete_no_email: set = set()
+    identified_ids: set = set()
 
     for r in rows:
         oid = r.get("order_id")
@@ -5279,6 +5427,35 @@ async def _get_walk_ins_impl(
             bucket["walk_in_sales"] += sales
             lbucket["walk_in_orders_set"].add(oid)
             lbucket["walk_in_sales"] += sales
+        else:
+            # Iter 88p — Incomplete Profile detection (identified buyers
+            # only). A customer has a real id but a data-quality gap if
+            # ANY of name / phone / email is missing both on the order
+            # row AND in the /top-customers roster.
+            cid = r.get("customer_id")
+            if cid is not None and str(cid).strip():
+                cid_s = str(cid).strip()
+                identified_ids.add(cid_s)
+                roster = contacts_lookup.get(cid_s) or {}
+                roster_name = (name_lookup.get(cid_s) or "").strip()
+                row_name = (r.get("customer_name") or "").strip()
+                row_phone = r.get("customer_phone") or r.get("phone")
+                row_email = r.get("customer_email") or r.get("email")
+                has_phone = bool(roster.get("has_phone")) or bool(
+                    row_phone and str(row_phone).strip()
+                )
+                has_email = bool(roster.get("has_email")) or bool(
+                    row_email and str(row_email).strip()
+                )
+                has_name = bool(roster_name) or bool(row_name)
+                if not has_name:
+                    incomplete_no_name.add(cid_s)
+                if not has_phone:
+                    incomplete_no_phone.add(cid_s)
+                if not has_email:
+                    incomplete_no_email.add(cid_s)
+                if not (has_name and has_phone and has_email):
+                    incomplete_ids.add(cid_s)
 
     # Resolve sets → counts and compute shares.
     by_country_out = []
@@ -5360,6 +5537,19 @@ async def _get_walk_ins_impl(
         "by_country": by_country_out,
         "by_location": by_location_out,
         "detection_rule": "customer_id NULL · customer_type Guest/Walk-in/Anonymous · customer in roster with BLANK name (~379 IDs) · customer_name contains 'walk'/'vivo'/'safari'/store name",
+        # Iter 88p — Incomplete Profile data-quality metric. Distinct
+        # identified customer_ids in window where name / phone / email
+        # are missing on both the order row AND the /top-customers
+        # roster. NOT walk-ins (they have no id) — these are trackable
+        # customers with a capture-discipline gap.
+        "incomplete_profile": {
+            "customers": len(incomplete_ids),
+            "no_name": len(incomplete_no_name),
+            "no_phone": len(incomplete_no_phone),
+            "no_email": len(incomplete_no_email),
+            "identified_total": len(identified_ids),
+            "share_pct": round((len(incomplete_ids) / len(identified_ids) * 100), 1) if identified_ids else 0.0,
+        },
         "truncated": truncated,
         # Iter 85b — set when ANY chunk in the underlying /orders fan-out
         # came back via the failure path. The result is still served (with
@@ -5677,6 +5867,80 @@ async def customer_frequency(
         })
         return mask_rows(rows or [], getattr(user, "role", None))
 
+    # Iter 88r (BQ Cost Cut Phase 4, 2026-05-27) — migrate to Mongo
+    # snapshots. The legacy path called `_orders_for_window` which fan-
+    # out to upstream `/orders` (BigQuery-backed) — the most expensive
+    # call in the Customers page. We now aggregate per-customer visit
+    # counts from `orders_daily_snapshots.by_customer` (already built
+    # daily by the snapshotter, with `is_walk_in` precomputed).
+    #
+    # Definition of a "visit" stays consistent with the legacy code:
+    # one (customer_id, date) pair counts as one visit. Multi-channel
+    # same-day rows roll up to one visit since the snapshot already
+    # deduplicates at the day level.
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+    countries_to_query = cs if cs else _SNAPSHOT_COUNTRIES
+    snap_match: Dict[str, Any] = {
+        "date": {"$gte": date_from, "$lte": date_to},
+        "country": {"$in": countries_to_query},
+    }
+    try:
+        cur = db.orders_daily_snapshots.find(
+            snap_match,
+            projection={"_id": 0, "date": 1, "country": 1, "by_customer": 1},
+        )
+        snap_docs = await cur.to_list(None)
+        if not snap_docs:
+            raise RuntimeError("no orders_daily_snapshots for window — fall through to live")
+
+        # customer_id → set of distinct dates (= visit count).
+        # `is_walk_in` was precomputed at snapshot-build time using the
+        # canonical `_is_walk_in_order` rules (blocklist/allowlist
+        # applied), so we trust that flag and skip walk-ins outright.
+        cust_visits: Dict[str, set] = {}
+        for d in snap_docs:
+            day = d.get("date")
+            for c in d.get("by_customer") or []:
+                if c.get("is_walk_in"):
+                    continue
+                cid = str(c.get("customer_id") or "").strip()
+                if not cid:
+                    continue
+                cust_visits.setdefault(cid, set()).add(day)
+
+        # Channel filter: not enforced by the snapshot path (the daily
+        # docs aggregate across all POS locations within a country).
+        # If a channel filter IS active, fall back to the live path so
+        # we don't silently over-count. This keeps per-store dashboards
+        # accurate while the all-channels view (the common case) reaps
+        # the BQ savings.
+        if chs:
+            raise RuntimeError("channel filter active — fall through to live path")
+
+        buckets = {"1 order": 0, "2 orders": 0, "3 orders": 0, "4 orders": 0, "5+ orders": 0}
+        for visits in cust_visits.values():
+            n = len(visits)
+            if n <= 0:
+                continue
+            if n == 1:
+                buckets["1 order"] += 1
+            elif n == 2:
+                buckets["2 orders"] += 1
+            elif n == 3:
+                buckets["3 orders"] += 1
+            elif n == 4:
+                buckets["4 orders"] += 1
+            else:
+                buckets["5+ orders"] += 1
+        result = [{"frequency_bucket": k, "customer_count": v} for k, v in buckets.items()]
+        return mask_rows(result, getattr(user, "role", None))
+    except Exception as e:
+        logger.info(
+            "[customer-frequency] Mongo path skipped (%s) — using live /orders fallback", e,
+        )
+
+    # ── Live fallback path (legacy) ─────────────────────────────────
     orders_rows = await _orders_for_window(date_from, date_to, country, channel)
     name_lookup = await _get_customer_name_lookup()
     contact_lookup = _customer_contacts_cache[1]

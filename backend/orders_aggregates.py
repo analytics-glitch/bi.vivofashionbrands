@@ -276,6 +276,30 @@ async def read_walkins_aggregate(
     in the original implementation).
     """
     days = _enum_days(date_from, date_to)
+    # Iter 88s (2026-05-27) — channel-group fast-path.
+    # The daily snapshot collection is country-level grain, so it can't
+    # honour an arbitrary list of POS-channel names. The Customers page
+    # FilterBar exposes a 3-state channel group: "all" (no channels),
+    # "retail" (every POS that ISN'T "Online - Shop Zetu"), and "online"
+    # (just Online). We can serve all 3 from the country-level snapshot:
+    #   • "all"      → no channels list → use every country row
+    #   • "online"   → channels list looks like ["Online - Shop Zetu"]
+    #   • "retail"   → the inverse → exclude the Online country row
+    # If the caller passes a `channels` list that contains anything
+    # OTHER than the magic "online" POS name, we treat it as the retail
+    # channel group (excluding Online) at country grain.
+    online_only = False
+    retail_only = False
+    if channels:
+        ch_set = {(c or "").strip().lower() for c in channels if c}
+        def _is_online_label(lbl: str) -> bool:
+            return "online" in lbl or "shop zetu" in lbl
+        if all(_is_online_label(c) for c in ch_set):
+            online_only = True
+        elif all(not _is_online_label(c) for c in ch_set):
+            retail_only = True
+        else:
+            return None
     # We always want the per-country docs (NOT the None roll-up) so we
     # can sum + filter consistently. The None roll-up is a derivation,
     # not a stored doc.
@@ -299,6 +323,12 @@ async def read_walkins_aggregate(
     if countries:
         cs_set = {c for c in countries if c}
         rows = [r for r in rows if r["country"] in cs_set]
+
+    # Iter 88s — channel-group filter applied at country grain.
+    if online_only:
+        rows = [r for r in rows if r["country"] == "Online"]
+    elif retail_only:
+        rows = [r for r in rows if r["country"] != "Online"]
 
     walk_orders = sum(r.get("walk_in_orders", 0) for r in rows)
     walk_units = sum(r.get("walk_in_units", 0) for r in rows)
