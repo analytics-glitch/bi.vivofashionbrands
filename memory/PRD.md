@@ -4,6 +4,17 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89b) — Warehouse IBT "Mark As Done" not moving to Completed Moves list (P0 bug fix)
+- **Bug**: User reported clicking "Mark As Done" on a warehouse→store IBT row didn't move the SKU to the Completed Moves list (and didn't disappear from the live transfer list).
+- **Reproduction**: Logged in as admin, clicked Done on a warehouse SKU row. Backend `POST /api/ibt/complete` returned 200 and the row was persisted in `ibt_completed_moves` (verified via direct Mongo query). But the live list still showed the row and the Completed Moves Report did not refresh.
+- **Root cause**: `api.js` has a 5-minute client-side response cache (`_respCache`, `RESP_TTL_MS = 5 * 60_000`) that wraps `api.get`. When `setCompletedRefresh((k) => k + 1)` triggered the `useEffect` on `IBT.jsx` to re-fetch `/ibt/completed/keys`, the response was served from the stale cache — so `completedSkuKeys` never picked up the new key and the row stayed visible. Same issue for `IBTCompletedMoves` re-fetching `/ibt/completed`.
+- **Fix**:
+  - `/app/frontend/src/lib/api.js` — added `/ibt/completed/keys` and `/ibt/completed` to `FAST_TTL_PATHS` (30 s TTL safety net for any other consumer).
+  - `/app/frontend/src/pages/IBT.jsx` — `useEffect` that fetches `/ibt/completed/keys` now passes `{ forceFresh: true }` when `completedRefresh > 0` so post-mutation re-fetches bypass the cache entirely.
+  - `/app/frontend/src/components/IBTCompletedMoves.jsx` — same `forceFresh: true` pattern when `refreshKey > 0`.
+- **Verified live**: clicking Mark As Done on a warehouse row now: a) row disappears from live list immediately (Done-buttons count drops by 1), b) row appears at the top of the Completed Moves Report immediately (rows count up by 1). Network log shows both `/api/ibt/completed/keys` and `/api/ibt/completed` re-fetched after the POST. Same fix benefits the store→store modal flow which also bumps `completedRefresh`.
+
+
 ### Recent (Feb 2026 — Iter 89) — Sortable headers on every table (P0)
 - **User ask**: *"Every table in this dashboard should have sort options in all the columns."*
 - **Approach**: Built a reusable `useTableSort` hook + `<SortableTh>` helper (`/app/frontend/src/lib/useTableSort.js`) — three-state click cycle (asc → desc → off), caret-up/down indicator, numeric-aware comparator with localeCompare `{numeric: true}` fallback for natural sort.

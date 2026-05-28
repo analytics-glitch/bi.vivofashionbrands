@@ -16,7 +16,12 @@ export default function IBTCompletedMoves({ refreshKey }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api.get("/ibt/completed", { timeout: 30000 })
+    // Iter 89 — force a real network fetch (not the 5-min api.js
+    // response cache) whenever the parent bumps refreshKey, e.g. after
+    // a Mark-As-Done completes. Without this, the newly-actioned row
+    // wouldn't appear in this report for up to 5 minutes.
+    const config = refreshKey > 0 ? { timeout: 30000, forceFresh: true } : { timeout: 30000 };
+    api.get("/ibt/completed", config)
       .then((r) => { if (!cancelled) setRows(r.data || []); })
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });

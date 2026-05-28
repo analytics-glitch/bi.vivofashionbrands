@@ -53,6 +53,14 @@ const FAST_TTL_PATHS = [
   "/notifications/unread-count",
   "/ibt/late-count",
   "/data-freshness",
+  // Iter 89 — IBT completed-moves endpoints must reflect a
+  // newly-marked-done row immediately. The 5-min default would leave
+  // the picker staring at a row they just actioned and the "Completed
+  // Moves Report" missing the freshest entry. Refresh-after-mutate
+  // ALSO passes forceFresh: true (see IBT.jsx onMarkDone) — this
+  // shorter TTL is a safety net for any other consumer.
+  "/ibt/completed/keys",
+  "/ibt/completed",
 ];
 // Auth endpoints MUST NEVER be cached. When an admin flips a user's
 // role, status (pending → active), or `active` flag, the next read of

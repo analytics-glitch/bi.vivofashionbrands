@@ -72,7 +72,13 @@ const IBT = () => {
   // so we can hide them from the live table.
   useEffect(() => {
     let cancelled = false;
-    api.get("/ibt/completed/keys")
+    // Iter 89 — when this effect re-runs *because* of a Mark-As-Done
+    // (completedRefresh > 0), we MUST bypass the client response cache
+    // — otherwise the freshly-completed row keeps showing up in the
+    // live list for up to 5 minutes (the api.js default RESP_TTL_MS).
+    // Initial mount can use the cache normally.
+    const config = completedRefresh > 0 ? { forceFresh: true } : {};
+    api.get("/ibt/completed/keys", config)
       .then((r) => {
         if (cancelled) return;
         setCompletedKeys(new Set(r.data?.keys || []));
