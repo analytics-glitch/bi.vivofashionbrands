@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, Empty, ErrorBox, SectionTitle } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import { ClockCounterClockwise, DownloadSimple, CaretDown, CaretRight } from "@phosphor-icons/react";
 
 /**
@@ -100,6 +101,27 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
     [runs]
   );
 
+  // Iter 89 — Sortable headers for every column. The default ordering
+  // remains "newest first" (the manual sort above); clicking a header
+  // applies a user-driven sort on top.
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const accessors = useMemo(() => ({
+    style_name: (r) => r.style_name || "",
+    color: (r) => r.color || "",
+    allocation_type: (r) => r.allocation_type || "",
+    subcategory: (r) => r.subcategory || "",
+    suggested_total: (r) => Number(r.suggested_total ?? 0),
+    allocated_total: (r) => Number(r.allocated_total ?? 0),
+    delta_total: (r) => Number(r.delta_total ?? 0),
+    status: (r) => r.status || "",
+    created_at: (r) => r.created_at || "",
+    created_by: (r) => r.created_by_name || r.created_by_email || "",
+  }), []);
+  const displayedRuns = useMemo(
+    () => sortRows(sortedRuns, accessors),
+    [sortRows, sortedRuns, accessors],
+  );
+
   return (
     <div className="card-white p-5" data-testid="allocation-history">
       <SectionTitle
@@ -122,21 +144,21 @@ const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
             <thead>
               <tr className="bg-[#fde7c5] text-[#5b3a00]">
                 <th className="text-left px-3 py-2 w-6"></th>
-                <th className="text-left px-3 py-2">Style</th>
-                <th className="text-left px-3 py-2">Color</th>
-                <th className="text-left px-3 py-2">Type</th>
-                <th className="text-left px-3 py-2">Subcat</th>
-                <th className="text-right px-3 py-2">Buying</th>
-                <th className="text-right px-3 py-2">Warehouse</th>
-                <th className="text-right px-3 py-2">Δ</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Saved</th>
-                <th className="text-left px-3 py-2">By</th>
+                <SortableTh sortKey="style_name" sort={sort} onSort={toggleSort} className="px-3 py-2">Style</SortableTh>
+                <SortableTh sortKey="color" sort={sort} onSort={toggleSort} className="px-3 py-2">Color</SortableTh>
+                <SortableTh sortKey="allocation_type" sort={sort} onSort={toggleSort} className="px-3 py-2">Type</SortableTh>
+                <SortableTh sortKey="subcategory" sort={sort} onSort={toggleSort} className="px-3 py-2">Subcat</SortableTh>
+                <SortableTh sortKey="suggested_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Buying</SortableTh>
+                <SortableTh sortKey="allocated_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Warehouse</SortableTh>
+                <SortableTh sortKey="delta_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Δ</SortableTh>
+                <SortableTh sortKey="status" sort={sort} onSort={toggleSort} className="px-3 py-2">Status</SortableTh>
+                <SortableTh sortKey="created_at" sort={sort} onSort={toggleSort} className="px-3 py-2">Saved</SortableTh>
+                <SortableTh sortKey="created_by" sort={sort} onSort={toggleSort} className="px-3 py-2">By</SortableTh>
                 <th className="text-right px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
-              {sortedRuns.map((run) => {
+              {displayedRuns.map((run) => {
                 const open = expandedId === run.id;
                 return (
                   <React.Fragment key={run.id}>

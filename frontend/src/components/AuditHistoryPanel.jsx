@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   ClockCounterClockwise, CheckCircle, Warning, XCircle,
   CaretDown, CaretUp, ArrowsClockwise, EnvelopeSimple, Play,
@@ -112,7 +113,26 @@ const AuditHistoryPanel = () => {
   useEffect(() => { load(); }, [load]);
 
   const latest = rows[0];
-  const visible = expanded ? rows : rows.slice(0, 5);
+
+  // Iter 89 — Every column in the audit log table is sortable. We sort
+  // the windowed `visible` slice (after the show-last-5 toggle) so the
+  // user's sort applies to whichever subset they're looking at.
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const accessors = useMemo(() => ({
+    timestamp: (r) => r.timestamp || "",
+    status: (r) => r.status || "",
+    slowest_ms: (r) => Number(r.performance?.slowest_ms ?? -1),
+    cache_hit_rate: (r) => Number(r.system_health?.cache_hit_rate ?? -1),
+    rss_mb: (r) => Number(r.system_health?.rss_mb ?? -1),
+    issues_found: (r) => Number(r.issues_found ?? 0),
+    issues_auto_fixed: (r) => Number(r.issues_auto_fixed ?? 0),
+    issues_escalated: (r) => Number(r.issues_escalated ?? 0),
+  }), []);
+  const visibleBase = expanded ? rows : rows.slice(0, 5);
+  const visible = useMemo(
+    () => sortRows(visibleBase, accessors),
+    [sortRows, visibleBase, accessors],
+  );
 
   // Compact summary line that lives in the topbar / cache-stats pill
   // area. Renders even when no rows exist yet (first audit hasn't fired).
@@ -189,14 +209,14 @@ const AuditHistoryPanel = () => {
         <table className="w-full text-[12px]" data-testid="audit-history-table">
           <thead className="bg-[#fef9f0] text-[10.5px] uppercase tracking-wide text-[#6b7280]">
             <tr>
-              <th className="text-left py-2 px-2">When</th>
-              <th className="text-left py-2 px-2">Status</th>
-              <th className="text-right py-2 px-2">Slowest</th>
-              <th className="text-right py-2 px-2">Cache hit</th>
-              <th className="text-right py-2 px-2">RSS</th>
-              <th className="text-right py-2 px-2">Found</th>
-              <th className="text-right py-2 px-2">Auto-fixed</th>
-              <th className="text-right py-2 px-2">Escalated</th>
+              <SortableTh sortKey="timestamp" sort={sort} onSort={toggleSort} className="py-2 px-2">When</SortableTh>
+              <SortableTh sortKey="status" sort={sort} onSort={toggleSort} className="py-2 px-2">Status</SortableTh>
+              <SortableTh sortKey="slowest_ms" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">Slowest</SortableTh>
+              <SortableTh sortKey="cache_hit_rate" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">Cache hit</SortableTh>
+              <SortableTh sortKey="rss_mb" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">RSS</SortableTh>
+              <SortableTh sortKey="issues_found" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">Found</SortableTh>
+              <SortableTh sortKey="issues_auto_fixed" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">Auto-fixed</SortableTh>
+              <SortableTh sortKey="issues_escalated" sort={sort} onSort={toggleSort} numeric className="py-2 px-2">Escalated</SortableTh>
               <th className="py-2 px-2"></th>
             </tr>
           </thead>

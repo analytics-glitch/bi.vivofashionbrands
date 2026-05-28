@@ -4,6 +4,57 @@ import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { Truck, CaretRight, CaretDown } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
+
+/**
+ * Per-color breakdown — sortable. Used both in the inline (legacy)
+ * expansion area and the always-shown detail panels. Each instance
+ * owns its own sort state.
+ */
+const ReplenColorsTable = ({ colors, testId, dense = false, exposeAllCols = true }) => {
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const sortedColors = useMemo(
+    () => sortRows(colors || [], {
+      color: (c) => c.color,
+      units_30d: (c) => Number(c.units_30d ?? 0),
+      soh_total: (c) => Number(c.soh_total ?? 0),
+      target_qty: (c) => Number(c.target_qty ?? 0),
+      recommended_qty: (c) => Number(c.recommended_qty ?? 0),
+      pct_of_style_sales: (c) => Number(c.pct_of_style_sales ?? 0),
+    }),
+    [sortRows, colors],
+  );
+  const rowPad = dense ? "py-1.5" : "py-2 px-3";
+  const headPad = dense ? "py-1" : "py-1.5 px-3";
+  return (
+    <table className="w-full text-[12.5px]" data-testid={testId}>
+      <thead className={`text-[${dense ? "10px" : "10.5px"}] uppercase ${dense ? "text-muted" : "tracking-wide text-muted bg-[#fff8ee]"}`}>
+        <tr>
+          <SortableTh sortKey="color" sort={sort} onSort={toggleSort} className={`${headPad}`}>Color</SortableTh>
+          <SortableTh sortKey="units_30d" sort={sort} onSort={toggleSort} numeric className={`${headPad}`}>{dense ? "30d Units" : "30-day Units"}</SortableTh>
+          <SortableTh sortKey="soh_total" sort={sort} onSort={toggleSort} numeric className={`${headPad}`}>{dense ? "SOH" : "Current SOH"}</SortableTh>
+          <SortableTh sortKey="target_qty" sort={sort} onSort={toggleSort} numeric className={`${headPad}`}>{dense ? "Target" : "8-week Target"}</SortableTh>
+          <SortableTh sortKey="recommended_qty" sort={sort} onSort={toggleSort} numeric className={`${headPad}`}>{dense ? "Replen Qty" : "Recommended Qty"}</SortableTh>
+          <SortableTh sortKey="pct_of_style_sales" sort={sort} onSort={toggleSort} numeric className={`${headPad}`}>% of Sales</SortableTh>
+        </tr>
+      </thead>
+      <tbody className={dense ? "divide-y divide-[#fce6cc]" : "divide-y divide-[#fce6cc] bg-white"}>
+        {sortedColors.map((c) => (
+          <tr key={c.color} className={dense ? "" : "hover:bg-[#fff8ee]"}>
+            <td className={`${rowPad} font-semibold`}>{c.color}</td>
+            <td className={`${rowPad} text-right tabular-nums`}>{fmtNum(c.units_30d)}</td>
+            <td className={`${rowPad} text-right tabular-nums`}>{fmtNum(c.soh_total)}</td>
+            <td className={`${rowPad} text-right tabular-nums text-muted`}>{fmtNum(c.target_qty)}</td>
+            <td className={`${rowPad} text-right tabular-nums font-extrabold text-[#1a5c38]`}>
+              {c.recommended_qty > 0 ? `+${fmtNum(c.recommended_qty)}` : "—"}
+            </td>
+            <td className={`${rowPad} text-right tabular-nums text-muted`}>{c.pct_of_style_sales.toFixed(1)}%</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
 
 /**
  * Replenishment by Color report — well-selling styles whose weeks-of-
@@ -112,32 +163,7 @@ const ReplenishByColor = () => {
               <div className="text-[11px] uppercase tracking-wide text-[#1a5c38] font-bold mb-2">
                 Per-color breakdown · {r.colors.length} color{r.colors.length === 1 ? "" : "s"}
               </div>
-              <table className="w-full text-[12.5px]" data-testid={`replen-colors-${r.style_name}`}>
-                <thead className="text-[10px] uppercase text-muted">
-                  <tr>
-                    <th className="text-left py-1">Color</th>
-                    <th className="text-right py-1">30d Units</th>
-                    <th className="text-right py-1">SOH</th>
-                    <th className="text-right py-1">Target</th>
-                    <th className="text-right py-1">Replen Qty</th>
-                    <th className="text-right py-1">% of Sales</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#fce6cc]">
-                  {r.colors.map((c) => (
-                    <tr key={c.color}>
-                      <td className="py-1.5 font-semibold">{c.color}</td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtNum(c.units_30d)}</td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtNum(c.soh_total)}</td>
-                      <td className="py-1.5 text-right tabular-nums text-muted">{fmtNum(c.target_qty)}</td>
-                      <td className="py-1.5 text-right tabular-nums font-extrabold text-[#1a5c38]">
-                        {c.recommended_qty > 0 ? `+${fmtNum(c.recommended_qty)}` : "—"}
-                      </td>
-                      <td className="py-1.5 text-right tabular-nums text-muted">{c.pct_of_style_sales.toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ReplenColorsTable colors={r.colors} testId={`replen-colors-${r.style_name}`} dense />
             </div>
           )}
           columns={[
@@ -196,32 +222,7 @@ const ReplenishByColor = () => {
               <div className="bg-[#fef3e0] px-3 py-2 text-[12.5px] font-bold text-[#0f3d24]">
                 {r.style_name} · per-color breakdown
               </div>
-              <table className="w-full text-[12.5px]">
-                <thead className="text-[10.5px] uppercase tracking-wide text-muted bg-[#fff8ee]">
-                  <tr>
-                    <th className="text-left py-1.5 px-3">Color</th>
-                    <th className="text-right py-1.5 px-3">30-day Units</th>
-                    <th className="text-right py-1.5 px-3">Current SOH</th>
-                    <th className="text-right py-1.5 px-3">8-week Target</th>
-                    <th className="text-right py-1.5 px-3">Recommended Qty</th>
-                    <th className="text-right py-1.5 px-3">% of Sales</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#fce6cc] bg-white">
-                  {r.colors.map((c) => (
-                    <tr key={c.color} className="hover:bg-[#fff8ee]">
-                      <td className="py-2 px-3 font-semibold">{c.color}</td>
-                      <td className="py-2 px-3 text-right tabular-nums">{fmtNum(c.units_30d)}</td>
-                      <td className="py-2 px-3 text-right tabular-nums">{fmtNum(c.soh_total)}</td>
-                      <td className="py-2 px-3 text-right tabular-nums text-muted">{fmtNum(c.target_qty)}</td>
-                      <td className="py-2 px-3 text-right tabular-nums font-extrabold text-[#1a5c38]">
-                        {c.recommended_qty > 0 ? `+${fmtNum(c.recommended_qty)}` : "—"}
-                      </td>
-                      <td className="py-2 px-3 text-right tabular-nums text-muted">{c.pct_of_style_sales.toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ReplenColorsTable colors={r.colors} />
             </div>
           ))}
         </div>

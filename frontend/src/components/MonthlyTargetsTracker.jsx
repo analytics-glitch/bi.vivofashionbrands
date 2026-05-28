@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import { Loading } from "@/components/common";
 import { CaretDown, CaretRight, ChartLine } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 /**
  * Per-store daily target tracker — Sarit-style table per store.
@@ -25,6 +26,27 @@ function StoreCard({ store }) {
   const proj_pct = store.pct_of_target_projected;
   const onPace = proj_pct >= 100;
   const ringColor = onPace ? "#00c853" : proj_pct >= 70 ? "#d97706" : "#dc2626";
+
+  // Iter 89 — Sortable daily breakdown table per store.
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const sortedDaily = useMemo(
+    () => sort
+      ? sortRows(store.daily || [], {
+          date: (r) => r.date || "",
+          day_of_week: (r) => r.day_of_week || "",
+          ratio: (r) => Number(r.ratio ?? 0),
+          daily_target: (r) => Number(r.daily_target ?? 0),
+          suggested_daily_target: (r) => r.suggested_daily_target == null ? null : Number(r.suggested_daily_target),
+          suggested_daily_quantity: (r) => r.suggested_daily_quantity == null ? null : Number(r.suggested_daily_quantity),
+          suggested_basket_size: (r) => r.suggested_basket_size == null ? null : Number(r.suggested_basket_size),
+          actual: (r) => r.is_future ? null : Number(r.actual ?? 0),
+          variance_pct: (r) => r.is_future ? null : Number(r.variance_pct ?? 0),
+          ksh_variance: (r) => r.is_future ? null : Number(r.ksh_variance ?? 0),
+          ksh_variance_cumulative: (r) => r.is_future ? null : Number(r.ksh_variance_cumulative ?? 0),
+        })
+      : (store.daily || []),
+    [sort, sortRows, store.daily],
+  );
 
   return (
     <div className="card-white p-0 overflow-hidden" data-testid={`monthly-store-${store.channel}`}>
@@ -64,36 +86,42 @@ function StoreCard({ store }) {
           <table className="w-full text-[12px]" data-testid={`monthly-daily-table-${store.channel}`}>
             <thead>
               <tr className="bg-[#fde7c5] text-[#5b3a00]">
-                <th className="text-left px-3 py-2">Date</th>
-                <th className="text-left px-3 py-2">Day</th>
-                <th className="text-right px-3 py-2">Ratio</th>
-                <th className="text-right px-3 py-2">Daily Budget</th>
-                <th
-                  className="text-right px-3 py-2 bg-amber-200/70"
+                <SortableTh sortKey="date" sort={sort} onSort={toggleSort} className="px-3 py-2">Date</SortableTh>
+                <SortableTh sortKey="day_of_week" sort={sort} onSort={toggleSort} className="px-3 py-2">Day</SortableTh>
+                <SortableTh sortKey="ratio" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Ratio</SortableTh>
+                <SortableTh sortKey="daily_target" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Daily Budget</SortableTh>
+                <SortableTh
+                  sortKey="suggested_daily_target"
+                  sort={sort}
+                  onSort={toggleSort}
+                  numeric
+                  className="px-3 py-2 bg-amber-200/70"
                   title="What you need to do per day on remaining days to still hit the monthly target — re-weighted by the day-of-week pattern."
-                >
-                  Suggested Daily Need
-                </th>
-                <th
-                  className="text-right px-3 py-2 bg-amber-100/70"
+                >Suggested Daily Need</SortableTh>
+                <SortableTh
+                  sortKey="suggested_daily_quantity"
+                  sort={sort}
+                  onSort={toggleSort}
+                  numeric
+                  className="px-3 py-2 bg-amber-100/70"
                   title="Suggested Daily Need ÷ store ASP — units to sell that day to land the target."
-                >
-                  Suggested Quantity
-                </th>
-                <th
-                  className="text-right px-3 py-2 bg-amber-100/70"
+                >Suggested Quantity</SortableTh>
+                <SortableTh
+                  sortKey="suggested_basket_size"
+                  sort={sort}
+                  onSort={toggleSort}
+                  numeric
+                  className="px-3 py-2 bg-amber-100/70"
                   title="Suggested Daily Need ÷ store's daily-orders pace — avg basket KES each transaction needs to be."
-                >
-                  Suggested Basket Size
-                </th>
-                <th className="text-right px-3 py-2">Actual</th>
-                <th className="text-right px-3 py-2">Variance %</th>
-                <th className="text-right px-3 py-2">Ksh variance (Daily)</th>
-                <th className="text-right px-3 py-2">Ksh variance (Cumulative)</th>
+                >Suggested Basket Size</SortableTh>
+                <SortableTh sortKey="actual" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Actual</SortableTh>
+                <SortableTh sortKey="variance_pct" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Variance %</SortableTh>
+                <SortableTh sortKey="ksh_variance" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Ksh variance (Daily)</SortableTh>
+                <SortableTh sortKey="ksh_variance_cumulative" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Ksh variance (Cumulative)</SortableTh>
               </tr>
             </thead>
             <tbody>
-              {store.daily.map((r) => {
+              {sortedDaily.map((r) => {
                 const future = r.is_future;
                 const today = r.is_today;
                 const negVar = (r.variance_pct ?? 0) < 0 && !future;

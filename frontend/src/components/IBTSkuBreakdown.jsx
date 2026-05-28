@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import { ArrowRight } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 /**
  * SKU-level (color × size) breakdown for a single IBT recommendation.
@@ -17,6 +18,10 @@ const IBTSkuBreakdown = ({ row }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAll, setShowAll] = useState(false);
+
+  // Iter 89 — Hooks must be called unconditionally before any
+  // early return below.
+  const { sort, toggleSort, sortRows } = useTableSort();
 
   useEffect(() => {
     let cancel = false;
@@ -38,13 +43,27 @@ const IBTSkuBreakdown = ({ row }) => {
     return () => { cancel = true; };
   }, [row.style_name, row.from_store, row.to_store, row.units_to_move]);
 
+  const visible = data && data.skus?.length
+    ? (showAll ? data.skus : data.skus.filter((s) => s.suggested_qty > 0))
+    : [];
+  const sortedVisible = useMemo(
+    () => sortRows(visible, {
+      sku: (r) => r.sku,
+      color: (r) => r.color,
+      size: (r) => r.size,
+      from_available: (r) => Number(r.from_available ?? 0),
+      to_available: (r) => Number(r.to_available ?? 0),
+      suggested_qty: (r) => Number(r.suggested_qty ?? 0),
+    }),
+    [sortRows, visible],
+  );
+
   if (loading) return <Loading label="Loading SKU breakdown…" />;
   if (error) return <ErrorBox message={error} />;
   if (!data || !data.skus?.length) {
     return <Empty label="No SKU-level inventory available for this style at the source / destination." />;
   }
 
-  const visible = showAll ? data.skus : data.skus.filter((s) => s.suggested_qty > 0);
   const hiddenCount = data.skus.length - visible.length;
 
   return (
@@ -71,16 +90,16 @@ const IBTSkuBreakdown = ({ row }) => {
         <table className="w-full data text-[12px]">
           <thead className="bg-white">
             <tr>
-              <th className="text-left">SKU</th>
-              <th className="text-left">Color</th>
-              <th className="text-left">Size</th>
-              <th className="text-right">Stock at FROM</th>
-              <th className="text-right">Stock at TO</th>
-              <th className="text-right">Suggested Qty</th>
+              <SortableTh sortKey="sku" sort={sort} onSort={toggleSort}>SKU</SortableTh>
+              <SortableTh sortKey="color" sort={sort} onSort={toggleSort}>Color</SortableTh>
+              <SortableTh sortKey="size" sort={sort} onSort={toggleSort}>Size</SortableTh>
+              <SortableTh sortKey="from_available" sort={sort} onSort={toggleSort} numeric>Stock at FROM</SortableTh>
+              <SortableTh sortKey="to_available" sort={sort} onSort={toggleSort} numeric>Stock at TO</SortableTh>
+              <SortableTh sortKey="suggested_qty" sort={sort} onSort={toggleSort} numeric>Suggested Qty</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {visible.map((s) => (
+            {sortedVisible.map((s) => (
               <tr key={s.sku} className={s.suggested_qty > 0 ? "" : "opacity-60"}>
                 <td className="font-mono text-[11px]">{s.sku}</td>
                 <td>{s.color}</td>

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, fmtNum } from "@/lib/api";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 
@@ -12,6 +13,11 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
 
+  // Iter 89 — Hooks must be called before any conditional/early return.
+  // These power the per-channel and quarterly tables further down.
+  const { sort: bucketSort, toggleSort: toggleBucketSort, sortRows: sortBuckets } = useTableSort();
+  const { sort: qSort, toggleSort: toggleQSort, sortRows: sortQ } = useTableSort();
+
   useEffect(() => {
     let cancelled = false;
     setErr(null);
@@ -20,6 +26,30 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
       .catch((e) => { if (!cancelled) setErr(e?.response?.data?.detail || e.message); });
     return () => { cancelled = true; };
   }, [year]);
+
+  const buckets = data?.buckets || [];
+  const sortedBuckets = useMemo(
+    () => sortBuckets(buckets, {
+      bucket: (b) => b.bucket,
+      target_annual: (b) => Number(b.target_annual ?? 0),
+      actual_ytd: (b) => Number(b.actual_ytd ?? 0),
+      pct_of_target_ytd: (b) => Number(b.pct_of_target_ytd ?? 0),
+      projected_year: (b) => Number(b.projected_year ?? 0),
+      pct_of_target_projected: (b) => Number(b.pct_of_target_projected ?? 0),
+      variance_projected: (b) => Number(b.variance_projected ?? 0),
+    }),
+    [sortBuckets, buckets],
+  );
+  const sortedBucketsQ = useMemo(
+    () => sortQ(buckets, {
+      bucket: (b) => b.bucket,
+      Q1: (b) => Number((b.actual_quarters || {}).Q1 ?? 0),
+      Q2: (b) => Number((b.actual_quarters || {}).Q2 ?? 0),
+      Q3: (b) => Number((b.actual_quarters || {}).Q3 ?? 0),
+      Q4: (b) => Number((b.actual_quarters || {}).Q4 ?? 0),
+    }),
+    [sortQ, buckets],
+  );
 
   if (err) {
     return (
@@ -36,7 +66,7 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
     );
   }
 
-  const { total, buckets, completion_pct, days_elapsed, days_total, as_of } = data;
+  const { total, completion_pct, days_elapsed, days_total, as_of } = data;
 
   // Status colour: ahead = green, on-track = amber, behind = rose.
   const status = (pct) => {
@@ -116,17 +146,17 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
         <table className="w-full text-[12px]" data-testid="annual-targets-table">
           <thead>
             <tr className="text-left text-muted border-b border-border">
-              <th className="py-2 pr-3">Channel</th>
-              <th className="py-2 pr-3 text-right">Annual Target</th>
-              <th className="py-2 pr-3 text-right">YTD Actual</th>
-              <th className="py-2 pr-3 text-right">% YTD</th>
-              <th className="py-2 pr-3 text-right">Projected Year</th>
-              <th className="py-2 pr-3 text-right">% Projected</th>
-              <th className="py-2 pr-0 text-right">Gap</th>
+              <SortableTh sortKey="bucket" sort={bucketSort} onSort={toggleBucketSort} className="py-2 pr-3">Channel</SortableTh>
+              <SortableTh sortKey="target_annual" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-3">Annual Target</SortableTh>
+              <SortableTh sortKey="actual_ytd" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-3">YTD Actual</SortableTh>
+              <SortableTh sortKey="pct_of_target_ytd" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-3">% YTD</SortableTh>
+              <SortableTh sortKey="projected_year" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-3">Projected Year</SortableTh>
+              <SortableTh sortKey="pct_of_target_projected" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-3">% Projected</SortableTh>
+              <SortableTh sortKey="variance_projected" sort={bucketSort} onSort={toggleBucketSort} numeric className="py-2 pr-0">Gap</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {buckets.map((b) => (
+            {sortedBuckets.map((b) => (
               <tr key={b.bucket} className="border-b border-border/40">
                 <td className="py-2 pr-3 font-bold">{b.bucket}</td>
                 <td className="py-2 pr-3 text-right num">{fmtKES(b.target_annual)}</td>
@@ -169,14 +199,14 @@ export default function AnnualTargetsCard({ variant = "compact", year = 2026 }) 
           <table className="w-full text-[12px]" data-testid="annual-targets-quarters">
             <thead>
               <tr className="text-left text-muted border-b border-border">
-                <th className="py-1 pr-3">Channel</th>
+                <SortableTh sortKey="bucket" sort={qSort} onSort={toggleQSort} className="py-1 pr-3">Channel</SortableTh>
                 {QUARTERS.map((q) => (
-                  <th key={q} className="py-1 pr-3 text-right">{q} Target / Actual</th>
+                  <SortableTh key={q} sortKey={q} sort={qSort} onSort={toggleQSort} numeric className="py-1 pr-3">{q} Target / Actual</SortableTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {buckets.map((b) => (
+              {sortedBucketsQ.map((b) => (
                 <tr key={b.bucket} className="border-b border-border/40">
                   <td className="py-1 pr-3 font-bold">{b.bucket}</td>
                   {QUARTERS.map((q) => {

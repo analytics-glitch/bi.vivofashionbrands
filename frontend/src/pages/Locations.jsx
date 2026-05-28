@@ -5,6 +5,7 @@ import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePe
 import { KPICard } from "@/components/KPICard";
 import { InlineDelta } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useLocationBadges, LocationLeaderboard, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { useOutliers } from "@/lib/useOutliers";
@@ -32,6 +33,8 @@ const Locations = () => {
   const [sortKey, setSortKey] = useState("total_sales");
   const [selected, setSelected] = useState(null);
   const [weekdayData, setWeekdayData] = useState(null);
+  // Iter 89 — Sort state for the plain "Footfall & Conversion" table.
+  const ffSort = useTableSort();
 
   // Weekday pattern feeds the store deep-dive's mini-heatmap.
   // Safe to share across all store drills since the endpoint is 1h-cached.
@@ -652,27 +655,40 @@ const Locations = () => {
                   <table className="w-full data" data-testid="footfall-table">
                     <thead>
                       <tr>
-                        <th>Location</th>
-                        <th className="text-right">Total Sales</th>
-                        <th className="text-right">Orders</th>
-                        <th className="text-right">Footfall</th>
-                        <th className="text-right">Conversion</th>
-                        <th className="text-right">Δ Conversion</th>
+                        <SortableTh sortKey="location" sort={ffSort.sort} onSort={ffSort.toggleSort}>Location</SortableTh>
+                        <SortableTh sortKey="total_sales" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Total Sales</SortableTh>
+                        <SortableTh sortKey="orders" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Orders</SortableTh>
+                        <SortableTh sortKey="footfall" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Footfall</SortableTh>
+                        <SortableTh sortKey="conversion" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Conversion</SortableTh>
+                        <SortableTh sortKey="conv_delta" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Δ Conversion</SortableTh>
                       </tr>
                     </thead>
                     <tbody>
                       {footfall.length === 0 && (
                         <tr><td colSpan={6}><Empty label="No footfall data in this period." /></td></tr>
                       )}
-                      {[...footfall]
-                        .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
-                        .map((r, i) => {
+                      {(() => {
+                        const decorated = footfall.map((r) => {
                           const store = enriched.find((l) => l.channel === r.location);
                           const authoritativeSales = store ? (store.total_sales || 0) : (r.total_sales || 0);
                           const authoritativeOrders = store ? (store.orders || store.total_orders || 0) : (r.orders || 0);
                           const footfallCount = r.total_footfall || 0;
                           const cr = footfallCount ? (authoritativeOrders / footfallCount) * 100 : 0;
                           const convPp = store ? store.conv_delta_pp : null;
+                          return { r, authoritativeSales, authoritativeOrders, footfallCount, cr, convPp };
+                        });
+                        const sortedFf = ffSort.sort
+                          ? ffSort.sortRows(decorated, {
+                              location: (d) => d.r.location,
+                              total_sales: (d) => d.authoritativeSales,
+                              orders: (d) => d.authoritativeOrders,
+                              footfall: (d) => d.footfallCount,
+                              conversion: (d) => d.cr,
+                              conv_delta: (d) => d.convPp == null ? null : Number(d.convPp),
+                            })
+                          : decorated.sort((a, b) => (b.footfallCount || 0) - (a.footfallCount || 0));
+                        return sortedFf.map((d, i) => {
+                          const { r, authoritativeSales, authoritativeOrders, footfallCount, cr, convPp } = d;
                           const pill = cr > 15 ? "pill-green" : cr >= 10 ? "pill-amber" : "pill-red";
                           return (
                             <tr key={r.location + i}>
@@ -692,7 +708,8 @@ const Locations = () => {
                               </td>
                             </tr>
                           );
-                        })}
+                        });
+                      })()}
                     </tbody>
                   </table>
                 </div>

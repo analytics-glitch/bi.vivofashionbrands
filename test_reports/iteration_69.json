@@ -1,0 +1,63 @@
+{
+  "summary": "Iter 89 frontend-only verification: validated the new useTableSort hook + SortableTh helper across the dashboard. Login works, frontend compiles (eslint warnings only, no errors), and sortable headers behave as designed (asc -> desc -> clear with caret indicator) on every page that actually rendered a table. No React Hook ordering violations and no new console errors introduced by the sort retrofit.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/ibt (and a few other pages)",
+        "issues": ["Pre-existing hydration warning: '<span> cannot be a child of <option>' rendered somewhere inside the IBT subtree (likely a country/store <select> using flag spans). Not caused by this iteration but worth fixing."]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Investigate / fix the pre-existing hydration warning '<span> cannot be a child of <option>' originating in the IBT page select(s). Not a regression from sort work.",
+    "Optional: address the eslint exhaustive-deps warnings in AnnualTargetsCard.jsx (buckets used inside useMemo dep list) and Footfall.jsx (missing 'explorationPrevRange' dep)."
+  ],
+  "critical_code_review_comments": [
+    "useTableSort.js: solid 3-state cycle (asc -> desc -> off) with proper null handling; uses localeCompare with {numeric:true} for natural sort. Looks production-quality.",
+    "SortableTh renders cursor-pointer + caret indicator only when isActive. Visual treatment is consistent across all retrofitted tables.",
+    "Note: clicking SortableTh on tables that sit far below the page top can be intercepted by the sticky topbar when a test calls scroll_into_view_if_needed (Playwright force=True still does coordinate-based hit-testing). This is a test harness quirk, not a product bug — real users click headers in-place after they have scrolled to them."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a", "frontend": "100% (of testable tables)" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "When asserting sortable header behavior in Playwright, prefer page.evaluate(() => ths[i].click()) over locator.click(force=True). The dashboard has a sticky topbar that intercepts coordinate-based clicks once the th is scrolled to y=0 of the viewport via scroll_into_view_if_needed. JS .click() bypasses this and reflects real user behavior (users scroll the table into the middle of the viewport, not the top). Also: ff-bottom-turnin-table only renders when bottomFiveTurnIn data is non-empty AND showBottomTurnIn is true; audit-history-table is gated by audit history payload — these are conditional, not bugs. SOR Color/Size tables, monthly-daily-table-<channel>, replen-colors-<style>, replen-detail-<style>, sor-color-table, sor-size-table-<color>, and repeat-orders-<id> require an expand/click interaction to render and were not exercised in this run but the underlying useTableSort wiring was verified on representative tables.",
+  "tested_tables_pass": [
+    "ceo-country-table",
+    "ceo-locations-table",
+    "ceo-top-skus",
+    "ceo-subcat-table",
+    "ceo-returns-table",
+    "ceo-footfall-table",
+    "footfall-table (Locations)",
+    "replen-table",
+    "allocation-history-table",
+    "cluster-store-table",
+    "annual-targets-table",
+    "annual-targets-quarters",
+    "walk-ins-by-country",
+    "walk-ins-by-store",
+    "repeat-customers-list",
+    "top-customers",
+    "customers-by-location",
+    "churned-customers",
+    "new-customer-products",
+    "sales-export-table"
+  ],
+  "tables_not_rendered_in_this_session": [
+    "ibt-flat-table / ibt-flat-table-warehouse (table card uses ibt-table testid + ibt-table-sort-* per-column controls; existing SortableTable already wired)",
+    "ff-bottom-turnin-table (hidden because showBottomTurnIn=false / no bottom-5 candidates)",
+    "ff-excluded (excluded list is empty by design — see Footfall.jsx line 366)",
+    "audit-history-table on /admin/activity (panel not rendered without audit history payload)",
+    "sor-color-table / sor-size-table-* (require clicking into SOR tab + opening a row)",
+    "monthly-daily-table-<channel> (requires expanding a store row in Monthly Targets Tracker)",
+    "repeat-orders-<id> (requires expanding a customer row)",
+    "replen-colors-<style> / replen-detail-<style> (requires Replenish-by-Color expansion)"
+  ]
+}

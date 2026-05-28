@@ -1807,35 +1807,30 @@ const Customers = () => {
                           <div className="text-[11px] font-bold uppercase text-muted mb-2">
                             Orders ({r.order_count})
                           </div>
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-[12px]" data-testid={`repeat-orders-${r.customer_id}`}>
-                              <thead>
-                                <tr className="text-left text-muted border-b border-border">
-                                  <th className="py-1 pr-3">Order IDs</th>
-                                  <th className="py-1 pr-3">Date</th>
-                                  <th className="py-1 pr-3">Channel</th>
-                                  <th className="py-1 pr-3 text-right">Units</th>
-                                  <th className="py-1 pr-0 text-right">Total</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {(r.orders || []).map((o, i) => (
-                                  <tr key={`${o.order_date}-${o.channel}-${i}`} className="border-b border-border/50 last:border-0">
-                                    <td className="py-1 pr-3 font-mono text-[11px]">
-                                      {o.order_id || "—"}
-                                      {o.order_id_count > 1 && (
-                                        <span className="ml-1 text-[10px] text-muted">({o.order_id_count} ids)</span>
-                                      )}
-                                    </td>
-                                    <td className="py-1 pr-3">{o.order_date}</td>
-                                    <td className="py-1 pr-3">{o.channel || "—"}</td>
-                                    <td className="py-1 pr-3 text-right num">{o.units}</td>
-                                    <td className="py-1 pr-0 text-right num font-semibold">{fmtKES(o.total_kes)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                          <SortableTable
+                            testId={`repeat-orders-${r.customer_id}`}
+                            initialSort={{ key: "order_date", dir: "desc" }}
+                            maxHeight={null}
+                            columns={[
+                              { key: "order_id", label: "Order IDs", sortable: true,
+                                render: (o) => (
+                                  <span className="font-mono text-[11px]">
+                                    {o.order_id || "—"}
+                                    {o.order_id_count > 1 && (
+                                      <span className="ml-1 text-[10px] text-muted">({o.order_id_count} ids)</span>
+                                    )}
+                                  </span>
+                                ) },
+                              { key: "order_date", label: "Date", sortable: true },
+                              { key: "channel", label: "Channel", sortable: true,
+                                render: (o) => o.channel || "—" },
+                              { key: "units", label: "Units", sortable: true, numeric: true, align: "right" },
+                              { key: "total_kes", label: "Total", sortable: true, numeric: true, align: "right",
+                                render: (o) => <span className="font-semibold">{fmtKES(o.total_kes)}</span> },
+                            ]}
+                            rows={r.orders || []}
+                            stickyFirstCol={false}
+                          />
                         </div>
                       )}
                     />

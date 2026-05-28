@@ -43,10 +43,16 @@ import {
 } from "recharts";
 import { ChartTooltip, Delta, makePctDeltaLabel } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 const Footfall = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, dataVersion } = applied;
+
+  // Iter 89 — Sort state for the plain tables on the page that aren't
+  // already built on `<SortableTable>`. Each table gets its own hook.
+  const bottomTurnInSort = useTableSort();
+  const excludedSort = useTableSort();
 
   const [rows, setRows] = useState([]);
   const [prev, setPrev] = useState([]);
@@ -709,17 +715,23 @@ const Footfall = () => {
                   <table className="w-full data" data-testid="ff-bottom-turnin-table">
                     <thead>
                       <tr>
-                        <th>Store</th>
-                        <th className="text-right">Outside Traffic</th>
-                        <th className="text-right">Footfall In</th>
-                        <th className="text-right">Turn-in Rate</th>
+                        <SortableTh sortKey="location" sort={bottomTurnInSort.sort} onSort={bottomTurnInSort.toggleSort}>Store</SortableTh>
+                        <SortableTh sortKey="outside_traffic" sort={bottomTurnInSort.sort} onSort={bottomTurnInSort.toggleSort} numeric>Outside Traffic</SortableTh>
+                        <SortableTh sortKey="total_footfall" sort={bottomTurnInSort.sort} onSort={bottomTurnInSort.toggleSort} numeric>Footfall In</SortableTh>
+                        <SortableTh sortKey="turn_in_rate" sort={bottomTurnInSort.sort} onSort={bottomTurnInSort.toggleSort} numeric>Turn-in Rate</SortableTh>
                         {compareMode !== "none" && (
-                          <th className="text-right">vs Last Period</th>
+                          <SortableTh sortKey="turn_in_delta_pp" sort={bottomTurnInSort.sort} onSort={bottomTurnInSort.toggleSort} numeric>vs Last Period</SortableTh>
                         )}
                       </tr>
                     </thead>
                     <tbody>
-                      {bottomFiveTurnIn.map((r, i) => (
+                      {bottomTurnInSort.sortRows(bottomFiveTurnIn, {
+                        location: (r) => r.location,
+                        outside_traffic: (r) => Number(r.outside_traffic ?? 0),
+                        total_footfall: (r) => Number(r.total_footfall ?? 0),
+                        turn_in_rate: (r) => Number(r.turn_in_rate ?? 0),
+                        turn_in_delta_pp: (r) => r.turn_in_delta_pp == null ? null : Number(r.turn_in_delta_pp),
+                      }).map((r, i) => (
                         <tr key={r.location + i} data-testid={`ff-bottom-turnin-row-${i}`}>
                           <td className="font-medium">
                             <span className="inline-flex items-center gap-2">
@@ -969,14 +981,19 @@ const Footfall = () => {
                 <table className="w-full data">
                   <thead>
                     <tr>
-                      <th>Location</th>
-                      <th className="text-right">Footfall</th>
-                      <th className="text-right">Orders</th>
-                      <th className="text-right">Conversion</th>
+                      <SortableTh sortKey="location" sort={excludedSort.sort} onSort={excludedSort.toggleSort}>Location</SortableTh>
+                      <SortableTh sortKey="total_footfall" sort={excludedSort.sort} onSort={excludedSort.toggleSort} numeric>Footfall</SortableTh>
+                      <SortableTh sortKey="orders" sort={excludedSort.sort} onSort={excludedSort.toggleSort} numeric>Orders</SortableTh>
+                      <SortableTh sortKey="conversion_rate" sort={excludedSort.sort} onSort={excludedSort.toggleSort} numeric>Conversion</SortableTh>
                     </tr>
                   </thead>
                   <tbody>
-                    {excluded.map((r, i) => (
+                    {excludedSort.sortRows(excluded, {
+                      location: (r) => r.location,
+                      total_footfall: (r) => Number(r.total_footfall ?? 0),
+                      orders: (r) => Number(r.orders ?? 0),
+                      conversion_rate: (r) => Number(r.conversion_rate ?? 0),
+                    }).map((r, i) => (
                       <tr key={r.location + i}>
                         <td className="font-medium text-muted">
                           <span className="inline-flex items-center gap-2">

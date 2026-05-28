@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { ArrowsClockwise, Stack, Calendar } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 /**
  * Store Peer-Cluster inspector (Phase 1 — surface only).
@@ -21,6 +22,9 @@ const StoreClusters = () => {
   const [reclustering, setReclustering] = useState(false);
   const [useYear, setUseYear] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Iter 89 — Per-store table sort state.
+  const tableSort = useTableSort();
 
   useEffect(() => {
     let cancel = false;
@@ -145,33 +149,50 @@ const StoreClusters = () => {
             <table className="w-full text-[12.5px]">
               <thead className="bg-panel">
                 <tr className="text-left">
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Store</th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Tier</th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Cluster</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">ASP</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Basket</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Size CoG</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">% Tops</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">% Bottoms</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">% Acc</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">90d Rev</th>
+                  <SortableTh sortKey="store" sort={tableSort.sort} onSort={tableSort.toggleSort} className="px-3 py-2 font-semibold whitespace-nowrap">Store</SortableTh>
+                  <SortableTh sortKey="tier" sort={tableSort.sort} onSort={tableSort.toggleSort} className="px-3 py-2 font-semibold whitespace-nowrap">Tier</SortableTh>
+                  <SortableTh sortKey="cluster_id" sort={tableSort.sort} onSort={tableSort.toggleSort} className="px-3 py-2 font-semibold whitespace-nowrap">Cluster</SortableTh>
+                  <SortableTh sortKey="asp" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">ASP</SortableTh>
+                  <SortableTh sortKey="avg_basket_units" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Basket</SortableTh>
+                  <SortableTh sortKey="size_cog" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Size CoG</SortableTh>
+                  <SortableTh sortKey="pct_tops" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">% Tops</SortableTh>
+                  <SortableTh sortKey="pct_bottoms" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">% Bottoms</SortableTh>
+                  <SortableTh sortKey="pct_accessories" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">% Acc</SortableTh>
+                  <SortableTh sortKey="revenue_90d" sort={tableSort.sort} onSort={tableSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">90d Rev</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(data.by_store).sort((a, b) => (a[1].cluster_id || "").localeCompare(b[1].cluster_id || "")).map(([store, row], i) => (
-                  <tr key={store} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`}>
-                    <td className="px-3 py-2 font-semibold whitespace-nowrap">{store}</td>
-                    <td className="px-3 py-2"><span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold text-white" style={{ background: tierColor(row.tier) }}>{row.tier}</span></td>
-                    <td className="px-3 py-2 font-mono">{row.cluster_id || "—"}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">KES {Math.round(row.asp || 0).toLocaleString("en-KE")}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{(row.avg_basket_units || 0).toFixed(1)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{(row.size_cog || 0).toFixed(1)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_tops || 0) * 100)}%</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_bottoms || 0) * 100)}%</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_accessories || 0) * 100)}%</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.revenue_90d || 0) / 1000).toLocaleString("en-KE")}K</td>
-                  </tr>
-                ))}
+                {(() => {
+                  const entries = Object.entries(data.by_store).map(([store, row]) => ({ store, ...row }));
+                  const sorted = tableSort.sort
+                    ? tableSort.sortRows(entries, {
+                        store: (r) => r.store,
+                        tier: (r) => r.tier || "",
+                        cluster_id: (r) => r.cluster_id || "",
+                        asp: (r) => Number(r.asp ?? 0),
+                        avg_basket_units: (r) => Number(r.avg_basket_units ?? 0),
+                        size_cog: (r) => Number(r.size_cog ?? 0),
+                        pct_tops: (r) => Number(r.pct_tops ?? 0),
+                        pct_bottoms: (r) => Number(r.pct_bottoms ?? 0),
+                        pct_accessories: (r) => Number(r.pct_accessories ?? 0),
+                        revenue_90d: (r) => Number(r.revenue_90d ?? 0),
+                      })
+                    : entries.sort((a, b) => (a.cluster_id || "").localeCompare(b.cluster_id || ""));
+                  return sorted.map((row, i) => (
+                    <tr key={row.store} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`}>
+                      <td className="px-3 py-2 font-semibold whitespace-nowrap">{row.store}</td>
+                      <td className="px-3 py-2"><span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold text-white" style={{ background: tierColor(row.tier) }}>{row.tier}</span></td>
+                      <td className="px-3 py-2 font-mono">{row.cluster_id || "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">KES {Math.round(row.asp || 0).toLocaleString("en-KE")}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{(row.avg_basket_units || 0).toFixed(1)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{(row.size_cog || 0).toFixed(1)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_tops || 0) * 100)}%</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_bottoms || 0) * 100)}%</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.pct_accessories || 0) * 100)}%</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Math.round((row.revenue_90d || 0) / 1000).toLocaleString("en-KE")}K</td>
+                    </tr>
+                  ));
+                })()}
               </tbody>
             </table>
           </div>

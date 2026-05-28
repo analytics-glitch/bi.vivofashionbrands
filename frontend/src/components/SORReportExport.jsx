@@ -6,6 +6,7 @@ import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
 import LaunchMonthFilter, { filterByLaunchMonths } from "@/components/LaunchMonthFilter";
 import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 /**
  * SOR Report — catalog-wide style sell-through report.
@@ -438,6 +439,70 @@ const Tile = ({ label, value }) => (
   </div>
 );
 
+const SizeBreakdownTable = ({ color, sizes, selectedColor, selectedSize, onSizeClick }) => {
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const isLocFiltered = selectedColor === color.color;
+  // Default size ordering already applied upstream; only sort when user clicks.
+  const displayed = useMemo(
+    () => sort
+      ? sortRows(sizes, {
+          size: (r) => r.size || "",
+          sku: (r) => r.sku || "",
+          units_6m: (r) => Number(r.units_6m ?? 0),
+          pct_of_color: (r) => color.units_6m ? (r.units_6m / color.units_6m) * 100 : 0,
+          units_3w: (r) => Number(r.units_3w ?? 0),
+          soh_total: (r) => Number(r.soh_total ?? 0),
+          soh_wh: (r) => Number(r.soh_wh ?? 0),
+          pct_in_wh: (r) => Number(r.pct_in_wh ?? 0),
+        })
+      : sizes,
+    [sort, sortRows, sizes, color.units_6m],
+  );
+  return (
+    <table className="w-full text-[11.5px]" data-testid={`sor-size-table-${color.color}`}>
+      <thead>
+        <tr className="text-left text-muted border-b border-border/60">
+          <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="py-1 pr-3">Size</SortableTh>
+          <SortableTh sortKey="sku" sort={sort} onSort={toggleSort} className="py-1 pr-3 font-mono">SKU</SortableTh>
+          <SortableTh sortKey="units_6m" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">Units 6M</SortableTh>
+          <SortableTh sortKey="pct_of_color" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">% of Color</SortableTh>
+          <SortableTh sortKey="units_3w" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">Units 3W</SortableTh>
+          <SortableTh sortKey="soh_total" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">SOH</SortableTh>
+          <SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">SOH WH</SortableTh>
+          <SortableTh sortKey="pct_in_wh" sort={sort} onSort={toggleSort} numeric className="py-1 pr-0">% In WH</SortableTh>
+        </tr>
+      </thead>
+      <tbody>
+        {displayed.map((r, i) => {
+          const isSizeSel = isLocFiltered && selectedSize === r.size;
+          return (
+          <tr
+            key={`${r.sku}-${i}`}
+            className={`border-b border-border/30 last:border-0 cursor-pointer hover:bg-amber-50/60 ${isSizeSel ? "bg-amber-200/50" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onSizeClick) onSizeClick(color.color, r.size);
+            }}
+            data-testid={`sor-size-row-${color.color}-${r.size}`}
+          >
+            <td className="py-1 pr-3">{r.size || "—"}</td>
+            <td className="py-1 pr-3 font-mono text-[10.5px]">{r.sku || "—"}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.units_6m)}</td>
+            <td className="py-1 pr-3 text-right num text-muted">
+              {color.units_6m ? ((r.units_6m / color.units_6m) * 100).toFixed(1) : "0.0"}%
+            </td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
+            <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
+          </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+};
+
 // ---- SKU breakdown (Color → Size, 2-level drill) ----
 //
 // Outer rows = each unique color with rolled-up totals across its sizes.
@@ -447,6 +512,7 @@ const Tile = ({ label, value }) => (
 // merch team scan colour performance, then drill into the lagging size.
 const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick, onSizeClick }) => {
   const [openColor, setOpenColor] = useState(null);
+  const { sort: colorSort, toggleSort: toggleColorSort, sortRows: sortColorRows } = useTableSort();
 
   if (loading && (!rows || rows.length === 0)) {
     return <div className="text-[12px] text-muted py-2">Loading SKU breakdown… (~30s on cold cache)</div>;
@@ -485,6 +551,19 @@ const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick
       return (a.size || "").localeCompare(b.size || "");
     });
   }
+  // Iter 89 — apply user-driven sort if active; otherwise keep the
+  // "by Units 6M descending" default established above.
+  const displayColors = colorSort
+    ? sortColorRows(colors, {
+        color: (c) => c.color,
+        units_6m: (c) => Number(c.units_6m ?? 0),
+        pct_of_style: (c) => totalUnits ? (c.units_6m / totalUnits) * 100 : 0,
+        units_3w: (c) => Number(c.units_3w ?? 0),
+        soh_total: (c) => Number(c.soh_total ?? 0),
+        soh_wh: (c) => Number(c.soh_wh ?? 0),
+        pct_in_wh: (c) => c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0,
+      })
+    : colors;
 
   return (
     <div className="px-2 py-1" data-testid="sor-sku-breakdown">
@@ -496,17 +575,17 @@ const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick
           <thead>
             <tr className="text-left text-muted border-b border-border">
               <th className="py-1 pr-3 w-5"></th>
-              <th className="py-1 pr-3">Color</th>
-              <th className="py-1 pr-3 text-right">Units 6M</th>
-              <th className="py-1 pr-3 text-right">% of Style</th>
-              <th className="py-1 pr-3 text-right">Units 3W</th>
-              <th className="py-1 pr-3 text-right">SOH</th>
-              <th className="py-1 pr-3 text-right">SOH WH</th>
-              <th className="py-1 pr-0 text-right">% In WH</th>
+              <SortableTh sortKey="color" sort={colorSort} onSort={toggleColorSort} className="py-1 pr-3">Color</SortableTh>
+              <SortableTh sortKey="units_6m" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">Units 6M</SortableTh>
+              <SortableTh sortKey="pct_of_style" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">% of Style</SortableTh>
+              <SortableTh sortKey="units_3w" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">Units 3W</SortableTh>
+              <SortableTh sortKey="soh_total" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">SOH</SortableTh>
+              <SortableTh sortKey="soh_wh" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">SOH WH</SortableTh>
+              <SortableTh sortKey="pct_in_wh" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-0">% In WH</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {colors.map((c) => {
+            {displayColors.map((c) => {
               const isOpen = openColor === c.color;
               const isLocFiltered = selectedColor === c.color;
               const pctInWh = c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0;
@@ -516,9 +595,6 @@ const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick
                     className={`border-b border-border/40 last:border-0 cursor-pointer hover:bg-panel/60 ${isLocFiltered ? "bg-amber-100/70" : ""}`}
                     onClick={() => {
                       setOpenColor(isOpen ? null : c.color);
-                      // Drive the right-hand "Where did it sell?" pane
-                      // to colour-filter on this colour. Same handler
-                      // toggles off when the user re-clicks.
                       if (onColorClick) onColorClick(c.color);
                     }}
                     data-testid={`sor-color-row-${c.color}`}
@@ -539,47 +615,13 @@ const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick
                   {isOpen && (
                     <tr>
                       <td colSpan={8} className="bg-panel/30 px-3 py-2">
-                        <table className="w-full text-[11.5px]" data-testid={`sor-size-table-${c.color}`}>
-                          <thead>
-                            <tr className="text-left text-muted border-b border-border/60">
-                              <th className="py-1 pr-3">Size</th>
-                              <th className="py-1 pr-3 font-mono">SKU</th>
-                              <th className="py-1 pr-3 text-right">Units 6M</th>
-                              <th className="py-1 pr-3 text-right">% of Color</th>
-                              <th className="py-1 pr-3 text-right">Units 3W</th>
-                              <th className="py-1 pr-3 text-right">SOH</th>
-                              <th className="py-1 pr-3 text-right">SOH WH</th>
-                              <th className="py-1 pr-0 text-right">% In WH</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {c.sizes.map((r, i) => {
-                              const isSizeSel = isLocFiltered && selectedSize === r.size;
-                              return (
-                              <tr
-                                key={`${r.sku}-${i}`}
-                                className={`border-b border-border/30 last:border-0 cursor-pointer hover:bg-amber-50/60 ${isSizeSel ? "bg-amber-200/50" : ""}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();  // don't toggle the parent color row
-                                  if (onSizeClick) onSizeClick(c.color, r.size);
-                                }}
-                                data-testid={`sor-size-row-${c.color}-${r.size}`}
-                              >
-                                <td className="py-1 pr-3">{r.size || "—"}</td>
-                                <td className="py-1 pr-3 font-mono text-[10.5px]">{r.sku || "—"}</td>
-                                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_6m)}</td>
-                                <td className="py-1 pr-3 text-right num text-muted">
-                                  {c.units_6m ? ((r.units_6m / c.units_6m) * 100).toFixed(1) : "0.0"}%
-                                </td>
-                                <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
-                                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
-                                <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
-                                <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
-                              </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                        <SizeBreakdownTable
+                          color={c}
+                          sizes={c.sizes}
+                          selectedColor={selectedColor}
+                          selectedSize={selectedSize}
+                          onSizeClick={onSizeClick}
+                        />
                       </td>
                     </tr>
                   )}

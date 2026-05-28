@@ -15,6 +15,7 @@ import {
   COUNTRY_FLAGS,
 } from "@/lib/api";
 import SORHeader from "@/components/SORHeader";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 // AnnualTargetsCard moved to /targets (Targets Tracker page).
 import { Loading, ErrorBox } from "@/components/common";
 import { Printer, CalendarBlank } from "@phosphor-icons/react";
@@ -281,6 +282,126 @@ const CEOReport = () => {
       }));
   }, [newStyles]);
 
+  // Iter 89 — Per-section sort state. Each table gets its own hook so a
+  // user's sort on the country table doesn't leak into the locations
+  // table. Accessors are computed inline in the render block for the
+  // simpler tables.
+  const countrySort = useTableSort();
+  const locSort = useTableSort();
+  const topSort = useTableSort();
+  const subcatSort = useTableSort();
+  const worstSorSort = useTableSort();
+  const returnsSort = useTableSort();
+  const footfallSort = useTableSort();
+
+  // Country rows (data tables only — TOTAL stays static at the bottom).
+  const countryRows = useMemo(() => {
+    return ["Kenya", "Uganda", "Rwanda", "Online"].map((cname) => {
+      const c = countries.find((x) => x.country === cname);
+      const lm = cLMm.get(cname);
+      const ly = cLYm.get(cname);
+      const dLM = c && lm ? pctDelta(c.total_sales, lm.total_sales) : null;
+      const dLY = c && ly ? pctDelta(c.total_sales, ly.total_sales) : null;
+      return {
+        cname, c, dLM, dLY,
+        total_sales: c?.total_sales ?? 0,
+        orders: c?.orders ?? 0,
+        units_sold: c?.units_sold ?? 0,
+        avg_basket_size: c?.avg_basket_size ?? 0,
+        returns: c?.returns ?? 0,
+      };
+    });
+  }, [countries, cLMm, cLYm]);
+  const sortedCountryRows = useMemo(
+    () => countrySort.sortRows(countryRows, {
+      cname: (r) => r.cname,
+      total_sales: (r) => r.total_sales,
+      dLM: (r) => r.dLM ?? -Infinity,
+      dLY: (r) => r.dLY ?? -Infinity,
+      orders: (r) => r.orders,
+      units_sold: (r) => r.units_sold,
+      avg_basket_size: (r) => r.avg_basket_size,
+      returns: (r) => r.returns,
+    }),
+    [countrySort, countryRows],
+  );
+  const sortedLocations = useMemo(
+    () => locSort.sortRows(top10Loc, {
+      channel: (r) => r.channel,
+      country: (r) => r.country,
+      total_sales: (r) => Number(r.total_sales ?? 0),
+      lm_delta: (r) => {
+        const prev = salesLMm.get(r.channel);
+        return prev ? pctDelta(r.total_sales, prev.total_sales) : -Infinity;
+      },
+      orders: (r) => Number(r.orders ?? 0),
+      units_sold: (r) => Number(r.units_sold ?? 0),
+      basket: (r) => Number(r.orders ? r.total_sales / r.orders : (r.avg_basket_size ?? 0)),
+    }),
+    [locSort, top10Loc, salesLMm],
+  );
+  const sortedTopSkus = useMemo(
+    () => topSort.sortRows(top.slice(0, 20), {
+      style_name: (r) => r.style_name || "",
+      product_type: (r) => r.product_type || "",
+      units_sold: (r) => Number(r.units_sold ?? 0),
+      total_sales: (r) => Number(r.total_sales ?? 0),
+      avg_price: (r) => Number(r.avg_price || (r.units_sold ? (r.total_sales || 0) / r.units_sold : 0)),
+    }),
+    [topSort, top],
+  );
+  const sortedSubcats = useMemo(() => {
+    const base = subcats.filter((r) => isMerchandise(r.subcategory)).slice(0, 15);
+    return subcatSort.sortRows(base, {
+      subcategory: (r) => r.subcategory,
+      units_sold: (r) => Number(r.units_sold ?? 0),
+      pct_of_total_sold: (r) => Number(r.pct_of_total_sold ?? 0),
+      current_stock: (r) => Number(r.current_stock ?? 0),
+      pct_of_total_stock: (r) => Number(r.pct_of_total_stock ?? 0),
+      variance: (r) => Number((r.pct_of_total_stock || 0) - (r.pct_of_total_sold || 0)),
+      sor_percent: (r) => Number(r.sor_percent ?? 0),
+    });
+  }, [subcatSort, subcats]);
+  const sortedWorstSor = useMemo(
+    () => worstSorSort.sortRows(worstSor, {
+      style_name: (r) => r.style_name || "",
+      collection: (r) => r.collection || "",
+      units_sold: (r) => Number(r.units_sold ?? 0),
+      current_stock: (r) => Number(r.current_stock ?? 0),
+      sor_percent: (r) => Number(r.sor_percent ?? 0),
+    }),
+    [worstSorSort, worstSor],
+  );
+  const sortedReturns = useMemo(
+    () => returnsSort.sortRows(top5Returns, {
+      channel: (r) => r.channel,
+      country: (r) => r.country,
+      returns: (r) => Number(r.returns ?? 0),
+      total_sales: (r) => Number(r.total_sales ?? 0),
+      return_rate: (r) => Number(r.gross_sales ? (r.returns / r.gross_sales) * 100 : 0),
+    }),
+    [returnsSort, top5Returns],
+  );
+  const footfallBase = useMemo(() => {
+    return footfall
+      .filter((r) => (r.conversion_rate || 0) <= 50)
+      .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
+      .slice(0, 10);
+  }, [footfall]);
+  const sortedFootfall = useMemo(() => {
+    const salesByLoc = new Map((sales || []).map((s) => [s.channel, s.total_sales || 0]));
+    return footfallSort.sortRows(footfallBase, {
+      location: (r) => r.location,
+      total_footfall: (r) => Number(r.total_footfall ?? 0),
+      orders: (r) => Number(r.orders ?? 0),
+      conversion_rate: (r) => Number(r.conversion_rate ?? 0),
+      sales_per_visitor: (r) => {
+        const ff = r.total_footfall || 0;
+        return ff > 0 ? (salesByLoc.get(r.location) || 0) / ff : 0;
+      },
+    });
+  }, [footfallSort, footfallBase, sales]);
+
   return (
     <div data-testid="ceo-report-page">
       <div className="flex items-center justify-between pb-4 border-b border-border no-print mb-4">
@@ -396,23 +517,18 @@ const CEOReport = () => {
             <table className="w-full data" data-testid="ceo-country-table">
               <thead>
                 <tr>
-                  <th>Country</th>
-                  <th className="text-right">Total Sales</th>
-                  <th className="text-right">vs Last Month</th>
-                  <th className="text-right">vs Last Year</th>
-                  <th className="text-right">Orders</th>
-                  <th className="text-right">Units</th>
-                  <th className="text-right">Avg Basket</th>
-                  <th className="text-right">Returns</th>
+                  <SortableTh sortKey="cname" sort={countrySort.sort} onSort={countrySort.toggleSort}>Country</SortableTh>
+                  <SortableTh sortKey="total_sales" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>Total Sales</SortableTh>
+                  <SortableTh sortKey="dLM" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>vs Last Month</SortableTh>
+                  <SortableTh sortKey="dLY" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>vs Last Year</SortableTh>
+                  <SortableTh sortKey="orders" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>Orders</SortableTh>
+                  <SortableTh sortKey="units_sold" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>Units</SortableTh>
+                  <SortableTh sortKey="avg_basket_size" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>Avg Basket</SortableTh>
+                  <SortableTh sortKey="returns" sort={countrySort.sort} onSort={countrySort.toggleSort} numeric>Returns</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {["Kenya", "Uganda", "Rwanda", "Online"].map((cname) => {
-                  const c = countries.find((x) => x.country === cname);
-                  const lm = cLMm.get(cname);
-                  const ly = cLYm.get(cname);
-                  const dLM = c && lm ? pctDelta(c.total_sales, lm.total_sales) : null;
-                  const dLY = c && ly ? pctDelta(c.total_sales, ly.total_sales) : null;
+                {sortedCountryRows.map(({ cname, c, dLM, dLY }) => {
                   return (
                     <tr key={cname}>
                       <td className="font-medium">
@@ -457,17 +573,17 @@ const CEOReport = () => {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Location</th>
-                  <th>Country</th>
-                  <th className="text-right">Total Sales</th>
-                  <th className="text-right">vs Last Month</th>
-                  <th className="text-right">Orders</th>
-                  <th className="text-right">Units</th>
-                  <th className="text-right">Avg Basket</th>
+                  <SortableTh sortKey="channel" sort={locSort.sort} onSort={locSort.toggleSort}>Location</SortableTh>
+                  <SortableTh sortKey="country" sort={locSort.sort} onSort={locSort.toggleSort}>Country</SortableTh>
+                  <SortableTh sortKey="total_sales" sort={locSort.sort} onSort={locSort.toggleSort} numeric>Total Sales</SortableTh>
+                  <SortableTh sortKey="lm_delta" sort={locSort.sort} onSort={locSort.toggleSort} numeric>vs Last Month</SortableTh>
+                  <SortableTh sortKey="orders" sort={locSort.sort} onSort={locSort.toggleSort} numeric>Orders</SortableTh>
+                  <SortableTh sortKey="units_sold" sort={locSort.sort} onSort={locSort.toggleSort} numeric>Units</SortableTh>
+                  <SortableTh sortKey="basket" sort={locSort.sort} onSort={locSort.toggleSort} numeric>Avg Basket</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {top10Loc.map((l, i) => {
+                {sortedLocations.map((l, i) => {
                   const prev = salesLMm.get(l.channel);
                   const d = prev ? pctDelta(l.total_sales, prev.total_sales) : null;
                   const basket = l.orders ? l.total_sales / l.orders : l.avg_basket_size;
@@ -499,15 +615,15 @@ const CEOReport = () => {
               <thead>
                 <tr>
                   <th className="text-left">Rank</th>
-                  <th className="text-left">Style Name</th>
-                  <th className="text-left">Subcategory</th>
-                  <th className="text-right">Units Sold</th>
-                  <th className="text-right">Total Sales KES</th>
-                  <th className="text-right">Avg Price KES</th>
+                  <SortableTh sortKey="style_name" sort={topSort.sort} onSort={topSort.toggleSort}>Style Name</SortableTh>
+                  <SortableTh sortKey="product_type" sort={topSort.sort} onSort={topSort.toggleSort}>Subcategory</SortableTh>
+                  <SortableTh sortKey="units_sold" sort={topSort.sort} onSort={topSort.toggleSort} numeric>Units Sold</SortableTh>
+                  <SortableTh sortKey="total_sales" sort={topSort.sort} onSort={topSort.toggleSort} numeric>Total Sales KES</SortableTh>
+                  <SortableTh sortKey="avg_price" sort={topSort.sort} onSort={topSort.toggleSort} numeric>Avg Price KES</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {top.slice(0, 20).map((s, i) => (
+                {sortedTopSkus.map((s, i) => (
                   <tr key={(s.style_name || "") + i}>
                     <td className="text-muted num">{i + 1}</td>
                     <td className="font-medium max-w-[340px] truncate" title={s.style_name}>
@@ -529,17 +645,17 @@ const CEOReport = () => {
             <table className="w-full data" data-testid="ceo-subcat-table">
               <thead>
                 <tr>
-                  <th>Subcategory</th>
-                  <th className="text-right">Units Sold</th>
-                  <th className="text-right">% of Sold</th>
-                  <th className="text-right">Current Stock</th>
-                  <th className="text-right">% of Stock</th>
-                  <th className="text-right">Variance</th>
-                  <th className="text-right"><SORHeader /></th>
+                  <SortableTh sortKey="subcategory" sort={subcatSort.sort} onSort={subcatSort.toggleSort}>Subcategory</SortableTh>
+                  <SortableTh sortKey="units_sold" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric>Units Sold</SortableTh>
+                  <SortableTh sortKey="pct_of_total_sold" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric>% of Sold</SortableTh>
+                  <SortableTh sortKey="current_stock" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric>Current Stock</SortableTh>
+                  <SortableTh sortKey="pct_of_total_stock" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric>% of Stock</SortableTh>
+                  <SortableTh sortKey="variance" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric>Variance</SortableTh>
+                  <SortableTh sortKey="sor_percent" sort={subcatSort.sort} onSort={subcatSort.toggleSort} numeric><SORHeader /></SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {subcats.filter((r) => isMerchandise(r.subcategory)).slice(0, 15).map((r, i) => {
+                {sortedSubcats.map((r, i) => {
                   const pill = (r.sor_percent || 0) < 30 ? "pill-red" : (r.sor_percent || 0) < 60 ? "pill-amber" : "pill-green";
                   const variance = (r.pct_of_total_stock || 0) - (r.pct_of_total_sold || 0);
                   const vPill = variance >= 2 ? "pill-red" : variance <= -2 ? "pill-green" : "pill-neutral";
@@ -628,15 +744,15 @@ const CEOReport = () => {
               <table className="w-full data">
                 <thead>
                   <tr>
-                    <th>Style</th>
-                    <th>Collection</th>
-                    <th className="text-right">Units</th>
-                    <th className="text-right">Stock</th>
-                    <th className="text-right"><SORHeader /></th>
+                    <SortableTh sortKey="style_name" sort={worstSorSort.sort} onSort={worstSorSort.toggleSort}>Style</SortableTh>
+                    <SortableTh sortKey="collection" sort={worstSorSort.sort} onSort={worstSorSort.toggleSort}>Collection</SortableTh>
+                    <SortableTh sortKey="units_sold" sort={worstSorSort.sort} onSort={worstSorSort.toggleSort} numeric>Units</SortableTh>
+                    <SortableTh sortKey="current_stock" sort={worstSorSort.sort} onSort={worstSorSort.toggleSort} numeric>Stock</SortableTh>
+                    <SortableTh sortKey="sor_percent" sort={worstSorSort.sort} onSort={worstSorSort.toggleSort} numeric><SORHeader /></SortableTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {worstSor.map((r, i) => (
+                  {sortedWorstSor.map((r, i) => (
                     <tr key={(r.style_name || "") + i} style={{ background: "rgba(220,38,38,0.04)" }}>
                       <td className="font-medium break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.style_name}>
                         {r.style_name}
@@ -693,22 +809,22 @@ const CEOReport = () => {
             <thead>
               <tr>
                 <th>#</th>
-                <th>Location</th>
-                <th>Country</th>
-                <th className="text-right">Returns</th>
-                <th className="text-right">Total Sales</th>
-                <th className="text-right">Return Rate</th>
+                <SortableTh sortKey="channel" sort={returnsSort.sort} onSort={returnsSort.toggleSort}>Location</SortableTh>
+                <SortableTh sortKey="country" sort={returnsSort.sort} onSort={returnsSort.toggleSort}>Country</SortableTh>
+                <SortableTh sortKey="returns" sort={returnsSort.sort} onSort={returnsSort.toggleSort} numeric>Returns</SortableTh>
+                <SortableTh sortKey="total_sales" sort={returnsSort.sort} onSort={returnsSort.toggleSort} numeric>Total Sales</SortableTh>
+                <SortableTh sortKey="return_rate" sort={returnsSort.sort} onSort={returnsSort.toggleSort} numeric>Return Rate</SortableTh>
               </tr>
             </thead>
             <tbody>
-              {top5Returns.length === 0 && (
+              {sortedReturns.length === 0 && (
                 <tr>
                   <td colSpan={6} className="text-muted text-center py-4">
                     No returns recorded in this period.
                   </td>
                 </tr>
               )}
-              {top5Returns.map((l, i) => {
+              {sortedReturns.map((l, i) => {
                 const rr = l.gross_sales ? (l.returns / l.gross_sales) * 100 : 0;
                 return (
                   <tr key={l.channel + i}>
@@ -733,11 +849,11 @@ const CEOReport = () => {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Location</th>
-                  <th className="text-right">Footfall</th>
-                  <th className="text-right">Orders</th>
-                  <th className="text-right">Conversion</th>
-                  <th className="text-right">Sales / Visitor</th>
+                  <SortableTh sortKey="location" sort={footfallSort.sort} onSort={footfallSort.toggleSort}>Location</SortableTh>
+                  <SortableTh sortKey="total_footfall" sort={footfallSort.sort} onSort={footfallSort.toggleSort} numeric>Footfall</SortableTh>
+                  <SortableTh sortKey="orders" sort={footfallSort.sort} onSort={footfallSort.toggleSort} numeric>Orders</SortableTh>
+                  <SortableTh sortKey="conversion_rate" sort={footfallSort.sort} onSort={footfallSort.toggleSort} numeric>Conversion</SortableTh>
+                  <SortableTh sortKey="sales_per_visitor" sort={footfallSort.sort} onSort={footfallSort.toggleSort} numeric>Sales / Visitor</SortableTh>
                 </tr>
               </thead>
               <tbody>
@@ -746,11 +862,7 @@ const CEOReport = () => {
                   // we can compute Sales / Visitor = total_sales ÷ footfall.
                   // Upstream /footfall does not expose total_sales per store.
                   const salesByLoc = new Map((sales || []).map((s) => [s.channel, s.total_sales || 0]));
-                  return footfall
-                    .filter((r) => (r.conversion_rate || 0) <= 50)
-                    .sort((a, b) => (b.total_footfall || 0) - (a.total_footfall || 0))
-                    .slice(0, 10)
-                    .map((r, i) => {
+                  return sortedFootfall.map((r, i) => {
                       const pill = (r.conversion_rate || 0) > 15 ? "pill-green" : (r.conversion_rate || 0) >= 10 ? "pill-amber" : "pill-red";
                       const locSales = salesByLoc.get(r.location) || 0;
                       const ff = r.total_footfall || 0;

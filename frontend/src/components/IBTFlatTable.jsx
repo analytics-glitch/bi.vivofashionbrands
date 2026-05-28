@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import { ArrowRight, CheckCircle, MagnifyingGlass } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 /**
  * Flat SKU-level IBT table.
@@ -232,6 +233,36 @@ export default function IBTFlatTable({
     });
   }, [flatRows, search, completedSkuKeys]);
 
+  // Iter 89 — Every column sortable. Click a header to sort asc, click
+  // again for desc, click a third time to clear. Accessors normalise
+  // numbers vs strings so dates / counts / pills compare correctly.
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const sortAccessors = useMemo(() => ({
+    style_name: (r) => r.style_name,
+    from_store: (r) => r.from_store,
+    from_qty_sold_28d: (r) => (r.from_qty_sold_28d == null ? null : Number(r.from_qty_sold_28d)),
+    to_store: (r) => r.to_store,
+    to_qty_sold_28d: (r) => (r.to_qty_sold_28d == null ? null : Number(r.to_qty_sold_28d)),
+    owner: (r) => r.owner || "",
+    color: (r) => r.color,
+    size: (r) => r.size,
+    sku: (r) => r.sku,
+    barcode: (r) => r.barcode,
+    bin: (r) => r.bin || "",
+    from_available: (r) => Number(r.from_available ?? 0),
+    to_available: (r) => Number(r.to_available ?? 0),
+    suggested_qty: (r) => Number(r.suggested_qty ?? 0),
+    actual: (r) => {
+      const v = actuals[r.rowKey];
+      return v === undefined || v === "" ? null : Number(v);
+    },
+    days_lapsed: (r) => (r.days_lapsed == null ? null : Number(r.days_lapsed)),
+  }), [actuals]);
+  const sortedRows = useMemo(
+    () => sortRows(filteredRows, sortAccessors),
+    [sortRows, filteredRows, sortAccessors],
+  );
+
   const handleMarkDone = (r) => {
     const actual = actuals[r.rowKey];
     onMarkDone?.({
@@ -337,46 +368,46 @@ export default function IBTFlatTable({
         <table className="w-full min-w-max text-[12.5px]">
           <thead className="bg-panel sticky top-0 z-10">
             <tr className="text-left">
-              <th className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[180px] max-w-[260px]">Style</th>
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">From</th>
+              <SortableTh sortKey="style_name" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[180px] max-w-[260px]" testId={`${testId}-sort-style`}>Style</SortableTh>
+              <SortableTh sortKey="from_store" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-from`}>From</SortableTh>
               {/* Iter 78 — fixed-28-day Qty Sold per side, only on the
                   store-to-store flow. Helps the user justify the
                   transfer direction without changing their filter. */}
               {!_isWh(flow) && (
-                <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Units sold at the FROM store in the last 28 days (fixed window)">From: Qty Sold (28d)</th>
+                <SortableTh sortKey="from_qty_sold_28d" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Units sold at the FROM store in the last 28 days (fixed window)" testId={`${testId}-sort-from-qty28`}>From: Qty Sold (28d)</SortableTh>
               )}
               <th className="px-2 py-2.5"></th>
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">To</th>
+              <SortableTh sortKey="to_store" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-to`}>To</SortableTh>
               {!_isWh(flow) && (
-                <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Units sold at the TO store in the last 28 days (fixed window)">To: Qty Sold (28d)</th>
+                <SortableTh sortKey="to_qty_sold_28d" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Units sold at the TO store in the last 28 days (fixed window)" testId={`${testId}-sort-to-qty28`}>To: Qty Sold (28d)</SortableTh>
               )}
               {/* Iter 78 — Owner + Bin only on the warehouse → store
                   flow (mirrors what the Daily Replenishment table
                   shows). Store-to-store flow keeps the original
                   column layout. */}
               {_isWh(flow) && (
-                <th className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Picker assigned to the destination store">Owner</th>
+                <SortableTh sortKey="owner" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Picker assigned to the destination store" testId={`${testId}-sort-owner`}>Owner</SortableTh>
               )}
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Color</th>
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</th>
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">SKU</th>
-              <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</th>
+              <SortableTh sortKey="color" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-color`}>Color</SortableTh>
+              <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-size`}>Size</SortableTh>
+              <SortableTh sortKey="sku" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-sku`}>SKU</SortableTh>
+              <SortableTh sortKey="barcode" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-barcode`}>Barcode</SortableTh>
               {_isWh(flow) && (
-                <th className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Warehouse bin location for this barcode">Bin</th>
+                <SortableTh sortKey="bin" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Warehouse bin location for this barcode" testId={`${testId}-sort-bin`}>Bin</SortableTh>
               )}
-              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the FROM store">Inv. Qty FROM</th>
-              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the TO store">Inv. Qty TO</th>
-              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Suggested</th>
-              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual transferred</th>
-              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Days since the system first surfaced this transfer. Highlighted RED when more than 2 days.">Days lapsed</th>
+              <SortableTh sortKey="from_available" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Shop-floor inventory at the FROM store" testId={`${testId}-sort-from-inv`}>Inv. Qty FROM</SortableTh>
+              <SortableTh sortKey="to_available" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Shop-floor inventory at the TO store" testId={`${testId}-sort-to-inv`}>Inv. Qty TO</SortableTh>
+              <SortableTh sortKey="suggested_qty" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-suggested`}>Suggested</SortableTh>
+              <SortableTh sortKey="actual" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" testId={`${testId}-sort-actual`}>Actual transferred</SortableTh>
+              <SortableTh sortKey="days_lapsed" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since the system first surfaced this transfer. Highlighted RED when more than 2 days." testId={`${testId}-sort-days`}>Days lapsed</SortableTh>
               <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Action</th>
             </tr>
           </thead>
           <tbody>
-            {filteredRows.length === 0 && !loading && (
+            {sortedRows.length === 0 && !loading && (
               <tr><td colSpan={16} className="px-3 py-6 text-center text-muted">No matches.</td></tr>
             )}
-            {filteredRows.map((r, idx) => (
+            {sortedRows.map((r, idx) => (
               <tr
                 key={r.rowKey}
                 className={`border-t border-border/50 ${idx % 2 === 0 ? "bg-white" : "bg-panel/30"} hover:bg-amber-50/40`}

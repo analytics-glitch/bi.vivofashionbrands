@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   Calendar as CalendarIcon, CheckCircle, FilePdf,
   Package, ArrowCounterClockwise, MagnifyingGlass,
@@ -77,6 +78,11 @@ const Replenishments = () => {
   const [completed, setCompleted] = useState({ rows: [], total: 0 });
   const [completedLoading, setCompletedLoading] = useState(false);
   const [completedRefresh, setCompletedRefresh] = useState(0);
+
+  // Iter 89 — Per-table sort state (each table is independent).
+  const liveSort = useTableSort();
+  const fulfilmentSort = useTableSort();
+  const completedSort = useTableSort();
 
   // Bootstrap is now handled inside <ReplenishmentRosterCard>; this
   // page just listens for the save signal via the onSaved callback.
@@ -159,6 +165,25 @@ const Replenishments = () => {
         );
       });
   }, [data.rows, search]);
+
+  // Iter 89 — Sortable view of visibleRows. Default ordering is the
+  // server-side picker assignment (owner / pos / bin) so the natural
+  // grouping is preserved until the user clicks a header.
+  const sortedVisibleRows = useMemo(() => {
+    return liveSort.sortRows(visibleRows, {
+      owner: (r) => r.owner || "",
+      pos_location: (r) => r.pos_location || "",
+      days_lapsed: (r) => r.days_lapsed == null ? null : Number(r.days_lapsed),
+      product_name: (r) => r.product_name || "",
+      size: (r) => r.size || "",
+      barcode: (r) => r.barcode || "",
+      bin: (r) => r.bin || "",
+      units_sold: (r) => Number(r.units_sold ?? 0),
+      soh_store: (r) => Number(r.soh_store ?? 0),
+      soh_wh: (r) => Number(r.soh_wh ?? 0),
+      replenish: (r) => Number(r.replenish ?? 0),
+    });
+  }, [liveSort, visibleRows]);
 
   const setActual = (k, v) => setActuals((prev) => ({ ...prev, [k]: v }));
 
@@ -423,23 +448,23 @@ const Replenishments = () => {
               <table className="w-full min-w-max text-[12.5px]" data-testid="replen-table">
                 <thead className="bg-panel sticky top-0 z-10">
                   <tr className="text-left">
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Owner</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap text-right" title="Days since this SKU first appeared on the replenishment list. RED when > 2.">Days lapsed</th>
-                    <th className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[200px] max-w-[280px]">Product</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Bin</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Sold</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">SOH Store</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">SOH WH</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Suggested</th>
+                    <SortableTh sortKey="owner" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Owner</SortableTh>
+                    <SortableTh sortKey="pos_location" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
+                    <SortableTh sortKey="days_lapsed" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since this SKU first appeared on the replenishment list. RED when > 2.">Days lapsed</SortableTh>
+                    <SortableTh sortKey="product_name" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[200px] max-w-[280px]">Product</SortableTh>
+                    <SortableTh sortKey="size" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
+                    <SortableTh sortKey="barcode" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
+                    <SortableTh sortKey="bin" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Bin</SortableTh>
+                    <SortableTh sortKey="units_sold" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Sold</SortableTh>
+                    <SortableTh sortKey="soh_store" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH Store</SortableTh>
+                    <SortableTh sortKey="soh_wh" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
+                    <SortableTh sortKey="replenish" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Suggested</SortableTh>
                     <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual replenished</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map((r, idx) => {
+                  {sortedVisibleRows.map((r, idx) => {
                     const k = `${r.pos_location}|${r.barcode}`;
                     const dl = r.days_lapsed;
                     return (
@@ -524,15 +549,21 @@ const Replenishments = () => {
             <table className="w-full text-[12.5px]">
               <thead className="bg-panel">
                 <tr className="text-left">
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">User</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Lines done</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Suggested</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Replenished</th>
-                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Fulfilment rate</th>
+                  <SortableTh sortKey="user" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} className="px-3 py-2 font-semibold whitespace-nowrap">User</SortableTh>
+                  <SortableTh sortKey="lines" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Lines done</SortableTh>
+                  <SortableTh sortKey="target" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Suggested</SortableTh>
+                  <SortableTh sortKey="actual" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Replenished</SortableTh>
+                  <SortableTh sortKey="rate" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Fulfilment rate</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {fulfilmentByUser.map((u, i) => (
+                {fulfilmentSort.sortRows(fulfilmentByUser, {
+                  user: (u) => u.user,
+                  lines: (u) => Number(u.lines ?? 0),
+                  target: (u) => Number(u.target ?? 0),
+                  actual: (u) => Number(u.actual ?? 0),
+                  rate: (u) => u.rate == null ? null : Number(u.rate),
+                }).map((u, i) => (
                   <tr key={u.user} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-fulfilment-row-${i}`}>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">
@@ -594,20 +625,35 @@ const Replenishments = () => {
               <table className="w-full min-w-max text-[12.5px]">
                 <thead className="bg-panel sticky top-0">
                   <tr className="text-left">
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Completed at</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">User</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</th>
-                    <th className="px-3 py-2.5 font-semibold">Product</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</th>
-                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Qty to replenish</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Qty replenished</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Fulfilment %</th>
-                    <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Qty after replenish</th>
+                    <SortableTh sortKey="completed_at" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Completed at</SortableTh>
+                    <SortableTh sortKey="completed_by" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">User</SortableTh>
+                    <SortableTh sortKey="pos_location" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
+                    <SortableTh sortKey="product_name" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold">Product</SortableTh>
+                    <SortableTh sortKey="size" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
+                    <SortableTh sortKey="barcode" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
+                    <SortableTh sortKey="replenish" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty to replenish</SortableTh>
+                    <SortableTh sortKey="actual" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty replenished</SortableTh>
+                    <SortableTh sortKey="fulfilment_pct" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Fulfilment %</SortableTh>
+                    <SortableTh sortKey="soh_after" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty after replenish</SortableTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {(completed.rows || []).map((r) => (
+                  {completedSort.sortRows(completed.rows || [], {
+                    completed_at: (r) => r.completed_at || "",
+                    completed_by: (r) => r.owner || r.completed_by_name || "",
+                    pos_location: (r) => r.pos_location || "",
+                    product_name: (r) => r.product_name || "",
+                    size: (r) => r.size || "",
+                    barcode: (r) => r.barcode || "",
+                    replenish: (r) => Number(r.replenish ?? 0),
+                    actual: (r) => Number(r.actual_units_replenished ?? 0),
+                    fulfilment_pct: (r) => {
+                      const t = Number(r.replenish ?? 0);
+                      const a = Number(r.actual_units_replenished ?? 0);
+                      return t > 0 ? (a / t) * 100 : null;
+                    },
+                    soh_after: (r) => r.soh_after == null ? null : Number(r.soh_after),
+                  }).map((r) => (
                     <tr key={r.key} className="border-t border-border/50 hover:bg-panel/30">
                       <td className="px-3 py-2 text-[11px] tabular-nums">
                         {r.completed_at ? r.completed_at.replace("T", " ").slice(0, 16) : "—"}
