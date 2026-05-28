@@ -4,6 +4,30 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89) — Sortable headers on every table (P0)
+- **User ask**: *"Every table in this dashboard should have sort options in all the columns."*
+- **Approach**: Built a reusable `useTableSort` hook + `<SortableTh>` helper (`/app/frontend/src/lib/useTableSort.js`) — three-state click cycle (asc → desc → off), caret-up/down indicator, numeric-aware comparator with localeCompare `{numeric: true}` fallback for natural sort.
+- **Tables retrofitted** (~20+ tables across 14 files):
+  - `IBTFlatTable.jsx` — both Store→Store and Warehouse→Store flows (Style, From, To, From: Qty 28d, To: Qty 28d, Owner, Color, Size, SKU, Barcode, Bin, Inv FROM, Inv TO, Suggested, Actual, Days lapsed all sortable)
+  - `IBTSkuBreakdown.jsx` — SKU/Color/Size/Stock at FROM/Stock at TO/Suggested
+  - `AnnualTargetsCard.jsx` — per-channel and per-quarter tables. Hooks moved above early returns to comply with rules-of-hooks
+  - `AuditHistoryPanel.jsx` — every column of the audit log
+  - `AllocationRunsHistory.jsx` — Style/Color/Type/Subcat/Buying/Warehouse/Δ/Status/Saved/By
+  - `ReplenishByColor.jsx` — extracted `ReplenColorsTable` child component so the inline + always-shown per-color tables both sort independently
+  - `SORReportExport.jsx` — extracted `SizeBreakdownTable` child for nested size sort; outer Color table also sortable
+  - `MonthlyTargetsTracker.jsx` — per-store daily breakdown
+  - `CEOReport.jsx` — 7 plain tables (country, locations, top-skus, subcat, worst-SOR, returns, footfall) each with own sort hook
+  - `Footfall.jsx` — ff-bottom-turnin-table + Excluded table
+  - `Locations.jsx` — Footfall & Conversion table
+  - `Replenishments.jsx` — live picker queue + per-user fulfilment + completed audit (3 tables)
+  - `StoreClusters.jsx` — per-store features table
+  - `Customers.jsx` — repeat-orders subtable swapped to `<SortableTable>`
+- **Already sortable** (no work needed): all tables built on the shared `<SortableTable>` component — KPI breakdowns, Stock-to-Sales, SOR L-10/All Styles, footfall exploration, footfall breakdown, repeat-customers-list, top customers, etc.
+- **Skipped by design**: `TotalSalesSummary` (has subtotal/grand-total rows), `MonthlyTargetsTracker` quarters matrix, `AllocationPendingQueue` paired sub-header table (size columns are paired plan/actual), `CategoryAccordionTable` (uses divs not real table rows by design), Customers metric / comparison table (semantic group separators between rows).
+- **Test result**: `testing_agent_v3_fork` iter 69 — 20/20 testable tables pass at 100%. No React Hook violations, no console errors introduced.
+- **One pre-existing issue surfaced (unrelated to sort work)**: hydration warning `<span> cannot be a child of <option>` on the IBT page select(s). Filed for follow-up.
+
+
 ### Recent (Feb 2026 — Iter 88a) — Customer Loyalty page: trust upstream `/customers` for all segmentation (P0)
 - **Bug**: User screenshot of Customers page (May 20–24) showed `New customers = 4` and `New ABV = KES 27.91K` (way too high). Total identified = only 766.
 - **Root cause**: backend `_get_customers_live` was overriding upstream `/customers` `total_customers` and `avg_customer_spend` using a local recomputation (`analytics_avg_spend_by_customer_type`). That endpoint relied on the per-order `customer_type` field with a "majority vote, Returning wins ties" rule. Odoo POS rows are not tagged with `customer_type` upstream (only Shopify rows are), so 95% of true new customers were silently re-bucketed as Returning.
