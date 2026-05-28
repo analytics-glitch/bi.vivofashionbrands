@@ -114,7 +114,14 @@ const SORReport = () => {
     const totalSOH = filtered.reduce((s, r) => s + (r.soh_total || 0), 0);
     const denom = filtered.reduce((s, r) => s + ((r.units_6m || 0) + (r.soh_total || 0)), 0);
     const wSor = denom > 0 ? totalUnits / denom * 100 : 0;
-    return { totalSales, totalUnits, totalSOH, wSor, n: filtered.length };
+    // Iter 89d — Catalog-wide Weeks-of-Cover.
+    //   weekly_burn = Σ(weekly_avg) — already 3-month based (Iter 89c).
+    //   wOC = totalSOH ÷ weekly_burn. "—" when the filtered catalog
+    //   has 0 recent burn (would be ∞).
+    const totalWeeklyBurn = filtered.reduce((s, r) => s + (r.weekly_avg || 0), 0);
+    const aggregateWoc = totalWeeklyBurn > 0 ? totalSOH / totalWeeklyBurn : null;
+    const overstocked = filtered.filter((r) => r.woc != null && r.woc > 26).length;
+    return { totalSales, totalUnits, totalSOH, wSor, n: filtered.length, aggregateWoc, overstocked };
   }, [filtered]);
 
   // Lazy-load SKU breakdown when a row expands. The endpoint may
@@ -255,11 +262,25 @@ const SORReport = () => {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
           <Tile label="Styles" value={fmtNum(stats.n)} />
           <Tile label="Total Sales" value={fmtKES(stats.totalSales)} />
           <Tile label="Units Sold" value={fmtNum(stats.totalUnits)} />
           <Tile label="SOH" value={fmtNum(stats.totalSOH)} />
+          <Tile
+            label="Weeks of Cover"
+            value={stats.aggregateWoc == null ? "—" : `${stats.aggregateWoc.toFixed(1)}w`}
+            sub={stats.aggregateWoc == null ? "no recent burn" : `${fmtNum(stats.overstocked)} styles > 26w`}
+            tone={
+              stats.aggregateWoc == null
+                ? undefined
+                : stats.aggregateWoc < 12
+                ? "good"
+                : stats.aggregateWoc > 26
+                ? "warn"
+                : undefined
+            }
+          />
           <Tile label="Weighted SOR" value={`${stats.wSor.toFixed(1)}%`} />
         </div>
 
@@ -437,12 +458,24 @@ const SORReport = () => {
   );
 };
 
-const Tile = ({ label, value }) => (
-  <div className="rounded-xl border border-border p-3">
-    <div className="eyebrow">{label}</div>
-    <div className="font-extrabold text-[16px] num mt-0.5">{value}</div>
-  </div>
-);
+const Tile = ({ label, value, sub, tone }) => {
+  // Iter 89d — `tone` paints WoC tile in green when catalog is lean
+  // (< 12w) or amber when overstocked (> 26w). `sub` adds context line
+  // such as "X styles > 26w" so the tile reads at a glance.
+  const cls =
+    tone === "warn"
+      ? "border-amber-300 bg-amber-50 text-amber-900"
+      : tone === "good"
+      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+      : "border-border";
+  return (
+    <div className={`rounded-xl border p-3 ${cls}`}>
+      <div className="eyebrow">{label}</div>
+      <div className="font-extrabold text-[16px] num mt-0.5">{value}</div>
+      {sub && <div className="text-[10.5px] opacity-80 mt-0.5">{sub}</div>}
+    </div>
+  );
+};
 
 const SizeBreakdownTable = ({ color, sizes, selectedColor, selectedSize, onSizeClick }) => {
   const { sort, toggleSort, sortRows } = useTableSort();

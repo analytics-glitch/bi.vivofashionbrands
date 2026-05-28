@@ -4,6 +4,14 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89d) — WoC KPI tile on Products SOR · All Styles + Exports SOR Report
+- **User ask**: "I meant I need a card for week of cover in these 2" (Products → SOR All Styles and Exports → SOR Report KPI strips).
+- **Implementation**:
+  - `SorAllStyles.jsx` — added `Weeks of Cover` tile (5→6 cols on md+). Formula: `aggregate_woc = Σ(soh_total) / Σ(weekly_avg)`. Subtitle shows count of styles > 26w. Tone is green when < 12w (lean), amber when > 26w (catalog overstocked).
+  - `SORReportExport.jsx` — same `Weeks of Cover` tile inserted between SOH and Weighted SOR. The `Tile` helper now accepts `sub` and `tone` props (green/amber backgrounds).
+- **Verified live**: Both pages show `WEEKS OF COVER · 12.6w · 340 styles > 26w`. Math is consistent across the two views since they both read the same `/sor-all-styles` payload.
+
+
 ### Recent (Feb 2026 — Iter 89c) — SOR tables: Weeks-of-Cover + style-number-keyed launch/age (P0)
 - **User ask**: "Add weeks of cover in these. Also Style launch date, weeks of cover, Age should be based on style number not style name."
 - **Backend changes** (`/app/backend/server.py`):
