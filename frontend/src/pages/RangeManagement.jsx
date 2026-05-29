@@ -91,6 +91,11 @@ const RangeManagement = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Iter 89w-f — bulk-promote workflow state.  Declared up-top so the
+  // data-fetch useEffect below can react to `refreshToken` changes.
+  const [promoting, setPromoting] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+
   // Filters
   const [tierFilter, setTierFilter] = useState([]);
   const [brandFilter, setBrandFilter] = useState([]);
@@ -121,13 +126,39 @@ const RangeManagement = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion, refreshToken]);
 
   const rows = data?.rows || [];
   const summary = data?.summary;
   const retirement = data?.retirement_pipeline || [];
   const movements = data?.recent_movements || [];
   const candidates = data?.tier3_graduation_candidates || [];
+
+  const promoteAllCandidates = async () => {
+    if (!candidates.length) return;
+    const n = candidates.length;
+    const ok = window.confirm(
+      `Promote ${n} Tier 3 style${n === 1 ? "" : "s"} to Tier 2?\n\n` +
+      `This sets a manual override that survives across classifier runs. ` +
+      `You can revert any individual style later via the API.`,
+    );
+    if (!ok) return;
+    setPromoting(true);
+    try {
+      const r = await api.post("/range-mgmt/overrides/bulk-promote", {
+        style_names: candidates.map((c) => c.style_name),
+        override_tier: "Tier 2",
+        reason: "Bulk graduation from Range Mgmt UI",
+      });
+      // Refresh classification so the tier counts update.
+      setRefreshToken((x) => x + 1);
+      window.alert(`Promoted ${r.data?.upserted ?? n} styles to Tier 2.`);
+    } catch (e) {
+      window.alert("Bulk promote failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setPromoting(false);
+    }
+  };
 
   const brandOpts   = useMemo(() => [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort(), [rows]);
   const subcatOpts  = useMemo(() => [...new Set(rows.map((r) => r.subcategory).filter(Boolean))].sort(), [rows]);
@@ -272,6 +303,18 @@ const RangeManagement = () => {
                 />
               ))}
             </div>
+            {/* Iter 89w-f — data-ceiling footer note */}
+            <p
+              className="text-[11px] text-muted mt-2 leading-snug"
+              data-testid="range-data-ceiling-note"
+            >
+              <strong>Note on age ceiling:</strong> Style age is computed from the persisted
+              first-sale date in <code className="text-[10px]">style_launch_dates</code>, which today
+              spans roughly the last 6 months of trading data. Styles older than that show as ~27w
+              and stay in Tier 3 / Tier 4 until the history grows — Tier 1 (24+ months) and Tier 2
+              (9–24 months) buckets will populate organically over the coming months. Use the
+              graduation panel above to promote ready styles manually in the meantime.
+            </p>
           </div>
 
           {/* Section 1.5 — Tier 3 → Tier 2 graduation candidates */}
@@ -293,21 +336,33 @@ const RangeManagement = () => {
                     Promote these to clear the Tier 3 backlog (currently {fmtNum(summary?.tier_counts?.["Tier 3"] || 0)} vs target {summary?.targets?.["Tier 2"]?.[0]}–{summary?.targets?.["Tier 2"]?.[1]}).
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Pre-fill the tier filter with Tier 3 so the user can
-                    // dig into the wider Tier 3 cohort from this callout.
-                    setTierFilter(["Tier 3"]);
-                    document
-                      .querySelector('[data-testid="range-table-card"]')
-                      ?.scrollIntoView({ behavior: "smooth" });
-                  }}
-                  data-testid="grad-candidates-jump-btn"
-                  className="px-3 py-1 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel"
-                >
-                  See all Tier 3 →
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={promoteAllCandidates}
+                    disabled={promoting || !candidates.length}
+                    data-testid="grad-promote-all-btn"
+                    className="px-3 py-1 rounded-lg bg-sky-700 hover:bg-sky-800 text-white text-[11.5px] font-semibold disabled:opacity-50"
+                    title="Sets a manual tier-2 override for every candidate"
+                  >
+                    {promoting
+                      ? "Promoting…"
+                      : `Promote all ${fmtNum(candidates.length)} to Tier 2`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTierFilter(["Tier 3"]);
+                      document
+                        .querySelector('[data-testid="range-table-card"]')
+                        ?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    data-testid="grad-candidates-jump-btn"
+                    className="px-3 py-1 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel"
+                  >
+                    See all Tier 3 →
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-[12px] border-collapse" data-testid="grad-candidates-table">
@@ -424,7 +479,23 @@ const RangeManagement = () => {
                     csv: (r) => r.style_name,
                   },
                   { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
-                  { key: "tier", label: "Tier", align: "left", render: (r) => <TierPill tier={r.tier} /> },
+                  {
+                    key: "tier", label: "Tier", align: "left",
+                    render: (r) => (
+                      <span className="inline-flex items-center gap-1">
+                        <TierPill tier={r.tier} />
+                        {r.auto_tier && r.auto_tier !== r.tier && (
+                          <span
+                            className="inline-block px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-violet-100 text-violet-800"
+                            title={`Manual override · auto-tier was ${r.auto_tier}\n${r.override_reason || ""}`}
+                            data-testid={`tier-override-badge-${r.style_name}`}
+                          >
+                            MANUAL
+                          </span>
+                        )}
+                      </span>
+                    ),
+                  },
                   {
                     key: "style_age_weeks", label: "Age (wks)", numeric: true,
                     render: (r) => fmtNum(r.style_age_weeks),

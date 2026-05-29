@@ -1136,5 +1136,17 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **UI**: top-12 candidates shown inline (style + brand + subcategory + weeks-to-gate pill + SOR % + FP % + reorders + stock + last-sale-days). "See all Tier 3 →" button auto-applies the Tier 3 filter and scrolls to the full table. "+ N more candidates" overflow line when > 12.
 - **Live numbers**: 337 candidates surfaced — promoting them clears 39 % of the Tier 3 backlog (870 → 533) and gets Tier 2 closer to its 200-300 target.
 
+### Recent (Feb 2026 — Iter 89w-f) — Bulk Tier 2 promotion + age-ceiling footer note
+- **Manual tier overrides** — new Mongo collection `style_tier_overrides` (unique index on `style_name`). Override docs carry `override_tier`, `reason`, `set_by` (user email), `set_at` (UTC datetime).
+- **New endpoints**:
+  - `POST /api/range-mgmt/overrides/bulk-promote` body `{style_names[], override_tier, reason}` — upserts overrides. Validates `override_tier ∈ {Tier 1..Tier 4, Retire}`. Returns `{upserted: N}`.
+  - `DELETE /api/range-mgmt/overrides/{style_name}` — drops a single override, 404 if absent.
+  - `GET /api/range-mgmt/overrides` — list every active override (used for an "Overrides" panel down the road).
+- **Override application**: `/api/range-mgmt/classify` now applies overrides AFTER the auto-classifier but BEFORE `summarise()`, so the summary tier counts reflect the manual moves. Original auto-assigned tier is preserved as `auto_tier`; row also carries `override_reason`, `override_by`, `override_at`.
+- **Frontend "Promote all N to Tier 2" button** on the candidates panel — sky-blue primary, confirm dialog, optimistic refresh via a `refreshToken` state bumped on success. After promotion, the tier KPI cards re-render with the new counts.
+- **Manual override badge** in the classification table — small violet "MANUAL" pill next to the Tier pill on overridden rows, with `title` showing the auto tier and the reason.
+- **Footer "Note on age ceiling"** under the tier KPI cards — explains the 6-month data window and points users at the graduation panel as the workaround.
+- **Verified end-to-end**: bulk-promoted 3 styles via curl → Tier 2 jumped from 0 → 3 in the summary, Tier 3 dropped from 870 → 866. Reverted via DELETE → counts restored. Mongo state cleaned post-test.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
