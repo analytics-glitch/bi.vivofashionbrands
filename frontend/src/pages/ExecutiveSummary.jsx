@@ -789,11 +789,8 @@ const CategorySubcatTable = ({ subcategories, view }) => {
     return { categories: cats, totalRev, totalUnits };
   }, [subcategories]);
 
-  if (!categories.length) {
-    return <Empty label="No category data." />;
-  }
-
-  // Decline / grower counts to surface a one-line headline above the table.
+  // Decline / grower counts (declared before the early return so the
+  // hooks underneath keep their stable order across renders).
   const declineCount = categories.filter((c) => (c.rev_delta ?? 0) < 0).length;
   const growCount = categories.filter((c) => (c.rev_delta ?? 0) > 0).length;
   const subDecline = categories.reduce(
@@ -803,15 +800,101 @@ const CategorySubcatTable = ({ subcategories, view }) => {
     (s, c) => s + c.subs.filter((sc) => (sc.delta_pct ?? 0) > 0).length, 0,
   );
 
+  // Iter 89v — clickable headline chips. Filter modes:
+  //  • `all`          (default — show everything)
+  //  • `cat-decline`  (only categories whose own Δ% < 0 + their subs)
+  //  • `cat-grow`     (only categories whose Δ% > 0 + their subs)
+  //  • `sub-decline`  (all categories, but only declining subs underneath)
+  //  • `sub-grow`     (all categories, but only growing subs underneath)
+  // Sub-filter modes also drop categories with zero matching subs so
+  // the table doesn't show empty parent rows.
+  const [filter, setFilter] = useState("all");
+  const filteredCategories = useMemo(() => {
+    if (filter === "all") return categories;
+    if (filter === "cat-decline") return categories.filter((c) => (c.rev_delta ?? 0) < 0);
+    if (filter === "cat-grow")    return categories.filter((c) => (c.rev_delta ?? 0) > 0);
+    if (filter === "sub-decline" || filter === "sub-grow") {
+      const want = filter === "sub-decline" ? -1 : 1;
+      return categories
+        .map((c) => ({
+          ...c,
+          subs: c.subs.filter((sc) => {
+            const d = sc.delta_pct ?? 0;
+            return want < 0 ? d < 0 : d > 0;
+          }),
+        }))
+        .filter((c) => c.subs.length > 0);
+    }
+    return categories;
+  }, [categories, filter]);
+
+  // Recompute visible totals so the table footer reflects the filtered view.
+  const visibleTotals = useMemo(() => {
+    let rev = 0, units = 0;
+    for (const c of filteredCategories) {
+      if (filter === "sub-decline" || filter === "sub-grow") {
+        for (const sc of c.subs) {
+          rev += sc.cur || 0;
+          units += sc.cur_units || 0;
+        }
+      } else {
+        rev += c.cur || 0;
+        units += c.cur_units || 0;
+      }
+    }
+    return { rev, units };
+  }, [filteredCategories, filter]);
+
+  if (!categories.length) {
+    return <Empty label="No category data." />;
+  }
+
+  const Chip = ({ id, count, label, tone }) => {
+    const active = filter === id;
+    const base = "inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer select-none";
+    const toneCls = tone === "decline"
+      ? (active ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-700 border-rose-200 hover:bg-rose-50")
+      : (active ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50");
+    return (
+      <button
+        type="button"
+        className={`${base} ${toneCls}`}
+        onClick={() => setFilter((cur) => (cur === id ? "all" : id))}
+        data-testid={`exec-cat-chip-${id}`}
+        aria-pressed={active}
+        title={active ? "Click again to clear filter" : `Click to show only ${label}`}
+      >
+        <span className="font-extrabold tabular-nums">{count}</span>
+        <span>{label}</span>
+        {active && <span className="ml-0.5 opacity-90">×</span>}
+      </button>
+    );
+  };
+
   return (
     <div data-testid={`exec-catsubcat-table-${view}`}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] mb-2.5 px-1">
-        <span><span className="font-bold text-rose-700 tabular-nums">{declineCount}</span> categories declining</span>
-        <span><span className="font-bold text-emerald-700 tabular-nums">{growCount}</span> growing</span>
-        <span className="text-muted">·</span>
-        <span><span className="font-bold text-rose-700 tabular-nums">{subDecline}</span> subcats declining</span>
-        <span><span className="font-bold text-emerald-700 tabular-nums">{subGrow}</span> growing</span>
-        <span className="ml-auto text-muted">Total: <span className="font-bold text-foreground tabular-nums">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(totalUnits)}u</span></span>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11.5px] mb-2.5 px-1">
+        <Chip id="cat-decline" count={declineCount} label="categories declining" tone="decline" />
+        <Chip id="cat-grow"    count={growCount}    label="growing"             tone="grow" />
+        <span className="text-muted px-0.5">·</span>
+        <Chip id="sub-decline" count={subDecline}   label="subcats declining"   tone="decline" />
+        <Chip id="sub-grow"    count={subGrow}      label="growing"             tone="grow" />
+        {filter !== "all" && (
+          <button
+            type="button"
+            onClick={() => setFilter("all")}
+            className="text-[10.5px] underline text-muted hover:text-foreground ml-0.5"
+            data-testid="exec-cat-clear"
+          >
+            Clear
+          </button>
+        )}
+        <span className="ml-auto text-muted">
+          {filter === "all"
+            ? <>Total: <span className="font-bold text-foreground tabular-nums">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(totalUnits)}u</span></>
+            : <>Filtered: <span className="font-bold text-foreground tabular-nums">{fmtKES(visibleTotals.rev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(visibleTotals.units)}u</span></>
+          }
+        </span>
       </div>
       <div className="overflow-x-auto rounded-lg border border-border bg-white">
         <table className="w-full min-w-max text-[12px]">
@@ -830,7 +913,14 @@ const CategorySubcatTable = ({ subcategories, view }) => {
             </tr>
           </thead>
           <tbody>
-            {categories.map((c) => {
+            {filteredCategories.length === 0 && (
+              <tr>
+                <td colSpan="10" className="px-3 py-6 text-center text-muted text-[12px]">
+                  No rows match the current filter.
+                </td>
+              </tr>
+            )}
+            {filteredCategories.map((c) => {
               const catBg =
                 (c.rev_delta ?? 0) < -10 ? "bg-rose-50/80"
                 : (c.rev_delta ?? 0) < 0 ? "bg-amber-50/80"
@@ -882,12 +972,14 @@ const CategorySubcatTable = ({ subcategories, view }) => {
           </tbody>
           <tfoot className="bg-panel/70 border-t-2 border-border">
             <tr className="font-bold">
-              <td className="px-3 py-2">Total ({view.toUpperCase()})</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtKES(totalRev)}</td>
+              <td className="px-3 py-2">
+                {filter === "all" ? `Total (${view.toUpperCase()})` : `Filtered Total (${view.toUpperCase()})`}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtKES(filter === "all" ? totalRev : visibleTotals.rev)}</td>
               <td className="px-3 py-2"></td>
               <td className="px-3 py-2"></td>
-              <td className="px-3 py-2 text-right tabular-nums">100%</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(totalUnits)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{filter === "all" ? "100%" : `${totalRev > 0 ? ((visibleTotals.rev / totalRev) * 100).toFixed(1) : 0}%`}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(filter === "all" ? totalUnits : visibleTotals.units)}</td>
               <td className="px-3 py-2"></td>
               <td className="px-3 py-2"></td>
               <td className="px-3 py-2"></td>
