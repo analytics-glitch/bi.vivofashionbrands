@@ -162,6 +162,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
         <div data-testid={`exec-country-${country}-ytd`}>
           <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">YTD</div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={ytd?.revenue?.cur}    ly={ytd?.revenue?.ly}    delta={ytd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Avg/Day"   fmt={fmtKES} cur={ytd?.avg_sales_per_day?.cur} ly={ytd?.avg_sales_per_day?.ly} delta={ytd?.avg_sales_per_day?.delta_pct} />
           <CountryMetricRow label="Units"                   cur={ytd?.units?.cur}      ly={ytd?.units?.ly}      delta={ytd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={ytd?.orders?.cur}     ly={ytd?.orders?.ly}     delta={ytd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
@@ -179,6 +180,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
             <span className="inline-block text-[9.5px] uppercase font-extrabold tracking-widest text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">MTD</span>
           </div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Avg/Day"   fmt={fmtKES} cur={mtd?.avg_sales_per_day?.cur} ly={mtd?.avg_sales_per_day?.ly} delta={mtd?.avg_sales_per_day?.delta_pct} />
           <CountryMetricRow label="Units"                   cur={mtd?.units?.cur}      ly={mtd?.units?.ly}      delta={mtd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />

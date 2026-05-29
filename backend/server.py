@@ -3469,7 +3469,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         sub_rows.sort(key=lambda r: r["cur"], reverse=True)
         return {"subcategories": sub_rows}
 
-    def _country_block(cur_block: Dict[str, Any], ly_block: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _country_block(cur_block: Dict[str, Any], ly_block: Dict[str, Any], days: int = 0) -> List[Dict[str, Any]]:
         """Roll up sales + footfall by country for the four
         leadership-tracked buckets (Kenya, Uganda, Rwanda, Online).
         Zero extra upstream calls — derived from rows already in
@@ -3515,9 +3515,15 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             # Iter 89i — per-country ASP.
             c_asp = c["revenue"] / c["units"] if c["units"] else 0.0
             l_asp = ly_c["revenue"] / ly_c["units"] if ly_c["units"] else 0.0
+            # Iter 89u — per-country avg sales / day. Same day-count
+            # denominator as the headline KPI (the LY window is the
+            # same length so the Δ is a true day-comparable measure).
+            c_avg_day = (c["revenue"]  / days) if days else 0.0
+            l_avg_day = (ly_c["revenue"] / days) if days else 0.0
             out.append({
                 "country": country,
                 "revenue":    {"cur": c["revenue"],   "ly": ly_c["revenue"],   "delta_pct": _pct_delta(c["revenue"], ly_c["revenue"])},
+                "avg_sales_per_day": {"cur": c_avg_day, "ly": l_avg_day, "delta_pct": _pct_delta(c_avg_day, l_avg_day), "days": days},
                 "orders":     {"cur": c["orders"],    "ly": ly_c["orders"],    "delta_pct": _pct_delta(c["orders"], ly_c["orders"])},
                 "units":      {"cur": c["units"],     "ly": ly_c["units"],     "delta_pct": _pct_delta(c["units"], ly_c["units"])},
                 "footfall":   {"cur": c["footfall"],  "ly": ly_c["footfall"],  "delta_pct": _pct_delta(c["footfall"], ly_c["footfall"])},
@@ -3763,13 +3769,13 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         "stock_mix": stock_mix,
         "ytd": {
             "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"], days=(yesterday - ytd_from).days + 1),
-            "countries":  _country_block(blocks["ytd_cur"], blocks["ytd_ly"]),
+            "countries":  _country_block(blocks["ytd_cur"], blocks["ytd_ly"], days=(yesterday - ytd_from).days + 1),
             "stores":     _store_table(blocks["ytd_cur"]["sales"], blocks["ytd_ly"]["sales"]),
             "categories": _category_block(blocks["ytd_cur"]["subcategories"], blocks["ytd_ly"]["subcategories"]),
         },
         "mtd": {
             "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"], days=(yesterday - mtd_from).days + 1),
-            "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"]),
+            "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"], days=(yesterday - mtd_from).days + 1),
             "stores":     _store_table(blocks["mtd_cur"]["sales"], blocks["mtd_ly"]["sales"]),
             "categories": _category_block(blocks["mtd_cur"]["subcategories"], blocks["mtd_ly"]["subcategories"]),
         },
