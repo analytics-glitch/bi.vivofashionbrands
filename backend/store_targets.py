@@ -16,7 +16,7 @@ the quarterly-summary country total (99.5M) is built from.
 from __future__ import annotations
 import calendar
 from datetime import date
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # Per-store monthly targets — index 0 = January, index 11 = December.
@@ -60,6 +60,63 @@ STORE_TARGETS_2026: Dict[str, Dict[str, object]] = {
 }
 
 
+# Upstream sales-data channel names use a `Vivo …` prefix and a few
+# variants (e.g. "Vivo MSA Digo Road" = budget-sheet "Mombasa CBD",
+# "Vivo Eldoret" = "Rupa Mall"). Map upstream channel → budget-sheet
+# key so the join in `store_target_block` lands on the right row.
+# Updates here when finance / merch changes naming convention.
+CHANNEL_ALIAS_TO_TARGET_KEY: Dict[str, str] = {
+    # Direct "Vivo X" → budget-sheet "X"
+    "Vivo Sarit":            "Sarit Centre",
+    "Vivo Junction":         "Junction",
+    "Vivo Mama Ngina St":    "MAMA NGINA",
+    "Vivo Moi Avenue":       "Moi Avenue",
+    "Vivo Garden City":      "Garden City",
+    "Vivo Yaya":             "Yaya",
+    "Vivo Village Market":   "Village Market",
+    "Vivo TRM":              "TRM",
+    "Vivo Capital Centre":   "Capital Centre",
+    "Vivo Galleria":         "Galleria",
+    "Vivo Imaara":           "Imaara",
+    "Vivo Hub":              "The Hub",
+    "Vivo Two Rivers":       "TWO RIVERS",
+    "Vivo City Mall":        "City Mall",
+    "Vivo Runda":            "Runda",
+    "Vivo Kisumu":           "Kisumu",
+    "Vivo Signature Mall":   "Signature",
+    "Vivo T- Mall":          "T-Mall",
+    "Vivo Greenspan":        "Greenspan",
+    "Vivo Kileleshwa":       "Kileleshwa",
+    "Vivo Meru":             "Meru-Greenwood",
+    "Vivo Kigali Heights":   "Kigali Heights",
+    "Vivo Acacia":           "Acacia Mall",
+    # Geo-name variants
+    "The Oasis Mall":        "Oasis Mall",
+    "Vivo MSA Digo Road":    "Mombasa CBD",   # Mombasa CBD store
+    "Vivo Eldoret":          "Rupa Mall",     # Rupa Mall is the Eldoret store
+    # Stores in budget but not yet visible in upstream sales (closed /
+    # not yet open) are intentionally NOT aliased — they'll surface
+    # the day they start selling.
+    #
+    # Stores in upstream but not in the 2026 budget (no target):
+    #   "The Oasis Mall Holding Location" — staging/holding, not a real POS
+    #   "Vivo Nakuru"      — not in budget sheet
+    #   "Vivo M-peace Plaza" (Rwanda) — closed / out of budget
+    #   "Vivo Popup"       — pop-up, no annual target
+}
+
+
+def _resolve_target_key(channel: str) -> Optional[str]:
+    """Return the budget-sheet key for a given upstream channel name,
+    or None if the channel isn't in the budget. Tries direct match
+    first, then the alias map."""
+    if not channel:
+        return None
+    if channel in STORE_TARGETS_2026:
+        return channel
+    return CHANNEL_ALIAS_TO_TARGET_KEY.get(channel)
+
+
 # Online country bucket — we don't track per-channel online targets
 # (the dashboard rolls all online channels into a single "Online"
 # country) so we keep it country-level only.  Monthly figures come from
@@ -101,7 +158,8 @@ def store_target_block(channel: str, as_of: date) -> Tuple[float, float, float]:
     for a given channel.  Returns (0,0,0) for unknown stores so they
     won't break the join — the frontend will show a "no target" pill.
     """
-    rec = STORE_TARGETS_2026.get(channel)
+    key = _resolve_target_key(channel)
+    rec = STORE_TARGETS_2026.get(key) if key else None
     if not rec:
         return 0.0, 0.0, 0.0
     monthly = rec["monthly"]
