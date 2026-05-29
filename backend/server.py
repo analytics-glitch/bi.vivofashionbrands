@@ -3551,12 +3551,20 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         }
 
     async def _stock_mix_block() -> Dict[str, Any]:
-        """Stock Mix — "What's selling vs what we have" by Category.
-        Compares units sold (MTD) against units currently on hand to
-        flag mix-mismatches (e.g. 30% of stock in Outerwear but only
-        7% of sales) so merch can reweight buys / move stock.
+        """Stock Mix — "What's selling vs what we have" by Category +
+        Subcategory. Compares units sold (MTD) against units currently
+        on hand to flag mix-mismatches.
 
-        Uses the existing snapshot path (zero extra BQ scan when warm).
+        Iter 89r — adds `weeks_of_cover` per row. We use MTD units sold
+        ÷ days_elapsed_in_month to derive a daily run-rate, then divide
+        stock by (daily_rate × 7) to express cover in weeks. We use
+        MTD instead of a fresh 30-day window because the MTD sales are
+        already in memory (zero extra BQ scan). Thresholds:
+          • cover < 4 weeks  → restock candidate
+          • 4–17 weeks       → healthy
+          • > 17 weeks       → markdown candidate
+        Subcategories with no MTD sales but stock-on-hand return None
+        (rendered as "—" / "Idle stock" on the frontend).
         """
         try:
             inv_rows = await fetch_all_inventory(country=country) if country else await fetch_all_inventory()
@@ -3594,6 +3602,23 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             cat_sold[cat] += u
         total_stock = sum(cat_stock.values()) or 1.0
         total_sold = sum(cat_sold.values()) or 1.0
+        # Days elapsed in the MTD window so we can derive a daily run-
+        # rate from MTD units. `yesterday` is the YTD/MTD anchor that
+        # the rest of this endpoint uses, so its day-of-month equals
+        # the number of MTD-completed days.
+        mtd_days = max(yesterday.day, 1)
+
+        def _weeks_of_cover(stock_u: float, sold_u: float) -> Optional[float]:
+            """Convert (stock units, MTD units sold) → weeks of cover.
+            Returns None when there's no sales signal — those rows are
+            rendered as "Idle stock" on the frontend instead of as a
+            misleading "infinite weeks of cover" number."""
+            if sold_u <= 0:
+                return None
+            daily_rate = sold_u / mtd_days
+            weekly_rate = daily_rate * 7.0
+            return stock_u / weekly_rate if weekly_rate > 0 else None
+
         cats = sorted(set(cat_stock.keys()) | set(cat_sold.keys()))
         rows: List[Dict[str, Any]] = []
         for cat in cats:
@@ -3616,6 +3641,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                     "stock_pct": (ssu / total_stock) * 100.0,
                     "sold_pct":  (sso / total_sold)  * 100.0,
                     "gap_pct":   ((ssu / total_stock) * 100.0) - ((sso / total_sold) * 100.0),
+                    "weeks_of_cover": _weeks_of_cover(ssu, sso),
                 })
             sub_rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
             rows.append({
@@ -3627,6 +3653,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                 # Gap: positive ⇒ we're over-stocked relative to sales;
                 # negative ⇒ we're under-stocked / hot demand.
                 "gap_pct": stock_pct - sold_pct,
+                "weeks_of_cover": _weeks_of_cover(stock_u, sold_u),
                 "subcategories": sub_rows,
             })
         # Sort by absolute gap descending so the biggest mismatches
@@ -3635,6 +3662,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
             "total_sold_units_mtd": total_sold if total_sold > 1 else 0,
+            "mtd_days": mtd_days,
             "categories": rows,
         }
 

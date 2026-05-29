@@ -83,9 +83,12 @@ const KpiCard = ({ icon: Icon, label, fmt, ytd, mtd, testId, tone }) => {
           </div>
         </div>
         <div className="h-px bg-border/60" />
-        <div data-testid={`${testId}-mtd`}>
+        <div
+          data-testid={`${testId}-mtd`}
+          className="rounded-md border-l-[3px] border-amber-500 bg-amber-50/40 px-2 py-1 -mx-1 mt-1.5"
+        >
           <div className="flex items-baseline justify-between gap-2">
-            <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest">MTD</div>
+            <div className="text-[9.5px] uppercase font-extrabold tracking-widest text-amber-800">MTD</div>
             <DeltaPill value={mtd?.delta_pct} testId={`${testId}-mtd-delta`} />
           </div>
           <div className="font-extrabold text-[18px] sm:text-[20px] leading-tight mt-0.5 tabular-nums" data-testid={`${testId}-mtd-value`}>
@@ -164,15 +167,15 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
           <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={ytd?.asp?.cur}        ly={ytd?.asp?.ly}        delta={ytd?.asp?.delta_pct} />
         </div>
-        {/* Iter 89n — visually distinguish MTD from YTD: tinted block
-            with a left accent border and a coloured "MTD" badge so the
-            two windows don't bleed into each other at a glance. */}
+        {/* Iter 89r — visually distinguish MTD from YTD using an
+            amber/warm accent (not blue) per leadership pref so MTD
+            stands apart from the cool brand palette. */}
         <div
           data-testid={`exec-country-${country}-mtd`}
-          className="rounded-md border-l-[3px] border-indigo-400 bg-indigo-50/50 px-2 py-1.5 -mx-1"
+          className="rounded-md border-l-[3px] border-amber-500 bg-amber-50/50 px-2 py-1.5 -mx-1"
         >
           <div className="mb-1">
-            <span className="inline-block text-[9.5px] uppercase font-extrabold tracking-widest text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">MTD</span>
+            <span className="inline-block text-[9.5px] uppercase font-extrabold tracking-widest text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">MTD</span>
           </div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
           <CountryMetricRow label="Units"                   cur={mtd?.units?.cur}      ly={mtd?.units?.ly}      delta={mtd?.units?.delta_pct} />
@@ -1006,6 +1009,39 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
  * obvious: positive gap ⇒ we're over-stocked relative to sales,
  * negative gap ⇒ hot demand the floor can't supply.
  */
+/**
+ * StockMix — "What's selling vs what we have" by Category +
+ * Subcategory.  Side-by-side comparison of inventory mix (% of units
+ * on hand) vs sales mix (% of units sold MTD), with weeks-of-cover
+ * derived from the MTD daily run-rate.  The Gap column makes
+ * mismatches obvious; the Cover column turns each row into an
+ * actionable buy/markdown trigger.
+ */
+const CoverPill = ({ weeks, bold = false }) => {
+  if (weeks == null) {
+    return <span className="text-muted text-[10px] italic" title="No MTD sales — idle stock">Idle</span>;
+  }
+  // Thresholds (in weeks): <4 restock · 4–17 healthy · >17 markdown.
+  // 17 wks ≈ 120 days, 4 wks = 28 days — matches the original day-based
+  // trigger semantics requested by leadership.
+  const tone =
+    weeks < 4 ? "text-rose-700 bg-rose-50 border-rose-200"
+    : weeks > 17 ? "text-amber-700 bg-amber-50 border-amber-200"
+    : "text-emerald-700 bg-emerald-50 border-emerald-200";
+  const label =
+    weeks < 4 ? "Restock"
+    : weeks > 17 ? "Markdown"
+    : "Healthy";
+  return (
+    <span
+      className={`inline-flex items-center justify-end gap-1 rounded-md border ${bold ? "font-bold text-[11px]" : "font-semibold text-[10.5px]"} px-1.5 py-0.5 tabular-nums ${tone}`}
+      title={`${weeks.toFixed(1)} weeks of cover · ${label.toLowerCase()} candidate (<4w restock · 4–17w healthy · >17w markdown)`}
+    >
+      {weeks.toFixed(1)}w
+    </span>
+  );
+};
+
 const StockMix = ({ stockMix }) => {
   if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
     return null;
@@ -1032,6 +1068,7 @@ const StockMix = ({ stockMix }) => {
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold MTD</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Weeks of cover = stock units ÷ (avg daily MTD units sold × 7). <4w restock candidate · 4–17w healthy · >17w markdown candidate.">Cover (wks)</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap">Read</th>
             </tr>
           </thead>
@@ -1072,6 +1109,7 @@ const StockMix = ({ stockMix }) => {
                         {gap > 0 ? "+" : ""}{gap.toFixed(1)}
                       </span>
                     </td>
+                    <td className="px-3 py-2 text-right"><CoverPill weeks={r.weeks_of_cover} bold /></td>
                     <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
                       {oversupply && <span className="text-amber-700">{read}</span>}
                       {undersupply && <span className="text-rose-700">{read}</span>}
@@ -1101,6 +1139,7 @@ const StockMix = ({ stockMix }) => {
                             {sgap > 0 ? "+" : ""}{sgap.toFixed(1)}
                           </span>
                         </td>
+                        <td className="px-3 py-1.5 text-right"><CoverPill weeks={sc.weeks_of_cover} /></td>
                         <td className="px-3 py-1.5 text-[10.5px] font-semibold whitespace-nowrap">
                           {sOver && <span className="text-amber-700">{sRead}</span>}
                           {sUnder && <span className="text-rose-700">{sRead}</span>}
@@ -1122,12 +1161,15 @@ const StockMix = ({ stockMix }) => {
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
               <td className="px-3 py-2"></td>
               <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
             </tr>
           </tfoot>
         </table>
       </div>
-      <div className="text-[10.5px] text-muted mt-2 flex items-center justify-end gap-4">
-        <span>Gap &gt; +5pp = over-stocked · Gap &lt; -5pp = hot demand · |Gap| ≤ 5pp = balanced</span>
+      <div className="text-[10.5px] text-muted mt-2 flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+        <span>Gap &gt; +5pp = over-stocked · Gap &lt; -5pp = hot demand</span>
+        <span className="opacity-70">·</span>
+        <span>Cover &lt; 4w = restock · 4–17w = healthy · &gt; 17w = markdown candidate</span>
       </div>
     </div>
   );
