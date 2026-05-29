@@ -955,7 +955,7 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
     <div className="card-white p-4 sm:p-5" data-testid="exec-targets-section">
       <SectionTitle
         title="YTD vs Yearly Target (2026 budget)"
-        subtitle="YTD revenue vs the linear day-based prorate (annual ÷ 365 × days elapsed in year). Source: finance team budget sheet."
+        subtitle="YTD revenue vs the day-based prorate of monthly targets — sum of full elapsed months + (current month × day_in_month ÷ days_in_month). Source: finance team budget sheet."
       />
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
         <div className="rounded-lg border border-border bg-white px-3.5">
@@ -1052,23 +1052,64 @@ const StockMix = ({ stockMix }) => {
                 ? "Hot — restock"
                 : "Balanced";
               return (
-                <tr key={r.category} className={`border-t border-border/50 ${rowTone}`} data-testid={`exec-stockmix-row-${r.category}`}>
-                  <td className="px-3 py-2 font-semibold whitespace-nowrap">{r.category}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums font-bold">{r.stock_pct.toFixed(1)}%</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums font-bold">{r.sold_pct.toFixed(1)}%</td>
-                  <td className="px-3 py-2 text-right">
-                    <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[11px] px-1.5 py-0.5 tabular-nums ${gapCls}`}>
-                      {gap > 0 ? "+" : ""}{gap.toFixed(1)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
-                    {oversupply && <span className="text-amber-700">{read}</span>}
-                    {undersupply && <span className="text-rose-700">{read}</span>}
-                    {!oversupply && !undersupply && <span className="text-emerald-700">{read}</span>}
-                  </td>
-                </tr>
+                <React.Fragment key={r.category}>
+                  {/* Category roll-up row */}
+                  <tr className={`border-t-2 border-border font-bold ${rowTone}`} data-testid={`exec-stockmix-row-${r.category}`}>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <span>{r.category}</span>
+                        {r.subcategories?.length > 0 && (
+                          <span className="text-[10px] font-normal text-muted">({r.subcategories.length})</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.stock_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.sold_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right">
+                      <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[11px] px-1.5 py-0.5 tabular-nums ${gapCls}`}>
+                        {gap > 0 ? "+" : ""}{gap.toFixed(1)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
+                      {oversupply && <span className="text-amber-700">{read}</span>}
+                      {undersupply && <span className="text-rose-700">{read}</span>}
+                      {!oversupply && !undersupply && <span className="text-emerald-700">{read}</span>}
+                    </td>
+                  </tr>
+                  {/* Subcategory rows nested underneath the parent */}
+                  {(r.subcategories || []).map((sc) => {
+                    const sgap = sc.gap_pct;
+                    const sOver = sgap > 5;
+                    const sUnder = sgap < -5;
+                    const sGapCls = sOver ? "text-amber-700 bg-amber-50 border-amber-200"
+                      : sUnder ? "text-rose-700 bg-rose-50 border-rose-200"
+                      : "text-emerald-700 bg-emerald-50 border-emerald-200";
+                    const sRead = sOver ? "Over-stocked" : sUnder ? "Hot — restock" : "Balanced";
+                    return (
+                      <tr key={`${r.category}-${sc.subcategory}`} className="border-t border-border/50 hover:bg-panel/40 transition-colors" data-testid={`exec-stockmix-sub-${sc.subcategory}`}>
+                        <td className="px-3 py-1.5 pl-8 text-[11.5px]">
+                          <span className="text-muted">{sc.subcategory}</span>
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.stock_units)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{sc.stock_pct.toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.sold_units)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{sc.sold_pct.toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right">
+                          <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[10.5px] px-1.5 py-0.5 tabular-nums ${sGapCls}`}>
+                            {sgap > 0 ? "+" : ""}{sgap.toFixed(1)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5 text-[10.5px] font-semibold whitespace-nowrap">
+                          {sOver && <span className="text-amber-700">{sRead}</span>}
+                          {sUnder && <span className="text-rose-700">{sRead}</span>}
+                          {!sOver && !sUnder && <span className="text-emerald-700">{sRead}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -1101,7 +1142,9 @@ const ExecutiveSummary = () => {
   // simultaneously so a compact in-section selector decides which to
   // render. Default is MTD because the charts answer "what's happening
   // right now".
-  const [catView, setCatView] = useState("mtd");
+  // Iter 89q — default the cat/subcat breakdown to YTD per leadership
+  // pref (gives the longer signal); MTD is still one click away.
+  const [catView, setCatView] = useState("ytd");
   // Iter 89g — click-a-country-to-drill-down state. `selectedCountry`
   // is one of "Kenya" / "Uganda" / "Rwanda" / "Online" or null.
   // - Store Performance table filters client-side.

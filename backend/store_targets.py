@@ -132,38 +132,39 @@ def _is_leap(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
-def _days_in_year(year: int) -> int:
-    return 366 if _is_leap(year) else 365
-
-
-def _doy(d: date) -> int:
-    """Day-of-year, 1-based (Jan 1 → 1)."""
-    return (d - date(d.year, 1, 1)).days + 1
+def _days_in_month(year: int, month: int) -> int:
+    """Hand-rolled (no calendar import) — month is 1..12."""
+    if month == 2:
+        return 29 if _is_leap(year) else 28
+    if month in (4, 6, 9, 11):
+        return 30
+    return 31
 
 
 def _prorata_to_date(monthly: List[float], as_of: date) -> float:
-    """Pure linear day-based prorate of the annual target.
-    Ignores month-by-month seasonality — leadership pref: a flat
-    daily run-rate is the cleanest fairness measure ("on day 148 of
-    365 you should have done 148/365 of the year").
-    """
+    """Day-based prorate that respects monthly seasonality:
+       sum(full elapsed monthly targets) + current_month_target ×
+       (day_in_month ÷ days_in_current_month).
+    The current-month slice is computed by *day count*, not fractional
+    month progress — so on May 28 the May target is multiplied by
+    28/31, on a 30-day month by day/30, etc.  Outside the budget year
+    we return 0 to avoid comparing against a phantom target."""
     if as_of.year != 2026:
-        # Outside the budget year — return 0 so we don't compare against
-        # a phantom target (e.g. LY window slips into 2025).
         return 0.0
-    annual = sum(monthly)
-    return annual * _doy(as_of) / _days_in_year(as_of.year)
+    total = 0.0
+    for m in range(1, as_of.month):
+        total += monthly[m - 1]
+    dim = _days_in_month(as_of.year, as_of.month)
+    total += monthly[as_of.month - 1] * (as_of.day / dim)
+    return total
 
 
 def _mtd_prorata(monthly: List[float], as_of: date) -> float:
-    """MTD slice of the linear daily prorate: annual ÷ days-in-year ×
-    days-elapsed-in-current-month. Same flat-daily logic as
-    _prorata_to_date so the two metrics stay consistent.
-    """
+    """MTD = current month's target × day_in_month ÷ days_in_month."""
     if as_of.year != 2026:
         return 0.0
-    annual = sum(monthly)
-    return annual * as_of.day / _days_in_year(as_of.year)
+    dim = _days_in_month(as_of.year, as_of.month)
+    return monthly[as_of.month - 1] * (as_of.day / dim)
 
 
 def store_target_block(channel: str, as_of: date) -> Tuple[float, float, float]:

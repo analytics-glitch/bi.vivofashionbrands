@@ -3319,17 +3319,24 @@ async def exec_summary_endpoint(country: Optional[str] = None):
     def _excl_staff_online(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Exclude exact "Staff" / "Vivo Staff" / any name containing
         # "staff" (case-insensitive) and the Online country bucket.
+        # Iter 89q — also drop "Holding Location" pseudo-stores: these
+        # are inventory-staging endpoints (e.g. "The Oasis Mall
+        # Holding Location") that occasionally accrue stray POS-test
+        # transactions but aren't real selling channels.
         out: List[Dict[str, Any]] = []
         for r in rows or []:
             ch = (r.get("channel") or "").strip()
             country = (r.get("country") or "").strip()
-            if "staff" in ch.lower():
+            ch_lc = ch.lower()
+            if "staff" in ch_lc:
+                continue
+            if "holding location" in ch_lc:
                 continue
             if country.lower() == "online":
                 continue
             # Also drop "Online - …" channels in case the row leaked
             # through without a country tag.
-            if ch.lower().startswith("online"):
+            if ch_lc.startswith("online"):
                 continue
             out.append(r)
         return out
@@ -3555,24 +3562,36 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             inv_rows = await fetch_all_inventory(country=country) if country else await fetch_all_inventory()
         except Exception:
             inv_rows = []
-        # Roll inventory units on hand by category.
+        # Roll inventory units on hand by (category, subcategory) and
+        # by category total. The subcategory layer lets the frontend
+        # nest sub-rows under each category — same join key as the
+        # MTD subcategory sales rows that already drive the Category
+        # & Subcategory Breakdown above.
+        sub_stock: Dict[Tuple[str, str], float] = defaultdict(float)
         cat_stock: Dict[str, float] = defaultdict(float)
         for r in inv_rows or []:
             pt = (r.get("product_type") or "").strip()
             cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
             try:
-                cat_stock[cat] += float(r.get("available") or 0)
+                u = float(r.get("available") or 0)
             except (TypeError, ValueError):
-                pass
-        # Roll units sold (MTD) by category.
+                continue
+            if u <= 0:
+                continue
+            sub_stock[(cat, pt or "Unspecified")] += u
+            cat_stock[cat] += u
+        # Roll units sold (MTD) by (category, subcategory) too.
+        sub_sold: Dict[Tuple[str, str], float] = defaultdict(float)
         cat_sold: Dict[str, float] = defaultdict(float)
         for sc in blocks["mtd_cur"]["subcategories"] or []:
             pt = (sc.get("subcategory") or "").strip()
             cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
             try:
-                cat_sold[cat] += float(sc.get("units_sold") or 0)
+                u = float(sc.get("units_sold") or 0)
             except (TypeError, ValueError):
-                pass
+                continue
+            sub_sold[(cat, pt or "Unspecified")] += u
+            cat_sold[cat] += u
         total_stock = sum(cat_stock.values()) or 1.0
         total_sold = sum(cat_sold.values()) or 1.0
         cats = sorted(set(cat_stock.keys()) | set(cat_sold.keys()))
@@ -3582,6 +3601,23 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             sold_u = cat_sold.get(cat, 0.0)
             stock_pct = (stock_u / total_stock) * 100.0
             sold_pct = (sold_u / total_sold) * 100.0
+            # Build the subcategory rows nested under this category
+            # using the same %-of-group-total denominators so leadership
+            # can compare a sub directly against its parent.
+            sub_keys = {k for k in (set(sub_stock.keys()) | set(sub_sold.keys())) if k[0] == cat}
+            sub_rows: List[Dict[str, Any]] = []
+            for (_c, sub) in sub_keys:
+                ssu = sub_stock.get((cat, sub), 0.0)
+                sso = sub_sold.get((cat, sub), 0.0)
+                sub_rows.append({
+                    "subcategory": sub,
+                    "stock_units": ssu,
+                    "sold_units": sso,
+                    "stock_pct": (ssu / total_stock) * 100.0,
+                    "sold_pct":  (sso / total_sold)  * 100.0,
+                    "gap_pct":   ((ssu / total_stock) * 100.0) - ((sso / total_sold) * 100.0),
+                })
+            sub_rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
             rows.append({
                 "category": cat,
                 "stock_units": stock_u,
@@ -3591,6 +3627,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                 # Gap: positive ⇒ we're over-stocked relative to sales;
                 # negative ⇒ we're under-stocked / hot demand.
                 "gap_pct": stock_pct - sold_pct,
+                "subcategories": sub_rows,
             })
         # Sort by absolute gap descending so the biggest mismatches
         # surface at the top of the list.
