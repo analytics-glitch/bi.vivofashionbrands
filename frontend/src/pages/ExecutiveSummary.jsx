@@ -164,9 +164,16 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
           <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={ytd?.asp?.cur}        ly={ytd?.asp?.ly}        delta={ytd?.asp?.delta_pct} />
         </div>
-        <div className="h-px bg-border/60" />
-        <div data-testid={`exec-country-${country}-mtd`}>
-          <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">MTD</div>
+        {/* Iter 89n — visually distinguish MTD from YTD: tinted block
+            with a left accent border and a coloured "MTD" badge so the
+            two windows don't bleed into each other at a glance. */}
+        <div
+          data-testid={`exec-country-${country}-mtd`}
+          className="rounded-md border-l-[3px] border-indigo-400 bg-indigo-50/50 px-2 py-1.5 -mx-1"
+        >
+          <div className="mb-1">
+            <span className="inline-block text-[9.5px] uppercase font-extrabold tracking-widest text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">MTD</span>
+          </div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
           <CountryMetricRow label="Units"                   cur={mtd?.units?.cur}      ly={mtd?.units?.ly}      delta={mtd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
@@ -491,7 +498,21 @@ const CategoryBars = ({ subcategories, view }) => {
       delta_pct: b.ly ? ((b.cur - b.ly) / b.ly) * 100 : null,
       share_pct: totalRev > 0 ? (b.cur / totalRev) * 100 : 0,
     }));
-    arr.sort((a, b) => b.cur - a.cur);
+    // Iter 89n — sort by biggest decline first so leadership sees the
+    // categories bleeding revenue at the top. Categories with no LY
+    // baseline (`delta_pct == null`) and growing categories sink to
+    // the bottom (sorted by current revenue desc within their groups).
+    arr.sort((a, b) => {
+      const ad = a.delta_pct;
+      const bd = b.delta_pct;
+      const aDecline = ad != null && ad < 0;
+      const bDecline = bd != null && bd < 0;
+      if (aDecline && bDecline) return ad - bd;        // worst decline first
+      if (aDecline) return -1;
+      if (bDecline) return 1;
+      // Both not declining (growing or no LY) → bigger revenue first
+      return (b.cur || 0) - (a.cur || 0);
+    });
     return { cats: arr, totalRev };
   }, [subcategories]);
 
@@ -549,7 +570,24 @@ const CategoryBars = ({ subcategories, view }) => {
  * predictable height. Each row shows cur · LY · Δ% plus ASP (cur/LY/Δ).
  */
 const AllSubcategories = ({ subcategories }) => {
-  const rows = subcategories || [];
+  // Iter 89n — sort by biggest decline first so the worst revenue
+  // bleeders surface at the top of the scroll list. Subcategories
+  // with no LY baseline or with positive deltas drop below, sorted
+  // by current revenue desc within those groups.
+  const rows = useMemo(() => {
+    const arr = [...(subcategories || [])];
+    arr.sort((a, b) => {
+      const ad = a.delta_pct;
+      const bd = b.delta_pct;
+      const aDecline = ad != null && ad < 0;
+      const bDecline = bd != null && bd < 0;
+      if (aDecline && bDecline) return ad - bd;
+      if (aDecline) return -1;
+      if (bDecline) return 1;
+      return (b.cur || 0) - (a.cur || 0);
+    });
+    return arr;
+  }, [subcategories]);
   // Iter 89j — pre-compute totals so each row can display its share %
   // of period revenue + show the period grand-total in the footer.
   const { totalRev, totalUnits } = useMemo(() => {
