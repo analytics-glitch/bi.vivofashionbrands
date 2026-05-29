@@ -38,8 +38,8 @@ import BackendUrlWarningPill from "@/components/BackendUrlWarningPill";
 import CacheStatsPill from "@/components/CacheStatsPill";
 
 const tabs = [
-  { to: "/", label: "Executive Summary", icon: Briefcase, id: "exec-summary" },
-  { to: "/overview", label: "Overview", icon: ChartPieSlice, id: "overview" },
+  { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
+  { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },

@@ -93,7 +93,7 @@ function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
-              <Route path="/" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
+              <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
               <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
               <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
               <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
