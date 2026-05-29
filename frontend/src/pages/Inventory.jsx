@@ -81,11 +81,30 @@ const Inventory = () => {
   // catalog shows on first load. Threaded into the /inventory and
   // /top-skus requests so the backend filters on the same source.
   const [styleStatus, setStyleStatus] = useState("active");
+  // Iter 89w-b — small counts pill alongside the toggle so users know
+  // how many styles (and units) are in each bucket at a glance.
+  const [statusCounts, setStatusCounts] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 120);
     return () => clearTimeout(t);
   }, [searchInput]);
+
+  // Iter 89w-b — counts pill, refetched only when country/POS filters
+  // change (NOT on styleStatus changes — these counts are always both
+  // sides of the bucket so the user can see "1234 active · 200
+  // retired" regardless of which one they're currently viewing).
+  useEffect(() => {
+    let cancelled = false;
+    const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
+    const locationsCsv = channels.length ? channels.join(",") : undefined;
+    api
+      .get("/inventory-style-counts", { params: { country: countryCsv, locations: locationsCsv } })
+      .then((r) => { if (!cancelled) setStatusCounts(r.data || null); })
+      .catch(() => { if (!cancelled) setStatusCounts(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,7 +238,13 @@ const Inventory = () => {
   // the visible location & subcategory set and restrict the aggregated
   // charts/tables to match. When no filters are active we show the raw
   // merchandise aggregates.
-  const filtersActive = Boolean(search || brandFilter || typeFilter || merchCats.length || merchSubs.length);
+  // Iter 89w — styleStatus narrows the source-of-truth array, so once it
+  // is anything other than "all" we MUST recompute every KPI/table from
+  // the filtered `inv` (instead of the chain-wide `summary` aggregate
+  // which is computed upstream over every style, retired included).
+  const filtersActive = Boolean(
+    search || brandFilter || typeFilter || merchCats.length || merchSubs.length || (styleStatus && styleStatus !== "all")
+  );
   const visibleLocations = useMemo(
     () => new Set(filteredInv.map((r) => r.location_name).filter(Boolean)),
     [filteredInv]
@@ -536,6 +561,20 @@ const Inventory = () => {
             onChange={setStyleStatus}
             testIdPrefix="inv-style-status"
           />
+          {statusCounts && (
+            <div
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1 text-[11.5px]"
+              data-testid="inv-style-status-counts"
+              title="Live distinct-style and unit counts from the inventory snapshot. Updates with country/POS filters."
+            >
+              <span className="font-bold text-emerald-700">{fmtNum(statusCounts.active_styles)}</span>
+              <span className="text-muted">active</span>
+              <span className="text-muted">·</span>
+              <span className="font-bold text-amber-700">{fmtNum(statusCounts.retired_styles)}</span>
+              <span className="text-muted">retired</span>
+              <span className="text-muted">styles ({fmtNum(statusCounts.total_styles)} total)</span>
+            </div>
+          )}
           {(countries.length > 0 || channels.length > 0) && (
             <div
               className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"

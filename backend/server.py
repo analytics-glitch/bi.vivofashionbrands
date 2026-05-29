@@ -4084,6 +4084,50 @@ async def get_inventory(
     return filter_rows(rows, style_status, field="style_name")
 
 
+@api_router.get("/inventory-style-counts")
+async def get_inventory_style_counts(
+    location: Optional[str] = None,
+    locations: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """Iter 89w-b — counts of distinct STYLES (and unit totals) split by
+    Active vs Retired.  Used by the Inventory page to surface a small
+    pill alongside the Active/Retired/All toggle so leadership can
+    eyeball range health without flipping the filter.
+
+    Reuses the same `fetch_all_inventory` cache the main `/inventory`
+    endpoint uses, so this is free when the page is already loaded.
+    """
+    locs = _split_csv(locations)
+    rows = await fetch_all_inventory(
+        country=country, location=location, product=None,
+        locations=locs if locs else None,
+    )
+    active_styles: set = set()
+    retired_styles: set = set()
+    active_units = 0
+    retired_units = 0
+    for r in rows or []:
+        name = r.get("style_name") or r.get("product_name")
+        units = r.get("available") or 0
+        if is_retired(name):
+            if name:
+                retired_styles.add(name)
+            retired_units += units
+        else:
+            if name:
+                active_styles.add(name)
+            active_units += units
+    return {
+        "active_styles": len(active_styles),
+        "retired_styles": len(retired_styles),
+        "active_units": active_units,
+        "retired_units": retired_units,
+        "total_styles": len(active_styles) + len(retired_styles),
+        "total_units": active_units + retired_units,
+    }
+
+
 @api_router.post("/admin/cache-clear")
 async def admin_cache_clear():
     """Clear all server-side caches so the next request re-fetches

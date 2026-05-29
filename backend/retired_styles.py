@@ -7,11 +7,24 @@ Matching is case-insensitive on a normalised `style_name` (lowercase,
 collapsed whitespace).  Sibling colours/variants share the same
 style_name in our data, so a name-based match catches all SKUs of a
 retired style automatically.
+
+Iter 89w-b — each entry now carries a `retired_at` ISO date so the
+exports CSV can carry the merch-team-recorded retirement date.  Styles
+on the original Feb 2026 list default to today (2026-02-13, the day
+the user supplied the list).  Future additions should add their own
+date below.
 """
 
 from __future__ import annotations
 import re
-from typing import Iterable, Optional, Set
+from typing import Iterable, Optional, Set, Dict
+
+
+# Default retirement date used for the bulk list the merch team
+# supplied on the same day this filter shipped.  Keeping it as a
+# module-level constant (not datetime.today()) so historical CSV
+# exports stay deterministic across server restarts.
+DEFAULT_RETIRED_AT = "2026-02-13"
 
 
 def _normalize(s: str) -> str:
@@ -502,6 +515,13 @@ RETIRED_STYLE_NAMES: Set[str] = frozenset(
     _normalize(line) for line in _RAW.splitlines() if line.strip()
 )
 
+# Map of normalised name → retirement ISO date.  Future additions (e.g.
+# a style retired on a different day) should be appended here using
+# `_normalize("Some Style Name"): "YYYY-MM-DD"`.
+RETIRED_STYLE_DATES: Dict[str, str] = {
+    name: DEFAULT_RETIRED_AT for name in RETIRED_STYLE_NAMES
+}
+
 
 def is_retired(style_name: Optional[str]) -> bool:
     """Returns True if the given style name matches any retired entry
@@ -509,6 +529,14 @@ def is_retired(style_name: Optional[str]) -> bool:
     if not style_name:
         return False
     return _normalize(style_name) in RETIRED_STYLE_NAMES
+
+
+def retired_at(style_name: Optional[str]) -> Optional[str]:
+    """Returns the recorded retirement ISO date for `style_name`, or
+    None if the style is not on the retired list."""
+    if not style_name:
+        return None
+    return RETIRED_STYLE_DATES.get(_normalize(style_name))
 
 
 def filter_rows(
@@ -536,13 +564,20 @@ def filter_rows(
 
 
 def annotate_status(rows: Iterable[dict], field: str = "style_name") -> list:
-    """Add a `style_status` field ("active" or "retired") to each row.
-    Useful for endpoints that want to expose the status to the
-    frontend (e.g. for rendering a badge) even when no filter is
+    """Add `style_status` ("active"|"retired") and `retired_at` (ISO
+    date string or None) to each row.  Useful for endpoints that want
+    to expose the status to the frontend (e.g. for rendering a badge
+    or surfacing the retirement date in a CSV) even when no filter is
     applied."""
     out: list = []
     for r in rows:
         rr = dict(r)
-        rr["style_status"] = "retired" if is_retired(rr.get(field)) else "active"
+        name = rr.get(field)
+        if is_retired(name):
+            rr["style_status"] = "retired"
+            rr["retired_at"] = RETIRED_STYLE_DATES.get(_normalize(name))
+        else:
+            rr["style_status"] = "active"
+            rr["retired_at"] = None
         out.append(rr)
     return out

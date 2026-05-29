@@ -168,6 +168,8 @@ const InventoryExport = () => {
       ["product_type", "Subcategory"],
       ["category", "Category"],
       ["available", "Available"],
+      ["style_status", "Style Status"],
+      ["retired_at", "Retired Date"],
     ];
     const esc = (v) => {
       if (v === null || v === undefined) return "";
@@ -365,6 +367,13 @@ const InventoryExport = () => {
                       key: "available", label: "Available", numeric: true,
                       render: (r) => <span className={`font-semibold ${(r.available || 0) <= 2 ? "text-danger" : ""}`}>{fmtNum(r.available)}</span>,
                       csv: (r) => r.available,
+                    },
+                    {
+                      key: "retired_at", label: "Retired Date", align: "left",
+                      render: (r) => r.style_status === "retired"
+                        ? <span className="pill" style={{ background: "rgba(217,119,6,0.12)", color: "#92400e", fontWeight: 600 }}>{r.retired_at || "—"}</span>
+                        : <span className="text-muted">—</span>,
+                      csv: (r) => r.retired_at || "",
                     },
                   ]}
                   rows={pageRows}
