@@ -55,6 +55,11 @@ _kpi_stale_save_lock = asyncio.Lock()  # serialise concurrent disk flushes
 # Sizes calibrated to the cardinality of each cache's key space — see
 # /app/backend/cache_bounds.py for rationale.
 from cache_bounds import evict_oldest  # noqa: E402
+from store_targets import (  # noqa: E402
+    STORE_TARGETS_2026,
+    store_target_block,
+    country_target_block,
+)
 _KPI_STALE_CACHE_MAX = 256
 _CHURN_FULL_CACHE_MAX = 8
 _L10_CACHE_MAX = 64
@@ -3404,12 +3409,18 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         for ch in sorted(set(cur_map.keys()) | set(ly_map.keys())):
             cur_v = cur_map.get(ch, 0.0)
             ly_v = ly_map.get(ch, 0.0)
+            # Iter 89k — attach 2026 budget targets (annual + pro-rata
+            # YTD) to each store row so the table can show per-store
+            # progress against target without an extra round-trip.
+            ann_t, ytd_t, _mtd_t = store_target_block(ch, yesterday)
             stores.append({
                 "channel": ch,
                 "country": country_map.get(ch, ""),
                 "cur": cur_v,
                 "ly": ly_v,
                 "delta_pct": _pct_delta(cur_v, ly_v),
+                "target_annual": ann_t,
+                "target_ytd": ytd_t,
             })
         return stores
 
@@ -3502,6 +3513,96 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             })
         return out
 
+    def _targets_block() -> Dict[str, Any]:
+        """Per-country and grand-total revenue targets (annual + pro-
+        rated YTD/MTD) read from the 2026 budget sheet supplied by
+        finance. The YTD/MTD figures are prorated by day-of-month so
+        progress bars don't jump on month-boundary; they end at the
+        same `yesterday` cutoff the rest of the page uses.
+
+        Per-store targets are joined onto the YTD store table below in
+        _store_table so each row can show its own progress %.
+        """
+        country_rows: List[Dict[str, Any]] = []
+        total_annual = total_ytd = total_mtd = 0.0
+        for c in _OVERVIEW_COUNTRIES:
+            annual, ytd_t, mtd_t = country_target_block(c, yesterday)
+            country_rows.append({
+                "country": c,
+                "annual": annual,
+                "ytd": ytd_t,
+                "mtd": mtd_t,
+            })
+            total_annual += annual
+            total_ytd += ytd_t
+            total_mtd += mtd_t
+        return {
+            "as_of": yesterday.isoformat(),
+            "year": yesterday.year,
+            "countries": country_rows,
+            "total": {"annual": total_annual, "ytd": total_ytd, "mtd": total_mtd},
+        }
+
+    async def _stock_mix_block() -> Dict[str, Any]:
+        """Stock Mix — "What's selling vs what we have" by Category.
+        Compares units sold (MTD) against units currently on hand to
+        flag mix-mismatches (e.g. 30% of stock in Outerwear but only
+        7% of sales) so merch can reweight buys / move stock.
+
+        Uses the existing snapshot path (zero extra BQ scan when warm).
+        """
+        try:
+            inv_rows = await fetch_all_inventory(country=country) if country else await fetch_all_inventory()
+        except Exception:
+            inv_rows = []
+        # Roll inventory units on hand by category.
+        cat_stock: Dict[str, float] = defaultdict(float)
+        for r in inv_rows or []:
+            pt = (r.get("product_type") or "").strip()
+            cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
+            try:
+                cat_stock[cat] += float(r.get("available") or 0)
+            except (TypeError, ValueError):
+                pass
+        # Roll units sold (MTD) by category.
+        cat_sold: Dict[str, float] = defaultdict(float)
+        for sc in blocks["mtd_cur"]["subcategories"] or []:
+            pt = (sc.get("subcategory") or "").strip()
+            cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
+            try:
+                cat_sold[cat] += float(sc.get("units_sold") or 0)
+            except (TypeError, ValueError):
+                pass
+        total_stock = sum(cat_stock.values()) or 1.0
+        total_sold = sum(cat_sold.values()) or 1.0
+        cats = sorted(set(cat_stock.keys()) | set(cat_sold.keys()))
+        rows: List[Dict[str, Any]] = []
+        for cat in cats:
+            stock_u = cat_stock.get(cat, 0.0)
+            sold_u = cat_sold.get(cat, 0.0)
+            stock_pct = (stock_u / total_stock) * 100.0
+            sold_pct = (sold_u / total_sold) * 100.0
+            rows.append({
+                "category": cat,
+                "stock_units": stock_u,
+                "sold_units": sold_u,
+                "stock_pct": stock_pct,
+                "sold_pct": sold_pct,
+                # Gap: positive ⇒ we're over-stocked relative to sales;
+                # negative ⇒ we're under-stocked / hot demand.
+                "gap_pct": stock_pct - sold_pct,
+            })
+        # Sort by absolute gap descending so the biggest mismatches
+        # surface at the top of the list.
+        rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
+        return {
+            "total_stock_units": total_stock if total_stock > 1 else 0,
+            "total_sold_units_mtd": total_sold if total_sold > 1 else 0,
+            "categories": rows,
+        }
+
+    stock_mix = await _stock_mix_block()
+
     payload = {
         "as_of": yesterday.isoformat(),
         "windows": {
@@ -3510,6 +3611,8 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             "mtd": {"current": [mtd_from.isoformat(), yesterday.isoformat()],
                     "ly":      [_shift_year(mtd_from).isoformat(), _shift_year(yesterday).isoformat()]},
         },
+        "targets": _targets_block(),
+        "stock_mix": stock_mix,
         "ytd": {
             "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"]),
             "countries":  _country_block(blocks["ytd_cur"], blocks["ytd_ly"]),

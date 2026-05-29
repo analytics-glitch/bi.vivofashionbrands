@@ -206,6 +206,11 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
         ytd_cur: y.cur || 0,
         ytd_ly: y.ly || 0,
         ytd_delta: y.delta_pct,
+        // Iter 89k — per-store 2026 budget target (annual + pro-rata
+        // YTD) carried on the row so we can show progress without an
+        // extra request.
+        target_annual: y.target_annual || m.target_annual || 0,
+        target_ytd: y.target_ytd || m.target_ytd || 0,
       };
     });
     return rows.sort((a, b) => {
@@ -223,16 +228,39 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
     [merged, countryFilter],
   );
 
+  // Iter 89k — % contribution to revenue for the visible (post-filter)
+  // rows. We compute against the total of what's on screen so when
+  // leadership filters to Kenya, contribution % re-bases to Kenya
+  // total. Two columns: MTD share and YTD share.
+  const { mtdTotal, ytdTotal } = useMemo(() => {
+    let m = 0, y = 0;
+    for (const r of filtered) {
+      m += r.mtd_cur || 0;
+      y += r.ytd_cur || 0;
+    }
+    return { mtdTotal: m, ytdTotal: y };
+  }, [filtered]);
+
+  const enriched = useMemo(() => filtered.map((r) => ({
+    ...r,
+    mtd_share: mtdTotal > 0 ? (r.mtd_cur / mtdTotal) * 100 : 0,
+    ytd_share: ytdTotal > 0 ? (r.ytd_cur / ytdTotal) * 100 : 0,
+    target_pct: r.target_ytd > 0 ? (r.ytd_cur / r.target_ytd) * 100 : null,
+  })), [filtered, mtdTotal, ytdTotal]);
+
   const { sort, toggleSort, sortRows } = useTableSort();
-  const displayed = sort ? sortRows(filtered, {
+  const displayed = sort ? sortRows(enriched, {
     channel: (r) => r.channel,
     mtd_cur: (r) => r.mtd_cur,
+    mtd_share: (r) => r.mtd_share,
     mtd_ly: (r) => r.mtd_ly,
     mtd_delta: (r) => (r.mtd_delta == null ? 9999 : r.mtd_delta),
     ytd_cur: (r) => r.ytd_cur,
+    ytd_share: (r) => r.ytd_share,
     ytd_ly: (r) => r.ytd_ly,
     ytd_delta: (r) => (r.ytd_delta == null ? 9999 : r.ytd_delta),
-  }) : filtered;
+    target_pct: (r) => (r.target_pct == null ? -1 : r.target_pct),
+  }) : enriched;
 
   const rowTone = (mtdDelta) => {
     // Highlight the MTD column on each row based on user-spec
@@ -261,11 +289,14 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
             <th className="px-2 py-2 w-6"></th>
             <SortableTh sortKey="channel" sort={sort} onSort={toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Store</SortableTh>
             <SortableTh sortKey="mtd_cur" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">MTD Revenue</SortableTh>
+            <SortableTh sortKey="mtd_share" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">MTD %</SortableTh>
             <SortableTh sortKey="mtd_ly" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">MTD LY</SortableTh>
             <SortableTh sortKey="mtd_delta" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">MTD Δ%</SortableTh>
             <SortableTh sortKey="ytd_cur" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">YTD Revenue</SortableTh>
+            <SortableTh sortKey="ytd_share" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">YTD %</SortableTh>
             <SortableTh sortKey="ytd_ly" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">YTD LY</SortableTh>
             <SortableTh sortKey="ytd_delta" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">YTD Δ%</SortableTh>
+            <SortableTh sortKey="target_pct" sort={sort} onSort={toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="YTD revenue ÷ YTD pro-rata target (2026 budget)">vs Target</SortableTh>
           </tr>
         </thead>
         <tbody>
@@ -275,6 +306,12 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
                 : r.mtd_delta < 0 ? "bg-rose-500"
                 : "bg-emerald-500";
             const needsAttention = r.mtd_delta != null && r.mtd_delta < -10;
+            const tgt = r.target_pct;
+            const tgtCls =
+              tgt == null ? "text-muted"
+                : tgt >= 100 ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                : tgt >= 90 ? "text-amber-700 bg-amber-50 border-amber-200"
+                : "text-rose-700 bg-rose-50 border-rose-200";
             return (
               <tr key={r.channel} className={`border-t border-border/50 ${rowTone(r.mtd_delta)}`} data-testid={`exec-store-row-${r.channel}`}>
                 <td className="px-2 py-2"><span className={`inline-block w-2 h-2 rounded-full ${dot}`} title={r.mtd_delta == null ? "no comparison data" : r.mtd_delta < 0 ? "down vs LY" : "up vs LY"} /></td>
@@ -283,15 +320,46 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
                   {r.channel}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums font-semibold">{fmtKES(r.mtd_cur)}</td>
+                <td className="px-3 py-2 text-right tabular-nums font-bold text-brand">{r.mtd_share.toFixed(1)}%</td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtKES(r.mtd_ly)}</td>
                 <td className="px-3 py-2 text-right"><DeltaPill value={r.mtd_delta} /></td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmtKES(r.ytd_cur)}</td>
+                <td className="px-3 py-2 text-right tabular-nums font-bold text-brand">{r.ytd_share.toFixed(1)}%</td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtKES(r.ytd_ly)}</td>
                 <td className="px-3 py-2 text-right"><DeltaPill value={r.ytd_delta} /></td>
+                <td className="px-3 py-2 text-right">
+                  {tgt == null ? (
+                    <span className="text-[10px] text-muted">—</span>
+                  ) : (
+                    <span
+                      className={`inline-flex items-center justify-end gap-1 rounded-md border font-bold text-[11px] px-1.5 py-0.5 tabular-nums ${tgtCls}`}
+                      title={`YTD target (2026 budget): KES ${Math.round(r.target_ytd).toLocaleString()} · Annual: KES ${Math.round(r.target_annual).toLocaleString()}`}
+                      data-testid={`exec-store-target-${r.channel}`}
+                    >
+                      {tgt.toFixed(0)}%
+                    </span>
+                  )}
+                </td>
               </tr>
             );
           })}
         </tbody>
+        {/* Total row so leadership can read the visible-rows total at the bottom of the table */}
+        <tfoot className="bg-panel/70 border-t-2 border-border">
+          <tr className="font-bold">
+            <td className="px-2 py-2"></td>
+            <td className="px-3 py-2 whitespace-nowrap">{countryFilter ? `${countryFilter} total` : "Total"} ({displayed.length})</td>
+            <td className="px-3 py-2 text-right tabular-nums">{fmtKES(mtdTotal)}</td>
+            <td className="px-3 py-2 text-right tabular-nums text-brand">100%</td>
+            <td className="px-3 py-2"></td>
+            <td className="px-3 py-2"></td>
+            <td className="px-3 py-2 text-right tabular-nums">{fmtKES(ytdTotal)}</td>
+            <td className="px-3 py-2 text-right tabular-nums text-brand">100%</td>
+            <td className="px-3 py-2"></td>
+            <td className="px-3 py-2"></td>
+            <td className="px-3 py-2"></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   );
@@ -568,6 +636,229 @@ const _fmtRange = (range) => {
   }
 };
 
+/**
+ * YearlyTargets — YTD revenue progress vs the 2026 budget targets
+ * supplied by finance. Each country gets a row (Kenya, Uganda, Rwanda,
+ * Online) plus a grand-total row. Progress bar reads (YTD revenue ÷
+ * pro-rata YTD target). The annual target is also surfaced so leadership
+ * can see "we need X more to hit the full year".
+ */
+const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
+  const pct = ytdTarget > 0 ? (ytdActual / ytdTarget) * 100 : 0;
+  const annualPct = annualTarget > 0 ? (ytdActual / annualTarget) * 100 : 0;
+  // Tone — green at/above pace, amber 90-100%, rose under 90%.
+  const tone =
+    pct >= 100 ? "bg-emerald-500" : pct >= 90 ? "bg-amber-500" : "bg-rose-500";
+  const pillTone =
+    pct >= 100 ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+      : pct >= 90 ? "text-amber-700 bg-amber-50 border-amber-200"
+      : "text-rose-700 bg-rose-50 border-rose-200";
+  const gap = ytdTarget - ytdActual;
+  const annualGap = annualTarget - ytdActual;
+  return (
+    <div
+      className="grid grid-cols-[150px_1fr_120px] items-center gap-3 py-2.5 border-b border-border/50 last:border-b-0"
+      data-testid={`exec-target-row-${label}`}
+    >
+      <div className="flex items-center gap-2">
+        {flag && <span className="text-[16px]">{flag}</span>}
+        <span className="font-bold text-[13px]">{label}</span>
+      </div>
+      <div>
+        <div className="relative h-3 bg-panel rounded-full overflow-hidden">
+          <div className={`absolute inset-y-0 left-0 ${tone} rounded-full transition-all`} style={{ width: `${Math.min(pct, 100)}%` }} />
+          {/* On-pace marker at 100% */}
+          <div className="absolute inset-y-0 right-0 w-px bg-foreground/40" title="On-pace target (100%)" />
+        </div>
+        <div className="flex items-baseline justify-between mt-1 text-[10.5px] text-muted">
+          <span className="tabular-nums">
+            <span className="font-bold text-foreground">{fmtKES(ytdActual)}</span>
+            <span className="opacity-60"> · YTD target </span>
+            <span className="tabular-nums">{fmtKES(ytdTarget)}</span>
+          </span>
+          <span className="tabular-nums">
+            {gap > 0
+              ? <span className="text-rose-700">Behind by <span className="font-bold">{fmtKES(gap)}</span></span>
+              : <span className="text-emerald-700">Ahead by <span className="font-bold">{fmtKES(-gap)}</span></span>
+            }
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between mt-0.5 text-[10px] text-muted">
+          <span>Annual budget: <span className="font-bold tabular-nums text-foreground">{fmtKES(annualTarget)}</span> · <span className="tabular-nums">{annualPct.toFixed(1)}%</span> achieved</span>
+          <span className="tabular-nums">Remaining: <span className="font-bold">{fmtKES(Math.max(annualGap, 0))}</span></span>
+        </div>
+      </div>
+      <div className="text-right">
+        <span className={`inline-flex items-center justify-end gap-1 rounded-md border font-extrabold text-[14px] px-2 py-1 tabular-nums ${pillTone}`} data-testid={`exec-target-pct-${label}`}>
+          {pct.toFixed(0)}%
+        </span>
+        <div className="text-[9.5px] uppercase tracking-wider text-muted mt-1 font-bold">YTD vs target</div>
+      </div>
+    </div>
+  );
+};
+
+const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
+  // Build country → ytd actual map from the existing exec-summary
+  // country block (no extra fetch). Total ytd actual is the top-level
+  // KPI revenue YTD (all channels).
+  const actualMap = useMemo(() => {
+    const m = {};
+    for (const c of ytdCountries || []) m[c.country] = c.revenue?.cur || 0;
+    return m;
+  }, [ytdCountries]);
+  if (!targets || !targets.countries) return null;
+  const totalActual = ytdKpis?.revenue?.cur || 0;
+  return (
+    <div className="card-white p-4 sm:p-5" data-testid="exec-targets-section">
+      <SectionTitle
+        title="YTD vs Yearly Target (2026 budget)"
+        subtitle="YTD revenue against the pro-rata budget (full months + day-of-month pro-rata of the current month). Source: finance team budget sheet."
+      />
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+        <div className="rounded-lg border border-border bg-white px-3.5">
+          {targets.countries.map((c) => (
+            <TargetRow
+              key={c.country}
+              label={c.country}
+              flag={COUNTRY_FLAGS[c.country]}
+              ytdActual={actualMap[c.country] || 0}
+              ytdTarget={c.ytd}
+              annualTarget={c.annual}
+            />
+          ))}
+          <div className="bg-gradient-to-r from-brand/5 to-transparent -mx-3.5 px-3.5">
+            <TargetRow
+              label="GROUP TOTAL"
+              ytdActual={totalActual}
+              ytdTarget={targets.total?.ytd || 0}
+              annualTarget={targets.total?.annual || 0}
+            />
+          </div>
+        </div>
+        {/* Side card — quick scorecard for the group total */}
+        <div className="rounded-xl border-2 border-brand/30 bg-gradient-to-br from-brand/5 to-white p-4 flex flex-col justify-center" data-testid="exec-target-group-card">
+          <div className="text-[10.5px] uppercase font-extrabold tracking-widest text-brand mb-1">Group YTD pace</div>
+          <div className="text-[38px] font-extrabold leading-none tabular-nums">
+            {targets.total?.ytd > 0 ? ((totalActual / targets.total.ytd) * 100).toFixed(0) : 0}%
+          </div>
+          <div className="text-[11px] text-muted mt-1">of pro-rata YTD target</div>
+          <div className="h-px bg-border/60 my-3" />
+          <div className="text-[11px] text-muted">Annual target</div>
+          <div className="text-[15px] font-bold tabular-nums">{fmtKES(targets.total?.annual || 0)}</div>
+          <div className="text-[11px] text-muted mt-2">Achieved so far</div>
+          <div className="text-[15px] font-bold tabular-nums">
+            {fmtKES(totalActual)}
+            <span className="text-[11px] text-muted font-normal ml-1.5">
+              ({targets.total?.annual > 0 ? ((totalActual / targets.total.annual) * 100).toFixed(1) : 0}%)
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * StockMix — "What's selling vs what we have" by Category.
+ * Side-by-side comparison of inventory mix (% of units on hand) vs
+ * sales mix (% of units sold MTD). The Gap column makes mismatches
+ * obvious: positive gap ⇒ we're over-stocked relative to sales,
+ * negative gap ⇒ hot demand the floor can't supply.
+ */
+const StockMix = ({ stockMix }) => {
+  if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
+    return null;
+  }
+  const rows = stockMix.categories;
+  return (
+    <div className="card-white p-4 sm:p-5" data-testid="exec-stockmix-section">
+      <SectionTitle
+        title="Stock Mix — What's selling vs what we have"
+        subtitle={
+          <span>
+            Share of units on hand (group-wide inventory) compared with share of units sold MTD, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
+            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold MTD: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span></span>
+          </span>
+        }
+      />
+      <div className="overflow-x-auto rounded-lg border border-border bg-white">
+        <table className="w-full min-w-max text-[12.5px]" data-testid="exec-stockmix-table">
+          <thead className="bg-panel">
+            <tr className="text-left">
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Category</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock Units</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock %</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold MTD</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap" style={{ minWidth: 200 }}>Mix comparison</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Read</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const gap = r.gap_pct;
+              const oversupply = gap > 5;
+              const undersupply = gap < -5;
+              const gapCls = oversupply ? "text-amber-700 bg-amber-50 border-amber-200"
+                : undersupply ? "text-rose-700 bg-rose-50 border-rose-200"
+                : "text-emerald-700 bg-emerald-50 border-emerald-200";
+              const read = oversupply
+                ? "Over-stocked"
+                : undersupply
+                ? "Hot — restock"
+                : "Balanced";
+              const stockBar = Math.min(r.stock_pct, 100);
+              const soldBar = Math.min(r.sold_pct, 100);
+              return (
+                <tr key={r.category} className="border-t border-border/50" data-testid={`exec-stockmix-row-${r.category}`}>
+                  <td className="px-3 py-2 font-semibold whitespace-nowrap">{r.category}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-bold">{r.stock_pct.toFixed(1)}%</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-bold">{r.sold_pct.toFixed(1)}%</td>
+                  <td className="px-3 py-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] uppercase font-bold text-muted w-9">stock</span>
+                        <div className="relative h-2 flex-1 bg-panel rounded">
+                          <div className="absolute inset-y-0 left-0 bg-brand/70 rounded" style={{ width: `${stockBar}%` }} />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] uppercase font-bold text-muted w-9">sold</span>
+                        <div className="relative h-2 flex-1 bg-panel rounded">
+                          <div className="absolute inset-y-0 left-0 bg-emerald-500 rounded" style={{ width: `${soldBar}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[11px] px-1.5 py-0.5 tabular-nums ${gapCls}`}>
+                      {gap > 0 ? "+" : ""}{gap.toFixed(1)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
+                    {oversupply && <span className="text-amber-700">{read}</span>}
+                    {undersupply && <span className="text-rose-700">{read}</span>}
+                    {!oversupply && !undersupply && <span className="text-emerald-700">{read}</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-[10.5px] text-muted mt-2 flex items-center gap-4">
+        <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-brand/70" /> Inventory share</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Sales share (MTD)</span>
+        <span className="ml-auto">Gap &gt; +5pp = over-stocked · Gap &lt; -5pp = hot demand</span>
+      </div>
+    </div>
+  );
+};
+
 const ExecutiveSummary = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -660,16 +951,6 @@ const ExecutiveSummary = () => {
           </div>
         </div>
       </div>
-
-      {/* SECTION 0.5 — What's Hot / What's Not narrative banner */}
-      {/* MTD callout sits at the top because the actionable window for
-          leadership is "what's happening right now". The catSource view
-          (which respects the country filter further down) is used so
-          the callout updates when leadership drills into a country. */}
-      <HotNotCallout
-        subcategories={catSource.mtd.categories.subcategories}
-        view="mtd"
-      />
 
       {/* SECTION 1 — Top KPI scorecard */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
@@ -799,6 +1080,24 @@ const ExecutiveSummary = () => {
           </div>
         </div>
       </div>
+
+      {/* SECTION 4 — YTD vs Yearly Target (2026 budget) */}
+      <YearlyTargets
+        targets={data.targets}
+        ytdCountries={data.ytd.countries}
+        ytdKpis={data.ytd.kpis}
+      />
+
+      {/* SECTION 5 — Stock Mix: what's selling vs what we have */}
+      <StockMix stockMix={data.stock_mix} />
+
+      {/* SECTION 6 — What's Hot / What's Not narrative banner (moved
+          to the bottom per leadership pref so the data scorecard reads
+          first and the narrative call-out closes the page). */}
+      <HotNotCallout
+        subcategories={catSource.mtd.categories.subcategories}
+        view="mtd"
+      />
     </div>
   );
 };

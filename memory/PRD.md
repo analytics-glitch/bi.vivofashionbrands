@@ -4,6 +4,22 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89m) — Executive Summary: Targets + Stock Mix + Store contribution + reorder
+- **User ask**: (a) Move "What's hot · What's not" to the bottom of the page, (b) In Store Performance add % contribution to total revenue, (c) Add YTD performance against the Yearly Targets (2026 budget sheet), (d) Add Stock Mix — what's selling vs what we have.
+- **Budget data ingestion** — new file `/app/backend/store_targets.py` holds the 2026 monthly targets per store (28 Kenya retail stores + Uganda 2 + Rwanda 1 + Online country roll-up using "Gross SZ" monthlies). Helpers `_prorata_to_date` and `_mtd_prorata` produce day-of-month-pro-rata YTD/MTD targets so progress bars don't jump at month boundaries.
+- **Backend** (`/api/exec-summary`):
+  - New top-level `targets` block: per-country `{annual, ytd, mtd}` plus group total. YTD/MTD prorated to `yesterday`.
+  - New top-level `stock_mix` block: rolls `fetch_all_inventory()` units-on-hand and MTD subcategory `units_sold` up to category, exposing `stock_pct`, `sold_pct`, and `gap_pct`. Sorted by `abs(gap_pct)` desc so biggest mismatches surface first. Zero extra BQ scan (reuses warmed inventory + sales already in memory).
+  - `_store_table` now joins each row to `store_target_block(channel, yesterday)` so per-store annual + YTD targets ride along.
+- **Frontend** (`ExecutiveSummary.jsx`):
+  - HotNotCallout MOVED to bottom (after Categories + Targets + Stock Mix).
+  - Store table — added `MTD %` and `YTD %` contribution columns (re-bases to visible-row total so the country-filter view shows the right context), and `vs Target` pill column (YTD revenue ÷ pro-rata YTD target, color-coded: green ≥100%, amber 90–100%, rose <90%). New `<tfoot>` shows visible totals.
+  - New `<YearlyTargets>` section: per-country progress bars with "Behind/Ahead by X" callouts + annual budget + remaining, plus side card showing Group YTD pace, annual target, achieved-so-far %.
+  - New `<StockMix>` section: per-category table with stock units, stock %, sold MTD, sold %, side-by-side mini bar comparison, gap (pp), and a read ("Balanced/Over-stocked/Hot — restock").
+- **Verified live**: Kenya 89% YTD vs target (KES 365.65M vs target KES 408.63M — behind by KES 42.98M), Rwanda 102% (ahead by KES 260.89K), Online 127% (ahead by KES 10.33M), Group 91%. Stock Mix shows Dresses 31.3% stock / 31.7% sold = balanced; Outerwear 13.1% / 15.7% = -2.5pp (hot but balanced). Store table footer reads KES 85.73M MTD / KES 414.93M YTD total across 32 stores.
+
+
+
 ### Recent (Feb 2026 — Iter 89l) — Executive Summary: "What's Hot / What's Not" auto-callout
 - **What**: Auto-narrative banner at the top of the Executive Summary surfacing the 3 best and 3 worst subcategory movers vs same period last year. Reads at a glance: *"🔥 Short & Mini Dresses: +344% rev on +317% units · 🚨 Waterfalls & Kimonos: -51% rev on -44% units"*.
 - **Implementation** (frontend-only, `ExecutiveSummary.jsx`): new `HotNotCallout` component. Uses the MTD subcategories list from the existing payload — zero extra fetch. Filters:
