@@ -4,6 +4,15 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89j) — Executive Summary: revenue contribution % + units
+- **User ask**: "For the subcategory and category show the revenue contribution and also the qty."
+- **Frontend only** (`ExecutiveSummary.jsx`):
+  - `CategoryBars` — under each category name, show `XX.X% · NNNNu` (share-of-period-revenue + units sold). Footer shows period total in KES. Sums units from rolled-up subcategories.
+  - `AllSubcategories` — each row now leads its metadata line with `XX.X% · NNNNu (LY NNNNu) · LY: KES … · ASP: …`. Sticky footer at the bottom shows `Total subcategories: N · Period total: KES X · NNN,NNN units`.
+- **No backend changes** — `cur_units` / `ly_units` were already in the payload (Iter 89e).
+- **Verified live**: Dresses category shows `40.5% · 7,703u`, Tops `21.0% · 7,228u`, Bottoms `20.0% · 4,809u`. Top subcategory (Knee Length Dresses) shows `18.0% · 3,718u (LY 4,554u)` — clearly down on units (~18%) which explains the revenue Δ% of -12.9%.
+
+
 ### Recent (Feb 2026 — Iter 89i) — Executive Summary: ASP metric + full subcategory list
 - **User ask**: "Show all the subcategories and also add the ASP (Average Selling Price) metric."
 - **Backend**:

@@ -303,21 +303,26 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
  */
 const CategoryBars = ({ subcategories, view }) => {
   // Roll up subcategories → top-level category via shared productCategory map.
-  const cats = useMemo(() => {
+  const { cats, totalRev } = useMemo(() => {
     const buckets = new Map();
+    let totalRev = 0;
     for (const sc of subcategories || []) {
       const cat = categoryFor(sc.subcategory) || "Other";
-      const b = buckets.get(cat) || { name: cat, cur: 0, ly: 0 };
+      const b = buckets.get(cat) || { name: cat, cur: 0, ly: 0, cur_units: 0, ly_units: 0 };
       b.cur += sc.cur || 0;
       b.ly += sc.ly || 0;
+      b.cur_units += sc.cur_units || 0;
+      b.ly_units += sc.ly_units || 0;
+      totalRev += sc.cur || 0;
       buckets.set(cat, b);
     }
     const arr = Array.from(buckets.values()).map((b) => ({
       ...b,
       delta_pct: b.ly ? ((b.cur - b.ly) / b.ly) * 100 : null,
+      share_pct: totalRev > 0 ? (b.cur / totalRev) * 100 : 0,
     }));
     arr.sort((a, b) => b.cur - a.cur);
-    return arr;
+    return { cats: arr, totalRev };
   }, [subcategories]);
 
   const max = useMemo(
@@ -333,8 +338,16 @@ const CategoryBars = ({ subcategories, view }) => {
         const curPct = (c.cur / max) * 100;
         const lyPct = (c.ly / max) * 100;
         return (
-          <div key={c.name} className="grid grid-cols-[120px_1fr_72px] items-center gap-2.5">
-            <div className="text-[11.5px] font-semibold truncate" title={c.name}>{c.name}</div>
+          <div key={c.name} className="grid grid-cols-[120px_1fr_92px] items-center gap-2.5">
+            <div>
+              <div className="text-[11.5px] font-semibold truncate" title={c.name}>{c.name}</div>
+              {/* Iter 89j — share-of-revenue + units sold per category.
+                  Lets leadership see "Dresses = 35% of revenue, 8.4K
+                  units" without scrolling to the subcategory list. */}
+              <div className="text-[10px] text-muted mt-0.5">
+                <span className="font-bold text-foreground">{c.share_pct.toFixed(1)}%</span> · {fmtNum(c.cur_units)}u
+              </div>
+            </div>
             <div className="space-y-1">
               <div className="relative h-2.5 bg-panel rounded">
                 <div className="absolute inset-y-0 left-0 bg-brand rounded" style={{ width: `${curPct}%` }} />
@@ -345,9 +358,6 @@ const CategoryBars = ({ subcategories, view }) => {
             </div>
             <div className="text-right">
               <div className="font-extrabold text-[11.5px] tabular-nums">{fmtKES(c.cur)}</div>
-              {/* Iter 89h — LY shown directly under current so the
-                  reader doesn't have to guess what the lighter bar
-                  represents. */}
               <div className="text-[10px] text-muted tabular-nums">LY: {fmtKES(c.ly)}</div>
               <DeltaPill value={c.delta_pct} />
             </div>
@@ -357,6 +367,7 @@ const CategoryBars = ({ subcategories, view }) => {
       <div className="text-[10px] text-muted mt-2 flex items-center gap-3">
         <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-brand" /> {view === "ytd" ? "YTD" : "MTD"} current</span>
         <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-brand/30" /> Same period last year</span>
+        <span className="ml-auto">Total: <span className="font-bold text-foreground">{fmtKES(totalRev)}</span></span>
       </div>
     </div>
   );
@@ -369,6 +380,16 @@ const CategoryBars = ({ subcategories, view }) => {
  */
 const AllSubcategories = ({ subcategories }) => {
   const rows = subcategories || [];
+  // Iter 89j — pre-compute totals so each row can display its share %
+  // of period revenue + show the period grand-total in the footer.
+  const { totalRev, totalUnits } = useMemo(() => {
+    let rev = 0, units = 0;
+    for (const r of rows) {
+      rev += r.cur || 0;
+      units += r.cur_units || 0;
+    }
+    return { totalRev: rev, totalUnits: units };
+  }, [rows]);
   const max = useMemo(
     () => Math.max(1, ...rows.flatMap((sc) => [sc.cur, sc.ly])),
     [rows]
@@ -383,6 +404,7 @@ const AllSubcategories = ({ subcategories }) => {
           const barColor = positive ? "bg-emerald-500" : "bg-rose-500";
           const needsAttention = sc.delta_pct != null && sc.delta_pct < -10;
           const asp = sc.asp || {};
+          const sharePct = totalRev > 0 ? (sc.cur / totalRev) * 100 : 0;
           return (
             <li key={sc.subcategory} className="grid grid-cols-[18px_1fr] items-start gap-2 text-[12px]" data-testid={`exec-subcat-${i}`}>
               <span className="text-muted font-bold tabular-nums text-[11px] pt-0.5">{i + 1}</span>
@@ -399,6 +421,13 @@ const AllSubcategories = ({ subcategories }) => {
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-1">
                   <div className="text-[10px] text-muted">
+                    {/* Iter 89j — share-of-revenue + units sold up front;
+                        ASP and LY follow on the same line. */}
+                    <span className="font-bold text-foreground">{sharePct.toFixed(1)}%</span>
+                    <span className="mx-1.5 opacity-50">·</span>
+                    <span className="font-semibold text-foreground tabular-nums">{fmtNum(sc.cur_units)}u</span>
+                    <span className="opacity-50 ml-0.5">(LY {fmtNum(sc.ly_units)}u)</span>
+                    <span className="mx-1.5 opacity-50">·</span>
                     LY: <span className="tabular-nums">{fmtKES(sc.ly)}</span>
                     <span className="mx-1.5 opacity-50">·</span>
                     ASP: <span className="tabular-nums font-semibold">{fmtKES(asp.cur || 0)}</span>
@@ -416,6 +445,10 @@ const AllSubcategories = ({ subcategories }) => {
           );
         })}
       </ol>
+      <div className="text-[10px] text-muted mt-3 pt-2 border-t border-border/60 flex items-center justify-between sticky bottom-0 bg-white">
+        <span>Total subcategories: <span className="font-bold text-foreground">{rows.length}</span></span>
+        <span>Period total: <span className="font-bold text-foreground">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground">{fmtNum(totalUnits)} units</span></span>
+      </div>
     </div>
   );
 };
