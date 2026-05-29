@@ -3552,24 +3552,53 @@ async def exec_summary_endpoint(country: Optional[str] = None):
 
     async def _stock_mix_block() -> Dict[str, Any]:
         """Stock Mix — "What's selling vs what we have" by Category +
-        Subcategory. Compares units sold (MTD) against units currently
-        on hand to flag mix-mismatches.
+        Subcategory. Compares units sold (MTD — for the mix-share
+        comparison) against units currently on hand to flag mismatches.
 
-        Iter 89r — adds `weeks_of_cover` per row. We use MTD units sold
-        ÷ days_elapsed_in_month to derive a daily run-rate, then divide
-        stock by (daily_rate × 7) to express cover in weeks. We use
-        MTD instead of a fresh 30-day window because the MTD sales are
-        already in memory (zero extra BQ scan). Thresholds:
+        Iter 89s — weeks-of-cover now matches the SOR convention used
+        everywhere else in the dashboard: last **3 full calendar
+        months** of subcategory sales (≈ 90 days), normalised to a
+        weekly run-rate via `units_3m ÷ 12` (because avg_monthly =
+        u3m/3 and avg_weekly = avg_monthly/4 ⇒ u3m/12). This makes
+        cover here directly comparable to the SOR / Locations WoC.
+
+        Stock-mix share % (stock_pct, sold_pct, gap_pct) continues to
+        use MTD numbers because the mix question is "what proportion
+        of our sell-through right now vs what we're carrying", which
+        is a current-moment question.
+
+        Thresholds (unchanged):
           • cover < 4 weeks  → restock candidate
           • 4–17 weeks       → healthy
           • > 17 weeks       → markdown candidate
-        Subcategories with no MTD sales but stock-on-hand return None
-        (rendered as "—" / "Idle stock" on the frontend).
+        Subcategories with no 90-day sales but stock-on-hand return
+        None (rendered as "Idle stock" on the frontend).
         """
+        # Compute the 3-full-month window for the cover calculation —
+        # SAME boundaries as the SOR endpoint above, so the numbers
+        # line up exactly.
+        from datetime import timedelta
+        woc_to = yesterday.replace(day=1) - timedelta(days=1)
+        first_of_to_month = woc_to.replace(day=1)
+        one_back = (first_of_to_month - timedelta(days=1)).replace(day=1)
+        woc_from = (one_back - timedelta(days=1)).replace(day=1)
+        # Inventory + 90-day subcat sales fetched in parallel — the
+        # subcat-sales fetch hits the same cached endpoint other
+        # sections use, so the marginal cost is one cache lookup.
         try:
-            inv_rows = await fetch_all_inventory(country=country) if country else await fetch_all_inventory()
+            sub3m_task = asyncio.create_task(get_subcategory_sales(
+                date_from=woc_from.isoformat(),
+                date_to=woc_to.isoformat(),
+                country=country,
+            ))
+            inv_task = asyncio.create_task(
+                fetch_all_inventory(country=country) if country else fetch_all_inventory()
+            )
+            inv_rows = await inv_task
+            sub3m_rows = await sub3m_task
         except Exception:
             inv_rows = []
+            sub3m_rows = []
         # Roll inventory units on hand by (category, subcategory) and
         # by category total. The subcategory layer lets the frontend
         # nest sub-rows under each category — same join key as the
@@ -3613,22 +3642,40 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             cat_rev[cat] += rev
         total_stock = sum(cat_stock.values()) or 1.0
         total_sold = sum(cat_sold.values()) or 1.0
-        # Days elapsed in the MTD window so we can derive a daily run-
-        # rate from MTD units. `yesterday` is the YTD/MTD anchor that
-        # the rest of this endpoint uses, so its day-of-month equals
-        # the number of MTD-completed days.
+        # Days elapsed in the MTD window — kept for transparency
+        # downstream (frontend tooltips, etc.) even though it's no
+        # longer used for the cover formula.
         mtd_days = max(yesterday.day, 1)
 
-        def _weeks_of_cover(stock_u: float, sold_u: float) -> Optional[float]:
-            """Convert (stock units, MTD units sold) → weeks of cover.
-            Returns None when there's no sales signal — those rows are
-            rendered as "Idle stock" on the frontend instead of as a
-            misleading "infinite weeks of cover" number."""
-            if sold_u <= 0:
+        # Roll 90-day (3-full-month) units by (category, subcategory)
+        # and by category. This is the input to the SOR-style WoC.
+        sub_3m: Dict[Tuple[str, str], float] = defaultdict(float)
+        cat_3m: Dict[str, float] = defaultdict(float)
+        total_3m = 0.0
+        for sc in sub3m_rows or []:
+            pt = (sc.get("subcategory") or "").strip()
+            cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
+            try:
+                u = float(sc.get("units_sold") or 0)
+            except (TypeError, ValueError):
+                u = 0.0
+            if u <= 0:
+                continue
+            sub_3m[(cat, pt or "Unspecified")] += u
+            cat_3m[cat] += u
+            total_3m += u
+
+        def _weeks_of_cover(stock_u: float, units_3m: float) -> Optional[float]:
+            """SOR-style weeks of cover:
+                weeks = stock ÷ (units_3m ÷ 12)
+            (avg_monthly = u3m/3, weekly = avg_monthly/4 ⇒ u3m/12).
+            Returns None when there's no 90-day sales signal — those
+            rows render as "Idle stock" on the frontend instead of as
+            a misleading "infinite weeks of cover" number."""
+            if units_3m <= 0:
                 return None
-            daily_rate = sold_u / mtd_days
-            weekly_rate = daily_rate * 7.0
-            return stock_u / weekly_rate if weekly_rate > 0 else None
+            weekly = units_3m / 12.0
+            return stock_u / weekly if weekly > 0 else None
 
         cats = sorted(set(cat_stock.keys()) | set(cat_sold.keys()))
         rows: List[Dict[str, Any]] = []
@@ -3658,7 +3705,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                     "stock_pct": (ssu / total_stock) * 100.0,
                     "sold_pct":  (sso / total_sold)  * 100.0,
                     "gap_pct":   ((ssu / total_stock) * 100.0) - ((sso / total_sold) * 100.0),
-                    "weeks_of_cover": _weeks_of_cover(ssu, sso),
+                    "weeks_of_cover": _weeks_of_cover(ssu, sub_3m.get((cat, sub), 0.0)),
                     "asp_mtd": sub_asp,
                     "tied_up_kes": ssu * sub_asp,
                 })
@@ -3671,7 +3718,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                 "stock_pct": stock_pct,
                 "sold_pct": sold_pct,
                 "gap_pct": stock_pct - sold_pct,
-                "weeks_of_cover": _weeks_of_cover(stock_u, sold_u),
+                "weeks_of_cover": _weeks_of_cover(stock_u, cat_3m.get(cat, 0.0)),
                 "asp_mtd": cat_asp,
                 "tied_up_kes": stock_u * cat_asp,
                 "subcategories": sub_rows,
@@ -3679,16 +3726,20 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         # Sort by absolute gap descending so the biggest mismatches
         # surface at the top of the list.
         rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
-        # Group-wide weeks of cover — same formula as per-row but on
-        # the totals. Surfaced in the footer so leadership reads the
-        # aggregate "we're carrying N weeks of inventory" without
-        # having to mentally average the category rows.
-        total_woc = _weeks_of_cover(total_stock, total_sold) if total_stock > 1 and total_sold > 1 else None
+        # Group-wide weeks of cover — uses the same SOR-style 3m
+        # window as the per-row figures so they sum/divide consistently.
+        total_woc = _weeks_of_cover(total_stock, total_3m) if total_stock > 1 and total_3m > 0 else None
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
             "total_sold_units_mtd": total_sold if total_sold > 1 else 0,
+            "total_units_3m": total_3m,
             "total_weeks_of_cover": total_woc,
             "mtd_days": mtd_days,
+            "cover_window": {
+                "from": woc_from.isoformat(),
+                "to":   woc_to.isoformat(),
+                "method": "sor_3m",
+            },
             "categories": rows,
         }
 

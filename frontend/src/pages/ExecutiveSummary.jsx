@@ -8,7 +8,7 @@ import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase, Tag, Package, DownloadSimple, CircleNotch,
+  Briefcase, Tag, Package, DownloadSimple, CircleNotch, X as CloseIcon, Copy,
 } from "@phosphor-icons/react";
 
 /**
@@ -1389,12 +1389,15 @@ const ExecutiveSummary = () => {
     return () => { cancel = true; };
   }, [selectedCountry]);
 
-  // Snapshot — capture the whole exec-summary page (header + sections)
-  // to a PNG using html2canvas, matching the Overview page's "Save
-  // image" pattern. Hooks declared BEFORE the early returns so React
-  // sees them in the same order on every render.
+  // Snapshot — capture the whole exec-summary page to a PNG via
+  // html2canvas, but instead of triggering a download immediately we
+  // show the captured image in an in-page modal so leadership can
+  // preview, then choose to download / copy / share. Matches the
+  // Overview page's pattern except for the preview step.
   const captureRef = useRef(null);
   const [saving, setSaving] = useState(false);
+  const [snapshotUrl, setSnapshotUrl] = useState(null);
+  const [snapshotName, setSnapshotName] = useState(null);
   const onSaveImage = async () => {
     if (!captureRef.current || saving) return;
     setSaving(true);
@@ -1408,15 +1411,39 @@ const ExecutiveSummary = () => {
         windowHeight: captureRef.current.scrollHeight,
       });
       const stamp = (data?.as_of || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
-      const link = document.createElement("a");
-      link.download = `vivo-exec-summary_${stamp}.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-      toast.success("Snapshot saved — ready to share", { duration: 3000 });
+      setSnapshotUrl(canvas.toDataURL("image/png"));
+      setSnapshotName(`vivo-exec-summary_${stamp}.png`);
     } catch (e) {
-      toast.error("Couldn't save snapshot — " + (e?.message || "unknown error"));
+      toast.error("Couldn't render snapshot — " + (e?.message || "unknown error"));
     } finally {
       setSaving(false);
+    }
+  };
+  const onDownloadSnapshot = () => {
+    if (!snapshotUrl) return;
+    const link = document.createElement("a");
+    link.download = snapshotName || "vivo-exec-summary.png";
+    link.href = snapshotUrl;
+    link.click();
+    toast.success("Snapshot downloaded", { duration: 2500 });
+  };
+  const onCopySnapshot = async () => {
+    if (!snapshotUrl) return;
+    try {
+      const blob = await (await fetch(snapshotUrl)).blob();
+      // Use the Clipboard API where available so leadership can paste
+      // the screenshot straight into WhatsApp / Slack / email without
+      // needing the file off the file system.
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+        toast.success("Snapshot copied — paste anywhere", { duration: 2500 });
+      } else {
+        onDownloadSnapshot();
+      }
+    } catch (e) {
+      // Clipboard write can fail on Safari / older browsers — fall
+      // back to a normal download so the action never silently no-ops.
+      onDownloadSnapshot();
     }
   };
 
@@ -1463,12 +1490,12 @@ const ExecutiveSummary = () => {
               data-testid="exec-snapshot-save"
               data-html2canvas-ignore="true"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 disabled:opacity-60 disabled:cursor-wait whitespace-nowrap shrink-0"
-              title="Save the full Executive Summary as a PNG to share"
+              title="Show a shareable image of the full Executive Summary"
             >
               {saving
                 ? <CircleNotch size={14} weight="bold" className="animate-spin" />
                 : <DownloadSimple size={14} weight="bold" />}
-              {saving ? "Saving…" : "Save image"}
+              {saving ? "Rendering…" : "Share view"}
             </button>
             <div className="text-[11px] text-muted text-right">
               <div className="font-semibold text-foreground">As of</div>
@@ -1618,6 +1645,68 @@ const ExecutiveSummary = () => {
         subcategories={catSource.mtd.categories.subcategories}
         view="mtd"
       />
+
+      {/* Snapshot preview modal — opens after html2canvas renders the
+          page, lets the user view the captured PNG full-screen and
+          choose to download or copy to clipboard. data-html2canvas-
+          ignore prevents the modal from being included if the user
+          clicks Share again while the modal is open. */}
+      {snapshotUrl && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+          data-testid="exec-snapshot-modal"
+          data-html2canvas-ignore="true"
+          onClick={(e) => { if (e.target === e.currentTarget) setSnapshotUrl(null); }}
+        >
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-[min(96vw,1100px)] max-h-[92vh] w-full flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-panel">
+              <div>
+                <div className="text-[10.5px] uppercase font-extrabold tracking-widest text-brand">Shareable view</div>
+                <div className="text-[12.5px] font-bold mt-0.5" data-testid="exec-snapshot-filename">{snapshotName}</div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={onCopySnapshot}
+                  data-testid="exec-snapshot-copy"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-border bg-white hover:bg-panel transition-colors whitespace-nowrap"
+                  title="Copy to clipboard — then paste into WhatsApp / Slack / email"
+                >
+                  <Copy size={14} weight="bold" />
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  onClick={onDownloadSnapshot}
+                  data-testid="exec-snapshot-download"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 transition-colors whitespace-nowrap"
+                  title="Download as PNG"
+                >
+                  <DownloadSimple size={14} weight="bold" />
+                  Download
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSnapshotUrl(null)}
+                  data-testid="exec-snapshot-close"
+                  className="p-1.5 rounded-full border border-border hover:bg-panel"
+                  aria-label="Close preview"
+                >
+                  <CloseIcon size={14} weight="bold" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-auto flex-1 bg-panel/30 flex items-start justify-center p-4">
+              <img
+                src={snapshotUrl}
+                alt="Executive Summary snapshot"
+                data-testid="exec-snapshot-image"
+                className="max-w-full h-auto rounded-lg shadow-lg border border-border"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
