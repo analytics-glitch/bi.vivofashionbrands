@@ -3588,18 +3588,29 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                 continue
             sub_stock[(cat, pt or "Unspecified")] += u
             cat_stock[cat] += u
-        # Roll units sold (MTD) by (category, subcategory) too.
+        # Roll units sold (MTD) by (category, subcategory) too — and
+        # also keep KES revenue per (cat,sub) so we can derive an ASP
+        # for the tied-up-stock estimate displayed in the Quick
+        # Actions callout.
         sub_sold: Dict[Tuple[str, str], float] = defaultdict(float)
+        sub_rev:  Dict[Tuple[str, str], float] = defaultdict(float)
         cat_sold: Dict[str, float] = defaultdict(float)
+        cat_rev:  Dict[str, float] = defaultdict(float)
         for sc in blocks["mtd_cur"]["subcategories"] or []:
             pt = (sc.get("subcategory") or "").strip()
             cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
             try:
                 u = float(sc.get("units_sold") or 0)
             except (TypeError, ValueError):
-                continue
+                u = 0.0
+            try:
+                rev = float(sc.get("total_sales") or 0)
+            except (TypeError, ValueError):
+                rev = 0.0
             sub_sold[(cat, pt or "Unspecified")] += u
+            sub_rev[(cat, pt or "Unspecified")] += rev
             cat_sold[cat] += u
+            cat_rev[cat] += rev
         total_stock = sum(cat_stock.values()) or 1.0
         total_sold = sum(cat_sold.values()) or 1.0
         # Days elapsed in the MTD window so we can derive a daily run-
@@ -3634,6 +3645,12 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             for (_c, sub) in sub_keys:
                 ssu = sub_stock.get((cat, sub), 0.0)
                 sso = sub_sold.get((cat, sub), 0.0)
+                ssr = sub_rev.get((cat, sub), 0.0)
+                # ASP (KES per unit) computed from MTD sales — falls
+                # back to the parent-category ASP when the sub has no
+                # MTD sales (so idle stock still gets a tied-up
+                # estimate based on its closest peer).
+                sub_asp = (ssr / sso) if sso > 0 else (cat_rev.get(cat, 0.0) / cat_sold.get(cat, 0.0) if cat_sold.get(cat, 0.0) > 0 else 0.0)
                 sub_rows.append({
                     "subcategory": sub,
                     "stock_units": ssu,
@@ -3642,18 +3659,21 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                     "sold_pct":  (sso / total_sold)  * 100.0,
                     "gap_pct":   ((ssu / total_stock) * 100.0) - ((sso / total_sold) * 100.0),
                     "weeks_of_cover": _weeks_of_cover(ssu, sso),
+                    "asp_mtd": sub_asp,
+                    "tied_up_kes": ssu * sub_asp,
                 })
             sub_rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
+            cat_asp = (cat_rev.get(cat, 0.0) / cat_sold.get(cat, 0.0)) if cat_sold.get(cat, 0.0) > 0 else 0.0
             rows.append({
                 "category": cat,
                 "stock_units": stock_u,
                 "sold_units": sold_u,
                 "stock_pct": stock_pct,
                 "sold_pct": sold_pct,
-                # Gap: positive ⇒ we're over-stocked relative to sales;
-                # negative ⇒ we're under-stocked / hot demand.
                 "gap_pct": stock_pct - sold_pct,
                 "weeks_of_cover": _weeks_of_cover(stock_u, sold_u),
+                "asp_mtd": cat_asp,
+                "tied_up_kes": stock_u * cat_asp,
                 "subcategories": sub_rows,
             })
         # Sort by absolute gap descending so the biggest mismatches

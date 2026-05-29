@@ -6,7 +6,7 @@ import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase, Tag, Package,
+  Briefcase, Tag, Package, DownloadSimple,
 } from "@phosphor-icons/react";
 
 /**
@@ -1042,6 +1042,161 @@ const CoverPill = ({ weeks, bold = false }) => {
   );
 };
 
+/**
+ * QuickActions — auto-aggregates subcategory rows from Stock Mix into
+ * three actionable buckets: markdown candidates (cover > 17w),
+ * restock priorities (cover < 4w), and idle stock (no MTD sales).
+ * Includes a CSV export button so the merch team can hand the lists
+ * straight to ops without manually filtering the full table.
+ */
+const _csvEscape = (v) => {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+const _downloadCsv = (filename, rows) => {
+  const csv = rows.map((r) => r.map(_csvEscape).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const QuickActions = ({ stockMix }) => {
+  const buckets = useMemo(() => {
+    const markdown = [];
+    const restock = [];
+    const idle = [];
+    for (const c of stockMix?.categories || []) {
+      for (const s of c.subcategories || []) {
+        const row = { category: c.category, ...s };
+        if (s.weeks_of_cover == null) {
+          if (s.stock_units > 0) idle.push(row);
+        } else if (s.weeks_of_cover > 17) {
+          markdown.push(row);
+        } else if (s.weeks_of_cover < 4) {
+          restock.push(row);
+        }
+      }
+    }
+    // Markdown — biggest tied-up KES first (where the cash is stuck).
+    markdown.sort((a, b) => (b.tied_up_kes || 0) - (a.tied_up_kes || 0));
+    // Restock — fewest weeks of cover first (most urgent).
+    restock.sort((a, b) => (a.weeks_of_cover || 0) - (b.weeks_of_cover || 0));
+    // Idle — biggest unit pile first.
+    idle.sort((a, b) => (b.stock_units || 0) - (a.stock_units || 0));
+    const tied = markdown.reduce((s, r) => s + (r.tied_up_kes || 0), 0);
+    const mdUnits = markdown.reduce((s, r) => s + (r.stock_units || 0), 0);
+    const rsUnits = restock.reduce((s, r) => s + (r.stock_units || 0), 0);
+    return { markdown, restock, idle, tied, mdUnits, rsUnits };
+  }, [stockMix]);
+
+  const exportCsv = () => {
+    const ts = new Date().toISOString().slice(0, 10);
+    const head = ["Bucket", "Category", "Subcategory", "Stock Units", "Sold MTD", "Weeks of Cover", "ASP (KES)", "Tied-up KES"];
+    const rows = [head];
+    for (const r of buckets.markdown) rows.push(["Markdown", r.category, r.subcategory, r.stock_units, r.sold_units, r.weeks_of_cover?.toFixed(1) || "", r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
+    for (const r of buckets.restock) rows.push(["Restock",  r.category, r.subcategory, r.stock_units, r.sold_units, r.weeks_of_cover?.toFixed(1) || "", r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
+    for (const r of buckets.idle)    rows.push(["Idle",     r.category, r.subcategory, r.stock_units, r.sold_units, "",                                  r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
+    _downloadCsv(`stock-mix-actions-${ts}.csv`, rows);
+  };
+
+  const hasAnything = buckets.markdown.length || buckets.restock.length || buckets.idle.length;
+  if (!hasAnything) return null;
+
+  return (
+    <div
+      className="rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50/70 via-rose-50/30 to-white p-3 sm:p-3.5 mb-3"
+      data-testid="exec-stockmix-quick-actions"
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-[260px]">
+          <div className="text-[10.5px] uppercase font-extrabold tracking-widest text-amber-800 mb-1.5">
+            Quick Actions
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5 text-[12.5px]">
+            {buckets.markdown.length > 0 && (
+              <span data-testid="exec-quickact-markdown">
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1.5 -mb-px" />
+                <span className="font-extrabold text-amber-800 tabular-nums">{buckets.markdown.length}</span>
+                <span className="text-foreground"> markdown candidates · </span>
+                <span className="font-bold tabular-nums">{fmtNum(buckets.mdUnits)}</span> units
+                <span className="text-muted"> · </span>
+                <span className="font-extrabold tabular-nums">{fmtKES(buckets.tied)}</span>
+                <span className="text-muted"> tied up</span>
+              </span>
+            )}
+            {buckets.restock.length > 0 && (
+              <span data-testid="exec-quickact-restock">
+                <span className="inline-block w-2 h-2 rounded-full bg-rose-500 mr-1.5 -mb-px" />
+                <span className="font-extrabold text-rose-700 tabular-nums">{buckets.restock.length}</span>
+                <span className="text-foreground"> restock {buckets.restock.length === 1 ? "priority" : "priorities"} · </span>
+                <span className="font-bold tabular-nums">{fmtNum(buckets.rsUnits)}</span> units left
+              </span>
+            )}
+            {buckets.idle.length > 0 && (
+              <span data-testid="exec-quickact-idle">
+                <span className="inline-block w-2 h-2 rounded-full bg-muted/70 mr-1.5 -mb-px" />
+                <span className="font-extrabold text-muted tabular-nums">{buckets.idle.length}</span>
+                <span className="text-foreground"> idle (no MTD sales)</span>
+              </span>
+            )}
+          </div>
+          {/* Top examples (max 3 of each, comma-separated) so the
+              callout is actionable without scrolling the table. */}
+          {(buckets.markdown.length > 0 || buckets.restock.length > 0) && (
+            <div className="mt-1.5 text-[10.5px] text-muted">
+              {buckets.markdown.length > 0 && (
+                <span>
+                  <span className="font-bold text-amber-800">Markdown:</span>{" "}
+                  {buckets.markdown.slice(0, 3).map((r, i) => (
+                    <span key={r.subcategory}>
+                      {i > 0 && <span className="opacity-50"> · </span>}
+                      <span className="text-foreground">{r.subcategory}</span>
+                      <span className="opacity-70"> ({r.weeks_of_cover.toFixed(0)}w · {fmtKES(r.tied_up_kes)})</span>
+                    </span>
+                  ))}
+                  {buckets.markdown.length > 3 && <span className="opacity-60"> · +{buckets.markdown.length - 3} more</span>}
+                </span>
+              )}
+              {buckets.markdown.length > 0 && buckets.restock.length > 0 && <span className="block h-0.5" />}
+              {buckets.restock.length > 0 && (
+                <span>
+                  <span className="font-bold text-rose-700">Restock:</span>{" "}
+                  {buckets.restock.slice(0, 3).map((r, i) => (
+                    <span key={r.subcategory}>
+                      {i > 0 && <span className="opacity-50"> · </span>}
+                      <span className="text-foreground">{r.subcategory}</span>
+                      <span className="opacity-70"> ({r.weeks_of_cover.toFixed(1)}w)</span>
+                    </span>
+                  ))}
+                  {buckets.restock.length > 3 && <span className="opacity-60"> · +{buckets.restock.length - 3} more</span>}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={exportCsv}
+          className="inline-flex items-center gap-1.5 rounded-lg border-2 border-amber-400 bg-white hover:bg-amber-50 transition-colors px-3 py-1.5 text-[11.5px] font-bold text-amber-800 whitespace-nowrap"
+          data-testid="exec-stockmix-export-csv"
+          title="Download all action lists (markdown / restock / idle) as a CSV"
+        >
+          <DownloadSimple size={14} weight="bold" />
+          Export to CSV
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const StockMix = ({ stockMix }) => {
   if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
     return null;
@@ -1058,6 +1213,7 @@ const StockMix = ({ stockMix }) => {
           </span>
         }
       />
+      <QuickActions stockMix={stockMix} />
       <div className="overflow-x-auto rounded-lg border border-border bg-white">
         <table className="w-full min-w-max text-[12.5px]" data-testid="exec-stockmix-table">
           <thead className="bg-panel">
