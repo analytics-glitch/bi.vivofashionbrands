@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 89 — tested Marketing Intelligence backend (10/10 pytest) and frontend e2e (Marketing page, heatmap, action tracker, CSV, bulk flag, localStorage persistence, Inventory toggle). All requested features working. Minor React 'duplicate key' console warnings found on Marketing page.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Marketing.jsx",
+        "issue": "React console warning: 'Encountered two children with the same key' fires 3 times on /marketing render. Likely duplicate `style_name` used as React `key` in alert table, action tracker, or heatmap cells. Functionally renders correctly but should be fixed to avoid hidden render bugs.",
+        "selector": "console",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_89_marketing.py",
+    "/app/test_reports/pytest/iter89_marketing.xml"
+  ],
+  "action_items": [
+    "Fix React duplicate-key warnings on /marketing — ensure each .map() uses a unique key (e.g., style_name + idx, or row.id from server)."
+  ],
+  "critical_code_review_comments": [
+    "marketing_intel.py + routes/marketing.py are clean — pure helpers + 5 thin endpoints, indexes auto-created on first call, auth-gated via _ANALYST (admin/exec/analyst).",
+    "PATCH /api/marketing/flags/{style_name} correctly returns 400 on empty body or invalid action_status; response includes updated_by from JWT (verified).",
+    "Auto-flagging idempotency works: repeat calls do not duplicate Mongo docs (unique index on style_name).",
+    "Frontend Marketing.jsx renders 737 action-status <select> elements upfront — fine for current data volume but could become heavy if slow-mover count grows; consider virtualisation later.",
+    "CSV exporter uses display-cased column names (e.g. 'Locations Stocked', 'Flagged Date', 'Suggested Action', 'Action Status', 'Notes') — matches PRD intent though the spec listed snake_case keys; flag for product review."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_89_marketing.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "95%"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md). Viewer-role access control not retested (no viewer creds present in test_credentials.md).",
+  "seed_data_creation": "Auto-flagging created 737 docs in Mongo collection `marketing_slow_mover_flags` on first GET /api/marketing/slow-movers. PATCH test set action_status='in_progress' + notes='TEST_iter89 note' on one style; bulk-status POST set action_status='in_progress' on ~50 styles. These should be reset by main agent if a clean state is needed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test file is at /app/backend/tests/test_iteration_89_marketing.py — keep using it as regression. Login timeout must be ≥90s on cold start. localStorage key 'vivo.marketing.flag-edits.v1' shadows server values for action_status/notes — always clear before re-running PATCH verification. Marketing page renders one <select> per slow-mover row (~737 selects), so wait ≥10s before querying selectors. Inventory KPI text reads via regex was fragile; visually KPIs change correctly when Retired toggle clicked (verified via screenshot)." ,
+  "rca of the issue": "Duplicate React key warning: likely the heatmap or action tracker maps over row data using a non-unique key (possibly `subcategory` or `category` across locations). Reproduction: load /marketing → check browser console → 3x 'Encountered two children with the same key'. Mitigation: pass index or composite key to each .map() in Marketing.jsx (e.g., `key={`${loc}-${cat}`}` instead of just `key={cat}`)."
+}

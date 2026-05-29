@@ -13750,6 +13750,7 @@ from routes import customer_analytics  # noqa: F401, E402
 from routes import analytics_inventory  # noqa: F401, E402
 from routes import monthly_targets  # noqa: F401, E402
 from routes import allocations as _allocations  # noqa: F401, E402
+from routes import marketing as _marketing_routes  # noqa: F401, E402
 
 app.include_router(api_router)
 app.include_router(recommendations_router)

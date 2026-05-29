@@ -22,6 +22,7 @@ import {
   Stack,
   ChatCircleDots,
   Briefcase,
+  Megaphone,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -43,6 +44,7 @@ const tabs = [
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
   { to: "/customers", label: "Customers", icon: Users, id: "customers" },
   { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details" },
+  { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },

@@ -32,6 +32,7 @@ const Allocations = React.lazy(() => import("@/pages/Allocations"));
 const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
 const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
+const Marketing = React.lazy(() => import("@/pages/Marketing"));
 
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
@@ -100,6 +101,7 @@ function App() {
               <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
               <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
               <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
+              <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
               <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
               <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
               <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
