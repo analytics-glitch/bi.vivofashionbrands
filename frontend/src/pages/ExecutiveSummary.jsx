@@ -661,6 +661,208 @@ const AllSubcategories = ({ subcategories }) => {
   );
 };
 
+/**
+ * CategorySubcatTable — Iter 89o. Replaces the side-by-side bars +
+ * subcategory list with a single unified, scannable table.  Each
+ * category renders as a header row (rolled up rev/units/ASP across
+ * its subcategories) with the subcategories listed underneath,
+ * indented and visually subordinate.  All columns colour-coded so
+ * growth / decline jumps off the page; default sort puts declines on
+ * top within each category — but the *categories themselves* are
+ * sorted by their own Rev Δ% so the worst-bleeding bucket is at the
+ * top of the page.
+ */
+const DeltaCell = ({ value }) => {
+  if (value == null || !isFinite(value)) {
+    return <span className="text-muted text-[10.5px]">—</span>;
+  }
+  const positive = value >= 0;
+  const cls = positive ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50";
+  const arrow = positive ? "▲" : "▼";
+  return (
+    <span className={`inline-flex items-center justify-end gap-0.5 rounded-md px-1.5 py-0.5 font-bold text-[11px] tabular-nums ${cls}`}>
+      <span className="text-[8px]">{arrow}</span>
+      {Math.abs(value).toFixed(1)}%
+    </span>
+  );
+};
+
+const CategorySubcatTable = ({ subcategories, view }) => {
+  // Build (category → rolled-up totals + sub-rows). Use the shared
+  // categoryFor() map so this matches every other page.
+  const { categories, totalRev, totalUnits } = useMemo(() => {
+    const buckets = new Map();
+    let totalRev = 0;
+    let totalUnits = 0;
+    for (const sc of subcategories || []) {
+      const cat = categoryFor(sc.subcategory) || "Other";
+      const b = buckets.get(cat) || {
+        name: cat,
+        cur: 0, ly: 0, cur_units: 0, ly_units: 0, subs: [],
+      };
+      b.cur += sc.cur || 0;
+      b.ly += sc.ly || 0;
+      b.cur_units += sc.cur_units || 0;
+      b.ly_units += sc.ly_units || 0;
+      b.subs.push(sc);
+      totalRev += sc.cur || 0;
+      totalUnits += sc.cur_units || 0;
+      buckets.set(cat, b);
+    }
+    const cats = Array.from(buckets.values()).map((b) => ({
+      ...b,
+      rev_delta: b.ly ? ((b.cur - b.ly) / b.ly) * 100 : null,
+      units_delta: b.ly_units ? ((b.cur_units - b.ly_units) / b.ly_units) * 100 : null,
+      asp_cur: b.cur_units ? b.cur / b.cur_units : 0,
+      asp_ly:  b.ly_units  ? b.ly  / b.ly_units  : 0,
+      share_pct: totalRev > 0 ? (b.cur / totalRev) * 100 : 0,
+    })).map((b) => ({
+      ...b,
+      asp_delta: b.asp_ly ? ((b.asp_cur - b.asp_ly) / b.asp_ly) * 100 : null,
+    }));
+    // Sort categories by biggest decline first; growers / no-LY
+    // cats sink to the bottom (sub-sorted by current revenue desc).
+    cats.sort((a, b) => {
+      const ad = a.rev_delta;
+      const bd = b.rev_delta;
+      const aDec = ad != null && ad < 0;
+      const bDec = bd != null && bd < 0;
+      if (aDec && bDec) return ad - bd;
+      if (aDec) return -1;
+      if (bDec) return 1;
+      return (b.cur || 0) - (a.cur || 0);
+    });
+    // Sort subcategories within each category the same way.
+    for (const c of cats) {
+      c.subs = [...c.subs].map((sc) => ({
+        ...sc,
+        share_pct: totalRev > 0 ? (sc.cur / totalRev) * 100 : 0,
+        units_delta: sc.ly_units ? ((sc.cur_units - sc.ly_units) / sc.ly_units) * 100 : null,
+      })).sort((a, b) => {
+        const ad = a.delta_pct;
+        const bd = b.delta_pct;
+        const aDec = ad != null && ad < 0;
+        const bDec = bd != null && bd < 0;
+        if (aDec && bDec) return ad - bd;
+        if (aDec) return -1;
+        if (bDec) return 1;
+        return (b.cur || 0) - (a.cur || 0);
+      });
+    }
+    return { categories: cats, totalRev, totalUnits };
+  }, [subcategories]);
+
+  if (!categories.length) {
+    return <Empty label="No category data." />;
+  }
+
+  // Decline / grower counts to surface a one-line headline above the table.
+  const declineCount = categories.filter((c) => (c.rev_delta ?? 0) < 0).length;
+  const growCount = categories.filter((c) => (c.rev_delta ?? 0) > 0).length;
+  const subDecline = categories.reduce(
+    (s, c) => s + c.subs.filter((sc) => (sc.delta_pct ?? 0) < 0).length, 0,
+  );
+  const subGrow = categories.reduce(
+    (s, c) => s + c.subs.filter((sc) => (sc.delta_pct ?? 0) > 0).length, 0,
+  );
+
+  return (
+    <div data-testid={`exec-catsubcat-table-${view}`}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] mb-2.5 px-1">
+        <span><span className="font-bold text-rose-700 tabular-nums">{declineCount}</span> categories declining</span>
+        <span><span className="font-bold text-emerald-700 tabular-nums">{growCount}</span> growing</span>
+        <span className="text-muted">·</span>
+        <span><span className="font-bold text-rose-700 tabular-nums">{subDecline}</span> subcats declining</span>
+        <span><span className="font-bold text-emerald-700 tabular-nums">{subGrow}</span> growing</span>
+        <span className="ml-auto text-muted">Total: <span className="font-bold text-foreground tabular-nums">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(totalUnits)}u</span></span>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-border bg-white">
+        <table className="w-full min-w-max text-[12px]">
+          <thead className="bg-panel sticky top-0 z-10">
+            <tr className="text-left">
+              <th className="px-3 py-2 font-bold whitespace-nowrap">Category / Subcategory</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">Revenue</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">LY</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">Rev Δ%</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">Share %</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">Units</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">LY Units</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">Units Δ%</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">ASP</th>
+              <th className="px-3 py-2 font-bold whitespace-nowrap text-right">ASP Δ%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((c) => {
+              const catBg =
+                (c.rev_delta ?? 0) < -10 ? "bg-rose-50/80"
+                : (c.rev_delta ?? 0) < 0 ? "bg-amber-50/80"
+                : "bg-emerald-50/40";
+              return (
+                <React.Fragment key={c.name}>
+                  {/* Category roll-up row */}
+                  <tr className={`border-t-2 border-border font-bold ${catBg}`} data-testid={`exec-cat-row-${c.name}`}>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[13px]">{c.name}</span>
+                        <span className="text-[10px] font-normal text-muted">({c.subs.length})</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtKES(c.cur)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted font-normal">{fmtKES(c.ly)}</td>
+                    <td className="px-3 py-2.5 text-right"><DeltaCell value={c.rev_delta} /></td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{c.share_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(c.cur_units)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted font-normal">{fmtNum(c.ly_units)}</td>
+                    <td className="px-3 py-2.5 text-right"><DeltaCell value={c.units_delta} /></td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtKES(c.asp_cur)}</td>
+                    <td className="px-3 py-2.5 text-right"><DeltaCell value={c.asp_delta} /></td>
+                  </tr>
+                  {/* Subcategory rows */}
+                  {c.subs.map((sc) => {
+                    const aspCur = sc.asp?.cur || 0;
+                    const aspDelta = sc.asp?.delta_pct;
+                    return (
+                      <tr key={`${c.name}-${sc.subcategory}`} className="border-t border-border/50 hover:bg-panel/40 transition-colors" data-testid={`exec-subcat-row-${sc.subcategory}`}>
+                        <td className="px-3 py-1.5 pl-8 text-muted text-[11.5px]">
+                          <span className="text-foreground">{sc.subcategory}</span>
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmtKES(sc.cur)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtKES(sc.ly)}</td>
+                        <td className="px-3 py-1.5 text-right"><DeltaCell value={sc.delta_pct} /></td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{sc.share_pct.toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(sc.cur_units)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtNum(sc.ly_units)}</td>
+                        <td className="px-3 py-1.5 text-right"><DeltaCell value={sc.units_delta} /></td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmtKES(aspCur)}</td>
+                        <td className="px-3 py-1.5 text-right"><DeltaCell value={aspDelta} /></td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+          <tfoot className="bg-panel/70 border-t-2 border-border">
+            <tr className="font-bold">
+              <td className="px-3 py-2">Total ({view.toUpperCase()})</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtKES(totalRev)}</td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2 text-right tabular-nums">100%</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(totalUnits)}</td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const _fmtRange = (range) => {
   if (!range) return "";
   const [from, to] = range;
@@ -682,8 +884,12 @@ const _fmtRange = (range) => {
  * can see "we need X more to hit the full year".
  */
 const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
+  // Iter 89o — focus this row on YTD-actual-vs-YTD-pro-rata-target.
+  // The annual figure is shown only for reference (no "% achieved"
+  // against annual — that was misleading because Kenya at 89% of
+  // YTD-pace was reading as "31% achieved" against annual which made
+  // it look catastrophically behind when it's only modestly behind).
   const pct = ytdTarget > 0 ? (ytdActual / ytdTarget) * 100 : 0;
-  const annualPct = annualTarget > 0 ? (ytdActual / annualTarget) * 100 : 0;
   // Tone — green at/above pace, amber 90-100%, rose under 90%.
   const tone =
     pct >= 100 ? "bg-emerald-500" : pct >= 90 ? "bg-amber-500" : "bg-rose-500";
@@ -692,7 +898,6 @@ const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
       : pct >= 90 ? "text-amber-700 bg-amber-50 border-amber-200"
       : "text-rose-700 bg-rose-50 border-rose-200";
   const gap = ytdTarget - ytdActual;
-  const annualGap = annualTarget - ytdActual;
   return (
     <div
       className="grid grid-cols-[150px_1fr_120px] items-center gap-3 py-2.5 border-b border-border/50 last:border-b-0"
@@ -712,25 +917,24 @@ const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
           <span className="tabular-nums">
             <span className="font-bold text-foreground">{fmtKES(ytdActual)}</span>
             <span className="opacity-60"> · YTD target </span>
-            <span className="tabular-nums">{fmtKES(ytdTarget)}</span>
+            <span className="font-bold tabular-nums text-foreground">{fmtKES(ytdTarget)}</span>
           </span>
           <span className="tabular-nums">
             {gap > 0
-              ? <span className="text-rose-700">Behind by <span className="font-bold">{fmtKES(gap)}</span></span>
-              : <span className="text-emerald-700">Ahead by <span className="font-bold">{fmtKES(-gap)}</span></span>
+              ? <span className="text-rose-700">Behind YTD by <span className="font-bold">{fmtKES(gap)}</span></span>
+              : <span className="text-emerald-700">Ahead of YTD by <span className="font-bold">{fmtKES(-gap)}</span></span>
             }
           </span>
         </div>
-        <div className="flex items-baseline justify-between mt-0.5 text-[10px] text-muted">
-          <span>Annual budget: <span className="font-bold tabular-nums text-foreground">{fmtKES(annualTarget)}</span> · <span className="tabular-nums">{annualPct.toFixed(1)}%</span> achieved</span>
-          <span className="tabular-nums">Remaining: <span className="font-bold">{fmtKES(Math.max(annualGap, 0))}</span></span>
+        <div className="flex items-baseline justify-between mt-0.5 text-[9.5px] text-muted/80">
+          <span>Annual budget (reference): <span className="tabular-nums">{fmtKES(annualTarget)}</span></span>
         </div>
       </div>
       <div className="text-right">
         <span className={`inline-flex items-center justify-end gap-1 rounded-md border font-extrabold text-[14px] px-2 py-1 tabular-nums ${pillTone}`} data-testid={`exec-target-pct-${label}`}>
           {pct.toFixed(0)}%
         </span>
-        <div className="text-[9.5px] uppercase tracking-wider text-muted mt-1 font-bold">YTD vs target</div>
+        <div className="text-[9.5px] uppercase tracking-wider text-muted mt-1 font-bold">YTD vs YTD-target</div>
       </div>
     </div>
   );
@@ -780,17 +984,15 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
           <div className="text-[38px] font-extrabold leading-none tabular-nums">
             {targets.total?.ytd > 0 ? ((totalActual / targets.total.ytd) * 100).toFixed(0) : 0}%
           </div>
-          <div className="text-[11px] text-muted mt-1">of pro-rata YTD target</div>
+          <div className="text-[11px] text-muted mt-1">YTD revenue ÷ YTD-pro-rata target</div>
           <div className="h-px bg-border/60 my-3" />
-          <div className="text-[11px] text-muted">Annual target</div>
-          <div className="text-[15px] font-bold tabular-nums">{fmtKES(targets.total?.annual || 0)}</div>
-          <div className="text-[11px] text-muted mt-2">Achieved so far</div>
-          <div className="text-[15px] font-bold tabular-nums">
-            {fmtKES(totalActual)}
-            <span className="text-[11px] text-muted font-normal ml-1.5">
-              ({targets.total?.annual > 0 ? ((totalActual / targets.total.annual) * 100).toFixed(1) : 0}%)
-            </span>
-          </div>
+          <div className="text-[11px] text-muted">YTD revenue (actual)</div>
+          <div className="text-[15px] font-bold tabular-nums">{fmtKES(totalActual)}</div>
+          <div className="text-[11px] text-muted mt-2">YTD target (pro-rata)</div>
+          <div className="text-[15px] font-bold tabular-nums">{fmtKES(targets.total?.ytd || 0)}</div>
+          <div className="h-px bg-border/60 my-3" />
+          <div className="text-[10px] text-muted">Annual target (reference only)</div>
+          <div className="text-[12px] font-bold tabular-nums opacity-80">{fmtKES(targets.total?.annual || 0)}</div>
         </div>
       </div>
     </div>
@@ -1066,7 +1268,7 @@ const ExecutiveSummary = () => {
             title="Category & Subcategory Breakdown"
             subtitle={
               <span>
-                Top-level rollup vs same period last year, plus full subcategory list with revenue + ASP deltas.
+                Categories rolled up vs same period last year, with each subcategory listed underneath. Sorted worst-decline first so the bleeding buckets surface at the top. Color-coded Δ% cells make growth (green) and decline (red) instantly readable.
                 {selectedCountry && (
                   <span className="ml-1.5 text-[11px] font-bold text-brand">
                     Filtered to {COUNTRY_FLAGS[selectedCountry]} {selectedCountry}{countryLoading ? " — loading…" : ""}
@@ -1102,20 +1304,11 @@ const ExecutiveSummary = () => {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <div data-testid="exec-cat-bars-pane">
-            <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider">Revenue by Category — {catView.toUpperCase()}</div>
-            <CategoryBars subcategories={catSource[catView].categories.subcategories} view={catView} />
-          </div>
-          <div data-testid="exec-top-subcats-pane">
-            <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider flex items-center justify-between">
-              <span>All Subcategories — {catView.toUpperCase()}</span>
-              <span className="text-muted opacity-70 normal-case font-normal tracking-normal">
-                {(catSource[catView].categories.subcategories || []).length} items · scroll to see all
-              </span>
-            </div>
-            <AllSubcategories subcategories={catSource[catView].categories.subcategories} />
-          </div>
+        <div data-testid="exec-cat-table-pane">
+          <CategorySubcatTable
+            subcategories={catSource[catView].categories.subcategories}
+            view={catView}
+          />
         </div>
       </div>
 

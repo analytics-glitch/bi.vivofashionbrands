@@ -71,6 +71,106 @@ const COUNTRY_LINE_COLORS = {
 
 const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
+/**
+ * ProjectionBanner — live "Projected Today" callout shown on the
+ * Overview Daily-Sales-Trend chart whenever the date filter is set to
+ * today (Africa/Nairobi).  Reads from the `todayProjection` memo
+ * upstream, which ticks once per minute so the projection updates
+ * naturally as the trading day progresses.
+ *
+ * Layout intentionally compact (single row of 4 stat tiles) so it
+ * doesn't crowd the existing comparison-bars chart that follows.
+ */
+const ProjectionBanner = ({ p }) => {
+  if (!p) return null;
+  const elapsedPct = (p.elapsed * 100).toFixed(0);
+  const vsSdlw = p.sdlw ? ((p.projected - p.sdlw) / p.sdlw) * 100 : null;
+  const vsSdlm = p.sdlm ? ((p.projected - p.sdlm) / p.sdlm) * 100 : null;
+  const phaseLabel =
+    p.phase === "before-open" ? "Trading day hasn't opened (9:00 AM EAT)"
+    : p.phase === "after-close" ? "Trading day closed at 8:30 PM EAT — number is final"
+    : `Trading day ${elapsedPct}% complete · closes 8:30 PM EAT`;
+  const phaseTone =
+    p.phase === "live" ? "border-emerald-300 bg-gradient-to-br from-emerald-50/60 to-white"
+    : p.phase === "after-close" ? "border-border bg-gradient-to-br from-panel/40 to-white"
+    : "border-amber-300 bg-gradient-to-br from-amber-50/40 to-white";
+  const Pill = ({ value, label }) => {
+    if (value == null || !isFinite(value)) {
+      return <span className="text-[10.5px] text-muted">{label}: —</span>;
+    }
+    const pos = value >= 0;
+    const cls = pos ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-rose-700 bg-rose-50 border-rose-200";
+    return (
+      <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[10.5px] px-1.5 py-0.5 tabular-nums ${cls}`}>
+        {pos ? "▲" : "▼"} {Math.abs(value).toFixed(1)}% {label}
+      </span>
+    );
+  };
+  return (
+    <div
+      className={`rounded-xl border-2 ${phaseTone} p-3 sm:p-3.5 mt-3 mb-1`}
+      data-testid="overview-projected-today-banner"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase font-extrabold tracking-widest text-emerald-700">
+              {p.phase === "live" && <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" /></span>}
+              Projected Today
+            </span>
+            <span className="text-[11px] text-muted">{phaseLabel}</span>
+          </div>
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <div>
+              <div className="text-[28px] font-extrabold leading-none tabular-nums" data-testid="overview-projected-today-value">
+                {fmtKES(p.projected)}
+              </div>
+              <div className="text-[10.5px] text-muted mt-0.5">
+                Projected end-of-day
+              </div>
+            </div>
+            <div className="ml-3">
+              <div className="text-[14px] font-bold tabular-nums">{fmtKES(p.todayRev)}</div>
+              <div className="text-[10.5px] text-muted">So far today</div>
+            </div>
+            <div>
+              <div className="text-[12.5px] font-semibold tabular-nums text-muted">{fmtNum(p.todayOrders || 0)}</div>
+              <div className="text-[10.5px] text-muted">Orders so far</div>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            <Pill value={vsSdlw} label="vs SDLW" />
+            <Pill value={vsSdlm} label="vs SDLM" />
+          </div>
+          <div className="text-[10px] text-muted text-right">
+            SDLW: <span className="font-semibold tabular-nums text-foreground">{fmtKES(p.sdlw || 0)}</span>
+            <span className="mx-1.5 opacity-50">·</span>
+            SDLM: <span className="font-semibold tabular-nums text-foreground">{fmtKES(p.sdlm || 0)}</span>
+          </div>
+        </div>
+      </div>
+      {/* Trading-day progress bar — visualises elapsed window. */}
+      {p.phase !== "before-open" && (
+        <div className="mt-3">
+          <div className="relative h-1.5 bg-panel rounded-full overflow-hidden">
+            <div
+              className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full transition-all"
+              style={{ width: `${Math.min(p.elapsed * 100, 100)}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[9.5px] text-muted mt-1">
+            <span>9:00 AM</span>
+            <span>2:45 PM</span>
+            <span>8:30 PM EAT</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Overview = () => {
   const { applied, touchLastUpdated, lastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, channelGroup, dataVersion } = applied;
@@ -204,6 +304,14 @@ const Overview = () => {
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairedDays, compareMode]);
+
+  // Live "Projected Today" — minute-tick state used by the projection
+  // useMemo declared further down (after rangeDays is in scope).
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Country sales — sorted descending bar chart. ALWAYS include Kenya, Uganda
   // and Rwanda (even with zero sales) so users can eyeball markets equally.
@@ -370,6 +478,37 @@ const Overview = () => {
     const t = new Date(dateTo);
     return Math.max(1, Math.round((t - f) / 86400000) + 1);
   }, [dateFrom, dateTo]);
+
+  // Live "Projected Today" — closes 8:30 PM Africa/Nairobi. Linear
+  // projection from today_so_far ÷ elapsed_pct of the trading window.
+  // Good enough for an executive pulse; SDLW/SDLM are surfaced as
+  // benchmark anchors so leadership sees pace vs same-day-last-week
+  // and same-day-last-month.
+  const todayProjection = useMemo(() => {
+    if (rangeDays !== 1 || !pairedDays?.today) return null;
+    const todayKE = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
+    if (dateFrom !== todayKE) return null;
+    const _now = new Date(nowTick);
+    const hh = parseInt(_now.toLocaleString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", hour12: false }), 10);
+    const mm = parseInt(_now.toLocaleString("en-GB", { timeZone: "Africa/Nairobi", minute: "2-digit" }), 10);
+    const nowH = hh + (mm || 0) / 60;
+    const start = 9.0;     // 9:00 AM trading window opens
+    const end = 20.5;      // 8:30 PM closes
+    const totalH = end - start;
+    const todayRev = pairedDays.today.total_sales || 0;
+    const todayOrders = pairedDays.today.orders || 0;
+    const sdlw = pairedDays.sdlw?.total_sales || 0;
+    const sdlm = pairedDays.sdlm?.total_sales || 0;
+    if (nowH < start) {
+      return { phase: "before-open", elapsed: 0, projected: 0, todayRev, sdlw, sdlm, todayOrders, nowH };
+    }
+    if (nowH >= end) {
+      return { phase: "after-close", elapsed: 1, projected: todayRev, todayRev, sdlw, sdlm, todayOrders, nowH };
+    }
+    const elapsed = (nowH - start) / totalH;
+    const projected = elapsed > 0.05 ? todayRev / elapsed : todayRev * 4;
+    return { phase: "live", elapsed, projected, todayRev, sdlw, sdlm, todayOrders, nowH };
+  }, [pairedDays, rangeDays, dateFrom, nowTick]);
 
   const top15 = useMemo(() => {
     const sorted = [...sales].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0));
@@ -983,6 +1122,14 @@ const Overview = () => {
                   : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : compareMode === "last_year" ? "last year" : "prior period"}`
               }
             />
+
+            {/* Live "Projected Today" banner — only when viewing today.
+                Linear projection of today_so_far against the 9 AM – 8:30 PM
+                Africa/Nairobi trading window, with SDLW/SDLM pace anchors
+                so leadership can see if today is tracking ahead/behind. */}
+            {todayProjection && (
+              <ProjectionBanner p={todayProjection} />
+            )}
 
             {rangeDays === 1 ? (
               // --- Single-day paired bars ---
