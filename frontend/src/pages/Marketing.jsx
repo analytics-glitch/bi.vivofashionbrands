@@ -278,6 +278,10 @@ const Marketing = () => {
       ["sor_at_flag", "SOR at Flag"],
       ["sor_change", "SOR Change (pp)"],
       ["suggested_action", "Suggested Action"],
+      ["on_ibt", "On IBT List"],
+      ["ibt_from", "IBT From"],
+      ["ibt_to", "IBT To"],
+      ["ibt_units", "IBT Units"],
       ["action_status", "Action Status"],
       ["notes", "Notes"],
     ];
@@ -627,7 +631,18 @@ const Marketing = () => {
                           <OutcomeArrow outcome={r.outcome} change={r.sor_change} />
                         </td>
                         <td className="p-2 align-top text-[11.5px] max-w-[260px]">
-                          <span title={r.suggested_action} className="line-clamp-2">{r.suggested_action}</span>
+                          <div className="flex items-start gap-1.5">
+                            {r.on_ibt && (
+                              <span
+                                className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[9.5px] font-bold whitespace-nowrap"
+                                title={`On IBT list — ${r.ibt_units || ""}u ${r.ibt_from} → ${r.ibt_to}`}
+                                data-testid={`on-ibt-pill-${r.style_name}`}
+                              >
+                                ON IBT
+                              </span>
+                            )}
+                            <span title={r.suggested_action} className="line-clamp-2">{r.suggested_action}</span>
+                          </div>
                         </td>
                         <td className="p-2 align-top">
                           <select

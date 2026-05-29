@@ -23,7 +23,7 @@ from fastapi import HTTPException, Depends
 from pydantic import BaseModel, Field
 
 # Late import — server.py imports this module AFTER its helpers exist.
-from server import api_router, _split_csv, _get_top_skus_live, fetch_all_inventory, logger
+from server import api_router, _split_csv, _get_top_skus_live, fetch_all_inventory, logger, analytics_ibt_suggestions  # type: ignore
 from auth import db, get_current_user, User
 from retired_styles import is_retired
 from marketing_intel import (
@@ -133,12 +133,36 @@ async def get_slow_movers(
         inventory_rows, exclude_warehouse=True,
     )
 
+    # Iter 89w-i — IBT cross-reference.  Look up the current live IBT
+    # recommendation list and build {style → {from, to, units}} so the
+    # suggested_action rule can prefer "Store transfer (on IBT list)"
+    # over the generic "Consider transfer" boilerplate.  Best-effort —
+    # if the IBT engine errors we still return the slow-movers list.
+    ibt_pair_by_style: Dict[str, dict] = {}
+    try:
+        ibt_rows = await analytics_ibt_suggestions(
+            country=country, date_from=None, date_to=None,
+            min_move=2, limit=500,
+            low_pct=20.0, high_pct=150.0,
+        )
+        for ir in (ibt_rows or []):
+            sn = ir.get("style_name")
+            if not sn or sn in ibt_pair_by_style:
+                continue
+            ibt_pair_by_style[sn] = {
+                "from": ir.get("from_store"),
+                "to": ir.get("to_store"),
+                "units": ir.get("units_to_move"),
+            }
+    except Exception as e:
+        logger.warning("[marketing] IBT cross-ref failed: %s", e)
+
     # Drop retired styles unless explicitly asked for.
     if not include_retired:
         sales_rows = [r for r in (sales_rows or []) if not is_retired(r.get("style_name"))]
         inv_by_style = {k: v for k, v in inv_by_style.items() if not is_retired(k)}
 
-    rows = compute_slow_movers(sales_rows, inv_by_style, sor_threshold=threshold)
+    rows = compute_slow_movers(sales_rows, inv_by_style, sor_threshold=threshold, ibt_pair_by_style=ibt_pair_by_style)
 
     # Pull existing flags in one Mongo round-trip.
     existing = {}

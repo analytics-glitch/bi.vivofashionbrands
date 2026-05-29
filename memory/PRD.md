@@ -1171,5 +1171,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
   - **SorAllStyles & SorNewStylesL10**: accept a `windowDays` prop; forward as `window_days` query param.
 - **Verified end-to-end**: `?window_days=30` → 1108 styles in sor-all-styles; `?window_days=180` → 1774. Marketing 30d shows 600 slow movers @ 18.1% avg SOR vs the original 14d's 737 @ 13%. UI on Inventory shows the WINDOW · [30d] pill highlighted green by default.
 
+### Recent (Feb 2026 — Iter 89w-i) — Marketing × IBT cross-reference
+- **Backend**: `marketing_intel.suggested_action()` now accepts an optional `ibt_pair` dict. When the style is on the live IBT recommendation list, action reads "Store transfer: 2 units Vivo Kileleshwa → Vivo Runda (on IBT list)". When NOT on the list, the old "Consider store transfer to higher-traffic location" boilerplate is replaced by **"Mark down or feature in email/social campaign"** — the IBT engine has already proven there's no viable destination store, so a transfer would just shift dead stock.
+- **`routes/marketing.py`** now calls `analytics_ibt_suggestions(country=…, min_move=2, limit=500, low_pct=20, high_pct=150)` and builds `{style → {from, to, units}}` map for `compute_slow_movers`. Best-effort: if IBT cross-ref errors, slow-movers still ship with no `on_ibt` flag.
+- **Output rows**: every slow-mover now carries `on_ibt: bool`, `ibt_from`, `ibt_to`, `ibt_units`.
+- **Frontend**: green **ON IBT** pill next to the Suggested Action cell in the Action Plan Tracker, with the from/to/units in the tooltip. CSV export gets 4 new columns: On IBT List · IBT From · IBT To · IBT Units.
+- **Live numbers**: 27 of 736 slow-movers (3.7%) are on the IBT list; the other 362 styles previously tagged as "Consider transfer" now correctly point to markdown/feature actions.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
