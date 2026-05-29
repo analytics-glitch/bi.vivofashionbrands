@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { toast } from "sonner";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
@@ -6,7 +8,7 @@ import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase, Tag, Package, DownloadSimple,
+  Briefcase, Tag, Package, DownloadSimple, CircleNotch,
 } from "@phosphor-icons/react";
 
 /**
@@ -1209,7 +1211,11 @@ const StockMix = ({ stockMix }) => {
         subtitle={
           <span>
             Share of units on hand (group-wide inventory) compared with share of units sold MTD, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
-            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold MTD: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span></span>
+            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold MTD: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span>
+            {stockMix.total_weeks_of_cover != null && (
+              <span> · Group cover: <span className="font-bold text-foreground tabular-nums">{stockMix.total_weeks_of_cover.toFixed(1)}w</span></span>
+            )}
+            </span>
           </span>
         }
       />
@@ -1316,7 +1322,7 @@ const StockMix = ({ stockMix }) => {
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}</td>
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
               <td className="px-3 py-2"></td>
-              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2 text-right"><CoverPill weeks={stockMix.total_weeks_of_cover} bold /></td>
               <td className="px-3 py-2"></td>
             </tr>
           </tfoot>
@@ -1383,6 +1389,37 @@ const ExecutiveSummary = () => {
     return () => { cancel = true; };
   }, [selectedCountry]);
 
+  // Snapshot — capture the whole exec-summary page (header + sections)
+  // to a PNG using html2canvas, matching the Overview page's "Save
+  // image" pattern. Hooks declared BEFORE the early returns so React
+  // sees them in the same order on every render.
+  const captureRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+  const onSaveImage = async () => {
+    if (!captureRef.current || saving) return;
+    setSaving(true);
+    try {
+      const canvas = await html2canvas(captureRef.current, {
+        scale: 1.5,
+        useCORS: true,
+        backgroundColor: "#fff",
+        logging: false,
+        windowWidth: captureRef.current.scrollWidth,
+        windowHeight: captureRef.current.scrollHeight,
+      });
+      const stamp = (data?.as_of || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
+      const link = document.createElement("a");
+      link.download = `vivo-exec-summary_${stamp}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+      toast.success("Snapshot saved — ready to share", { duration: 3000 });
+    } catch (e) {
+      toast.error("Couldn't save snapshot — " + (e?.message || "unknown error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) return <Loading label="Loading executive summary…" />;
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Empty label="No data available." />;
@@ -1400,7 +1437,7 @@ const ExecutiveSummary = () => {
   });
 
   return (
-    <div className="space-y-5" data-testid="exec-summary-page">
+    <div className="space-y-5" data-testid="exec-summary-page" ref={captureRef}>
       {/* Page header — title + dynamic date subtitle */}
       <div className="card-white p-4 sm:p-5">
         <div className="flex items-start gap-3 flex-wrap justify-between">
@@ -1418,10 +1455,26 @@ const ExecutiveSummary = () => {
               </div>
             </div>
           </div>
-          <div className="text-[11px] text-muted text-right">
-            <div className="font-semibold text-foreground">As of</div>
-            <div>{_fmtRange([data.as_of, data.as_of]).split(" – ")[0]}</div>
-            <div className="mt-1">Auto-refreshing daily · ends yesterday</div>
+          <div className="flex items-start gap-3">
+            <button
+              type="button"
+              onClick={onSaveImage}
+              disabled={saving}
+              data-testid="exec-snapshot-save"
+              data-html2canvas-ignore="true"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 disabled:opacity-60 disabled:cursor-wait whitespace-nowrap shrink-0"
+              title="Save the full Executive Summary as a PNG to share"
+            >
+              {saving
+                ? <CircleNotch size={14} weight="bold" className="animate-spin" />
+                : <DownloadSimple size={14} weight="bold" />}
+              {saving ? "Saving…" : "Save image"}
+            </button>
+            <div className="text-[11px] text-muted text-right">
+              <div className="font-semibold text-foreground">As of</div>
+              <div>{_fmtRange([data.as_of, data.as_of]).split(" – ")[0]}</div>
+              <div className="mt-1">Auto-refreshing daily · ends yesterday</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1465,35 +1518,14 @@ const ExecutiveSummary = () => {
         </div>
       </div>
 
-      {/* SECTION 2 — Store performance */}
-      <div className="card-white p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
-          <SectionTitle
-            title="Store Performance"
-            subtitle={
-              <span>
-                Physical stores only (Staff & Online channels excluded). Sorted worst-first by MTD Δ%. Rows highlighted: <span className="text-rose-700 font-semibold">red</span> &lt; -10%, <span className="text-amber-700 font-semibold">amber</span> -10–0%, <span className="text-emerald-700 font-semibold">green</span> &gt; 0%.
-              </span>
-            }
-          />
-          {selectedCountry && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition shrink-0"
-              onClick={() => setSelectedCountry(null)}
-              data-testid="exec-store-clear-filter"
-            >
-              <span>{COUNTRY_FLAGS[selectedCountry]} {selectedCountry}</span>
-              <span className="opacity-70">×</span>
-            </button>
-          )}
-        </div>
-        <StorePerformanceTable
-          ytdStores={data.ytd.stores}
-          mtdStores={data.mtd.stores}
-          countryFilter={selectedCountry}
-        />
-      </div>
+      {/* SECTION 2 — YTD vs Yearly Target (2026 budget). Promoted
+          to right after the Country cards so leadership sees the
+          headline pace before drilling into category / store detail. */}
+      <YearlyTargets
+        targets={data.targets}
+        ytdCountries={data.ytd.countries}
+        ytdKpis={data.ytd.kpis}
+      />
 
       {/* SECTION 3 — Category + Subcategory */}
       <div className="card-white p-4 sm:p-5">
@@ -1546,19 +1578,42 @@ const ExecutiveSummary = () => {
         </div>
       </div>
 
-      {/* SECTION 4 — YTD vs Yearly Target (2026 budget) */}
-      <YearlyTargets
-        targets={data.targets}
-        ytdCountries={data.ytd.countries}
-        ytdKpis={data.ytd.kpis}
-      />
-
-      {/* SECTION 5 — Stock Mix: what's selling vs what we have */}
+      {/* SECTION 4 — Stock Mix: what's selling vs what we have */}
       <StockMix stockMix={data.stock_mix} />
 
-      {/* SECTION 6 — What's Hot / What's Not narrative banner (moved
-          to the bottom per leadership pref so the data scorecard reads
-          first and the narrative call-out closes the page). */}
+      {/* SECTION 5 — Store performance (moved to bottom per leadership
+          pref — the per-store grain reads last after the higher-level
+          country / target / category / stock sections). */}
+      <div className="card-white p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+          <SectionTitle
+            title="Store Performance"
+            subtitle={
+              <span>
+                Physical stores only (Staff & Online channels excluded). Sorted worst-first by MTD Δ%. Rows highlighted: <span className="text-rose-700 font-semibold">red</span> &lt; -10%, <span className="text-amber-700 font-semibold">amber</span> -10–0%, <span className="text-emerald-700 font-semibold">green</span> &gt; 0%.
+              </span>
+            }
+          />
+          {selectedCountry && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition shrink-0"
+              onClick={() => setSelectedCountry(null)}
+              data-testid="exec-store-clear-filter"
+            >
+              <span>{COUNTRY_FLAGS[selectedCountry]} {selectedCountry}</span>
+              <span className="opacity-70">×</span>
+            </button>
+          )}
+        </div>
+        <StorePerformanceTable
+          ytdStores={data.ytd.stores}
+          mtdStores={data.mtd.stores}
+          countryFilter={selectedCountry}
+        />
+      </div>
+
+      {/* SECTION 6 — What's Hot / What's Not narrative banner. */}
       <HotNotCallout
         subcategories={catSource.mtd.categories.subcategories}
         view="mtd"

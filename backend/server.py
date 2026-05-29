@@ -3679,9 +3679,15 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         # Sort by absolute gap descending so the biggest mismatches
         # surface at the top of the list.
         rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
+        # Group-wide weeks of cover — same formula as per-row but on
+        # the totals. Surfaced in the footer so leadership reads the
+        # aggregate "we're carrying N weeks of inventory" without
+        # having to mentally average the category rows.
+        total_woc = _weeks_of_cover(total_stock, total_sold) if total_stock > 1 and total_sold > 1 else None
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
             "total_sold_units_mtd": total_sold if total_sold > 1 else 0,
+            "total_weeks_of_cover": total_woc,
             "mtd_days": mtd_days,
             "categories": rows,
         }
