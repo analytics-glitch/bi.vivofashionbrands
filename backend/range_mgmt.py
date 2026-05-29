@@ -302,3 +302,74 @@ def diff_movements(
     # Newest movements first by impact: graduations to Tier 1/2 first, then demotions.
     out.sort(key=lambda x: (x["direction"] != "up", -rank.get(x["to_tier"], 0)))
     return out
+
+
+def tier3_to_tier2_candidates(classified: List[dict]) -> List[dict]:
+    """Iter 89w-e — Tier 3 styles that have ALREADY established
+    themselves and are meeting Tier 2 criteria, ranked by maturity.
+
+    Range / merch can promote these proactively to clear the Tier 3
+    backlog rather than waiting for the next /classify pass to flip
+    them automatically once they cross the 9-month (36-week) gate.
+
+    Filter:
+      • tier == "Tier 3"
+      • lifetime SOR > 60 %
+      • full price ≥ 90 % (or unknown — we don't disqualify on
+        missing FP because the proxy can be undefined for low-N
+        styles)
+      • reorder_count >= 2 (proves the style has earned at least one
+        replenishment cycle)
+      • style_age_weeks >= 20  (i.e. has been on range ≥ 5 months —
+        in our data set the upstream caps observable age at ≈ 26-27
+        weeks, so this catches styles that are clamped at the
+        ceiling AND mature performers near it)
+      • current_stock > 0 AND last_sale_days <= 30  — actively
+        selling.  Excludes sold-out / dormant styles whose 100 %
+        lifetime SOR is just zero-stock division.
+
+    Returns rows sorted by `style_age_weeks` desc (most mature first).
+    """
+    out: List[dict] = []
+    for r in classified:
+        if r.get("tier") != "Tier 3":
+            continue
+        age = r.get("style_age_weeks") or 0
+        if age < 20:
+            continue
+        sor = r.get("lifetime_sor_pct")
+        fp = r.get("full_price_pct")
+        reorders = r.get("reorder_count") or 0
+        stock = r.get("current_stock") or 0
+        last_sale = r.get("last_sale_days")
+        if sor is None or sor <= 60:
+            continue
+        if fp is not None and fp < 90:
+            continue
+        if reorders < 2:
+            continue
+        # Must be actively selling — excludes sold-out & dormant.
+        if stock <= 0:
+            continue
+        if last_sale is None or last_sale > 30:
+            continue
+        # weeks_to_gate is the literal SOP distance (gate = 36 weeks).
+        # For age-capped styles this can be negative — surface 0
+        # ("at-or-past gate") so the FE doesn't render confusing
+        # negatives.
+        weeks_to_gate = max(0.0, round(36 - age, 1))
+        out.append({
+            "style_name": r["style_name"],
+            "brand": r["brand"],
+            "subcategory": r["subcategory"],
+            "style_age_weeks": age,
+            "weeks_to_gate": weeks_to_gate,
+            "lifetime_sor_pct": sor,
+            "full_price_pct": fp,
+            "reorder_count": reorders,
+            "current_stock": r.get("current_stock"),
+            "woc": r.get("woc"),
+            "last_sale_days": r.get("last_sale_days"),
+        })
+    out.sort(key=lambda x: -(x["style_age_weeks"] or 0))
+    return out

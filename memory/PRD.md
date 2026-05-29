@@ -1129,5 +1129,12 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Page-level access**: `range-mgmt` added to `_ANALYST` (analyst / exec / admin). Stack-icon nav item between Products and Inventory.
 - **Verified end-to-end**: 1,188 classified rows on first call — Tier 1: 0 (insufficient history, expected with 6-month SOR window), Tier 2: 0 (same), Tier 3: 870 (over target 150-200 — flag for merch to graduate to Tier 2 / be more selective at Week 8), Tier 4: 93 (in range 60-100), Retire: 225.
 
+### Recent (Feb 2026 — Iter 89w-e) — Tier 3 → Tier 2 graduation candidates
+- **New "Quick win" callout panel** on `/range-mgmt` between the 4 tier KPI cards and the filters row.
+- **Backend**: `tier3_to_tier2_candidates()` helper + new `tier3_graduation_candidates` field on `/api/range-mgmt/classify`. Surfaces Tier 3 styles meeting ALL of: `age ≥ 20w · lifetime SOR > 60 % · full price ≥ 90 % · reorders ≥ 2 · stock > 0 · last sale ≤ 30d`. The stock+recent-sale gates exclude sold-out / dormant inflators (their 100 % SOR is just zero-stock division — not real performers).
+- **Mongo enrichment**: routes layer now hydrates `style_age_weeks` from `style_launch_dates` collection BEFORE classification, so styles past the 6-month SOR data ceiling get a closer-to-true age (currently caps at 27 wks because Mongo's persisted dates only go back ~6 months too — this will grow over time as the system observes more history).
+- **UI**: top-12 candidates shown inline (style + brand + subcategory + weeks-to-gate pill + SOR % + FP % + reorders + stock + last-sale-days). "See all Tier 3 →" button auto-applies the Tier 3 filter and scrolls to the full table. "+ N more candidates" overflow line when > 12.
+- **Live numbers**: 337 candidates surfaced — promoting them clears 39 % of the Tier 3 backlog (870 → 533) and gets Tier 2 closer to its 200-300 target.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

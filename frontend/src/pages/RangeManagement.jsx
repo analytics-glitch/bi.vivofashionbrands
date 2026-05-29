@@ -127,6 +127,7 @@ const RangeManagement = () => {
   const summary = data?.summary;
   const retirement = data?.retirement_pipeline || [];
   const movements = data?.recent_movements || [];
+  const candidates = data?.tier3_graduation_candidates || [];
 
   const brandOpts   = useMemo(() => [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort(), [rows]);
   const subcatOpts  = useMemo(() => [...new Set(rows.map((r) => r.subcategory).filter(Boolean))].sort(), [rows]);
@@ -272,6 +273,90 @@ const RangeManagement = () => {
               ))}
             </div>
           </div>
+
+          {/* Section 1.5 — Tier 3 → Tier 2 graduation candidates */}
+          {candidates.length > 0 && (
+            <div
+              className="card-white p-4 border-l-4"
+              style={{ borderLeftColor: "#1e40af" }}
+              data-testid="range-grad-candidates"
+            >
+              <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+                <div>
+                  <div className="eyebrow text-[10.5px] mb-0.5">Quick win · range health</div>
+                  <h3 className="font-extrabold text-[15px] leading-tight">
+                    {fmtNum(candidates.length)} Tier 3 styles ready to graduate to Tier 2
+                  </h3>
+                  <p className="text-muted text-[12px] mt-0.5">
+                    Within 6 weeks of the 9-month gate AND already meeting all Tier 2 criteria
+                    (reorders ≥ 3 · lifetime SOR &gt; 60 % · full price &gt; 90 %).
+                    Promote these to clear the Tier 3 backlog (currently {fmtNum(summary?.tier_counts?.["Tier 3"] || 0)} vs target {summary?.targets?.["Tier 2"]?.[0]}–{summary?.targets?.["Tier 2"]?.[1]}).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Pre-fill the tier filter with Tier 3 so the user can
+                    // dig into the wider Tier 3 cohort from this callout.
+                    setTierFilter(["Tier 3"]);
+                    document
+                      .querySelector('[data-testid="range-table-card"]')
+                      ?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                  data-testid="grad-candidates-jump-btn"
+                  className="px-3 py-1 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel"
+                >
+                  See all Tier 3 →
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px] border-collapse" data-testid="grad-candidates-table">
+                  <thead>
+                    <tr className="border-b border-border text-left">
+                      <th className="p-2 font-semibold text-muted">Style</th>
+                      <th className="p-2 font-semibold text-muted">Subcategory</th>
+                      <th className="p-2 font-semibold text-muted text-right">Weeks to gate</th>
+                      <th className="p-2 font-semibold text-muted text-right">Lifetime SOR</th>
+                      <th className="p-2 font-semibold text-muted text-right">FP %</th>
+                      <th className="p-2 font-semibold text-muted text-right">Reorders</th>
+                      <th className="p-2 font-semibold text-muted text-right">Stock</th>
+                      <th className="p-2 font-semibold text-muted text-right">Last sale</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {candidates.slice(0, 12).map((c, i) => (
+                      <tr key={`${c.style_name}-${i}`} className="border-b border-border">
+                        <td className="p-2">
+                          <div className="font-medium truncate max-w-[260px]" title={c.style_name}>{c.style_name}</div>
+                          <div className="text-muted text-[10.5px]">{c.brand}</div>
+                        </td>
+                        <td className="p-2 text-muted">{c.subcategory || "—"}</td>
+                        <td className="p-2 text-right num">
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10.5px] font-bold bg-sky-100 text-sky-800">
+                            {c.weeks_to_gate}w
+                          </span>
+                        </td>
+                        <td className="p-2 text-right num text-emerald-700 font-semibold">
+                          {c.lifetime_sor_pct == null ? "—" : `${c.lifetime_sor_pct.toFixed(1)}%`}
+                        </td>
+                        <td className="p-2 text-right num">
+                          {c.full_price_pct == null ? "—" : `${c.full_price_pct.toFixed(0)}%`}
+                        </td>
+                        <td className="p-2 text-right num">{c.reorder_count}</td>
+                        <td className="p-2 text-right num">{fmtNum(c.current_stock)}</td>
+                        <td className="p-2 text-right num">{c.last_sale_days == null ? "—" : `${c.last_sale_days}d`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {candidates.length > 12 && (
+                  <div className="text-center text-muted text-[11.5px] mt-2">
+                    + {fmtNum(candidates.length - 12)} more candidates (use the Tier filter to see all)
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Filters */}
           <div className="card-white p-3 flex flex-wrap items-end gap-2" data-testid="range-filters">

@@ -17,13 +17,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 # Late import — server.py owns the api_router.
-from server import api_router, logger, analytics_sor_all_styles  # type: ignore
+from server import api_router, logger, analytics_sor_all_styles, _hydrate_launch_dates_from_mongo  # type: ignore
 from auth import db
 from range_mgmt import (
     classify_all,
     summarise,
     retirement_pipeline,
     diff_movements,
+    tier3_to_tier2_candidates,
 )
 
 
@@ -112,6 +113,34 @@ async def classify(
         style_status=None,
     )
 
+    # Iter 89w-e — the sor-all-styles endpoint caps `style_age_weeks`
+    # at 26 (180-day data window) for column-comparability reasons.
+    # For the 4-tier framework we need the TRUE age so the Tier 2 /
+    # Tier 1 buckets (which start at 36 / 96 weeks) can ever populate
+    # and the "approaching 9-month gate" candidate panel can find
+    # styles in the 30-36-week window.
+    #
+    # `style_launch_dates` collection persists `first_sale_iso` per
+    # style across all past fan-outs, so it can shift launch dates
+    # back-in-time as we observe older sales.  We layer that on top.
+    style_names = [r.get("style_name") for r in (sor_rows or []) if r.get("style_name")]
+    persisted = await _hydrate_launch_dates_from_mongo(style_names)
+    today = datetime.now(timezone.utc).date()
+    for r in (sor_rows or []):
+        sn = r.get("style_name")
+        first_iso = persisted.get(sn)
+        if first_iso:
+            try:
+                pf = datetime.fromisoformat(first_iso).date()
+                true_age_w = (today - pf).days / 7.0
+                # Only OVERRIDE the capped age when our persisted date
+                # gives us a STRICTLY-LARGER age (shrinking would be
+                # wrong if the persisted record is stale/earlier).
+                if true_age_w > (r.get("style_age_weeks") or 0):
+                    r["style_age_weeks"] = round(true_age_w, 1)
+            except Exception:
+                pass
+
     classified = classify_all(sor_rows or [], include_retired=include_retired)
 
     # Detect movements (vs the LATEST persisted tier per style) and
@@ -123,12 +152,14 @@ async def classify(
 
     summary = summarise(classified)
     pipeline = retirement_pipeline(classified)
+    candidates = tier3_to_tier2_candidates(classified)
 
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "rows": classified,
         "retirement_pipeline": pipeline,
+        "tier3_graduation_candidates": candidates,
         "recent_movements": moves[:200],  # cap for response size
     }
 
