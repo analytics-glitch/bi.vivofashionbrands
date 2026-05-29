@@ -116,7 +116,7 @@ _STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"]
 # hides every non-inventory tab for this role).
 _WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"]
 _ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"]
-_EXEC = _ANALYST + ["ceo-report", "targets", "exports"]
+_EXEC = _ANALYST + ["ceo-report", "targets", "exports", "exec-summary"]
 _ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"]
 ROLE_PAGES = {
     "viewer": _VIEWER,

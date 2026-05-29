@@ -4,6 +4,16 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89e) — Executive Summary leadership scorecard page (P0 NEW FEATURE)
+- **User ask**: "Create a new Executive Summary page" — single-page at-a-glance leadership view, dynamic YTD/MTD ending yesterday, no manual date selection.
+- **Backend** (`/app/backend/server.py`): new `GET /api/exec-summary` endpoint — single call returns the entire page payload (both YTD and MTD blocks; each with current + same-period-LY KPIs, store table, and category/subcategory rollups). Date math is server-side and dynamic (`yesterday = today_utc - 1 day`, year-shift not 365-day-shift for clean LY comparison). Fans out 16 internal calls (4 windows × 4 endpoints: sales-summary, footfall, customers, subcategory-sales) in parallel — all snapshot-cached so repeat hits are essentially free. Staff/Online channels stripped for the physical-store table.
+- **Frontend**:
+  - new page `/app/frontend/src/pages/ExecutiveSummary.jsx` — header with dynamic date subtitle; 6 KPI cards (Revenue, Footfall, Avg Basket, Total Customers, New Customers, Returning Customers) each stacked YTD + MTD with current/LY/Δ% pills; Store Performance table sorted worst-first by MTD Δ%, red rows < -10%, amber -10–0%, green > 0%, warning icons on rows > 10% down; Category & Subcategory section with MTD/YTD toggle and side-by-side grouped bars + ranked top-10 subcategories.
+  - Route `/exec-summary` added in `App.js`; sidebar entry "Executive Summary" with Briefcase icon next to Overview.
+  - Permissions: `exec-summary` added to `_EXEC` roles in both `/app/backend/auth.py` and `/app/frontend/src/lib/permissions.js`.
+- **Verified live**: page loads in ~16 s on cold endpoint (snapshot-cached on repeat). Sample admin view confirms all three sections render with correct comparisons, sorting, color tones, and warning icons. Network endpoint returns 1 payload, ~30 KB.
+
+
 ### Recent (Feb 2026 — Iter 89d) — WoC KPI tile on Products SOR · All Styles + Exports SOR Report
 - **User ask**: "I meant I need a card for week of cover in these 2" (Products → SOR All Styles and Exports → SOR Report KPI strips).
 - **Implementation**:

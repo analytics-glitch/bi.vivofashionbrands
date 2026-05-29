@@ -17,7 +17,7 @@ const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishment
 // Mirror of `_WAREHOUSE` in /app/backend/auth.py.
 const WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"];
 const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments"];
-const EXEC = [...ANALYST, "ceo-report", "targets", "exports"];
+const EXEC = [...ANALYST, "ceo-report", "targets", "exports", "exec-summary"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
 
 export const ROLE_PAGES = {
@@ -55,6 +55,7 @@ export const homePageFor = (user) => {
   // Map page id → route. Mirrors App.js routes.
   const routeMap = {
     "overview": "/",
+    "exec-summary": "/exec-summary",
     "locations": "/locations",
     "footfall": "/footfall",
     "customers": "/customers",

@@ -22,6 +22,7 @@ import {
   Stack,
   ChatCircleDots,
   Sun,
+  Briefcase,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
@@ -38,6 +39,7 @@ import CacheStatsPill from "@/components/CacheStatsPill";
 
 const tabs = [
   { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
+  { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary" },
   { to: "/morning-brief", label: "Morning Brief", icon: Sun, id: "morning-brief" },
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },

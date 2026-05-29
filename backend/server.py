@@ -3220,6 +3220,211 @@ async def _get_daily_trend_live(
 _OVERVIEW_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"]
 
 
+# Iter 89e — Executive Summary aggregator. Single-call endpoint that
+# returns BOTH YTD and MTD views (each with current + same-period-last-
+# year) for the leadership scorecard page. Date math is server-side
+# and dynamic: end-of-window is always *yesterday* (UTC), so the page
+# never shows a partial-day or zero-units anomaly.
+@api_router.get("/exec-summary")
+async def exec_summary_endpoint():
+    """At-a-glance executive scorecard.
+
+    Returns a single payload with both YTD and MTD blocks. Each block
+    has:
+      - kpis: revenue, footfall, avg_basket, total_customers,
+              new_customers, returning_customers (current + LY + Δ%)
+      - stores: physical stores only (Staff/Online excluded) — current
+                + LY revenue per store
+      - categories: subcategory-sales current + LY for the bar chart
+                   and the top-10 sub list
+
+    Frontend toggles between the two blocks without re-fetching; one
+    HTTP round-trip on page load powers the whole page.
+
+    Date conventions (UTC):
+      - today_utc = datetime.now(timezone.utc).date()
+      - yesterday = today_utc - 1 day  (end of every window)
+      - YTD: Jan 1 of the current year → yesterday
+      - MTD: 1st of the current month → yesterday
+      - LY:  same calendar window shifted back exactly 1 year
+             (e.g. 2026-05-28 → 2025-05-28). Year-shift, not 365 days,
+             to keep month-boundaries aligned across leap years.
+    """
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday = today_utc - timedelta(days=1)
+    ytd_from = date(today_utc.year, 1, 1)
+    mtd_from = date(today_utc.year, today_utc.month, 1)
+
+    def _shift_year(d: date) -> date:
+        # Handle Feb-29 in a leap year by clamping to Feb-28 in the
+        # destination year. Day-of-month otherwise preserved.
+        try:
+            return d.replace(year=d.year - 1)
+        except ValueError:
+            return d.replace(year=d.year - 1, day=28)
+
+    windows = {
+        "ytd_cur": (ytd_from, yesterday),
+        "ytd_ly":  (_shift_year(ytd_from), _shift_year(yesterday)),
+        "mtd_cur": (mtd_from, yesterday),
+        "mtd_ly":  (_shift_year(mtd_from), _shift_year(yesterday)),
+    }
+
+    # Call the four high-level endpoints for each window in parallel
+    # (16 calls total). Each goes through the existing snapshot /
+    # `_kpi_stale_cache` machinery so repeat hits are essentially free
+    # and BigQuery cost stays bounded.
+    async def _block(date_from: date, date_to: date):
+        df, dt = date_from.isoformat(), date_to.isoformat()
+        ss, ff, cu, sc = await asyncio.gather(
+            get_sales_summary(date_from=df, date_to=dt),
+            get_footfall(date_from=df, date_to=dt),
+            get_customers(date_from=df, date_to=dt),
+            get_subcategory_sales(date_from=df, date_to=dt),
+            return_exceptions=True,
+        )
+
+        def _safe(x, default):
+            return default if isinstance(x, Exception) else (x if x is not None else default)
+
+        return {
+            "date_from": df,
+            "date_to": dt,
+            "sales": _safe(ss, []),
+            "footfall": _safe(ff, []),
+            "customers": _safe(cu, {}),
+            "subcategories": _safe(sc, []),
+        }
+
+    blocks = dict(zip(
+        windows.keys(),
+        await asyncio.gather(*[_block(df, dt) for df, dt in windows.values()]),
+    ))
+
+    def _excl_staff_online(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Exclude exact "Staff" / "Vivo Staff" / any name containing
+        # "staff" (case-insensitive) and the Online country bucket.
+        out: List[Dict[str, Any]] = []
+        for r in rows or []:
+            ch = (r.get("channel") or "").strip()
+            country = (r.get("country") or "").strip()
+            if "staff" in ch.lower():
+                continue
+            if country.lower() == "online":
+                continue
+            # Also drop "Online - …" channels in case the row leaked
+            # through without a country tag.
+            if ch.lower().startswith("online"):
+                continue
+            out.append(r)
+        return out
+
+    def _sum_sales(rows: List[Dict[str, Any]]) -> Tuple[float, float]:
+        # Returns (revenue, orders) summed across all channels.
+        rev, orders = 0.0, 0.0
+        for r in rows or []:
+            rev += float(r.get("total_sales") or 0)
+            orders += float(r.get("orders") or r.get("total_orders") or 0)
+        return rev, orders
+
+    def _sum_footfall(rows: List[Dict[str, Any]]) -> float:
+        return float(sum(float(r.get("total_footfall") or 0) for r in (rows or [])))
+
+    def _pct_delta(cur: float, ly: float) -> Optional[float]:
+        if not ly:
+            return None
+        return ((cur - ly) / ly) * 100.0
+
+    def _kpi_block(cur: Dict[str, Any], ly: Dict[str, Any]) -> Dict[str, Any]:
+        # Physical-only sales sums (Staff/Online excluded) AND group-
+        # wide sums kept separately. Revenue KPI uses ALL channels
+        # (incl. Online) to match the "Total Revenue, all channels"
+        # spec — but store-table revenue excludes Staff/Online.
+        rev_cur, ord_cur = _sum_sales(cur["sales"])
+        rev_ly, ord_ly = _sum_sales(ly["sales"])
+        ff_cur = _sum_footfall(cur["footfall"])
+        ff_ly = _sum_footfall(ly["footfall"])
+        cust_cur = cur["customers"] or {}
+        cust_ly = ly["customers"] or {}
+        ab_cur = (rev_cur / ord_cur) if ord_cur else 0.0
+        ab_ly = (rev_ly / ord_ly) if ord_ly else 0.0
+        total_c = float(cust_cur.get("total_customers") or 0)
+        total_c_ly = float(cust_ly.get("total_customers") or 0)
+        new_c = float(cust_cur.get("new_customers") or 0)
+        new_c_ly = float(cust_ly.get("new_customers") or 0)
+        # Returning = total - new (per upstream contract).
+        ret_c = max(total_c - new_c, 0.0)
+        ret_c_ly = max(total_c_ly - new_c_ly, 0.0)
+        return {
+            "revenue":             {"cur": rev_cur,  "ly": rev_ly,  "delta_pct": _pct_delta(rev_cur, rev_ly)},
+            "footfall":            {"cur": ff_cur,   "ly": ff_ly,   "delta_pct": _pct_delta(ff_cur, ff_ly)},
+            "avg_basket":          {"cur": ab_cur,   "ly": ab_ly,   "delta_pct": _pct_delta(ab_cur, ab_ly)},
+            "total_customers":     {"cur": total_c,  "ly": total_c_ly,  "delta_pct": _pct_delta(total_c, total_c_ly)},
+            "new_customers":       {"cur": new_c,    "ly": new_c_ly,    "delta_pct": _pct_delta(new_c, new_c_ly)},
+            "returning_customers": {"cur": ret_c,    "ly": ret_c_ly,    "delta_pct": _pct_delta(ret_c, ret_c_ly)},
+        }
+
+    def _store_table(cur_rows: List[Dict[str, Any]], ly_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cur_ph = _excl_staff_online(cur_rows)
+        ly_ph = _excl_staff_online(ly_rows)
+        cur_map = {r["channel"]: float(r.get("total_sales") or 0) for r in cur_ph if r.get("channel")}
+        ly_map  = {r["channel"]: float(r.get("total_sales") or 0) for r in ly_ph if r.get("channel")}
+        # Union of channel names so a store that opened mid-year (no
+        # LY data) or that closed (no current data) still appears.
+        stores: List[Dict[str, Any]] = []
+        for ch in sorted(set(cur_map.keys()) | set(ly_map.keys())):
+            cur_v = cur_map.get(ch, 0.0)
+            ly_v = ly_map.get(ch, 0.0)
+            stores.append({"channel": ch, "cur": cur_v, "ly": ly_v, "delta_pct": _pct_delta(cur_v, ly_v)})
+        return stores
+
+    def _category_block(cur_rows: List[Dict[str, Any]], ly_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # Top-level Category rollup (joined via productCategory map on
+        # the frontend) — backend just returns the raw subcategory rows
+        # current + LY so the UI can roll up consistently with the
+        # rest of the dashboard.
+        cur_map = {(r.get("subcategory") or ""): r for r in cur_rows or []}
+        ly_map  = {(r.get("subcategory") or ""): r for r in ly_rows or []}
+        sub_rows: List[Dict[str, Any]] = []
+        for sc in set(cur_map.keys()) | set(ly_map.keys()):
+            if not sc:
+                continue
+            c = cur_map.get(sc, {})
+            ly_r = ly_map.get(sc, {})
+            c_rev = float(c.get("total_sales") or 0)
+            l_rev = float(ly_r.get("total_sales") or 0)
+            sub_rows.append({
+                "subcategory": sc,
+                "product_type": c.get("product_type") or ly_r.get("product_type") or "",
+                "cur": c_rev, "ly": l_rev, "delta_pct": _pct_delta(c_rev, l_rev),
+                "cur_units": float(c.get("units_sold") or 0),
+                "ly_units":  float(ly_r.get("units_sold") or 0),
+            })
+        sub_rows.sort(key=lambda r: r["cur"], reverse=True)
+        return {"subcategories": sub_rows}
+
+    payload = {
+        "as_of": yesterday.isoformat(),
+        "windows": {
+            "ytd": {"current": [ytd_from.isoformat(), yesterday.isoformat()],
+                    "ly":      [_shift_year(ytd_from).isoformat(), _shift_year(yesterday).isoformat()]},
+            "mtd": {"current": [mtd_from.isoformat(), yesterday.isoformat()],
+                    "ly":      [_shift_year(mtd_from).isoformat(), _shift_year(yesterday).isoformat()]},
+        },
+        "ytd": {
+            "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"]),
+            "stores":     _store_table(blocks["ytd_cur"]["sales"], blocks["ytd_ly"]["sales"]),
+            "categories": _category_block(blocks["ytd_cur"]["subcategories"], blocks["ytd_ly"]["subcategories"]),
+        },
+        "mtd": {
+            "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"]),
+            "stores":     _store_table(blocks["mtd_cur"]["sales"], blocks["mtd_ly"]["sales"]),
+            "categories": _category_block(blocks["mtd_cur"]["subcategories"], blocks["mtd_ly"]["subcategories"]),
+        },
+    }
+    return payload
+
+
 @api_router.get("/bootstrap/overview")
 async def bootstrap_overview(
     date_from: str,
