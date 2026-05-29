@@ -9,6 +9,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
+import DateWindowSelector from "@/components/DateWindowSelector";
 import SortableTable from "@/components/SortableTable";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
@@ -41,6 +42,10 @@ const Products = () => {
   // Iter 89w — Active/Retired/All filter. Default "active" so the live
   // catalog reads on first load.
   const [styleStatus, setStyleStatus] = useState("all");
+  // Iter 89w-h — per-table window override for the STS / SOR tables.
+  // 30-day default; user can change. Threads through SOR + the two
+  // stock-to-sales aggregate endpoints.
+  const [stsWindowDays, setStsWindowDays] = useState(30);
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
@@ -86,18 +91,32 @@ const Products = () => {
     setLoading(true);
     setError(null);
     const p = buildParams(filters);
-    const prevP = prevRange ? { ...p, ...prevRange } : null;
+    // Iter 89w-h — STS-window override.  We replace the date_from /
+    // date_to from the global filter bar with a window computed from
+    // `stsWindowDays` (last N days ending yesterday) ONLY for the
+    // stock-to-sales aggregates and the SOR table — the rest of the
+    // page still respects the global dates.
+    const stsTo = new Date();
+    stsTo.setUTCDate(stsTo.getUTCDate() - 1);
+    const stsFromDate = new Date(stsTo);
+    stsFromDate.setUTCDate(stsFromDate.getUTCDate() - stsWindowDays + 1);
+    const stsParams = {
+      ...p,
+      date_from: stsFromDate.toISOString().slice(0, 10),
+      date_to: stsTo.toISOString().slice(0, 10),
+    };
+    const prevP = prevRange ? { ...stsParams, ...prevRange } : null;
     // Iter 89w — thread Active/Retired/All filter through to all
     // style-grain endpoints. The aggregate ones (stock-to-sales-by-*)
     // are category/subcategory aggregates so they don't get the
     // filter — that data is unchanged.
-    const pStyle = { ...p, style_status: styleStatus };
+    const pStyle = { ...stsParams, style_status: styleStatus };
     // Brand filter is applied client-side (upstream `product` does prefix match
     // on product_name, not brand, so server-side filtering is unreliable).
     Promise.all([
       api.get("/sor", { params: pStyle }),
-      api.get("/analytics/stock-to-sales-by-subcat", { params: p }),
-      api.get("/analytics/stock-to-sales-by-category", { params: p }),
+      api.get("/analytics/stock-to-sales-by-subcat", { params: stsParams }),
+      api.get("/analytics/stock-to-sales-by-category", { params: stsParams }),
       api.get("/top-skus", { params: { ...pStyle, limit: 200 } }),
       api.get("/analytics/new-styles", { params: pStyle }),
       prevP ? api.get("/analytics/stock-to-sales-by-subcat", { params: prevP }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
@@ -119,7 +138,7 @@ const Products = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion, styleStatus]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion, styleStatus, stsWindowDays]);
 
   // Client-side filter on results when multiple brands picked (upstream `product`
   // is a single-value filter).
@@ -207,6 +226,15 @@ const Products = () => {
               value={styleStatus}
               onChange={setStyleStatus}
               testIdPrefix="products-style-status"
+            />
+          </div>
+          <div className="flex flex-col">
+            <div className="eyebrow mb-1">SOR window</div>
+            <DateWindowSelector
+              value={stsWindowDays}
+              onChange={setStsWindowDays}
+              testId="products-sor-window"
+              label=""
             />
           </div>
           <div className="w-full sm:w-44">
@@ -315,8 +343,8 @@ const Products = () => {
         </button>
       </div>
 
-      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
-      {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
+      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} windowDays={stsWindowDays} />}
+      {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} windowDays={stsWindowDays} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
       {tab === "products-plan" && <ProductsPlan />}

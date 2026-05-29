@@ -10439,10 +10439,11 @@ async def analytics_sor_new_styles_l10(
     brand: Optional[str] = None,
     refresh: bool = False,
     style_status: Optional[str] = None,
+    window_days: int = 180,
 ):
     """SOR New Styles L-10 — styles whose FIRST-EVER sale was 3 to 4
-    months ago (90–122 days), with a 6-month performance + sell-out
-    snapshot.
+    months ago (90–122 days), with a `window_days` performance + sell-out
+    snapshot (default 180; user-configurable in Iter 89w-h).
 
     Columns returned per style:
         style_name, brand, subcategory, style_number,
@@ -10452,9 +10453,12 @@ async def analytics_sor_new_styles_l10(
         days_since_last_sale, sor_6m,
         launch_date, weekly_avg, woc, style_age_weeks
     Iter 89w — `style_status` post-filter applies the retired-style list.
+    Iter 89w-h — `window_days` makes the SOR window user-configurable.
+    The `sales_6m` / `units_6m` / `sor_6m` column NAMES stay for back-
+    compat with the FE; they represent whatever window was requested.
     """
     import time as _time
-    cache_key = f"{country or ''}|{channel or ''}|{brand or ''}"
+    cache_key = f"{country or ''}|{channel or ''}|{brand or ''}|w{int(window_days)}"
     if not refresh and cache_key in _l10_cache:
         ts, payload = _l10_cache[cache_key]
         if _time.time() - ts < _L10_TTL:
@@ -10463,7 +10467,7 @@ async def analytics_sor_new_styles_l10(
     today = datetime.now(timezone.utc).date()
     launch_to = today - timedelta(days=90)    # at most 3 months ago
     launch_from = today - timedelta(days=122)  # at most 4 months ago
-    six_m_from = today - timedelta(days=180)
+    six_m_from = today - timedelta(days=max(1, int(window_days)))
     three_w_from = today - timedelta(days=21)
 
     cs = _split_csv(country)
@@ -11019,23 +11023,29 @@ async def analytics_sor_all_styles(
     brand: Optional[str] = None,
     refresh: bool = False,
     style_status: Optional[str] = None,
+    window_days: int = 180,
 ):
     """SOR for ALL active styles — same column shape as L-10 but covers
-    every style that sold in the last 6 months, not just 3-4-month-old
-    launches. Use this for catalog-wide SOR audits, markdown candidates,
-    and IBT shortlists.
+    every style that sold in the last `window_days` days (default 180,
+    user-configurable in Iter 89w-h). Use this for catalog-wide SOR
+    audits, markdown candidates, and IBT shortlists.
 
     Iter 89w — `style_status` post-filter applies the retired-style list.
+    Iter 89w-h — `window_days` makes the SOR window user-configurable
+    from the Products page; WoC stays on 90 days (it's a velocity
+    indicator that benefits from a tight window regardless).
     """
     import time as _time
-    cache_key = f"all|{country or ''}|{channel or ''}|{brand or ''}"
+    # Window_days included in the cache key so 30d/60d/180d calls don't
+    # poison each other's cache.
+    cache_key = f"all|{country or ''}|{channel or ''}|{brand or ''}|w{int(window_days)}"
     if not refresh and cache_key in _all_styles_cache:
         ts, payload = _all_styles_cache[cache_key]
         if _time.time() - ts < _ALL_STYLES_TTL:
             return filter_rows(annotate_status(payload, field="style_name"), style_status, field="style_name")
 
     today = datetime.now(timezone.utc).date()
-    six_m_from = today - timedelta(days=180)
+    six_m_from = today - timedelta(days=max(1, int(window_days)))
     # Iter 89c — 3-month window (~13 weeks) drives the Weeks-of-Cover
     # calculation. The 6-month window stays for SOR % and sales totals
     # but WoC needs to reflect "this season's burn rate", not "the

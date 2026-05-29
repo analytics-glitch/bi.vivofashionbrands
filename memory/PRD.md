@@ -1159,5 +1159,17 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
   - `<ActiveUsersSection />` in `pages/ActivityLogs.jsx` — shows live count, avatar chips with initials + stable HSL colour by email, ADMIN role badge, refresh button, polls every 30s.
 - **Verified**: heartbeat upserts work; `/admin/active-sessions` returns the live user; UI shows "1 user active right now" with Vivo Admin chip; subsequent polling visible in activity-log table.
 
+### Recent (Feb 2026 — Iter 89w-h) — Per-table date window selector on every SOR/STS table
+- **Shared component** `/app/frontend/src/components/DateWindowSelector.jsx` — pill-button preset selector (7d · 14d · 30d · 60d · 90d). Default 30 days. Re-windows JUST the table it's attached to; global filter bar is unaffected (tooltip explains this).
+- **Backend**:
+  - `/api/analytics/sor-all-styles` & `/api/analytics/sor-new-styles-l10` both accept a new `window_days` query param (default 180 for backwards compat). The `six_m_from` window calc + cache key both pick it up.
+  - `/api/marketing/slow-movers` & `/api/marketing/heatmap` already had `days` — now wired to the FE selector.
+- **Frontend wiring**:
+  - **Inventory page**: 30d default `stsWindowDays` state drives `/stock-to-sales`, `/analytics/stock-to-sales-by-subcat`, `/analytics/stock-to-sales-by-category`. Selector lives on the STS-by-Category section header.
+  - **Products page**: 30d `stsWindowDays` drives `/sor`, both STS aggregates, and is threaded through to the L-10 and All Styles sub-tab components.
+  - **Marketing page**: `windowDays` default 30 — replaces the original 14d default. Subtitle reflects the chosen window.
+  - **SorAllStyles & SorNewStylesL10**: accept a `windowDays` prop; forward as `window_days` query param.
+- **Verified end-to-end**: `?window_days=30` → 1108 styles in sor-all-styles; `?window_days=180` → 1774. Marketing 30d shows 600 slow movers @ 18.1% avg SOR vs the original 14d's 737 @ 13%. UI on Inventory shows the WINDOW · [30d] pill highlighted green by default.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

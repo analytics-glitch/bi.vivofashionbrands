@@ -5,6 +5,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { KPICard } from "@/components/KPICard";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
+import DateWindowSelector from "@/components/DateWindowSelector";
 import {
   Megaphone,
   CurrencyCircleDollar,
@@ -96,6 +97,10 @@ const Marketing = () => {
   const [statusFilter, setStatusFilter] = useState([]);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  // Iter 89w-h — per-table window. Marketing spec was 14d but we let
+  // the user re-window to align with the rest of the SOR tables in
+  // the app.  30d default matches the other tables.
+  const [windowDays, setWindowDays] = useState(30);
 
   // Selection for "flag selected for campaign"
   const [selected, setSelected] = useState(new Set());
@@ -134,8 +139,8 @@ const Marketing = () => {
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
     const locationsCsv = channels.length ? channels.join(",") : undefined;
     Promise.all([
-      api.get("/marketing/slow-movers", { params: { country: countryCsv, channel: locationsCsv } }),
-      api.get("/marketing/heatmap",     { params: { country: countryCsv, channel: locationsCsv } }),
+      api.get("/marketing/slow-movers", { params: { country: countryCsv, channel: locationsCsv, days: windowDays } }),
+      api.get("/marketing/heatmap",     { params: { country: countryCsv, channel: locationsCsv, days: windowDays } }),
     ])
       .then(([sm, hm]) => {
         if (cancelled) return;
@@ -147,7 +152,7 @@ const Marketing = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion, windowDays]);
 
   // Merge server rows with local edits.
   const rowsWithEdits = useMemo(() => {
@@ -314,7 +319,7 @@ const Marketing = () => {
             Marketing Intelligence — Slow Movers
           </h1>
           <p className="text-muted text-[13px] mt-0.5">
-            14-day SOR &lt; 40%
+            {windowDays}-day SOR &lt; 40%
             {win && (
               <> · window <span className="font-semibold text-foreground">{fmtDate(win.date_from)} → {fmtDate(win.date_to)}</span></>
             )}
@@ -322,6 +327,11 @@ const Marketing = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <DateWindowSelector
+            value={windowDays}
+            onChange={setWindowDays}
+            testId="marketing-window"
+          />
           <button
             type="button"
             onClick={flagSelectedForCampaign}

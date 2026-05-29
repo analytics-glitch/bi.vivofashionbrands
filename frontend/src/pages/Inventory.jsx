@@ -5,6 +5,7 @@ import { varianceStyle, VarianceCell } from "@/lib/variance";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
+import DateWindowSelector from "@/components/DateWindowSelector";
 import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import { useRecommendationState } from "@/lib/useRecommendationState";
@@ -74,6 +75,11 @@ const Inventory = () => {
   // Include warehouse / wholesale / holding stock in the POS-scoped STS
   // tables. Off by default — most users want pure shop-floor stock.
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
+  // Iter 89w-h — per-table window override for the STS / stock-to-sales
+  // tables.  Defaults to 30 days so first-load shows recent velocity
+  // regardless of what the global filter bar is set to.  Overrides
+  // `dateFrom` / `dateTo` only for the 3 STS endpoints below.
+  const [stsWindowDays, setStsWindowDays] = useState(30);
   // Stock-to-Sales stock scope: which inventory rolls up into the
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
   // Iter 89w-c — STS / "Stock to Sales" scope.  Default "combined"
@@ -118,8 +124,16 @@ const Inventory = () => {
     const locationsCsv = channels.length ? channels.join(",") : undefined;
     const invParams = { country: countryCsv, locations: locationsCsv, style_status: styleStatus };
     const refreshParams = dataVersion > 0 ? { ...invParams, refresh: true } : invParams;
+    // Iter 89w-h — STS-specific date window (default 30d) overrides the
+    // global filter bar dates ONLY for the stock-to-sales endpoints.
+    const stsTo = new Date();
+    stsTo.setUTCDate(stsTo.getUTCDate() - 1);
+    const stsFromDate = new Date(stsTo);
+    stsFromDate.setUTCDate(stsFromDate.getUTCDate() - stsWindowDays + 1);
+    const stsDateFrom = stsFromDate.toISOString().slice(0, 10);
+    const stsDateTo = stsTo.toISOString().slice(0, 10);
     const dateParams = {
-      date_from: dateFrom, date_to: dateTo,
+      date_from: stsDateFrom, date_to: stsDateTo,
       country: countryCsv, locations: locationsCsv,
       include_warehouse: includeWarehouse ? 1 : undefined,
       stock_scope: stockScope,
@@ -127,7 +141,7 @@ const Inventory = () => {
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
       api.get("/inventory", { params: refreshParams }),
-      api.get("/stock-to-sales", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, locations: locationsCsv } }),
+      api.get("/stock-to-sales", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, locations: locationsCsv } }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
@@ -162,7 +176,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -929,10 +943,17 @@ const Inventory = () => {
           </div>
 
           <div className="card-white p-5" data-testid="sts-by-category-table">
-            <SectionTitle
-              title="Stock-to-Sales · by Category"
-              subtitle="Aggregated groups (Dresses, Tops, Bottoms, …). Variance compares sales share vs stock share. Red = action needed (stockout or overstock risk). Green = healthy balance."
-            />
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+              <SectionTitle
+                title="Stock-to-Sales · by Category"
+                subtitle="Aggregated groups (Dresses, Tops, Bottoms, …). Variance compares sales share vs stock share. Red = action needed (stockout or overstock risk). Green = healthy balance."
+              />
+              <DateWindowSelector
+                value={stsWindowDays}
+                onChange={setStsWindowDays}
+                testId="inv-sts-window"
+              />
+            </div>
             <SortableTable
               testId="inv-sts-cat"
               exportName={`inventory-sts-by-category_${exportSlug}.csv`}
