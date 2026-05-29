@@ -596,9 +596,9 @@ const Marketing = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((r) => (
+                    {filtered.map((r, idx) => (
                       <tr
-                        key={r.style_name}
+                        key={`${r.style_name}-${idx}`}
                         className={r.needs_escalation ? "bg-rose-50/40 border-b border-border" : "border-b border-border"}
                         data-testid={`tracker-row-${r.style_name}`}
                       >

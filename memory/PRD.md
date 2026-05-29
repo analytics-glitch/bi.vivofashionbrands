@@ -1093,21 +1093,20 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Fix #2 — /sales-summary today-only bypass**: skip the analytics snapshot when window is exactly TODAY (the snapshot lagged /kpis by 2-5 min between sweeps, causing intermittent 11 % recon FAIL → ESCALATED → email alert). Today's data is always live-derived, which itself uses pure-snapshot /kpis fan-out → no upstream calls, latency unchanged. Historic windows still use the snapshot.
 - **Verified**: recon `ok=true` with all 5 checks Δ=0.00 %. 16 / 16 pre-ship tests pass.
 
-### Recent (Feb 2026 — Iter 89w) — Retired-Styles 3-way filter (Active / Retired / All)
-- **User request**: hide 200+ retired styles from active dashboards & CSV exports, but keep them available for audits.
-- **Backend** (`/app/backend/retired_styles.py`): frozen set of 487 normalised style names + `is_retired()`, `filter_rows()`, `annotate_status()` helpers. Name-based match catches all SKUs/colors of a retired style automatically (sibling colours share style_name).
-- **Endpoints wired** with new `style_status` query param (default `all` for back-compat; FE defaults to `active`):
-  - `GET /api/inventory`
-  - `GET /api/sor`
-  - `GET /api/customer-products`
-  - `GET /api/top-skus`
-  - `GET /api/analytics/sor-new-styles-l10`
-  - `GET /api/analytics/sor-all-styles`
-- **Frontend**: shared `<StyleStatusToggle>` (Active = green, Retired = amber, All = brand) rendered on:
-  - `/inventory` (Inventory page)
-  - `/products` (Products + SOR L10 + SOR All Styles sub-tabs)
-  - `/exports` (Inventory tab — applies to CSV download)
-- **Verified end-to-end (preview)**: `?style_status=active` → 32 255 rows, `=retired` → 2 525 rows, `=all` → 34 780 rows. All three toggle UIs render correctly with test-ids `inv-style-status-toggle`, `products-style-status-toggle`, `exports-style-status-toggle`.
+### Recent (Feb 2026 — Iter 89w-c) — Marketing Intelligence page + Inventory KPI cascade + retirement date in exports
+- **Backend `/api/inventory-style-counts`**: returns `{active_styles, retired_styles, active_units, retired_units, total_styles, total_units}` for the small counts pill on the Inventory page. Reuses the existing `fetch_all_inventory` cache (free when the page is already loaded).
+- **Inventory KPI cascade**: `filtersActive` in `pages/Inventory.jsx` now flips true whenever `styleStatus !== "all"`, so every KPI card (Total Units / Stores / Warehouse / WoC / Low-Stock / Understocked) re-derives from the filtered `merchInv` instead of the chain-wide `summary` aggregate. Verified: Active toggle → 70 901 units; Retired toggle → 5 229 units.
+- **Retired date in Exports CSV**: `retired_styles.py` now exposes `RETIRED_STYLE_DATES` (default `2026-02-13` for the seed list) + `retired_at()` helper. `annotate_status()` now tags every row with `style_status` + `retired_at`. New "Retired Date" column added to the Exports → Inventory table & CSV.
+- **New Marketing Intelligence page** at `/marketing`:
+  - **Slow-movers** = `units sold (14d net) / (units sold + current_stock) × 100 < 40 %`, computed against the last 14 days ending yesterday. Stock excludes Warehouse / Holding / Wholesale buckets.
+  - **5-card summary banner**: slow-mover count, stock value at risk (KES), avg SOR, critical (7d+ no improve), improving (+10 pp).
+  - **Alert table**: sortable / filterable by Brand / Subcategory / Location / Status + search. SOR cell colour-bands (red <20 %, amber 20-39 %, green ≥60 %). Status badges (New / Monitored / Improving / Critical). Checkbox + "Flag selected for campaign" button bulk-updates action_status → in_progress via `POST /api/marketing/flags/bulk-status`.
+  - **Heatmap**: 30 locations × 7 categories (Tops / Bottoms / Dresses / Skirts / Outerwear / Two-Piece Sets / Mens). Green ≥60, amber 40-59, red <40, grey = no stock.
+  - **Action plan tracker**: per-row Status `<select>` (Pending / In Progress / Done) + Notes `<input>`. Saves to Mongo via `PATCH /api/marketing/flags/{style_name}` and mirrors to `localStorage[vivo.marketing.flag-edits.v1]` so unsaved drafts survive soft refreshes. Rose-tint highlight for rows flagged 7+ days ago with SOR not improved ≥10 pp.
+  - **CSV export** of the alert table; window stamp + filter ribbon match the on-screen state.
+- **Backend architecture**: pure compute in `/app/backend/marketing_intel.py`; 5 thin endpoints in `/app/backend/routes/marketing.py` (GET slow-movers / heatmap / flags, PATCH flags/{style}, POST flags/bulk-status). Mongo collection `marketing_slow_mover_flags` with unique index on `style_name`. Auto-flags first-time slow-movers on every slow-movers GET (idempotent).
+- **Page-level access control**: `marketing` page added to `_ANALYST` (so analyst / exec / admin see it). Nav item with Megaphone icon between Customer Details and Products.
+- **Testing**: 10 / 10 backend pytest pass (`/app/backend/tests/test_iteration_89_marketing.py`). Frontend e2e via testing agent 95 % (only LOW-priority React duplicate-key warning, fixed by composite key in tracker map).
 
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
