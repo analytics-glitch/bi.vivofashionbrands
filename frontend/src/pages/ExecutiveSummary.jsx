@@ -128,7 +128,36 @@ const CountryMetricRow = ({ label, cur, ly, fmt, delta }) => {
   );
 };
 
-const CountryCard = ({ ytd, mtd, selected, onClick }) => {
+/**
+ * TargetDayPill — small line directly under the Avg/Day row that
+ * compares actual daily run-rate to the target daily run-rate
+ * (pro-rata target ÷ days elapsed). Shown only when we have both a
+ * target and a day-count for the country.
+ */
+const TargetDayPill = ({ actual, targetTotal, days, label = "Target" }) => {
+  if (!targetTotal || !days) return null;
+  const targetDaily = targetTotal / days;
+  const gapPct = targetDaily > 0 ? ((actual - targetDaily) / targetDaily) * 100 : null;
+  // Hit-the-target colour: green at/above pace, amber 90–100%, rose < 90%.
+  const pct = targetDaily > 0 ? (actual / targetDaily) * 100 : 0;
+  const tone =
+    pct >= 100 ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+    : pct >= 90 ? "text-amber-700 bg-amber-50 border-amber-200"
+    : "text-rose-700 bg-rose-50 border-rose-200";
+  return (
+    <div className="grid grid-cols-[58px_1fr_auto] items-center gap-2 mt-0.5">
+      <span className="text-[9.5px] uppercase font-bold text-muted tracking-wider">{label}</span>
+      <span className="text-[10.5px] tabular-nums text-muted">
+        Need <span className="font-bold text-foreground">{fmtKES(targetDaily)}</span>/day
+      </span>
+      <span className={`text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded-md border ${tone}`} title={`Daily run-rate vs target daily run-rate. Pro-rata target ${fmtKES(targetTotal)} ÷ ${days}d.`}>
+        {gapPct != null ? `${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(1)}%` : "—"}
+      </span>
+    </div>
+  );
+};
+
+const CountryCard = ({ ytd, mtd, targets, selected, onClick }) => {
   const country = ytd?.country || mtd?.country;
   // Country tile tone — if both YTD and MTD revenue are down vs LY,
   // tint the whole card amber so it stands out at a glance.
@@ -163,6 +192,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">YTD</div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={ytd?.revenue?.cur}    ly={ytd?.revenue?.ly}    delta={ytd?.revenue?.delta_pct} />
           <CountryMetricRow label="Avg/Day"   fmt={fmtKES} cur={ytd?.avg_sales_per_day?.cur} ly={ytd?.avg_sales_per_day?.ly} delta={ytd?.avg_sales_per_day?.delta_pct} />
+          <TargetDayPill actual={ytd?.avg_sales_per_day?.cur} targetTotal={targets?.ytd} days={ytd?.avg_sales_per_day?.days} />
           <CountryMetricRow label="Units"                   cur={ytd?.units?.cur}      ly={ytd?.units?.ly}      delta={ytd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={ytd?.orders?.cur}     ly={ytd?.orders?.ly}     delta={ytd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
@@ -181,6 +211,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           </div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
           <CountryMetricRow label="Avg/Day"   fmt={fmtKES} cur={mtd?.avg_sales_per_day?.cur} ly={mtd?.avg_sales_per_day?.ly} delta={mtd?.avg_sales_per_day?.delta_pct} />
+          <TargetDayPill actual={mtd?.avg_sales_per_day?.cur} targetTotal={targets?.mtd} days={mtd?.avg_sales_per_day?.days} />
           <CountryMetricRow label="Units"                   cur={mtd?.units?.cur}      ly={mtd?.units?.ly}      delta={mtd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />
@@ -1482,11 +1513,16 @@ const ExecutiveSummary = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {(data.ytd.countries || []).map((c) => {
             const mtdCountry = (data.mtd.countries || []).find((x) => x.country === c.country);
+            // Match the per-country target on country name. `targets`
+            // payload uses the same {Kenya, Uganda, Rwanda, Online}
+            // buckets so the join is a direct find().
+            const tgt = (data.targets?.countries || []).find((t) => t.country === c.country);
             return (
               <CountryCard
                 key={c.country}
                 ytd={c}
                 mtd={mtdCountry}
+                targets={tgt}
                 selected={selectedCountry === c.country}
                 onClick={() => setSelectedCountry((cur) => cur === c.country ? null : c.country)}
               />
