@@ -4,6 +4,13 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89f) — Executive Summary: country breakdown section
+- **User ask**: "Share the numbers country wise (Kenya, Uganda, Rwanda, Online)."
+- **Backend** (`/api/exec-summary`): added a new `countries` array per view block. Helper `_country_block` rolls up the already-fetched `sales` and `footfall` rows into the four leadership-tracked buckets — zero extra upstream calls. Footfall is attributed via a location → country map derived from sales rows (since /footfall only carries `location`, not `country`).
+- **Frontend**: new `CountryBreakdown` section inserted between the KPI strip and the Store Performance table. 4 cards (flag + country name) each showing YTD + MTD blocks with Revenue / Orders / Footfall / Avg Basket and Δ% pills. Card border tints green when both windows are up, amber when mixed, red when both windows are down. Online correctly shows "—" for footfall (no physical counter).
+- **Verified live**: MTD shows Kenya KES 75.5M (+8.3%), Uganda 6.16M (+159.1%), Rwanda 4.03M (+20.8%), Online 10.97M (+124.5%). Footfall numbers match per-country rollup of physical stores.
+
+
 ### Recent (Feb 2026 — Iter 89e) — Executive Summary leadership scorecard page (P0 NEW FEATURE)
 - **User ask**: "Create a new Executive Summary page" — single-page at-a-glance leadership view, dynamic YTD/MTD ending yesterday, no manual date selection.
 - **Backend** (`/app/backend/server.py`): new `GET /api/exec-summary` endpoint — single call returns the entire page payload (both YTD and MTD blocks; each with current + same-period-LY KPIs, store table, and category/subcategory rollups). Date math is server-side and dynamic (`yesterday = today_utc - 1 day`, year-shift not 365-day-shift for clean LY comparison). Fans out 16 internal calls (4 windows × 4 endpoints: sales-summary, footfall, customers, subcategory-sales) in parallel — all snapshot-cached so repeat hits are essentially free. Staff/Online channels stripped for the physical-store table.

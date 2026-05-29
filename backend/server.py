@@ -3403,6 +3403,61 @@ async def exec_summary_endpoint():
         sub_rows.sort(key=lambda r: r["cur"], reverse=True)
         return {"subcategories": sub_rows}
 
+    def _country_block(cur_block: Dict[str, Any], ly_block: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Roll up sales + footfall by country for the four
+        leadership-tracked buckets (Kenya, Uganda, Rwanda, Online).
+        Zero extra upstream calls — derived from rows already in
+        memory. Per-country customer splits are intentionally NOT
+        included because they'd require 4 extra /customers calls per
+        view (= 16 across YTD/MTD × cur/LY) — a meaningful BigQuery
+        cost increase for a metric the country card doesn't need.
+        """
+        def _agg_by_country(sales_rows, footfall_rows):
+            agg: Dict[str, Dict[str, float]] = {c: {"revenue": 0.0, "orders": 0.0, "footfall": 0.0}
+                                                for c in _OVERVIEW_COUNTRIES}
+            # Build location→country map from sales rows so we can
+            # attribute footfall (which only carries `location`) to
+            # the right country bucket. This avoids a second upstream
+            # call for store-metadata.
+            loc_to_country: Dict[str, str] = {}
+            for r in sales_rows or []:
+                country = (r.get("country") or "").strip()
+                channel = (r.get("channel") or "").strip()
+                if country and channel:
+                    loc_to_country[channel] = country
+                if country not in agg:
+                    continue
+                agg[country]["revenue"] += float(r.get("total_sales") or 0)
+                agg[country]["orders"] += float(r.get("orders") or r.get("total_orders") or 0)
+            for r in footfall_rows or []:
+                # Footfall is physical-store only (Online has no
+                # footfall counter), so we only attribute when we have
+                # a matching country in the sales map. Stores with no
+                # current sales but historical footfall fall through.
+                loc = (r.get("location") or "").strip()
+                country = loc_to_country.get(loc) or (r.get("country") or "").strip()
+                if country not in agg:
+                    continue
+                agg[country]["footfall"] += float(r.get("total_footfall") or 0)
+            return agg
+
+        cur = _agg_by_country(cur_block["sales"], cur_block["footfall"])
+        ly = _agg_by_country(ly_block["sales"], ly_block["footfall"])
+        out: List[Dict[str, Any]] = []
+        for country in _OVERVIEW_COUNTRIES:
+            c = cur[country]
+            ly_c = ly[country]
+            c_ab = c["revenue"] / c["orders"] if c["orders"] else 0.0
+            l_ab = ly_c["revenue"] / ly_c["orders"] if ly_c["orders"] else 0.0
+            out.append({
+                "country": country,
+                "revenue":    {"cur": c["revenue"],   "ly": ly_c["revenue"],   "delta_pct": _pct_delta(c["revenue"], ly_c["revenue"])},
+                "orders":     {"cur": c["orders"],    "ly": ly_c["orders"],    "delta_pct": _pct_delta(c["orders"], ly_c["orders"])},
+                "footfall":   {"cur": c["footfall"],  "ly": ly_c["footfall"],  "delta_pct": _pct_delta(c["footfall"], ly_c["footfall"])},
+                "avg_basket": {"cur": c_ab,           "ly": l_ab,              "delta_pct": _pct_delta(c_ab, l_ab)},
+            })
+        return out
+
     payload = {
         "as_of": yesterday.isoformat(),
         "windows": {
@@ -3413,11 +3468,13 @@ async def exec_summary_endpoint():
         },
         "ytd": {
             "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"]),
+            "countries":  _country_block(blocks["ytd_cur"], blocks["ytd_ly"]),
             "stores":     _store_table(blocks["ytd_cur"]["sales"], blocks["ytd_ly"]["sales"]),
             "categories": _category_block(blocks["ytd_cur"]["subcategories"], blocks["ytd_ly"]["subcategories"]),
         },
         "mtd": {
             "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"]),
+            "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"]),
             "stores":     _store_table(blocks["mtd_cur"]["sales"], blocks["mtd_ly"]["sales"]),
             "categories": _category_block(blocks["mtd_cur"]["subcategories"], blocks["mtd_ly"]["subcategories"]),
         },

@@ -101,6 +101,63 @@ const KpiCard = ({ icon: Icon, label, fmt, ytd, mtd, testId, tone }) => {
 };
 
 /**
+ * CountryBreakdown — 4 cards (Kenya / Uganda / Rwanda / Online) each
+ * stacking the four primary metrics for both YTD and MTD. Helps
+ * leadership spot a single country that's pulling the group up or
+ * down without scrolling to the store table.
+ */
+const COUNTRY_FLAGS = { Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐" };
+
+const CountryMetricRow = ({ label, cur, ly, fmt, delta }) => {
+  const fmtVal = fmt || ((v) => fmtNum(Math.round(v)));
+  return (
+    <div className="flex items-center justify-between gap-2 text-[11.5px]">
+      <span className="text-muted shrink-0 w-[58px]">{label}</span>
+      <span className="font-bold tabular-nums">{fmtVal(cur || 0)}</span>
+      <DeltaPill value={delta} size="sm" />
+    </div>
+  );
+};
+
+const CountryCard = ({ ytd, mtd }) => {
+  const country = ytd?.country || mtd?.country;
+  // Country tile tone — if both YTD and MTD revenue are down vs LY,
+  // tint the whole card amber so it stands out at a glance.
+  const ytdDown = (ytd?.revenue?.delta_pct ?? 0) < 0;
+  const mtdDown = (mtd?.revenue?.delta_pct ?? 0) < 0;
+  const ring = ytdDown && mtdDown
+    ? "border-rose-300 bg-gradient-to-br from-rose-50/60 to-white"
+    : ytdDown || mtdDown
+    ? "border-amber-300 bg-gradient-to-br from-amber-50/60 to-white"
+    : "border-emerald-300 bg-gradient-to-br from-emerald-50/60 to-white";
+  return (
+    <div className={`rounded-xl border-2 ${ring} p-3.5 shadow-sm`} data-testid={`exec-country-${country}`}>
+      <div className="text-[15px] font-extrabold mb-2 flex items-center gap-2">
+        <span className="text-[18px]">{COUNTRY_FLAGS[country] || "🌍"}</span>
+        {country}
+      </div>
+      <div className="space-y-2.5">
+        <div data-testid={`exec-country-${country}-ytd`}>
+          <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">YTD</div>
+          <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={ytd?.revenue?.cur}    ly={ytd?.revenue?.ly}    delta={ytd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Orders"                  cur={ytd?.orders?.cur}     ly={ytd?.orders?.ly}     delta={ytd?.orders?.delta_pct} />
+          <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
+          <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
+        </div>
+        <div className="h-px bg-border/60" />
+        <div data-testid={`exec-country-${country}-mtd`}>
+          <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">MTD</div>
+          <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
+          <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />
+          <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={mtd?.avg_basket?.cur} ly={mtd?.avg_basket?.ly} delta={mtd?.avg_basket?.delta_pct} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
  * StorePerformanceTable — physical stores only (server already
  * stripped Staff / Online). Sorted by MTD delta ascending so the
  * worst-performing rows surface at the top — leadership's
@@ -393,6 +450,20 @@ const ExecutiveSummary = () => {
         <KpiCard testId="kpi-customers" label="Total Customers"      icon={UsersThree}                ytd={k("total_customers").ytd} mtd={k("total_customers").mtd} />
         <KpiCard testId="kpi-new"       label="New Customers"        icon={UserPlus}                  ytd={k("new_customers").ytd}   mtd={k("new_customers").mtd} />
         <KpiCard testId="kpi-returning" label="Returning Customers"  icon={ArrowsClockwise}           ytd={k("returning_customers").ytd} mtd={k("returning_customers").mtd} />
+      </div>
+
+      {/* SECTION 1.5 — Country breakdown */}
+      <div className="card-white p-4 sm:p-5">
+        <SectionTitle
+          title="By Country"
+          subtitle="Revenue · Orders · Footfall · Avg Basket per country (Kenya, Uganda, Rwanda, Online) vs same period last year. Card tints: green = both windows up, amber = mixed, red = both windows down."
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {(data.ytd.countries || []).map((c) => {
+            const mtdCountry = (data.mtd.countries || []).find((x) => x.country === c.country);
+            return <CountryCard key={c.country} ytd={c} mtd={mtdCountry} />;
+          })}
+        </div>
       </div>
 
       {/* SECTION 2 — Store performance */}
