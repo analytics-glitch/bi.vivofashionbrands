@@ -13,7 +13,7 @@ import SorStylesTable from "@/components/SorStylesTable";
  *
  * Data source: `/api/analytics/sor-all-styles` (server-side 30-min cached).
  */
-const SorAllStyles = ({ brand, styleStatus = "active" }) => {
+const SorAllStyles = ({ brand, styleStatus = "all" }) => {
   const { applied } = useFilters();
   const { countries, channels, dataVersion } = applied;
   const [rows, setRows] = useState([]);

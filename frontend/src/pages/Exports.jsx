@@ -36,7 +36,7 @@ const InventoryExport = () => {
   const [includeNonMerch, setIncludeNonMerch] = useState(false);
   const [page, setPage] = useState(0);
   // Iter 89w — Active/Retired/All filter.
-  const [styleStatus, setStyleStatus] = useState("active");
+  const [styleStatus, setStyleStatus] = useState("all");
 
   // Debounce search 120ms
   useEffect(() => {

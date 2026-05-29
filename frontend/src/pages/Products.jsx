@@ -40,7 +40,7 @@ const Products = () => {
   const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
   // Iter 89w — Active/Retired/All filter. Default "active" so the live
   // catalog reads on first load.
-  const [styleStatus, setStyleStatus] = useState("active");
+  const [styleStatus, setStyleStatus] = useState("all");
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);

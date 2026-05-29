@@ -15,7 +15,7 @@ import SorStylesTable from "@/components/SorStylesTable";
  * 30-min cached because the launch-date detection fans out 17+
  * /orders chunks).
  */
-const SorNewStylesL10 = ({ brand, styleStatus = "active" }) => {
+const SorNewStylesL10 = ({ brand, styleStatus = "all" }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
