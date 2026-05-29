@@ -955,7 +955,7 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
     <div className="card-white p-4 sm:p-5" data-testid="exec-targets-section">
       <SectionTitle
         title="YTD vs Yearly Target (2026 budget)"
-        subtitle="YTD revenue against the pro-rata budget (full months + day-of-month pro-rata of the current month). Source: finance team budget sheet."
+        subtitle="YTD revenue vs the linear day-based prorate (annual ÷ 365 × days elapsed in year). Source: finance team budget sheet."
       />
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
         <div className="rounded-lg border border-border bg-white px-3.5">

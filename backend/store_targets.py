@@ -14,7 +14,6 @@ the quarterly-summary country total (99.5M) is built from.
 """
 
 from __future__ import annotations
-import calendar
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
@@ -129,28 +128,42 @@ ONLINE_TARGETS_2026_MONTHLY: List[float] = [
 ]
 
 
+def _is_leap(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def _days_in_year(year: int) -> int:
+    return 366 if _is_leap(year) else 365
+
+
+def _doy(d: date) -> int:
+    """Day-of-year, 1-based (Jan 1 → 1)."""
+    return (d - date(d.year, 1, 1)).days + 1
+
+
 def _prorata_to_date(monthly: List[float], as_of: date) -> float:
-    """Sum full months before `as_of` plus a pro-rata slice of the
-    current month based on day-of-month.  `as_of` is the *last day
-    included* (i.e. the YTD anchor — `yesterday`)."""
+    """Pure linear day-based prorate of the annual target.
+    Ignores month-by-month seasonality — leadership pref: a flat
+    daily run-rate is the cleanest fairness measure ("on day 148 of
+    365 you should have done 148/365 of the year").
+    """
     if as_of.year != 2026:
         # Outside the budget year — return 0 so we don't compare against
         # a phantom target (e.g. LY window slips into 2025).
         return 0.0
-    total = 0.0
-    for m in range(1, as_of.month):
-        total += monthly[m - 1]
-    days_in_month = calendar.monthrange(as_of.year, as_of.month)[1]
-    total += monthly[as_of.month - 1] * (as_of.day / days_in_month)
-    return total
+    annual = sum(monthly)
+    return annual * _doy(as_of) / _days_in_year(as_of.year)
 
 
 def _mtd_prorata(monthly: List[float], as_of: date) -> float:
-    """Pro-rata of the current month up to (and including) `as_of`."""
+    """MTD slice of the linear daily prorate: annual ÷ days-in-year ×
+    days-elapsed-in-current-month. Same flat-daily logic as
+    _prorata_to_date so the two metrics stay consistent.
+    """
     if as_of.year != 2026:
         return 0.0
-    days_in_month = calendar.monthrange(as_of.year, as_of.month)[1]
-    return monthly[as_of.month - 1] * (as_of.day / days_in_month)
+    annual = sum(monthly)
+    return annual * as_of.day / _days_in_year(as_of.year)
 
 
 def store_target_block(channel: str, as_of: date) -> Tuple[float, float, float]:
