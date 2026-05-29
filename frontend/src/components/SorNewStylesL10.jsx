@@ -15,7 +15,7 @@ import SorStylesTable from "@/components/SorStylesTable";
  * 30-min cached because the launch-date detection fans out 17+
  * /orders chunks).
  */
-const SorNewStylesL10 = ({ brand }) => {
+const SorNewStylesL10 = ({ brand, styleStatus = "active" }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -26,7 +26,7 @@ const SorNewStylesL10 = ({ brand }) => {
     setError(null);
     api
       .get("/analytics/sor-new-styles-l10", {
-        params: { brand: brand || undefined },
+        params: { brand: brand || undefined, style_status: styleStatus },
         timeout: 240000,
       })
       .then(({ data }) => {
@@ -36,7 +36,7 @@ const SorNewStylesL10 = ({ brand }) => {
       .catch((e) => !cancel && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancel && setLoading(false));
     return () => { cancel = true; };
-  }, [brand]);
+  }, [brand, styleStatus]);
 
   const enriched = useMemo(
     () => (rows || [])

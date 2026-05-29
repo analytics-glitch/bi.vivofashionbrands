@@ -13,7 +13,7 @@ import SorStylesTable from "@/components/SorStylesTable";
  *
  * Data source: `/api/analytics/sor-all-styles` (server-side 30-min cached).
  */
-const SorAllStyles = ({ brand }) => {
+const SorAllStyles = ({ brand, styleStatus = "active" }) => {
   const { applied } = useFilters();
   const { countries, channels, dataVersion } = applied;
   const [rows, setRows] = useState([]);
@@ -24,7 +24,7 @@ const SorAllStyles = ({ brand }) => {
     let cancel = false;
     setLoading(true);
     setError(null);
-    const params = { brand: brand || undefined };
+    const params = { brand: brand || undefined, style_status: styleStatus };
     if (countries && countries.length) params.country = countries.join(",");
     if (channels && channels.length) params.channel = channels.join(",");
     api
@@ -37,7 +37,7 @@ const SorAllStyles = ({ brand }) => {
       .finally(() => !cancel && setLoading(false));
     return () => { cancel = true; };
     // eslint-disable-next-line
-  }, [brand, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [brand, styleStatus, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   const enriched = useMemo(
     () => (rows || []).map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),

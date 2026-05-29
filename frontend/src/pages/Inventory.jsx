@@ -4,6 +4,7 @@ import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS } from "
 import { varianceStyle, VarianceCell } from "@/lib/variance";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import StyleStatusToggle from "@/components/StyleStatusToggle";
 import SortableTable from "@/components/SortableTable";
 import RecommendationActionPill from "@/components/RecommendationActionPill";
 import { useRecommendationState } from "@/lib/useRecommendationState";
@@ -76,6 +77,10 @@ const Inventory = () => {
   // Stock-to-Sales stock scope: which inventory rolls up into the
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
   const [stockScope, setStockScope] = useState("stores");
+  // Iter 89w — Active/Retired/All toggle. Default "active" so the live
+  // catalog shows on first load. Threaded into the /inventory and
+  // /top-skus requests so the backend filters on the same source.
+  const [styleStatus, setStyleStatus] = useState("active");
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 120);
@@ -88,7 +93,7 @@ const Inventory = () => {
     setError(null);
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
     const locationsCsv = channels.length ? channels.join(",") : undefined;
-    const invParams = { country: countryCsv, locations: locationsCsv };
+    const invParams = { country: countryCsv, locations: locationsCsv, style_status: styleStatus };
     const refreshParams = dataVersion > 0 ? { ...invParams, refresh: true } : invParams;
     const dateParams = {
       date_from: dateFrom, date_to: dateTo,
@@ -105,7 +110,7 @@ const Inventory = () => {
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
       api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
         .catch(() => ({ data: [] })),
-      api.get("/top-skus", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, channel: locationsCsv, limit: 5000 } })
+      api.get("/top-skus", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, channel: locationsCsv, limit: 5000, style_status: styleStatus } })
         .catch(() => ({ data: [] })),
     ])
       .then(([s, i, st, sc, cat, woc, str, tsk]) => {
@@ -134,7 +139,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -526,6 +531,11 @@ const Inventory = () => {
           className="mt-2 flex flex-wrap items-center gap-2"
           data-testid="inv-filter-row"
         >
+          <StyleStatusToggle
+            value={styleStatus}
+            onChange={setStyleStatus}
+            testIdPrefix="inv-style-status"
+          />
           {(countries.length > 0 || channels.length > 0) && (
             <div
               className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1 text-[11.5px] font-semibold text-brand-deep"

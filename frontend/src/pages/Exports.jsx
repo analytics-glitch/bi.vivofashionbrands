@@ -34,6 +34,8 @@ const InventoryExport = () => {
   const [searchInput, setSearchInput] = useState("");
   const [includeNonMerch, setIncludeNonMerch] = useState(false);
   const [page, setPage] = useState(0);
+  // Iter 89w — Active/Retired/All filter.
+  const [styleStatus, setStyleStatus] = useState("active");
 
   // Debounce search 120ms
   useEffect(() => {
@@ -50,7 +52,7 @@ const InventoryExport = () => {
     setError(null);
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
     const locationsCsv = channels.length ? channels.join(",") : undefined;
-    const params = { country: countryCsv, locations: locationsCsv };
+    const params = { country: countryCsv, locations: locationsCsv, style_status: styleStatus };
     const refreshParams = dataVersion > 0 ? { ...params, refresh: true } : params;
     api
       .get("/inventory", { params: refreshParams })
@@ -63,7 +65,7 @@ const InventoryExport = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion, styleStatus]);
 
   // Attach computed category AND a pre-computed lowercase search blob to
   // every row so search filtering costs ONE includes() per row per

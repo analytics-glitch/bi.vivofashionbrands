@@ -60,6 +60,11 @@ from store_targets import (  # noqa: E402
     store_target_block,
     country_target_block,
 )
+from retired_styles import (  # noqa: E402
+    is_retired,
+    filter_rows,
+    annotate_status,
+)
 _KPI_STALE_CACHE_MAX = 256
 _CHURN_FULL_CACHE_MAX = 8
 _L10_CACHE_MAX = 64
@@ -3012,6 +3017,7 @@ async def get_top_skus(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
     limit: int = Query(20, ge=1, le=10000),
+    style_status: Optional[str] = None,
 ):
     # Retail/Online → country (collapses 60-call fan-out).
     country, channel, _ = _normalize_channel_group(country, channel)
@@ -3022,11 +3028,12 @@ async def get_top_skus(
             "/top-skus", date_from, date_to, country, channel,
         )
         if snap is not None:
-            return snap
-    return await _get_top_skus_live(
+            return filter_rows(annotate_status(snap, field="style_name"), style_status, field="style_name")
+    rows = await _get_top_skus_live(
         date_from=date_from, date_to=date_to,
         country=country, channel=channel, brand=brand, limit=limit,
     )
+    return filter_rows(annotate_status(rows or [], field="style_name"), style_status, field="style_name")
 
 
 async def _get_top_skus_live(
@@ -3086,6 +3093,7 @@ async def get_sor(
     country: Optional[str] = None,
     channel: Optional[str] = None,
     brand: Optional[str] = None,
+    style_status: Optional[str] = None,
 ):
     country, channel, _ = _normalize_channel_group(country, channel)
     # Only snapshot the default (no brand) case — brand-filtered queries
@@ -3095,12 +3103,13 @@ async def get_sor(
             "/sor", date_from, date_to, country, channel,
         )
         if snap is not None:
-            return snap
+            return filter_rows(annotate_status(snap, field="style_name"), style_status, field="style_name")
     async with HeavyGuard("/sor"):
-        return await _get_sor_impl(
+        rows = await _get_sor_impl(
             date_from=date_from, date_to=date_to,
             country=country, channel=channel, brand=brand,
         )
+    return filter_rows(annotate_status(rows or [], field="style_name"), style_status, field="style_name")
 
 
 async def _get_sor_impl(
@@ -4050,19 +4059,29 @@ async def get_inventory(
     product: Optional[str] = None,
     country: Optional[str] = None,
     refresh: Optional[bool] = False,
+    style_status: Optional[str] = None,  # active|retired|all (default all)
 ):
     """Fans out per-location because upstream /inventory is hard-capped at
     2000 rows. When `location` is given, still go through the helper so
     that Warehouse Finished Goods gets chunked & country is lowercased.
-    `locations` (CSV) scopes the fan-out to a subset of POS locations."""
+    `locations` (CSV) scopes the fan-out to a subset of POS locations.
+
+    Iter 89w — `style_status` post-filter applies the merch retired-style
+    list (Feb 2026). The list lives in `/app/backend/retired_styles.py`
+    and is matched case-insensitively on `style_name`.
+    """
     if refresh:
         _inv_cache["ts"] = 0
         _inv_cache["key"] = None
     locs = _split_csv(locations)
-    return await fetch_all_inventory(
+    rows = await fetch_all_inventory(
         country=country, location=location, product=product,
         locations=locs if locs else None,
     )
+    # Annotate every row with status so the frontend can render a
+    # badge even when no filter is applied, then apply the filter.
+    rows = annotate_status(rows, field="style_name")
+    return filter_rows(rows, style_status, field="style_name")
 
 
 @api_router.post("/admin/cache-clear")
@@ -10375,6 +10394,7 @@ async def analytics_sor_new_styles_l10(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
     refresh: bool = False,
+    style_status: Optional[str] = None,
 ):
     """SOR New Styles L-10 — styles whose FIRST-EVER sale was 3 to 4
     months ago (90–122 days), with a 6-month performance + sell-out
@@ -10387,13 +10407,14 @@ async def analytics_sor_new_styles_l10(
         soh_total, soh_wh, pct_in_wh,
         days_since_last_sale, sor_6m,
         launch_date, weekly_avg, woc, style_age_weeks
+    Iter 89w — `style_status` post-filter applies the retired-style list.
     """
     import time as _time
     cache_key = f"{country or ''}|{channel or ''}|{brand or ''}"
     if not refresh and cache_key in _l10_cache:
         ts, payload = _l10_cache[cache_key]
         if _time.time() - ts < _L10_TTL:
-            return payload
+            return filter_rows(annotate_status(payload, field="style_name"), style_status, field="style_name")
 
     today = datetime.now(timezone.utc).date()
     launch_to = today - timedelta(days=90)    # at most 3 months ago
@@ -10460,7 +10481,7 @@ async def analytics_sor_new_styles_l10(
         payload: List[Dict[str, Any]] = []
         _l10_cache[cache_key] = (_time.time(), payload)
         evict_oldest(_l10_cache, max_entries=_L10_CACHE_MAX)
-        return payload
+        return filter_rows(annotate_status(payload, field="style_name"), style_status, field="style_name")
 
     # Per-candidate maps for the 6-month and 3-week snapshots.
     six_m_map: Dict[str, Dict[str, Any]] = {
@@ -10655,7 +10676,7 @@ async def analytics_sor_new_styles_l10(
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _l10_cache[cache_key] = (_time.time(), out)
     evict_oldest(_l10_cache, max_entries=_L10_CACHE_MAX)
-    return out
+    return filter_rows(annotate_status(out, field="style_name"), style_status, field="style_name")
 
 
 # ---------------------------------------------------------------------------
@@ -10953,18 +10974,21 @@ async def analytics_sor_all_styles(
     channel: Optional[str] = None,
     brand: Optional[str] = None,
     refresh: bool = False,
+    style_status: Optional[str] = None,
 ):
     """SOR for ALL active styles — same column shape as L-10 but covers
     every style that sold in the last 6 months, not just 3-4-month-old
     launches. Use this for catalog-wide SOR audits, markdown candidates,
     and IBT shortlists.
+
+    Iter 89w — `style_status` post-filter applies the retired-style list.
     """
     import time as _time
     cache_key = f"all|{country or ''}|{channel or ''}|{brand or ''}"
     if not refresh and cache_key in _all_styles_cache:
         ts, payload = _all_styles_cache[cache_key]
         if _time.time() - ts < _ALL_STYLES_TTL:
-            return payload
+            return filter_rows(annotate_status(payload, field="style_name"), style_status, field="style_name")
 
     today = datetime.now(timezone.utc).date()
     six_m_from = today - timedelta(days=180)
@@ -11248,7 +11272,7 @@ async def analytics_sor_all_styles(
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _all_styles_cache[cache_key] = (_time.time(), out)
     evict_oldest(_all_styles_cache, max_entries=_ALL_STYLES_CACHE_MAX)
-    return out
+    return filter_rows(annotate_status(out, field="style_name"), style_status, field="style_name")
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import SORHeader from "@/components/SORHeader";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
+import StyleStatusToggle from "@/components/StyleStatusToggle";
 import SortableTable from "@/components/SortableTable";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
@@ -37,6 +38,9 @@ const Products = () => {
   const [merchCats, setMerchCats] = useState([]);
   const [merchSubs, setMerchSubs] = useState([]);
   const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
+  // Iter 89w — Active/Retired/All filter. Default "active" so the live
+  // catalog reads on first load.
+  const [styleStatus, setStyleStatus] = useState("active");
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
@@ -83,14 +87,19 @@ const Products = () => {
     setError(null);
     const p = buildParams(filters);
     const prevP = prevRange ? { ...p, ...prevRange } : null;
+    // Iter 89w — thread Active/Retired/All filter through to all
+    // style-grain endpoints. The aggregate ones (stock-to-sales-by-*)
+    // are category/subcategory aggregates so they don't get the
+    // filter — that data is unchanged.
+    const pStyle = { ...p, style_status: styleStatus };
     // Brand filter is applied client-side (upstream `product` does prefix match
     // on product_name, not brand, so server-side filtering is unreliable).
     Promise.all([
-      api.get("/sor", { params: p }),
+      api.get("/sor", { params: pStyle }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: p }),
       api.get("/analytics/stock-to-sales-by-category", { params: p }),
-      api.get("/top-skus", { params: { ...p, limit: 200 } }),
-      api.get("/analytics/new-styles", { params: p }),
+      api.get("/top-skus", { params: { ...pStyle, limit: 200 } }),
+      api.get("/analytics/new-styles", { params: pStyle }),
       prevP ? api.get("/analytics/stock-to-sales-by-subcat", { params: prevP }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
       prevP ? api.get("/analytics/stock-to-sales-by-category", { params: prevP }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
     ])
@@ -110,7 +119,7 @@ const Products = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion, styleStatus]);
 
   // Client-side filter on results when multiple brands picked (upstream `product`
   // is a single-value filter).
@@ -192,6 +201,14 @@ const Products = () => {
           <p className="text-muted text-[13px] mt-0.5">For Head of Products — style & subcategory performance</p>
         </div>
         <div className="flex flex-wrap items-end gap-3" data-testid="products-filters">
+          <div className="flex flex-col">
+            <div className="eyebrow mb-1">Style status</div>
+            <StyleStatusToggle
+              value={styleStatus}
+              onChange={setStyleStatus}
+              testIdPrefix="products-style-status"
+            />
+          </div>
           <div className="w-full sm:w-44">
             <div className="eyebrow mb-1">Category</div>
             <MultiSelect
@@ -298,8 +315,8 @@ const Products = () => {
         </button>
       </div>
 
-      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} />}
-      {tab === "all-styles" && <SorAllStyles brand={brandCsv} />}
+      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
+      {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
       {tab === "products-plan" && <ProductsPlan />}
