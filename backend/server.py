@@ -3226,7 +3226,7 @@ _OVERVIEW_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"]
 # and dynamic: end-of-window is always *yesterday* (UTC), so the page
 # never shows a partial-day or zero-units anomaly.
 @api_router.get("/exec-summary")
-async def exec_summary_endpoint():
+async def exec_summary_endpoint(country: Optional[str] = None):
     """At-a-glance executive scorecard.
 
     Returns a single payload with both YTD and MTD blocks. Each block
@@ -3276,11 +3276,21 @@ async def exec_summary_endpoint():
     # and BigQuery cost stays bounded.
     async def _block(date_from: date, date_to: date):
         df, dt = date_from.isoformat(), date_to.isoformat()
+        # Iter 89g — `country` query param drills the *categories* and
+        # *stores* sections down to one country. KPIs and the country-
+        # breakdown section stay group-wide so the user still sees the
+        # context of the total. Pass through to /subcategory-sales (which
+        # supports a country filter natively) — sales/footfall stay
+        # un-filtered because we still need other countries' rows to
+        # show the country-breakdown cards.
+        sc_kwargs = {"date_from": df, "date_to": dt}
+        if country:
+            sc_kwargs["country"] = country
         ss, ff, cu, sc = await asyncio.gather(
             get_sales_summary(date_from=df, date_to=dt),
             get_footfall(date_from=df, date_to=dt),
             get_customers(date_from=df, date_to=dt),
-            get_subcategory_sales(date_from=df, date_to=dt),
+            get_subcategory_sales(**sc_kwargs),
             return_exceptions=True,
         )
 
@@ -3367,6 +3377,16 @@ async def exec_summary_endpoint():
     def _store_table(cur_rows: List[Dict[str, Any]], ly_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         cur_ph = _excl_staff_online(cur_rows)
         ly_ph = _excl_staff_online(ly_rows)
+        # Iter 89g — keep country per channel so the frontend can
+        # filter the store table client-side when the user clicks a
+        # country card. Prefer the current-period country tag; fall
+        # back to LY for stores that have closed.
+        country_map: Dict[str, str] = {}
+        for r in cur_ph + ly_ph:
+            ch = r.get("channel")
+            co = (r.get("country") or "").strip()
+            if ch and co and ch not in country_map:
+                country_map[ch] = co
         cur_map = {r["channel"]: float(r.get("total_sales") or 0) for r in cur_ph if r.get("channel")}
         ly_map  = {r["channel"]: float(r.get("total_sales") or 0) for r in ly_ph if r.get("channel")}
         # Union of channel names so a store that opened mid-year (no
@@ -3375,7 +3395,13 @@ async def exec_summary_endpoint():
         for ch in sorted(set(cur_map.keys()) | set(ly_map.keys())):
             cur_v = cur_map.get(ch, 0.0)
             ly_v = ly_map.get(ch, 0.0)
-            stores.append({"channel": ch, "cur": cur_v, "ly": ly_v, "delta_pct": _pct_delta(cur_v, ly_v)})
+            stores.append({
+                "channel": ch,
+                "country": country_map.get(ch, ""),
+                "cur": cur_v,
+                "ly": ly_v,
+                "delta_pct": _pct_delta(cur_v, ly_v),
+            })
         return stores
 
     def _category_block(cur_rows: List[Dict[str, Any]], ly_rows: List[Dict[str, Any]]) -> Dict[str, Any]:

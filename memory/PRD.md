@@ -4,6 +4,17 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89g) — Executive Summary: clickable country drill-down
+- **What**: Country cards on the Executive Summary page are now clickable. Clicking a country (e.g. Uganda) filters the Store Performance table + Category/Subcategory section to just that country. Click the same card again, or use the inline "Clear country filter ×" button, to clear.
+- **Backend** (`/api/exec-summary`): now accepts optional `?country=` query param that scopes the `subcategory-sales` calls to that country. KPIs and the country-breakdown cards always stay group-wide so the user keeps full context. Each store row now also carries its `country` so the frontend can filter the table client-side without re-fetching.
+- **Frontend**:
+  - `CountryCard` is now an interactive `<button>` with `aria-pressed`, brand-coloured ring + "FILTER ON" pill when active, slight lift on hover.
+  - `StorePerformanceTable` accepts `countryFilter` prop — filters in-memory rows by country with a friendly empty state for Online ("Online has no physical stores").
+  - Categories section lazy-fetches `/api/exec-summary?country=X` on selection; the api.js response cache makes toggle-back instant. The group-wide categories stay rendered while the country-scoped fetch is in flight (no blank state).
+  - Filter pills + clear buttons on both Store Performance and Category section headers.
+- **Verified live**: Clicking Uganda → Store table shows 2 stores (The Oasis Mall, Vivo Acacia), Categories now show Dresses KES 2.83M (was ~42M group-wide), Knee Length Dresses KES 1.21M (was ~18.7M). All numbers consistent. Click again on Uganda → filter clears, sections restore to group-wide instantly (cached).
+
+
 ### Recent (Feb 2026 — Iter 89f) — Executive Summary: country breakdown section
 - **User ask**: "Share the numbers country wise (Kenya, Uganda, Rwanda, Online)."
 - **Backend** (`/api/exec-summary`): added a new `countries` array per view block. Helper `_country_block` rolls up the already-fetched `sales` and `footfall` rows into the four leadership-tracked buckets — zero extra upstream calls. Footfall is attributed via a location → country map derived from sales rows (since /footfall only carries `location`, not `country`).

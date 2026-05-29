@@ -119,22 +119,35 @@ const CountryMetricRow = ({ label, cur, ly, fmt, delta }) => {
   );
 };
 
-const CountryCard = ({ ytd, mtd }) => {
+const CountryCard = ({ ytd, mtd, selected, onClick }) => {
   const country = ytd?.country || mtd?.country;
   // Country tile tone — if both YTD and MTD revenue are down vs LY,
   // tint the whole card amber so it stands out at a glance.
   const ytdDown = (ytd?.revenue?.delta_pct ?? 0) < 0;
   const mtdDown = (mtd?.revenue?.delta_pct ?? 0) < 0;
-  const ring = ytdDown && mtdDown
+  const baseRing = ytdDown && mtdDown
     ? "border-rose-300 bg-gradient-to-br from-rose-50/60 to-white"
     : ytdDown || mtdDown
     ? "border-amber-300 bg-gradient-to-br from-amber-50/60 to-white"
     : "border-emerald-300 bg-gradient-to-br from-emerald-50/60 to-white";
+  // Iter 89g — selected state: thicker brand-coloured ring + subtle
+  // lift so it's obvious the card is the active filter.
+  const selectedRing = selected
+    ? "ring-4 ring-brand/40 ring-offset-2 ring-offset-panel border-brand shadow-lg -translate-y-0.5"
+    : "hover:shadow-md hover:-translate-y-0.5";
   return (
-    <div className={`rounded-xl border-2 ${ring} p-3.5 shadow-sm`} data-testid={`exec-country-${country}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left rounded-xl border-2 ${baseRing} ${selectedRing} transition-all duration-150 p-3.5 shadow-sm w-full`}
+      data-testid={`exec-country-${country}`}
+      aria-pressed={selected}
+      title={selected ? `Click again to clear filter (${country})` : `Filter Store Performance + Categories to ${country}`}
+    >
       <div className="text-[15px] font-extrabold mb-2 flex items-center gap-2">
         <span className="text-[18px]">{COUNTRY_FLAGS[country] || "🌍"}</span>
         {country}
+        {selected && <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded">Filter on</span>}
       </div>
       <div className="space-y-2.5">
         <div data-testid={`exec-country-${country}-ytd`}>
@@ -153,7 +166,7 @@ const CountryCard = ({ ytd, mtd }) => {
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={mtd?.avg_basket?.cur} ly={mtd?.avg_basket?.ly} delta={mtd?.avg_basket?.delta_pct} />
         </div>
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -163,7 +176,7 @@ const CountryCard = ({ ytd, mtd }) => {
  * worst-performing rows surface at the top — leadership's
  * "needs-immediate-attention" queue.
  */
-const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
+const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
   // Join YTD + MTD on channel so we can show all six columns in one row.
   const merged = useMemo(() => {
     const ytdMap = new Map((ytdStores || []).map((s) => [s.channel, s]));
@@ -172,8 +185,12 @@ const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
     const rows = channels.map((ch) => {
       const m = mtdMap.get(ch) || { cur: 0, ly: 0, delta_pct: null };
       const y = ytdMap.get(ch) || { cur: 0, ly: 0, delta_pct: null };
+      // Iter 89g — country carried on each store row so the
+      // country-card click filter can scope the table client-side.
+      const country = y.country || m.country || "";
       return {
         channel: ch,
+        country,
         mtd_cur: m.cur || 0,
         mtd_ly: m.ly || 0,
         mtd_delta: m.delta_pct,
@@ -182,8 +199,6 @@ const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
         ytd_delta: y.delta_pct,
       };
     });
-    // Default: worst MTD delta first (nulls + zero-LY land at the
-    // bottom). Click headers via `useTableSort` to override.
     return rows.sort((a, b) => {
       const av = a.mtd_delta == null ? 9999 : a.mtd_delta;
       const bv = b.mtd_delta == null ? 9999 : b.mtd_delta;
@@ -191,8 +206,16 @@ const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
     });
   }, [ytdStores, mtdStores]);
 
+  // Iter 89g — country filter (click on a country card to scope).
+  // Online has no physical stores in this table, so the filter yields
+  // an empty list and we surface a friendly empty state.
+  const filtered = useMemo(
+    () => (countryFilter ? merged.filter((r) => r.country === countryFilter) : merged),
+    [merged, countryFilter],
+  );
+
   const { sort, toggleSort, sortRows } = useTableSort();
-  const displayed = sort ? sortRows(merged, {
+  const displayed = sort ? sortRows(filtered, {
     channel: (r) => r.channel,
     mtd_cur: (r) => r.mtd_cur,
     mtd_ly: (r) => r.mtd_ly,
@@ -200,7 +223,7 @@ const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
     ytd_cur: (r) => r.ytd_cur,
     ytd_ly: (r) => r.ytd_ly,
     ytd_delta: (r) => (r.ytd_delta == null ? 9999 : r.ytd_delta),
-  }) : merged;
+  }) : filtered;
 
   const rowTone = (mtdDelta) => {
     // Highlight the MTD column on each row based on user-spec
@@ -211,7 +234,15 @@ const StorePerformanceTable = ({ ytdStores, mtdStores }) => {
     return "bg-emerald-50/40";
   };
 
-  if (!merged.length) return <Empty label="No physical-store sales in the comparison window." />;
+  if (!filtered.length) {
+    return (
+      <Empty label={
+        countryFilter
+          ? `No ${countryFilter} stores in the comparison window. (Online has no physical stores in this table.)`
+          : "No physical-store sales in the comparison window."
+      } />
+    );
+  }
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border bg-white" data-testid="exec-store-table-scroll">
@@ -388,14 +419,20 @@ const ExecutiveSummary = () => {
   // render. Default is MTD because the charts answer "what's happening
   // right now".
   const [catView, setCatView] = useState("mtd");
+  // Iter 89g — click-a-country-to-drill-down state. `selectedCountry`
+  // is one of "Kenya" / "Uganda" / "Rwanda" / "Online" or null.
+  // - Store Performance table filters client-side.
+  // - Category section re-fetches `/api/exec-summary?country=X` (lazy)
+  //   and overlays the country-scoped categories without re-painting
+  //   the rest of the page. The full payload is cached per country.
+  const [selectedCountry, setSelectedCountry] = useState(null);
+  const [countryData, setCountryData] = useState(null); // payload of the country-filtered fetch
+  const [countryLoading, setCountryLoading] = useState(false);
 
   useEffect(() => {
     let cancel = false;
     setLoading(true);
     setError(null);
-    // 60s timeout — endpoint fans out 16 internal calls; on a cold
-    // BigQuery start that can take a while. The frontend cache layer
-    // (`api.js`) reuses the response on subsequent visits.
     api
       .get("/exec-summary", { timeout: 90000 })
       .then(({ data: d }) => { if (!cancel) setData(d); })
@@ -404,9 +441,32 @@ const ExecutiveSummary = () => {
     return () => { cancel = true; };
   }, []);
 
+  // Iter 89g — lazy fetch for country-scoped categories. We only ask
+  // when a country is selected. api.js caches the response so toggling
+  // back to a previously-selected country is instant.
+  useEffect(() => {
+    if (!selectedCountry) {
+      setCountryData(null);
+      return;
+    }
+    let cancel = false;
+    setCountryLoading(true);
+    api
+      .get("/exec-summary", { params: { country: selectedCountry }, timeout: 90000 })
+      .then(({ data: d }) => { if (!cancel) setCountryData(d); })
+      .catch(() => { if (!cancel) setCountryData(null); })
+      .finally(() => { if (!cancel) setCountryLoading(false); });
+    return () => { cancel = true; };
+  }, [selectedCountry]);
+
   if (loading) return <Loading label="Loading executive summary…" />;
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Empty label="No data available." />;
+
+  // When a country is selected, render the *country-scoped* categories
+  // section (lazy-fetched). Until that arrives, keep the group-wide
+  // categories visible so the user never sees a blank panel.
+  const catSource = countryData || data;
 
   const ytdRange = data.windows?.ytd;
   const mtdRange = data.windows?.mtd;
@@ -456,59 +516,110 @@ const ExecutiveSummary = () => {
       <div className="card-white p-4 sm:p-5">
         <SectionTitle
           title="By Country"
-          subtitle="Revenue · Orders · Footfall · Avg Basket per country (Kenya, Uganda, Rwanda, Online) vs same period last year. Card tints: green = both windows up, amber = mixed, red = both windows down."
+          subtitle={
+            <span>
+              Revenue · Orders · Footfall · Avg Basket per country (Kenya, Uganda, Rwanda, Online) vs same period last year.
+              <span className="ml-1.5 text-[11px] font-semibold text-brand">Click a card to filter the Store Performance + Category sections below.</span>
+            </span>
+          }
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {(data.ytd.countries || []).map((c) => {
             const mtdCountry = (data.mtd.countries || []).find((x) => x.country === c.country);
-            return <CountryCard key={c.country} ytd={c} mtd={mtdCountry} />;
+            return (
+              <CountryCard
+                key={c.country}
+                ytd={c}
+                mtd={mtdCountry}
+                selected={selectedCountry === c.country}
+                onClick={() => setSelectedCountry((cur) => cur === c.country ? null : c.country)}
+              />
+            );
           })}
         </div>
       </div>
 
       {/* SECTION 2 — Store performance */}
       <div className="card-white p-4 sm:p-5">
-        <SectionTitle
-          title="Store Performance"
-          subtitle={
-            <span>
-              Physical stores only (Staff & Online channels excluded). Sorted worst-first by MTD Δ%. Rows highlighted: <span className="text-rose-700 font-semibold">red</span> &lt; -10%, <span className="text-amber-700 font-semibold">amber</span> -10–0%, <span className="text-emerald-700 font-semibold">green</span> &gt; 0%.
-            </span>
-          }
-        />
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+          <SectionTitle
+            title="Store Performance"
+            subtitle={
+              <span>
+                Physical stores only (Staff & Online channels excluded). Sorted worst-first by MTD Δ%. Rows highlighted: <span className="text-rose-700 font-semibold">red</span> &lt; -10%, <span className="text-amber-700 font-semibold">amber</span> -10–0%, <span className="text-emerald-700 font-semibold">green</span> &gt; 0%.
+              </span>
+            }
+          />
+          {selectedCountry && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition shrink-0"
+              onClick={() => setSelectedCountry(null)}
+              data-testid="exec-store-clear-filter"
+            >
+              <span>{COUNTRY_FLAGS[selectedCountry]} {selectedCountry}</span>
+              <span className="opacity-70">×</span>
+            </button>
+          )}
+        </div>
         <StorePerformanceTable
           ytdStores={data.ytd.stores}
           mtdStores={data.mtd.stores}
+          countryFilter={selectedCountry}
         />
       </div>
 
       {/* SECTION 3 — Category + Subcategory */}
       <div className="card-white p-4 sm:p-5">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <SectionTitle title="Category & Subcategory Breakdown" subtitle="Top-level rollup vs same period last year, plus top 10 subcategories." />
-          <div className="inline-flex rounded-md border border-border overflow-hidden text-[11.5px] font-semibold" data-testid="exec-cat-view-toggle">
-            <button
-              type="button"
-              className={`px-3 py-1.5 ${catView === "mtd" ? "bg-brand text-white" : "bg-white text-foreground hover:bg-panel"}`}
-              onClick={() => setCatView("mtd")}
-              data-testid="exec-cat-toggle-mtd"
-            >MTD</button>
-            <button
-              type="button"
-              className={`px-3 py-1.5 ${catView === "ytd" ? "bg-brand text-white" : "bg-white text-foreground hover:bg-panel"}`}
-              onClick={() => setCatView("ytd")}
-              data-testid="exec-cat-toggle-ytd"
-            >YTD</button>
+          <SectionTitle
+            title="Category & Subcategory Breakdown"
+            subtitle={
+              <span>
+                Top-level rollup vs same period last year, plus top 10 subcategories.
+                {selectedCountry && (
+                  <span className="ml-1.5 text-[11px] font-bold text-brand">
+                    Filtered to {COUNTRY_FLAGS[selectedCountry]} {selectedCountry}{countryLoading ? " — loading…" : ""}
+                  </span>
+                )}
+              </span>
+            }
+          />
+          <div className="flex items-center gap-2">
+            {selectedCountry && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition"
+                onClick={() => setSelectedCountry(null)}
+                data-testid="exec-cat-clear-filter"
+              >
+                Clear country filter ×
+              </button>
+            )}
+            <div className="inline-flex rounded-md border border-border overflow-hidden text-[11.5px] font-semibold" data-testid="exec-cat-view-toggle">
+              <button
+                type="button"
+                className={`px-3 py-1.5 ${catView === "mtd" ? "bg-brand text-white" : "bg-white text-foreground hover:bg-panel"}`}
+                onClick={() => setCatView("mtd")}
+                data-testid="exec-cat-toggle-mtd"
+              >MTD</button>
+              <button
+                type="button"
+                className={`px-3 py-1.5 ${catView === "ytd" ? "bg-brand text-white" : "bg-white text-foreground hover:bg-panel"}`}
+                onClick={() => setCatView("ytd")}
+                data-testid="exec-cat-toggle-ytd"
+              >YTD</button>
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <div data-testid="exec-cat-bars-pane">
             <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider">Revenue by Category — {catView.toUpperCase()}</div>
-            <CategoryBars subcategories={data[catView].categories.subcategories} view={catView} />
+            <CategoryBars subcategories={catSource[catView].categories.subcategories} view={catView} />
           </div>
           <div data-testid="exec-top-subcats-pane">
             <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider">Top 10 Subcategories — {catView.toUpperCase()}</div>
-            <TopSubcategories subcategories={data[catView].categories.subcategories} />
+            <TopSubcategories subcategories={catSource[catView].categories.subcategories} />
           </div>
         </div>
       </div>
