@@ -64,7 +64,7 @@ const Inventory = () => {
 
   // Live search — debounced via useEffect below to avoid re-render storms.
   const [searchInput, setSearchInput] = useState("");
-  const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
+  const [stsView, setStsView] = useState("grouped"); // "flat" | "grouped"
   // Local merch-taxonomy filters (multi-select). Drive `visibleSubcats`
   // intersection downstream so every section reacts in lock-step.
   const [merchCats, setMerchCats] = useState([]); // [] = all merch categories
