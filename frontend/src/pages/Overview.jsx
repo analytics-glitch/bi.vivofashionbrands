@@ -85,15 +85,20 @@ const ProjectionBanner = ({ p }) => {
   if (!p) return null;
   const elapsedPct = (p.elapsed * 100).toFixed(0);
   const vsSdlw = p.sdlw ? ((p.projected - p.sdlw) / p.sdlw) * 100 : null;
-  const vsSdlm = p.sdlm ? ((p.projected - p.sdlm) / p.sdlm) * 100 : null;
+  const vsDow = p.dowRef ? ((p.projected - p.dowRef) / p.dowRef) * 100 : null;
   const phaseLabel =
-    p.phase === "before-open" ? "Trading day hasn't opened (9:00 AM EAT)"
+    p.phase === "before-open" ? "Trading day hasn't opened (9:00 AM EAT) — projection = 4-week same-DOW average"
     : p.phase === "after-close" ? "Trading day closed at 8:30 PM EAT — number is final"
     : `Trading day ${elapsedPct}% complete · closes 8:30 PM EAT`;
   const phaseTone =
     p.phase === "live" ? "border-emerald-300 bg-gradient-to-br from-emerald-50/60 to-white"
     : p.phase === "after-close" ? "border-border bg-gradient-to-br from-panel/40 to-white"
     : "border-amber-300 bg-gradient-to-br from-amber-50/40 to-white";
+  const methodTag =
+    p.method === "shape-blend" ? `Shape-aware blend · ${p.dowSamples}-week same-DOW avg`
+    : p.method === "dow-avg" ? `${p.dowSamples}-week same-DOW average`
+    : p.method === "actual" ? "Actual closing total"
+    : "Linear pace projection";
   const Pill = ({ value, label }) => {
     if (value == null || !isFinite(value)) {
       return <span className="text-[10.5px] text-muted">{label}: —</span>;
@@ -113,12 +118,15 @@ const ProjectionBanner = ({ p }) => {
     >
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="inline-flex items-center gap-1.5 text-[10.5px] uppercase font-extrabold tracking-widest text-emerald-700">
               {p.phase === "live" && <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" /></span>}
               Projected Today
             </span>
             <span className="text-[11px] text-muted">{phaseLabel}</span>
+            <span className="inline-flex items-center text-[9.5px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-brand/10 text-brand border border-brand/20" title="Projection method in use">
+              {methodTag}
+            </span>
           </div>
           <div className="flex items-baseline gap-3 flex-wrap">
             <div>
@@ -137,14 +145,22 @@ const ProjectionBanner = ({ p }) => {
               <div className="text-[12.5px] font-semibold tabular-nums text-muted">{fmtNum(p.todayOrders || 0)}</div>
               <div className="text-[10.5px] text-muted">Orders so far</div>
             </div>
+            {p.method === "shape-blend" && p.linear != null && (
+              <div>
+                <div className="text-[11.5px] font-semibold tabular-nums text-muted">{fmtKES(p.linear)}</div>
+                <div className="text-[10px] text-muted">Linear-only pace</div>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            <Pill value={vsDow} label={`vs ${p.dowSamples || 4}w-DOW avg`} />
             <Pill value={vsSdlw} label="vs SDLW" />
-            <Pill value={vsSdlm} label="vs SDLM" />
           </div>
           <div className="text-[10px] text-muted text-right">
+            4w-DOW avg: <span className="font-semibold tabular-nums text-foreground">{fmtKES(p.dowRef || 0)}</span>
+            <span className="mx-1.5 opacity-50">·</span>
             SDLW: <span className="font-semibold tabular-nums text-foreground">{fmtKES(p.sdlw || 0)}</span>
             <span className="mx-1.5 opacity-50">·</span>
             SDLM: <span className="font-semibold tabular-nums text-foreground">{fmtKES(p.sdlm || 0)}</span>
@@ -261,8 +277,9 @@ const Overview = () => {
 
   // --- Paired-bars data for single-day range ---
   // Fetches KPIs for:  Today, Same Day Last Week, Same Day Last Month,
-  // Same Day Last Year. Independent of compareMode so users always see
-  // YoY context when the range is a single day.
+  // Same Day Last Year + (when range is today) the past 4 same-DOW
+  // weeks for shape-aware projection. Independent of compareMode so
+  // users always see YoY context when the range is a single day.
   useEffect(() => {
     if (dateFrom !== dateTo) { setPairedDays(null); return; }
     let cancelled = false;
@@ -271,6 +288,13 @@ const Overview = () => {
     const sdlw = new Date(base); sdlw.setDate(base.getDate() - 7);
     const sdlm = new Date(base); sdlm.setMonth(base.getMonth() - 1);
     const sdly = new Date(base); sdly.setFullYear(base.getFullYear() - 1);
+    // Iter 89p — additional same-DOW weeks for shape-aware projection.
+    // We already have SDLW (1 week ago). Pull 2/3/4 weeks ago too so
+    // we can average across last 4 same-DOW totals as a reference for
+    // the rest-of-day projection.
+    const sd2w = new Date(base); sd2w.setDate(base.getDate() - 14);
+    const sd3w = new Date(base); sd3w.setDate(base.getDate() - 21);
+    const sd4w = new Date(base); sd4w.setDate(base.getDate() - 28);
     const fetchOne = (d) => {
       const i = iso(d);
       return api
@@ -278,10 +302,10 @@ const Overview = () => {
         .then((r) => ({ day: i, label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Africa/Nairobi" }), total_sales: r.data?.total_sales || 0, orders: r.data?.total_orders || 0 }))
         .catch(() => ({ day: i, label: d.toLocaleDateString("en-GB", { timeZone: "Africa/Nairobi" }), total_sales: 0, orders: 0 }));
     };
-    Promise.all([fetchOne(base), fetchOne(sdlw), fetchOne(sdlm), fetchOne(sdly)])
-      .then(([td, w, m, y]) => {
+    Promise.all([fetchOne(base), fetchOne(sdlw), fetchOne(sdlm), fetchOne(sdly), fetchOne(sd2w), fetchOne(sd3w), fetchOne(sd4w)])
+      .then(([td, w, m, y, w2, w3, w4]) => {
         if (cancelled) return;
-        setPairedDays({ today: td, sdlw: w, sdlm: m, sdly: y });
+        setPairedDays({ today: td, sdlw: w, sdlm: m, sdly: y, sd2w: w2, sd3w: w3, sd4w: w4 });
       });
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
@@ -479,11 +503,13 @@ const Overview = () => {
     return Math.max(1, Math.round((t - f) / 86400000) + 1);
   }, [dateFrom, dateTo]);
 
-  // Live "Projected Today" — closes 8:30 PM Africa/Nairobi. Linear
-  // projection from today_so_far ÷ elapsed_pct of the trading window.
-  // Good enough for an executive pulse; SDLW/SDLM are surfaced as
-  // benchmark anchors so leadership sees pace vs same-day-last-week
-  // and same-day-last-month.
+  // Live "Projected Today" — closes 8:30 PM Africa/Nairobi.
+  // Shape-aware projection: blend the linear pace with the average of
+  // the last 4 same-day-of-week totals. The blend weight is the
+  // elapsed fraction of the trading day, so early in the day the
+  // projection leans on the same-DOW history (more accurate during
+  // the morning + 12–5 PM lull), and late in the day it leans on
+  // today's actual pace (which by then is the strongest signal).
   const todayProjection = useMemo(() => {
     if (rangeDays !== 1 || !pairedDays?.today) return null;
     const todayKE = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
@@ -499,15 +525,47 @@ const Overview = () => {
     const todayOrders = pairedDays.today.orders || 0;
     const sdlw = pairedDays.sdlw?.total_sales || 0;
     const sdlm = pairedDays.sdlm?.total_sales || 0;
+    // Shape-aware reference: average of last 4 same-DOW totals
+    // (yields a stable "what a typical day looks like" baseline that
+    // implicitly captures DOW-specific surge patterns).
+    const dowSamples = [
+      pairedDays.sdlw?.total_sales,
+      pairedDays.sd2w?.total_sales,
+      pairedDays.sd3w?.total_sales,
+      pairedDays.sd4w?.total_sales,
+    ].filter((v) => typeof v === "number" && v > 0);
+    const dowRef = dowSamples.length
+      ? dowSamples.reduce((a, b) => a + b, 0) / dowSamples.length
+      : 0;
     if (nowH < start) {
-      return { phase: "before-open", elapsed: 0, projected: 0, todayRev, sdlw, sdlm, todayOrders, nowH };
+      return {
+        phase: "before-open", elapsed: 0,
+        projected: dowRef,             // before opening, best guess = same-DOW avg
+        todayRev, sdlw, sdlm, todayOrders, dowRef, dowSamples: dowSamples.length, nowH,
+        method: "dow-avg",
+      };
     }
     if (nowH >= end) {
-      return { phase: "after-close", elapsed: 1, projected: todayRev, todayRev, sdlw, sdlm, todayOrders, nowH };
+      return {
+        phase: "after-close", elapsed: 1, projected: todayRev,
+        todayRev, sdlw, sdlm, todayOrders, dowRef, dowSamples: dowSamples.length, nowH,
+        method: "actual",
+      };
     }
     const elapsed = (nowH - start) / totalH;
-    const projected = elapsed > 0.05 ? todayRev / elapsed : todayRev * 4;
-    return { phase: "live", elapsed, projected, todayRev, sdlw, sdlm, todayOrders, nowH };
+    const linear = elapsed > 0.05 ? todayRev / elapsed : todayRev * 4;
+    // Shape-aware blend: weight linear by elapsed (more trustworthy
+    // late in the day), and DOW reference by remaining (more
+    // trustworthy early in the day). When no DOW history is available
+    // we fall back to pure linear.
+    const projected = dowRef > 0
+      ? elapsed * linear + (1 - elapsed) * dowRef
+      : linear;
+    return {
+      phase: "live", elapsed, projected, todayRev, sdlw, sdlm, todayOrders,
+      dowRef, dowSamples: dowSamples.length, linear, nowH,
+      method: dowRef > 0 ? "shape-blend" : "linear",
+    };
   }, [pairedDays, rangeDays, dateFrom, nowTick]);
 
   const top15 = useMemo(() => {

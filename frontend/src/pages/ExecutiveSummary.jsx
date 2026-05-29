@@ -1031,7 +1031,6 @@ const StockMix = ({ stockMix }) => {
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold MTD</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
-              <th className="px-3 py-2 font-semibold whitespace-nowrap" style={{ minWidth: 200 }}>Mix comparison</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap">Read</th>
             </tr>
@@ -1041,6 +1040,9 @@ const StockMix = ({ stockMix }) => {
               const gap = r.gap_pct;
               const oversupply = gap > 5;
               const undersupply = gap < -5;
+              const rowTone = oversupply ? "bg-amber-50/60"
+                : undersupply ? "bg-rose-50/60"
+                : "";
               const gapCls = oversupply ? "text-amber-700 bg-amber-50 border-amber-200"
                 : undersupply ? "text-rose-700 bg-rose-50 border-rose-200"
                 : "text-emerald-700 bg-emerald-50 border-emerald-200";
@@ -1049,31 +1051,13 @@ const StockMix = ({ stockMix }) => {
                 : undersupply
                 ? "Hot — restock"
                 : "Balanced";
-              const stockBar = Math.min(r.stock_pct, 100);
-              const soldBar = Math.min(r.sold_pct, 100);
               return (
-                <tr key={r.category} className="border-t border-border/50" data-testid={`exec-stockmix-row-${r.category}`}>
+                <tr key={r.category} className={`border-t border-border/50 ${rowTone}`} data-testid={`exec-stockmix-row-${r.category}`}>
                   <td className="px-3 py-2 font-semibold whitespace-nowrap">{r.category}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units)}</td>
                   <td className="px-3 py-2 text-right tabular-nums font-bold">{r.stock_pct.toFixed(1)}%</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
                   <td className="px-3 py-2 text-right tabular-nums font-bold">{r.sold_pct.toFixed(1)}%</td>
-                  <td className="px-3 py-2">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[9px] uppercase font-bold text-muted w-9">stock</span>
-                        <div className="relative h-2 flex-1 bg-panel rounded">
-                          <div className="absolute inset-y-0 left-0 bg-brand/70 rounded" style={{ width: `${stockBar}%` }} />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[9px] uppercase font-bold text-muted w-9">sold</span>
-                        <div className="relative h-2 flex-1 bg-panel rounded">
-                          <div className="absolute inset-y-0 left-0 bg-emerald-500 rounded" style={{ width: `${soldBar}%` }} />
-                        </div>
-                      </div>
-                    </div>
-                  </td>
                   <td className="px-3 py-2 text-right">
                     <span className={`inline-flex items-center gap-0.5 rounded-md border font-bold text-[11px] px-1.5 py-0.5 tabular-nums ${gapCls}`}>
                       {gap > 0 ? "+" : ""}{gap.toFixed(1)}
@@ -1088,12 +1072,21 @@ const StockMix = ({ stockMix }) => {
               );
             })}
           </tbody>
+          <tfoot className="bg-panel/70 border-t-2 border-border">
+            <tr className="font-bold">
+              <td className="px-3 py-2">Total</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_stock_units)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">100%</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">100%</td>
+              <td className="px-3 py-2"></td>
+              <td className="px-3 py-2"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
-      <div className="text-[10.5px] text-muted mt-2 flex items-center gap-4">
-        <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-brand/70" /> Inventory share</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Sales share (MTD)</span>
-        <span className="ml-auto">Gap &gt; +5pp = over-stocked · Gap &lt; -5pp = hot demand</span>
+      <div className="text-[10.5px] text-muted mt-2 flex items-center justify-end gap-4">
+        <span>Gap &gt; +5pp = over-stocked · Gap &lt; -5pp = hot demand · |Gap| ≤ 5pp = balanced</span>
       </div>
     </div>
   );

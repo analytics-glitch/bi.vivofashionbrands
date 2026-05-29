@@ -31,7 +31,6 @@ const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
 const Allocations = React.lazy(() => import("@/pages/Allocations"));
 const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
-const MorningBrief = React.lazy(() => import("@/pages/MorningBrief"));
 const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 
 import { FiltersProvider } from "@/lib/filters";
@@ -92,9 +91,9 @@ function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
-              <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+              <Route path="/" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
               <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
-              <Route path="/morning-brief" element={<ProtectedShell pageId="morning-brief"><MorningBrief /></ProtectedShell>} />
+              <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
               <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
               <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
               <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
