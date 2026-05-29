@@ -1093,5 +1093,21 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Fix #2 — /sales-summary today-only bypass**: skip the analytics snapshot when window is exactly TODAY (the snapshot lagged /kpis by 2-5 min between sweeps, causing intermittent 11 % recon FAIL → ESCALATED → email alert). Today's data is always live-derived, which itself uses pure-snapshot /kpis fan-out → no upstream calls, latency unchanged. Historic windows still use the snapshot.
 - **Verified**: recon `ok=true` with all 5 checks Δ=0.00 %. 16 / 16 pre-ship tests pass.
 
+### Recent (Feb 2026 — Iter 89w) — Retired-Styles 3-way filter (Active / Retired / All)
+- **User request**: hide 200+ retired styles from active dashboards & CSV exports, but keep them available for audits.
+- **Backend** (`/app/backend/retired_styles.py`): frozen set of 487 normalised style names + `is_retired()`, `filter_rows()`, `annotate_status()` helpers. Name-based match catches all SKUs/colors of a retired style automatically (sibling colours share style_name).
+- **Endpoints wired** with new `style_status` query param (default `all` for back-compat; FE defaults to `active`):
+  - `GET /api/inventory`
+  - `GET /api/sor`
+  - `GET /api/customer-products`
+  - `GET /api/top-skus`
+  - `GET /api/analytics/sor-new-styles-l10`
+  - `GET /api/analytics/sor-all-styles`
+- **Frontend**: shared `<StyleStatusToggle>` (Active = green, Retired = amber, All = brand) rendered on:
+  - `/inventory` (Inventory page)
+  - `/products` (Products + SOR L10 + SOR All Styles sub-tabs)
+  - `/exports` (Inventory tab — applies to CSV download)
+- **Verified end-to-end (preview)**: `?style_status=active` → 32 255 rows, `=retired` → 2 525 rows, `=all` → 34 780 rows. All three toggle UIs render correctly with test-ids `inv-style-status-toggle`, `products-style-status-toggle`, `exports-style-status-toggle`.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

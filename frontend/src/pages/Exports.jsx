@@ -9,6 +9,7 @@ import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import { DownloadSimple, MagnifyingGlass, Warning } from "@phosphor-icons/react";
 // import ReplenishmentReport from "@/components/ReplenishmentReport"; // moved to /replenishments page
 import SORReportExport from "@/components/SORReportExport";
+import StyleStatusToggle from "@/components/StyleStatusToggle";
 import {
   StoreKpisExport,
   PeriodPerformanceExport,
@@ -249,6 +250,14 @@ const InventoryExport = () => {
               )}
             </div>
             <div className="flex flex-wrap gap-2 items-end">
+              <div>
+                <div className="eyebrow mb-1">Style status</div>
+                <StyleStatusToggle
+                  value={styleStatus}
+                  onChange={(v) => { setStyleStatus(v); setPage(0); }}
+                  testIdPrefix="exports-style-status"
+                />
+              </div>
               <div>
                 <div className="eyebrow mb-1">POS Location</div>
                 <MultiSelect
