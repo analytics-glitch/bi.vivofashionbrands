@@ -4,6 +4,15 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89h) — Executive Summary: LY values shown inline everywhere
+- **User ask**: "show LY numbers" — across the Executive Summary, the LY value was only visible in the KPI cards and store table; country cards and category section showed only the current value + Δ%.
+- **Frontend** (`ExecutiveSummary.jsx`):
+  - `CountryMetricRow` — now renders `LY: <value>` under each current value (cur + Δ% on row 1, LY muted underneath on row 2). Applied to all 16 metrics per country card.
+  - `CategoryBars` — right-column stack now reads cur → LY → Δ% top-to-bottom (e.g. Dresses KES 42.32M / LY: KES 37.61M / ↑12.5%).
+  - `TopSubcategories` — LY tucked under the inline progress bar (e.g. Knee Length Dresses KES 18.74M / LY: KES 21.52M / ↓12.9%).
+- **No backend changes** — the LY values were already in the payload; just exposed in the UI.
+
+
 ### Recent (Feb 2026 — Iter 89g) — Executive Summary: clickable country drill-down
 - **What**: Country cards on the Executive Summary page are now clickable. Clicking a country (e.g. Uganda) filters the Store Performance table + Category/Subcategory section to just that country. Click the same card again, or use the inline "Clear country filter ×" button, to clear.
 - **Backend** (`/api/exec-summary`): now accepts optional `?country=` query param that scopes the `subcategory-sales` calls to that country. KPIs and the country-breakdown cards always stay group-wide so the user keeps full context. Each store row now also carries its `country` so the frontend can filter the table client-side without re-fetching.

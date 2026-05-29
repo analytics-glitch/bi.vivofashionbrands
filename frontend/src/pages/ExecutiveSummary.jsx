@@ -109,12 +109,17 @@ const KpiCard = ({ icon: Icon, label, fmt, ytd, mtd, testId, tone }) => {
 const COUNTRY_FLAGS = { Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐" };
 
 const CountryMetricRow = ({ label, cur, ly, fmt, delta }) => {
+  // Iter 89h — show LY value inline so leadership can read "what
+  // changed" without doing the math: cur ↔ LY ↔ Δ%. Compact layout:
+  // current value bold + delta pill on row 1, "LY: <value>" muted on
+  // row 2 so the eye reads top-down without crowding the card.
   const fmtVal = fmt || ((v) => fmtNum(Math.round(v)));
   return (
-    <div className="flex items-center justify-between gap-2 text-[11.5px]">
-      <span className="text-muted shrink-0 w-[58px]">{label}</span>
+    <div className="grid grid-cols-[58px_1fr_auto] items-baseline gap-2 text-[11.5px]">
+      <span className="text-muted shrink-0 row-span-2 self-center">{label}</span>
       <span className="font-bold tabular-nums">{fmtVal(cur || 0)}</span>
       <DeltaPill value={delta} size="sm" />
+      <span className="text-[10px] text-muted tabular-nums col-span-2 -mt-0.5">LY: {fmtVal(ly || 0)}</span>
     </div>
   );
 };
@@ -338,6 +343,10 @@ const CategoryBars = ({ subcategories, view }) => {
             </div>
             <div className="text-right">
               <div className="font-extrabold text-[11.5px] tabular-nums">{fmtKES(c.cur)}</div>
+              {/* Iter 89h — LY shown directly under current so the
+                  reader doesn't have to guess what the lighter bar
+                  represents. */}
+              <div className="text-[10px] text-muted tabular-nums">LY: {fmtKES(c.ly)}</div>
               <DeltaPill value={c.delta_pct} />
             </div>
           </div>
@@ -387,6 +396,9 @@ const TopSubcategories = ({ subcategories }) => {
               <div className="relative h-1.5 bg-panel rounded mt-1">
                 <div className={`absolute inset-y-0 left-0 ${barColor} rounded`} style={{ width: `${curPct}%` }} />
               </div>
+              {/* Iter 89h — LY value tucked under the bar so the
+                  cur/LY/Δ trio is always co-located. */}
+              <div className="text-[10px] text-muted mt-0.5">LY: <span className="tabular-nums">{fmtKES(sc.ly)}</span></div>
             </div>
             <div className="text-right"><DeltaPill value={sc.delta_pct} /></div>
           </li>
