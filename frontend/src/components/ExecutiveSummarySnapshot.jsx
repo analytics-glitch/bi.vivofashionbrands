@@ -175,6 +175,13 @@ const ExecutiveSummarySnapshot = ({ data, onClose }) => {
             compareLbl="vs Last Year"
           />
           <Tile
+            testId="exec-snap-avgday"
+            label="Avg Sales / Day"
+            value={fmtKESMobile(ytd.avg_sales_per_day?.cur || 0)}
+            deltaPct={ytd.avg_sales_per_day?.delta_pct}
+            compareLbl="vs Last Year"
+          />
+          <Tile
             testId="exec-snap-units"
             label="Units Sold"
             value={fmtNum(ytd.units?.cur || 0)}
@@ -236,6 +243,13 @@ const ExecutiveSummarySnapshot = ({ data, onClose }) => {
             label="MTD Revenue"
             value={fmtKESMobile(mtd.revenue?.cur || 0)}
             deltaPct={mtd.revenue?.delta_pct}
+            compareLbl="vs Last Year"
+          />
+          <Tile
+            testId="exec-snap-mtd-avgday"
+            label="MTD Avg / Day"
+            value={fmtKESMobile(mtd.avg_sales_per_day?.cur || 0)}
+            deltaPct={mtd.avg_sales_per_day?.delta_pct}
             compareLbl="vs Last Year"
           />
           <Tile

@@ -1456,6 +1456,7 @@ const ExecutiveSummary = () => {
       {/* SECTION 1 — Top KPI scorecard */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <KpiCard testId="kpi-revenue"   label="Total Revenue"        icon={TrendUp}       fmt={fmtKES} ytd={k("revenue").ytd}   mtd={k("revenue").mtd} />
+        <KpiCard testId="kpi-avgday"    label="Avg Sales / Day"      icon={Coins}         fmt={fmtKES} ytd={k("avg_sales_per_day").ytd} mtd={k("avg_sales_per_day").mtd} />
         <KpiCard testId="kpi-units"     label="Units Sold"           icon={Package}                   ytd={k("units").ytd}     mtd={k("units").mtd} />
         <KpiCard testId="kpi-footfall"  label="Footfall"             icon={Footprints}                ytd={k("footfall").ytd}  mtd={k("footfall").mtd} />
         <KpiCard testId="kpi-basket"    label="Avg Basket"           icon={Coins}         fmt={fmtKES} ytd={k("avg_basket").ytd} mtd={k("avg_basket").mtd} />

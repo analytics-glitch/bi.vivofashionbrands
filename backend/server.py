@@ -3358,7 +3358,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             return None
         return ((cur - ly) / ly) * 100.0
 
-    def _kpi_block(cur: Dict[str, Any], ly: Dict[str, Any]) -> Dict[str, Any]:
+    def _kpi_block(cur: Dict[str, Any], ly: Dict[str, Any], days: int = 0) -> Dict[str, Any]:
         # Physical-only sales sums (Staff/Online excluded) AND group-
         # wide sums kept separately. Revenue KPI uses ALL channels
         # (incl. Online) to match the "Total Revenue, all channels"
@@ -3377,6 +3377,11 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         # or mix-shift toward cheaper SKUs.
         asp_cur = (rev_cur / units_cur) if units_cur else 0.0
         asp_ly = (rev_ly / units_ly) if units_ly else 0.0
+        # Iter 89t — Avg Sales per Day = revenue ÷ window length in
+        # days. Same denominator used for cur and LY because the LY
+        # window is the same length (just shifted -1 year).
+        avg_day_cur = (rev_cur / days) if days else 0.0
+        avg_day_ly  = (rev_ly  / days) if days else 0.0
         total_c = float(cust_cur.get("total_customers") or 0)
         total_c_ly = float(cust_ly.get("total_customers") or 0)
         new_c = float(cust_cur.get("new_customers") or 0)
@@ -3386,6 +3391,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         ret_c_ly = max(total_c_ly - new_c_ly, 0.0)
         return {
             "revenue":             {"cur": rev_cur,  "ly": rev_ly,  "delta_pct": _pct_delta(rev_cur, rev_ly)},
+            "avg_sales_per_day":   {"cur": avg_day_cur, "ly": avg_day_ly, "delta_pct": _pct_delta(avg_day_cur, avg_day_ly), "days": days},
             "units":               {"cur": units_cur, "ly": units_ly, "delta_pct": _pct_delta(units_cur, units_ly)},
             "footfall":            {"cur": ff_cur,   "ly": ff_ly,   "delta_pct": _pct_delta(ff_cur, ff_ly)},
             "avg_basket":          {"cur": ab_cur,   "ly": ab_ly,   "delta_pct": _pct_delta(ab_cur, ab_ly)},
@@ -3756,13 +3762,13 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         "targets": _targets_block(),
         "stock_mix": stock_mix,
         "ytd": {
-            "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"]),
+            "kpis":       _kpi_block(blocks["ytd_cur"], blocks["ytd_ly"], days=(yesterday - ytd_from).days + 1),
             "countries":  _country_block(blocks["ytd_cur"], blocks["ytd_ly"]),
             "stores":     _store_table(blocks["ytd_cur"]["sales"], blocks["ytd_ly"]["sales"]),
             "categories": _category_block(blocks["ytd_cur"]["subcategories"], blocks["ytd_ly"]["subcategories"]),
         },
         "mtd": {
-            "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"]),
+            "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"], days=(yesterday - mtd_from).days + 1),
             "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"]),
             "stores":     _store_table(blocks["mtd_cur"]["sales"], blocks["mtd_ly"]["sales"]),
             "categories": _category_block(blocks["mtd_cur"]["subcategories"], blocks["mtd_ly"]["subcategories"]),
