@@ -1148,5 +1148,16 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Footer "Note on age ceiling"** under the tier KPI cards — explains the 6-month data window and points users at the graduation panel as the workaround.
 - **Verified end-to-end**: bulk-promoted 3 styles via curl → Tier 2 jumped from 0 → 3 in the summary, Tier 3 dropped from 870 → 866. Reverted via DELETE → counts restored. Mongo state cleaned post-test.
 
+### Recent (Feb 2026 — Iter 89w-g) — Live user presence on Activity Logs
+- **Backend** (`/app/backend/auth.py`):
+  - `POST /api/auth/heartbeat` — authenticated; upserts `user_presence` collection (one doc per user) with `last_seen`, `page`, `role`, `name`, `email`. Idempotent across tabs.
+  - `GET /api/admin/active-sessions?window_minutes=5` — admin-only; returns users with a heartbeat in the last N minutes (default 5).
+  - Mongo `user_presence` collection: unique index on `user_id` + TTL index on `last_seen` (15 min) so docs auto-expire.
+- **Frontend**:
+  - `useHeartbeat(enabled)` hook (`/app/frontend/src/lib/useHeartbeat.js`) — pings every 2 min while authenticated + re-pings on every route change so the `page` field stays accurate. Errors are swallowed (presence is best-effort).
+  - Hook wired into the `Shell` component in `App.js`, gated on `useAuth().user` so it only fires for authenticated tabs.
+  - `<ActiveUsersSection />` in `pages/ActivityLogs.jsx` — shows live count, avatar chips with initials + stable HSL colour by email, ADMIN role badge, refresh button, polls every 30s.
+- **Verified**: heartbeat upserts work; `/admin/active-sessions` returns the live user; UI shows "1 user active right now" with Vivo Admin chip; subsequent polling visible in activity-log table.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

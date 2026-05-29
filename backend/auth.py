@@ -672,6 +672,87 @@ async def activity_logs(
     return {"total": total, "rows": rows}
 
 
+# ---------- Presence / heartbeat (Iter 89w-g) ----------
+# Authenticated users ping `/api/auth/heartbeat` every 2 min from each
+# open tab.  We upsert a doc in `user_presence` keyed by user_id (one
+# row per user, not per tab — multiple tabs from the same user just
+# refresh the same row).  TTL index drops docs 15 minutes after the
+# last heartbeat so the collection self-cleans.  Admins can read live
+# counts via `/api/admin/active-sessions`.
+
+_PRESENCE_INDEXED = False
+
+
+async def _ensure_presence_indexes() -> None:
+    global _PRESENCE_INDEXED
+    if _PRESENCE_INDEXED:
+        return
+    try:
+        await db.user_presence.create_index("user_id", unique=True)
+        # TTL on last_seen — Mongo auto-deletes docs 15 min after the
+        # last heartbeat.  Backend logic still uses a 5-min "active"
+        # window; TTL just keeps the collection lean.
+        await db.user_presence.create_index("last_seen", expireAfterSeconds=900)
+        _PRESENCE_INDEXED = True
+    except Exception:
+        pass
+
+
+@auth_router.post("/heartbeat")
+async def heartbeat(
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    """Frontend pings this every 2 min from each open tab.  Stores a
+    single doc per user with the latest activity timestamp."""
+    await _ensure_presence_indexes()
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    page = (body.get("page") or "").strip()[:120] or None
+    now = datetime.now(timezone.utc)
+    await db.user_presence.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "email": user.email,
+            "name": getattr(user, "name", None) or user.email.split("@")[0],
+            "role": user.role,
+            "page": page,
+            "last_seen": now,
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "last_seen": now.isoformat()}
+
+
+@admin_router.get("/active-sessions")
+async def active_sessions(
+    _: User = Depends(require_admin),
+    window_minutes: int = Query(5, ge=1, le=60),
+):
+    """Admin-only — returns users with a heartbeat in the last
+    `window_minutes` minutes (default 5).  Used by the Activity Logs
+    page's "Active users" section."""
+    await _ensure_presence_indexes()
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    rows: List[dict] = []
+    async for doc in db.user_presence.find({"last_seen": {"$gte": cutoff}}, {"_id": 0}):
+        ls = doc.get("last_seen")
+        if isinstance(ls, datetime):
+            doc["last_seen"] = ls.astimezone(timezone.utc).isoformat()
+        rows.append(doc)
+    rows.sort(key=lambda r: r.get("last_seen", ""), reverse=True)
+    return {
+        "count": len(rows),
+        "window_minutes": window_minutes,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "rows": rows,
+    }
+
+
 @admin_router.get("/pii-audit-logs")
 async def pii_audit_logs(
     _: User = Depends(require_admin),

@@ -41,9 +41,15 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import ChatWidget from "@/components/ChatWidget";
 import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
+import useHeartbeat from "@/lib/useHeartbeat";
+import { useAuth } from "@/lib/auth";
 
 const Shell = ({ children }) => {
   const navRef = useRef(null);
+  const { user } = useAuth();
+  // Iter 89w-g — fire presence heartbeats while a tab is open so
+  // admins can see live "who's using the system" on Activity Logs.
+  useHeartbeat(Boolean(user));
   // Expose the actual rendered navbar+filter-bar height as a CSS variable so
   // sticky table headers across the app can `top: var(--app-navbar-h)`
   // and never slide under the navbar. Recalculates on resize and on

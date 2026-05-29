@@ -1,10 +1,106 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
-import { MagnifyingGlass } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowClockwise } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
 
 const PAGE_SIZE = 100;
+
+// Hash a string to an HSL hue so each user gets a stable, distinct
+// avatar background even without an upstream colour assignment.
+const colorFor = (seed) => {
+  if (!seed) return "#475569";
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 55%, 38%)`;
+};
+
+const initialsOf = (name, email) => {
+  const src = (name || email || "?").trim();
+  if (!src) return "?";
+  const parts = src.split(/\s+|@|\./).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return src.slice(0, 2).toUpperCase();
+};
+
+const ActiveUsersSection = () => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    api.get("/admin/active-sessions", { params: { window_minutes: 5 } })
+      .then((r) => setData(r.data || null))
+      .catch((e) => setError(e?.response?.data?.detail || e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    // Live-poll every 30s so the count drifts up/down as users come
+    // and go without manual reload.  Heartbeats from the FE happen
+    // every 2 min, so anything more frequent than 30s is wasteful.
+    const id = setInterval(refresh, 30 * 1000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const rows = data?.rows || [];
+  return (
+    <div className="card-white p-5" data-testid="active-users-section">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div>
+          <div className="eyebrow text-[10.5px] mb-0.5">Live presence · last 5 min</div>
+          <h3 className="font-extrabold text-[15px] leading-tight" data-testid="active-users-count">
+            {loading && !data ? "Loading…" : `${data?.count ?? 0} user${(data?.count ?? 0) === 1 ? "" : "s"} active right now`}
+          </h3>
+          <p className="text-muted text-[12px] mt-0.5">
+            Anyone with a tab open in the last 5 minutes. Polled every 30s.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          data-testid="active-users-refresh"
+          className="px-3 py-1 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel disabled:opacity-50 inline-flex items-center gap-1.5"
+        >
+          <ArrowClockwise size={12} weight="bold" />
+          Refresh
+        </button>
+      </div>
+      {error && <ErrorBox message={error} />}
+      {!error && (
+        <div className="flex flex-wrap gap-2" data-testid="active-users-avatars">
+          {rows.length === 0 && !loading && (
+            <span className="text-muted text-[12px] italic">
+              No one else online — looks like you're flying solo right now.
+            </span>
+          )}
+          {rows.map((u) => (
+            <div
+              key={u.user_id}
+              className="inline-flex items-center gap-2 rounded-full bg-panel pl-1 pr-3 py-1 border border-border"
+              title={`${u.name || u.email} · ${u.role}\nLast seen ${new Date(u.last_seen).toLocaleTimeString()}${u.page ? `\nOn: ${u.page}` : ""}`}
+              data-testid={`active-user-${u.user_id}`}
+            >
+              <span
+                className="inline-flex items-center justify-center text-white font-bold rounded-full w-6 h-6 text-[10px]"
+                style={{ background: colorFor(u.email || u.user_id) }}
+              >
+                {initialsOf(u.name, u.email)}
+              </span>
+              <span className="text-[11.5px] font-medium">{u.name || u.email?.split("@")[0]}</span>
+              {u.role === "admin" && (
+                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded-full">ADMIN</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const ActivityLogs = () => {
   const [rows, setRows] = useState([]);
@@ -51,6 +147,8 @@ const ActivityLogs = () => {
         <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">Activity Logs</h1>
         <p className="text-muted text-[13px] mt-0.5">Every authenticated API request is logged. Useful for auditing access.</p>
       </div>
+
+      <ActiveUsersSection />
 
       <div className="card-white p-3 flex flex-wrap items-center gap-3" data-testid="logs-filter">
         <div className="relative">
