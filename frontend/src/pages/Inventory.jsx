@@ -76,11 +76,15 @@ const Inventory = () => {
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
   // Stock-to-Sales stock scope: which inventory rolls up into the
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
-  const [stockScope, setStockScope] = useState("stores");
-  // Iter 89w — Active/Retired/All toggle. Default "active" so the live
-  // catalog shows on first load. Threaded into the /inventory and
-  // /top-skus requests so the backend filters on the same source.
-  const [styleStatus, setStyleStatus] = useState("active");
+  // Iter 89w-c — STS / "Stock to Sales" scope.  Default "combined"
+  // so the page shows the full chain-wide picture on first load.
+  const [stockScope, setStockScope] = useState("combined");
+  // Iter 89w — Active/Retired/All toggle. Default "all" so the live
+  // catalog shows both active and retired styles on first load —
+  // matches user expectation that the page reflects ALL inventory by
+  // default; users can flip to Active to drop retired styles when
+  // analysing the active range.
+  const [styleStatus, setStyleStatus] = useState("all");
   // Iter 89w-b — small counts pill alongside the toggle so users know
   // how many styles (and units) are in each bucket at a glance.
   const [statusCounts, setStatusCounts] = useState(null);
