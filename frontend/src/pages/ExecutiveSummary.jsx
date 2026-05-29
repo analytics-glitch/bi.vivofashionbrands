@@ -1,14 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import html2canvas from "html2canvas";
-import { toast } from "sonner";
+import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, fmtNum } from "@/lib/api";
+import ExecutiveSummarySnapshot from "@/components/ExecutiveSummarySnapshot";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase, Tag, Package, DownloadSimple, CircleNotch, X as CloseIcon, Copy,
+  Briefcase, Tag, Package, DownloadSimple,
 } from "@phosphor-icons/react";
 
 /**
@@ -1389,63 +1388,11 @@ const ExecutiveSummary = () => {
     return () => { cancel = true; };
   }, [selectedCountry]);
 
-  // Snapshot — capture the whole exec-summary page to a PNG via
-  // html2canvas, but instead of triggering a download immediately we
-  // show the captured image in an in-page modal so leadership can
-  // preview, then choose to download / copy / share. Matches the
-  // Overview page's pattern except for the preview step.
-  const captureRef = useRef(null);
-  const [saving, setSaving] = useState(false);
-  const [snapshotUrl, setSnapshotUrl] = useState(null);
-  const [snapshotName, setSnapshotName] = useState(null);
-  const onSaveImage = async () => {
-    if (!captureRef.current || saving) return;
-    setSaving(true);
-    try {
-      const canvas = await html2canvas(captureRef.current, {
-        scale: 1.5,
-        useCORS: true,
-        backgroundColor: "#fff",
-        logging: false,
-        windowWidth: captureRef.current.scrollWidth,
-        windowHeight: captureRef.current.scrollHeight,
-      });
-      const stamp = (data?.as_of || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
-      setSnapshotUrl(canvas.toDataURL("image/png"));
-      setSnapshotName(`vivo-exec-summary_${stamp}.png`);
-    } catch (e) {
-      toast.error("Couldn't render snapshot — " + (e?.message || "unknown error"));
-    } finally {
-      setSaving(false);
-    }
-  };
-  const onDownloadSnapshot = () => {
-    if (!snapshotUrl) return;
-    const link = document.createElement("a");
-    link.download = snapshotName || "vivo-exec-summary.png";
-    link.href = snapshotUrl;
-    link.click();
-    toast.success("Snapshot downloaded", { duration: 2500 });
-  };
-  const onCopySnapshot = async () => {
-    if (!snapshotUrl) return;
-    try {
-      const blob = await (await fetch(snapshotUrl)).blob();
-      // Use the Clipboard API where available so leadership can paste
-      // the screenshot straight into WhatsApp / Slack / email without
-      // needing the file off the file system.
-      if (navigator.clipboard && window.ClipboardItem) {
-        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-        toast.success("Snapshot copied — paste anywhere", { duration: 2500 });
-      } else {
-        onDownloadSnapshot();
-      }
-    } catch (e) {
-      // Clipboard write can fail on Safari / older browsers — fall
-      // back to a normal download so the action never silently no-ops.
-      onDownloadSnapshot();
-    }
-  };
+  // Mobile snapshot — full-screen overlay (same pattern as Overview):
+  // page swaps to a stripped compact view, "Save image" downloads a
+  // PNG. Hooks declared BEFORE the early returns so React sees them
+  // in the same order on every render.
+  const [snapshot, setSnapshot] = useState(false);
 
   if (loading) return <Loading label="Loading executive summary…" />;
   if (error) return <ErrorBox message={error} />;
@@ -1463,8 +1410,12 @@ const ExecutiveSummary = () => {
     mtd: data.mtd.kpis[key],
   });
 
+  if (snapshot) {
+    return <ExecutiveSummarySnapshot data={data} onClose={() => setSnapshot(false)} />;
+  }
+
   return (
-    <div className="space-y-5" data-testid="exec-summary-page" ref={captureRef}>
+    <div className="space-y-5" data-testid="exec-summary-page">
       {/* Page header — title + dynamic date subtitle */}
       <div className="card-white p-4 sm:p-5">
         <div className="flex items-start gap-3 flex-wrap justify-between">
@@ -1485,17 +1436,13 @@ const ExecutiveSummary = () => {
           <div className="flex items-start gap-3">
             <button
               type="button"
-              onClick={onSaveImage}
-              disabled={saving}
-              data-testid="exec-snapshot-save"
-              data-html2canvas-ignore="true"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 disabled:opacity-60 disabled:cursor-wait whitespace-nowrap shrink-0"
-              title="Show a shareable image of the full Executive Summary"
+              onClick={() => setSnapshot(true)}
+              data-testid="exec-open-snapshot-btn"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold border border-border bg-white hover:border-brand/60 hover:text-brand transition-colors whitespace-nowrap shrink-0"
+              title="Compact mobile-friendly view of the headline KPIs — perfect for one screenshot"
             >
-              {saving
-                ? <CircleNotch size={14} weight="bold" className="animate-spin" />
-                : <DownloadSimple size={14} weight="bold" />}
-              {saving ? "Rendering…" : "Share view"}
+              <DownloadSimple size={14} weight="bold" />
+              Mobile snapshot
             </button>
             <div className="text-[11px] text-muted text-right">
               <div className="font-semibold text-foreground">As of</div>
@@ -1645,68 +1592,6 @@ const ExecutiveSummary = () => {
         subcategories={catSource.mtd.categories.subcategories}
         view="mtd"
       />
-
-      {/* Snapshot preview modal — opens after html2canvas renders the
-          page, lets the user view the captured PNG full-screen and
-          choose to download or copy to clipboard. data-html2canvas-
-          ignore prevents the modal from being included if the user
-          clicks Share again while the modal is open. */}
-      {snapshotUrl && (
-        <div
-          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
-          data-testid="exec-snapshot-modal"
-          data-html2canvas-ignore="true"
-          onClick={(e) => { if (e.target === e.currentTarget) setSnapshotUrl(null); }}
-        >
-          <div className="relative bg-white rounded-2xl shadow-2xl max-w-[min(96vw,1100px)] max-h-[92vh] w-full flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-panel">
-              <div>
-                <div className="text-[10.5px] uppercase font-extrabold tracking-widest text-brand">Shareable view</div>
-                <div className="text-[12.5px] font-bold mt-0.5" data-testid="exec-snapshot-filename">{snapshotName}</div>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onCopySnapshot}
-                  data-testid="exec-snapshot-copy"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-border bg-white hover:bg-panel transition-colors whitespace-nowrap"
-                  title="Copy to clipboard — then paste into WhatsApp / Slack / email"
-                >
-                  <Copy size={14} weight="bold" />
-                  Copy
-                </button>
-                <button
-                  type="button"
-                  onClick={onDownloadSnapshot}
-                  data-testid="exec-snapshot-download"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-bold border border-brand bg-brand text-white hover:bg-brand/90 transition-colors whitespace-nowrap"
-                  title="Download as PNG"
-                >
-                  <DownloadSimple size={14} weight="bold" />
-                  Download
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSnapshotUrl(null)}
-                  data-testid="exec-snapshot-close"
-                  className="p-1.5 rounded-full border border-border hover:bg-panel"
-                  aria-label="Close preview"
-                >
-                  <CloseIcon size={14} weight="bold" />
-                </button>
-              </div>
-            </div>
-            <div className="overflow-auto flex-1 bg-panel/30 flex items-start justify-center p-4">
-              <img
-                src={snapshotUrl}
-                alt="Executive Summary snapshot"
-                data-testid="exec-snapshot-image"
-                className="max-w-full h-auto rounded-lg shadow-lg border border-border"
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
