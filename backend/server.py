@@ -3374,6 +3374,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         ret_c_ly = max(total_c_ly - new_c_ly, 0.0)
         return {
             "revenue":             {"cur": rev_cur,  "ly": rev_ly,  "delta_pct": _pct_delta(rev_cur, rev_ly)},
+            "units":               {"cur": units_cur, "ly": units_ly, "delta_pct": _pct_delta(units_cur, units_ly)},
             "footfall":            {"cur": ff_cur,   "ly": ff_ly,   "delta_pct": _pct_delta(ff_cur, ff_ly)},
             "avg_basket":          {"cur": ab_cur,   "ly": ab_ly,   "delta_pct": _pct_delta(ab_cur, ab_ly)},
             "asp":                 {"cur": asp_cur,  "ly": asp_ly,  "delta_pct": _pct_delta(asp_cur, asp_ly)},

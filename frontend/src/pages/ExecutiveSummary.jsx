@@ -6,7 +6,7 @@ import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase, Tag,
+  Briefcase, Tag, Package,
 } from "@phosphor-icons/react";
 
 /**
@@ -158,6 +158,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
         <div data-testid={`exec-country-${country}-ytd`}>
           <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">YTD</div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={ytd?.revenue?.cur}    ly={ytd?.revenue?.ly}    delta={ytd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Units"                   cur={ytd?.units?.cur}      ly={ytd?.units?.ly}      delta={ytd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={ytd?.orders?.cur}     ly={ytd?.orders?.ly}     delta={ytd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
@@ -167,6 +168,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
         <div data-testid={`exec-country-${country}-mtd`}>
           <div className="text-[9.5px] uppercase font-bold text-muted tracking-widest mb-1">MTD</div>
           <CountryMetricRow label="Revenue"   fmt={fmtKES} cur={mtd?.revenue?.cur}    ly={mtd?.revenue?.ly}    delta={mtd?.revenue?.delta_pct} />
+          <CountryMetricRow label="Units"                   cur={mtd?.units?.cur}      ly={mtd?.units?.ly}      delta={mtd?.units?.delta_pct} />
           <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={mtd?.avg_basket?.cur} ly={mtd?.avg_basket?.ly} delta={mtd?.avg_basket?.delta_pct} />
@@ -560,8 +562,9 @@ const ExecutiveSummary = () => {
       </div>
 
       {/* SECTION 1 — Top KPI scorecard */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <KpiCard testId="kpi-revenue"   label="Total Revenue"        icon={TrendUp}       fmt={fmtKES} ytd={k("revenue").ytd}   mtd={k("revenue").mtd} />
+        <KpiCard testId="kpi-units"     label="Units Sold"           icon={Package}                   ytd={k("units").ytd}     mtd={k("units").mtd} />
         <KpiCard testId="kpi-footfall"  label="Footfall"             icon={Footprints}                ytd={k("footfall").ytd}  mtd={k("footfall").mtd} />
         <KpiCard testId="kpi-basket"    label="Avg Basket"           icon={Coins}         fmt={fmtKES} ytd={k("avg_basket").ytd} mtd={k("avg_basket").mtd} />
         <KpiCard testId="kpi-asp"       label="ASP"                  icon={Tag}           fmt={fmtKES} ytd={k("asp").ytd}        mtd={k("asp").mtd} />

@@ -4,6 +4,15 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89k) — Executive Summary: Units KPI + per-country units
+- **User ask**: "For each country add the units sold and also as part of the main metrics add Units/volume."
+- **Backend** (`/api/exec-summary`): `_kpi_block` now includes a `units` field (cur/ly/delta_pct). `_country_block` already had `units` (Iter 89i) so no backend work was needed there.
+- **Frontend** (`ExecutiveSummary.jsx`):
+  - KPI strip widened 7 → 8 cols on xl; added "Units Sold" KPI card (Package icon) immediately after Total Revenue so the rev/units pair reads together.
+  - Country cards: added "Units" row to both YTD and MTD blocks, placed between Revenue and Orders so it reads `Revenue → Units → Orders` (chain: total sold value, items sold, transactions).
+- **Verified live**: Units YTD 117,579 (LY 103,200, ↑13.9%) · MTD 25,965 (LY 20,284, ↑28.0%). Per-country MTD: Kenya 19,495 (↑13.6%), Uganda 1,213 (↑149.1%), Rwanda 899 (↑6.0%), Online 4,358 (↑143.2%).
+
+
 ### Recent (Feb 2026 — Iter 89j) — Executive Summary: revenue contribution % + units
 - **User ask**: "For the subcategory and category show the revenue contribution and also the qty."
 - **Frontend only** (`ExecutiveSummary.jsx`):
