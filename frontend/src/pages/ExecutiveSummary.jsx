@@ -303,6 +303,106 @@ const StorePerformanceTable = ({ ytdStores, mtdStores, countryFilter }) => {
  * so the page stays light and the bars render synchronously on first
  * paint.
  */
+/**
+ * HotNotCallout — auto-narrative banner that surfaces the 3 best and
+ * 3 worst subcategories of the period at a glance. "Hot" requires
+ * both revenue AND units up significantly (so a price-driven spike
+ * doesn't mask a unit-shortfall). "Not" requires both revenue AND
+ * units down. Tiny subcategories (< KES 200K in the period) are
+ * filtered out as noise. Computed off the same `subcategories` array
+ * already in the payload — zero extra fetch cost.
+ */
+const HOT_NOT_MIN_REV = 200_000;       // KES — drop micro-subcategories
+const HOT_NOT_MIN_LY_REV = 50_000;     // KES — need a meaningful LY base to compute % delta
+
+const HotNotCallout = ({ subcategories, view }) => {
+  const { hot, not } = useMemo(() => {
+    if (!subcategories || !subcategories.length) return { hot: [], not: [] };
+    // Build candidate pool with revenue + units deltas already attached.
+    const enriched = subcategories
+      .filter((sc) => sc.cur >= HOT_NOT_MIN_REV && sc.ly >= HOT_NOT_MIN_LY_REV)
+      .map((sc) => {
+        const unitsDelta = sc.ly_units ? ((sc.cur_units - sc.ly_units) / sc.ly_units) * 100 : null;
+        return { ...sc, units_delta_pct: unitsDelta };
+      });
+    // "Hot" — both revenue and units significantly up. Sort by rev delta desc.
+    const hotPool = enriched
+      .filter((sc) => (sc.delta_pct ?? -Infinity) >= 20 && (sc.units_delta_pct ?? -Infinity) >= 10)
+      .sort((a, b) => (b.delta_pct ?? 0) - (a.delta_pct ?? 0))
+      .slice(0, 3);
+    // "Not" — both revenue and units significantly down. Sort by rev delta asc (worst first).
+    const notPool = enriched
+      .filter((sc) => (sc.delta_pct ?? Infinity) <= -20 && (sc.units_delta_pct ?? Infinity) <= -10)
+      .sort((a, b) => (a.delta_pct ?? 0) - (b.delta_pct ?? 0))
+      .slice(0, 3);
+    return { hot: hotPool, not: notPool };
+  }, [subcategories]);
+
+  if (!hot.length && !not.length) return null;
+
+  const fmtItem = (sc, isHot) => {
+    const rev = (sc.delta_pct || 0);
+    const units = (sc.units_delta_pct || 0);
+    const sign = (v) => (v >= 0 ? "+" : "");
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap" key={sc.subcategory}>
+        <span className="font-extrabold">{sc.subcategory}:</span>
+        <span className={isHot ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>
+          {sign(rev)}{rev.toFixed(0)}% rev
+        </span>
+        <span className="opacity-70">on</span>
+        <span className={isHot ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>
+          {sign(units)}{units.toFixed(0)}% units
+        </span>
+      </span>
+    );
+  };
+
+  return (
+    <div className="card-white p-3 sm:p-4 border-2 border-amber-200 bg-gradient-to-br from-amber-50/40 to-white" data-testid="exec-hot-not-callout">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-[10.5px] uppercase font-extrabold tracking-widest text-amber-700 inline-flex items-center gap-1.5">
+          <span>What's hot · What's not</span>
+          <span className="text-[10px] text-muted font-normal normal-case tracking-normal">— {view.toUpperCase()} vs same period last year</span>
+        </div>
+        <span className="text-[10px] text-muted">Subcategories ≥ KES 200K · both rev & units moved meaningfully</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[12px]">
+        <div data-testid="exec-hot-list">
+          <div className="text-[11px] font-bold text-emerald-700 mb-1.5 flex items-center gap-1">🔥 Hot</div>
+          {hot.length === 0 ? (
+            <div className="text-[11.5px] text-muted italic">Nothing standing out as a hot mover this period.</div>
+          ) : (
+            <div className="space-y-1">
+              {hot.map((sc, i) => (
+                <div key={sc.subcategory} className="flex items-baseline gap-1.5" data-testid={`exec-hot-${i}`}>
+                  <span className="text-emerald-600 font-bold tabular-nums text-[10px] w-3">{i + 1}.</span>
+                  {fmtItem(sc, true)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div data-testid="exec-not-list">
+          <div className="text-[11px] font-bold text-rose-700 mb-1.5 flex items-center gap-1">🚨 Not</div>
+          {not.length === 0 ? (
+            <div className="text-[11.5px] text-muted italic">No subcategory is meaningfully behind LY this period.</div>
+          ) : (
+            <div className="space-y-1">
+              {not.map((sc, i) => (
+                <div key={sc.subcategory} className="flex items-baseline gap-1.5" data-testid={`exec-not-${i}`}>
+                  <span className="text-rose-600 font-bold tabular-nums text-[10px] w-3">{i + 1}.</span>
+                  {fmtItem(sc, false)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const CategoryBars = ({ subcategories, view }) => {
   // Roll up subcategories → top-level category via shared productCategory map.
   const { cats, totalRev } = useMemo(() => {
@@ -560,6 +660,16 @@ const ExecutiveSummary = () => {
           </div>
         </div>
       </div>
+
+      {/* SECTION 0.5 — What's Hot / What's Not narrative banner */}
+      {/* MTD callout sits at the top because the actionable window for
+          leadership is "what's happening right now". The catSource view
+          (which respects the country filter further down) is used so
+          the callout updates when leadership drills into a country. */}
+      <HotNotCallout
+        subcategories={catSource.mtd.categories.subcategories}
+        view="mtd"
+      />
 
       {/* SECTION 1 — Top KPI scorecard */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">

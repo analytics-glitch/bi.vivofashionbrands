@@ -4,6 +4,17 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89l) — Executive Summary: "What's Hot / What's Not" auto-callout
+- **What**: Auto-narrative banner at the top of the Executive Summary surfacing the 3 best and 3 worst subcategory movers vs same period last year. Reads at a glance: *"🔥 Short & Mini Dresses: +344% rev on +317% units · 🚨 Waterfalls & Kimonos: -51% rev on -44% units"*.
+- **Implementation** (frontend-only, `ExecutiveSummary.jsx`): new `HotNotCallout` component. Uses the MTD subcategories list from the existing payload — zero extra fetch. Filters:
+  - Both `cur ≥ KES 200K` and `ly ≥ KES 50K` so micro-subcategories don't crowd the list.
+  - "Hot": rev delta ≥ +20% AND units delta ≥ +10% (so a price-driven spike alone doesn't qualify).
+  - "Not": rev delta ≤ -20% AND units delta ≤ -10% (both must be down).
+  - Sort hot by rev delta desc, not by rev delta asc — top 3 each.
+- **Respects country filter**: when leadership clicks a country card the callout switches to that country's MTD subcategories.
+- **Verified live**: callout sits in a soft amber-tinted card between page header and KPI strip. Hot list and Not list each show 3 rows with bolded subcategory name and color-coded rev/units deltas.
+
+
 ### Recent (Feb 2026 — Iter 89k) — Executive Summary: Units KPI + per-country units
 - **User ask**: "For each country add the units sold and also as part of the main metrics add Units/volume."
 - **Backend** (`/api/exec-summary`): `_kpi_block` now includes a `units` field (cur/ly/delta_pct). `_country_block` already had `units` (Iter 89i) so no backend work was needed there.
