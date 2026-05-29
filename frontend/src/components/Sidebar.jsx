@@ -46,6 +46,7 @@ const tabs = [
   { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing" },
   { to: "/products", label: "Products", icon: Tag, id: "products" },
+  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },

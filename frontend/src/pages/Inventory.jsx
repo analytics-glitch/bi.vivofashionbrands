@@ -681,8 +681,15 @@ const Inventory = () => {
               // Stock-in-Stores / Stock-in-Warehouse tiles. Falls back
               // to a rows-rollup if the summary is missing (older cache
               // hits during rollout).
+              //
+              // Iter 89w-c — when ANY local filter is active
+              // (styleStatus, search, brand, subcat, category) the
+              // chain-wide summary is wrong: it covers retired styles
+              // and styles outside the filter scope.  Force the
+              // row-rollup path so WoC reacts in lockstep with the
+              // other KPIs.
               let woc;
-              if (weeksOfCoverSummary && weeksOfCoverSummary.weeks_of_cover != null) {
+              if (!filtersActive && weeksOfCoverSummary && weeksOfCoverSummary.weeks_of_cover != null) {
                 woc = weeksOfCoverSummary.weeks_of_cover;
               } else {
                 const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);

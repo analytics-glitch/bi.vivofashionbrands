@@ -16,7 +16,7 @@ const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishment
 // Warehouse staff: stock-movement operational pages + Inventory export.
 // Mirror of `_WAREHOUSE` in /app/backend/auth.py.
 const WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"];
-const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments", "marketing"];
+const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments", "marketing", "range-mgmt"];
 const EXEC = [...ANALYST, "ceo-report", "targets", "exports", "exec-summary"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
 
@@ -73,6 +73,7 @@ export const homePageFor = (user) => {
     "allocations": "/allocations",
     "replenishments": "/replenishments",
     "marketing": "/marketing",
+    "range-mgmt": "/range-mgmt",
     "admin-store-clusters": "/admin/store-clusters",
     "admin-users": "/admin/users",
     "admin-activity-logs": "/admin/activity-logs",

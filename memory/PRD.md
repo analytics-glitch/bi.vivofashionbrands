@@ -1108,5 +1108,26 @@ Four user-requested deltas, all verified (19/19 backend pytest PASS, frontend ~9
 - **Page-level access control**: `marketing` page added to `_ANALYST` (so analyst / exec / admin see it). Nav item with Megaphone icon between Customer Details and Products.
 - **Testing**: 10 / 10 backend pytest pass (`/app/backend/tests/test_iteration_89_marketing.py`). Frontend e2e via testing agent 95 % (only LOW-priority React duplicate-key warning, fixed by composite key in tracker map).
 
+### Recent (Feb 2026 — Iter 89w-d) — Product Range Management (4-Tier Framework) + Inventory WoC fix
+- **Bug fix**: Inventory page "Overall Weeks of Cover" KPI now recomputes when the Active/Retired/All toggle is flipped. Root cause: the card preferred `weeksOfCoverSummary` (chain-wide aggregate, unfiltered) when present and only fell back to the row-rollup when missing. Iter 89w-c forces the row-rollup path whenever `filtersActive` is true.
+- **New `/range-mgmt` page** implementing the Vivo Product SOP 2026 4-Tier classification:
+  - **Tier 1 — Core Basics**: 24+ months · 5+ reorders · full-price > 90 % · WOC ≤ 8 weeks
+  - **Tier 2 — Core Performers**: 9-24 months · 3+ reorders · lifetime SOR > 60 % · FP > 90 %
+  - **Tier 3 — Recent Performers**: passed Week 8 / Week 12 gate · < 9 months
+  - **Tier 4 — New / Test**: < 8 weeks OR pending Week-8 read
+  - **Retire**: aged out without Tier 1/2 criteria OR missed both Week 8 & Week 12 reads
+- **Pure compute** in `/app/backend/range_mgmt.py` (classify_style, classify_all, summarise, retirement_pipeline, diff_movements). Approximations explicitly documented per user sign-off: `reorder_count ≈ floor(style_age_weeks / 12)`, `full_price_pct ≈ asp_6m / original_price × 100`.
+- **Endpoints** in `/app/backend/routes/range_mgmt.py`:
+  - `GET /api/range-mgmt/classify` — summary + all classified rows + retirement pipeline + recent movements
+  - `GET /api/range-mgmt/movements?days=30` — historical tier changes from Mongo
+- **Mongo collection** `style_tier_history` (compound index on style_name + changed_at desc) — auto-logs tier movements on every classify call, deduped to one log per (style, tier, day).
+- **5-card summary banner** with RAG status vs target ranges (green = in range, amber = within ±20 %, red = out of range), progress bar against 500-700 target, pills for `flagged_for_retirement` / `overdue_for_week8_read` / `approaching_decision_gates`.
+- **Sortable classification table** with Tier pill (gold/green/blue/grey/red), filterable by Tier / Brand / Subcategory / Status + search.
+- **Tier Movement Tracker** (up = graduation green, down = demotion rose).
+- **Retirement Pipeline** with recommended retirement date (today) and outlet discount date (today + 4 weeks per SOP gap rule).
+- **CSV export** of the classification table.
+- **Page-level access**: `range-mgmt` added to `_ANALYST` (analyst / exec / admin). Stack-icon nav item between Products and Inventory.
+- **Verified end-to-end**: 1,188 classified rows on first call — Tier 1: 0 (insufficient history, expected with 6-month SOR window), Tier 2: 0 (same), Tier 3: 870 (over target 150-200 — flag for merch to graduate to Tier 2 / be more selective at Week 8), Tier 4: 93 (in range 60-100), Retire: 225.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
