@@ -3329,13 +3329,14 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             out.append(r)
         return out
 
-    def _sum_sales(rows: List[Dict[str, Any]]) -> Tuple[float, float]:
-        # Returns (revenue, orders) summed across all channels.
-        rev, orders = 0.0, 0.0
+    def _sum_sales(rows: List[Dict[str, Any]]) -> Tuple[float, float, float]:
+        # Returns (revenue, orders, units) summed across all channels.
+        rev, orders, units = 0.0, 0.0, 0.0
         for r in rows or []:
             rev += float(r.get("total_sales") or 0)
             orders += float(r.get("orders") or r.get("total_orders") or 0)
-        return rev, orders
+            units += float(r.get("units_sold") or 0)
+        return rev, orders, units
 
     def _sum_footfall(rows: List[Dict[str, Any]]) -> float:
         return float(sum(float(r.get("total_footfall") or 0) for r in (rows or [])))
@@ -3350,14 +3351,20 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         # wide sums kept separately. Revenue KPI uses ALL channels
         # (incl. Online) to match the "Total Revenue, all channels"
         # spec — but store-table revenue excludes Staff/Online.
-        rev_cur, ord_cur = _sum_sales(cur["sales"])
-        rev_ly, ord_ly = _sum_sales(ly["sales"])
+        rev_cur, ord_cur, units_cur = _sum_sales(cur["sales"])
+        rev_ly, ord_ly, units_ly = _sum_sales(ly["sales"])
         ff_cur = _sum_footfall(cur["footfall"])
         ff_ly = _sum_footfall(ly["footfall"])
         cust_cur = cur["customers"] or {}
         cust_ly = ly["customers"] or {}
         ab_cur = (rev_cur / ord_cur) if ord_cur else 0.0
         ab_ly = (rev_ly / ord_ly) if ord_ly else 0.0
+        # Iter 89i — ASP (Average Selling Price) = revenue ÷ units sold.
+        # Different from "Avg Basket" which is revenue ÷ orders; ASP
+        # is a per-item price metric — useful for spotting markdowns
+        # or mix-shift toward cheaper SKUs.
+        asp_cur = (rev_cur / units_cur) if units_cur else 0.0
+        asp_ly = (rev_ly / units_ly) if units_ly else 0.0
         total_c = float(cust_cur.get("total_customers") or 0)
         total_c_ly = float(cust_ly.get("total_customers") or 0)
         new_c = float(cust_cur.get("new_customers") or 0)
@@ -3369,6 +3376,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             "revenue":             {"cur": rev_cur,  "ly": rev_ly,  "delta_pct": _pct_delta(rev_cur, rev_ly)},
             "footfall":            {"cur": ff_cur,   "ly": ff_ly,   "delta_pct": _pct_delta(ff_cur, ff_ly)},
             "avg_basket":          {"cur": ab_cur,   "ly": ab_ly,   "delta_pct": _pct_delta(ab_cur, ab_ly)},
+            "asp":                 {"cur": asp_cur,  "ly": asp_ly,  "delta_pct": _pct_delta(asp_cur, asp_ly)},
             "total_customers":     {"cur": total_c,  "ly": total_c_ly,  "delta_pct": _pct_delta(total_c, total_c_ly)},
             "new_customers":       {"cur": new_c,    "ly": new_c_ly,    "delta_pct": _pct_delta(new_c, new_c_ly)},
             "returning_customers": {"cur": ret_c,    "ly": ret_c_ly,    "delta_pct": _pct_delta(ret_c, ret_c_ly)},
@@ -3419,12 +3427,19 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             ly_r = ly_map.get(sc, {})
             c_rev = float(c.get("total_sales") or 0)
             l_rev = float(ly_r.get("total_sales") or 0)
+            c_units = float(c.get("units_sold") or 0)
+            l_units = float(ly_r.get("units_sold") or 0)
+            # Iter 89i — per-subcategory ASP. Surfaces mix-shift away
+            # from premium SKUs even when the revenue trend looks fine.
+            c_asp = c_rev / c_units if c_units else 0.0
+            l_asp = l_rev / l_units if l_units else 0.0
             sub_rows.append({
                 "subcategory": sc,
                 "product_type": c.get("product_type") or ly_r.get("product_type") or "",
                 "cur": c_rev, "ly": l_rev, "delta_pct": _pct_delta(c_rev, l_rev),
-                "cur_units": float(c.get("units_sold") or 0),
-                "ly_units":  float(ly_r.get("units_sold") or 0),
+                "cur_units": c_units,
+                "ly_units":  l_units,
+                "asp":       {"cur": c_asp, "ly": l_asp, "delta_pct": _pct_delta(c_asp, l_asp)},
             })
         sub_rows.sort(key=lambda r: r["cur"], reverse=True)
         return {"subcategories": sub_rows}
@@ -3439,7 +3454,7 @@ async def exec_summary_endpoint(country: Optional[str] = None):
         cost increase for a metric the country card doesn't need.
         """
         def _agg_by_country(sales_rows, footfall_rows):
-            agg: Dict[str, Dict[str, float]] = {c: {"revenue": 0.0, "orders": 0.0, "footfall": 0.0}
+            agg: Dict[str, Dict[str, float]] = {c: {"revenue": 0.0, "orders": 0.0, "footfall": 0.0, "units": 0.0}
                                                 for c in _OVERVIEW_COUNTRIES}
             # Build location→country map from sales rows so we can
             # attribute footfall (which only carries `location`) to
@@ -3455,11 +3470,8 @@ async def exec_summary_endpoint(country: Optional[str] = None):
                     continue
                 agg[country]["revenue"] += float(r.get("total_sales") or 0)
                 agg[country]["orders"] += float(r.get("orders") or r.get("total_orders") or 0)
+                agg[country]["units"] += float(r.get("units_sold") or 0)
             for r in footfall_rows or []:
-                # Footfall is physical-store only (Online has no
-                # footfall counter), so we only attribute when we have
-                # a matching country in the sales map. Stores with no
-                # current sales but historical footfall fall through.
                 loc = (r.get("location") or "").strip()
                 country = loc_to_country.get(loc) or (r.get("country") or "").strip()
                 if country not in agg:
@@ -3475,12 +3487,17 @@ async def exec_summary_endpoint(country: Optional[str] = None):
             ly_c = ly[country]
             c_ab = c["revenue"] / c["orders"] if c["orders"] else 0.0
             l_ab = ly_c["revenue"] / ly_c["orders"] if ly_c["orders"] else 0.0
+            # Iter 89i — per-country ASP.
+            c_asp = c["revenue"] / c["units"] if c["units"] else 0.0
+            l_asp = ly_c["revenue"] / ly_c["units"] if ly_c["units"] else 0.0
             out.append({
                 "country": country,
                 "revenue":    {"cur": c["revenue"],   "ly": ly_c["revenue"],   "delta_pct": _pct_delta(c["revenue"], ly_c["revenue"])},
                 "orders":     {"cur": c["orders"],    "ly": ly_c["orders"],    "delta_pct": _pct_delta(c["orders"], ly_c["orders"])},
+                "units":      {"cur": c["units"],     "ly": ly_c["units"],     "delta_pct": _pct_delta(c["units"], ly_c["units"])},
                 "footfall":   {"cur": c["footfall"],  "ly": ly_c["footfall"],  "delta_pct": _pct_delta(c["footfall"], ly_c["footfall"])},
                 "avg_basket": {"cur": c_ab,           "ly": l_ab,              "delta_pct": _pct_delta(c_ab, l_ab)},
+                "asp":        {"cur": c_asp,          "ly": l_asp,             "delta_pct": _pct_delta(c_asp, l_asp)},
             })
         return out
 

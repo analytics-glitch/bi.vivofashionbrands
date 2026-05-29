@@ -4,6 +4,19 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### Recent (Feb 2026 — Iter 89i) — Executive Summary: ASP metric + full subcategory list
+- **User ask**: "Show all the subcategories and also add the ASP (Average Selling Price) metric."
+- **Backend**:
+  - `_sum_sales` now returns (revenue, orders, units). KPI block adds `asp` metric.
+  - Country block adds `units` aggregation + per-country `asp` field.
+  - Subcategory rows now include `asp: {cur, ly, delta_pct}`.
+- **Frontend**:
+  - KPI strip widened from 6 → 7 columns on lg; added "ASP" KPI card between "Avg Basket" and "Total Customers" (Tag icon).
+  - Country cards: added 5th metric row "ASP" for both YTD and MTD blocks.
+  - `TopSubcategories` renamed to `AllSubcategories` — renders every subcategory (no slice), scrollable with `max-h-[640px]`. Each row now shows Revenue cur/LY/Δ% AND ASP cur/(LY)/Δ% so leadership can spot mix-shift inside a subcategory.
+- **Verified live**: 27 subcategory rows rendered (was 10). ASP KPI YTD KES 3.95K, MTD KES 3.72K (↓6.0%). Per-country ASP highlights Rwanda MTD +34.9% vs Kenya flat — useful mix-shift signal that was invisible before.
+
+
 ### Recent (Feb 2026 — Iter 89h) — Executive Summary: LY values shown inline everywhere
 - **User ask**: "show LY numbers" — across the Executive Summary, the LY value was only visible in the KPI cards and store table; country cards and category section showed only the current value + Δ%.
 - **Frontend** (`ExecutiveSummary.jsx`):

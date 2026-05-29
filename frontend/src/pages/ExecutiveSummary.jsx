@@ -6,7 +6,7 @@ import { categoryFor } from "@/lib/productCategory";
 import {
   ArrowUp, ArrowDown, Minus, Warning,
   TrendUp, Footprints, Coins, UsersThree, UserPlus, ArrowsClockwise,
-  Briefcase,
+  Briefcase, Tag,
 } from "@phosphor-icons/react";
 
 /**
@@ -161,6 +161,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           <CountryMetricRow label="Orders"                  cur={ytd?.orders?.cur}     ly={ytd?.orders?.ly}     delta={ytd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
+          <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={ytd?.asp?.cur}        ly={ytd?.asp?.ly}        delta={ytd?.asp?.delta_pct} />
         </div>
         <div className="h-px bg-border/60" />
         <div data-testid={`exec-country-${country}-mtd`}>
@@ -169,6 +170,7 @@ const CountryCard = ({ ytd, mtd, selected, onClick }) => {
           <CountryMetricRow label="Orders"                  cur={mtd?.orders?.cur}     ly={mtd?.orders?.ly}     delta={mtd?.orders?.delta_pct} />
           <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={mtd?.avg_basket?.cur} ly={mtd?.avg_basket?.ly} delta={mtd?.avg_basket?.delta_pct} />
+          <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={mtd?.asp?.cur}        ly={mtd?.asp?.ly}        delta={mtd?.asp?.delta_pct} />
         </div>
       </div>
     </button>
@@ -361,50 +363,60 @@ const CategoryBars = ({ subcategories, view }) => {
 };
 
 /**
- * TopSubcategories — top-10 list with inline delta. Each row's right
- * edge shows a sparkline-style bar comparing current to LY width-wise
- * (filled by ratio of LY-to-Cur or Cur-to-LY, whichever is larger).
+ * AllSubcategories — full subcategory list, sorted by current revenue
+ * desc. Scrollable when the list runs deep so the section keeps a
+ * predictable height. Each row shows cur · LY · Δ% plus ASP (cur/LY/Δ).
  */
-const TopSubcategories = ({ subcategories }) => {
-  const top10 = useMemo(
-    () => (subcategories || []).slice(0, 10),
-    [subcategories]
-  );
+const AllSubcategories = ({ subcategories }) => {
+  const rows = subcategories || [];
   const max = useMemo(
-    () => Math.max(1, ...top10.flatMap((sc) => [sc.cur, sc.ly])),
-    [top10]
+    () => Math.max(1, ...rows.flatMap((sc) => [sc.cur, sc.ly])),
+    [rows]
   );
-  if (!top10.length) return <Empty label="No subcategory data." />;
+  if (!rows.length) return <Empty label="No subcategory data." />;
   return (
-    <ol className="space-y-2" data-testid="exec-top-subcategories">
-      {top10.map((sc, i) => {
-        const curPct = (sc.cur / max) * 100;
-        const positive = (sc.delta_pct ?? 0) >= 0;
-        const barColor = positive ? "bg-emerald-500" : "bg-rose-500";
-        const needsAttention = sc.delta_pct != null && sc.delta_pct < -10;
-        return (
-          <li key={sc.subcategory} className="grid grid-cols-[18px_1fr_56px] items-center gap-2 text-[12px]" data-testid={`exec-top-subcat-${i}`}>
-            <span className="text-muted font-bold tabular-nums text-[11px]">{i + 1}</span>
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-semibold truncate" title={sc.subcategory}>
-                  {needsAttention && <Warning size={11} weight="fill" className="inline -mt-0.5 mr-1 text-rose-600" />}
-                  {sc.subcategory}
-                </span>
-                <span className="text-[10.5px] text-muted tabular-nums shrink-0">{fmtKES(sc.cur)}</span>
+    <div className="max-h-[640px] overflow-y-auto pr-1" data-testid="exec-all-subcategories">
+      <ol className="space-y-2">
+        {rows.map((sc, i) => {
+          const curPct = (sc.cur / max) * 100;
+          const positive = (sc.delta_pct ?? 0) >= 0;
+          const barColor = positive ? "bg-emerald-500" : "bg-rose-500";
+          const needsAttention = sc.delta_pct != null && sc.delta_pct < -10;
+          const asp = sc.asp || {};
+          return (
+            <li key={sc.subcategory} className="grid grid-cols-[18px_1fr] items-start gap-2 text-[12px]" data-testid={`exec-subcat-${i}`}>
+              <span className="text-muted font-bold tabular-nums text-[11px] pt-0.5">{i + 1}</span>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold truncate" title={sc.subcategory}>
+                    {needsAttention && <Warning size={11} weight="fill" className="inline -mt-0.5 mr-1 text-rose-600" />}
+                    {sc.subcategory}
+                  </span>
+                  <span className="text-[10.5px] tabular-nums shrink-0 font-bold">{fmtKES(sc.cur)}</span>
+                </div>
+                <div className="relative h-1.5 bg-panel rounded mt-1">
+                  <div className={`absolute inset-y-0 left-0 ${barColor} rounded`} style={{ width: `${curPct}%` }} />
+                </div>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <div className="text-[10px] text-muted">
+                    LY: <span className="tabular-nums">{fmtKES(sc.ly)}</span>
+                    <span className="mx-1.5 opacity-50">·</span>
+                    ASP: <span className="tabular-nums font-semibold">{fmtKES(asp.cur || 0)}</span>
+                    <span className="opacity-50 ml-0.5">(LY {fmtKES(asp.ly || 0)})</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[9.5px] uppercase text-muted font-bold">Rev</span>
+                    <DeltaPill value={sc.delta_pct} />
+                    <span className="text-[9.5px] uppercase text-muted font-bold ml-1">ASP</span>
+                    <DeltaPill value={asp.delta_pct} />
+                  </div>
+                </div>
               </div>
-              <div className="relative h-1.5 bg-panel rounded mt-1">
-                <div className={`absolute inset-y-0 left-0 ${barColor} rounded`} style={{ width: `${curPct}%` }} />
-              </div>
-              {/* Iter 89h — LY value tucked under the bar so the
-                  cur/LY/Δ trio is always co-located. */}
-              <div className="text-[10px] text-muted mt-0.5">LY: <span className="tabular-nums">{fmtKES(sc.ly)}</span></div>
-            </div>
-            <div className="text-right"><DeltaPill value={sc.delta_pct} /></div>
-          </li>
-        );
-      })}
-    </ol>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 };
 
@@ -515,10 +527,11 @@ const ExecutiveSummary = () => {
       </div>
 
       {/* SECTION 1 — Top KPI scorecard */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         <KpiCard testId="kpi-revenue"   label="Total Revenue"        icon={TrendUp}       fmt={fmtKES} ytd={k("revenue").ytd}   mtd={k("revenue").mtd} />
         <KpiCard testId="kpi-footfall"  label="Footfall"             icon={Footprints}                ytd={k("footfall").ytd}  mtd={k("footfall").mtd} />
         <KpiCard testId="kpi-basket"    label="Avg Basket"           icon={Coins}         fmt={fmtKES} ytd={k("avg_basket").ytd} mtd={k("avg_basket").mtd} />
+        <KpiCard testId="kpi-asp"       label="ASP"                  icon={Tag}           fmt={fmtKES} ytd={k("asp").ytd}        mtd={k("asp").mtd} />
         <KpiCard testId="kpi-customers" label="Total Customers"      icon={UsersThree}                ytd={k("total_customers").ytd} mtd={k("total_customers").mtd} />
         <KpiCard testId="kpi-new"       label="New Customers"        icon={UserPlus}                  ytd={k("new_customers").ytd}   mtd={k("new_customers").mtd} />
         <KpiCard testId="kpi-returning" label="Returning Customers"  icon={ArrowsClockwise}           ytd={k("returning_customers").ytd} mtd={k("returning_customers").mtd} />
@@ -588,7 +601,7 @@ const ExecutiveSummary = () => {
             title="Category & Subcategory Breakdown"
             subtitle={
               <span>
-                Top-level rollup vs same period last year, plus top 10 subcategories.
+                Top-level rollup vs same period last year, plus full subcategory list with revenue + ASP deltas.
                 {selectedCountry && (
                   <span className="ml-1.5 text-[11px] font-bold text-brand">
                     Filtered to {COUNTRY_FLAGS[selectedCountry]} {selectedCountry}{countryLoading ? " — loading…" : ""}
@@ -630,8 +643,13 @@ const ExecutiveSummary = () => {
             <CategoryBars subcategories={catSource[catView].categories.subcategories} view={catView} />
           </div>
           <div data-testid="exec-top-subcats-pane">
-            <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider">Top 10 Subcategories — {catView.toUpperCase()}</div>
-            <TopSubcategories subcategories={catSource[catView].categories.subcategories} />
+            <div className="text-[11px] font-bold uppercase text-muted mb-2 tracking-wider flex items-center justify-between">
+              <span>All Subcategories — {catView.toUpperCase()}</span>
+              <span className="text-muted opacity-70 normal-case font-normal tracking-normal">
+                {(catSource[catView].categories.subcategories || []).length} items · scroll to see all
+              </span>
+            </div>
+            <AllSubcategories subcategories={catSource[catView].categories.subcategories} />
           </div>
         </div>
       </div>
