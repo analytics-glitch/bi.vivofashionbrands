@@ -1,0 +1,32 @@
+{
+  "summary": "Iter 91 - Tested Executive Summary 'Stock Mix' window feature (30/60/90 day filter, CSV export, tooltip, formula caption). Backend pytest: 11/11 passed. Frontend e2e: all data-testids present, window toggling re-fetches and updates header/caption/values, cover pill tooltip via title attribute shows full formula+numbers, full-table CSV exports with all 13 columns + Total row, Quick Actions and rest of /exec-summary unaffected.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91_exec_stockmix_window.py",
+    "/app/test_reports/pytest/iter91_stockmix_window.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend _stock_mix_block (server.py L3574-3744) is clean: window_days clamped to {30,60,90} with fallback to 30, inv+window-sales fetched in parallel via asyncio.create_task, idle-stock guarded via _weeks_of_cover() returning None when in-window sold=0 (avoids divide-by-zero & misleading 'infinite WoC').",
+    "Response shape is backward compatible: legacy key total_sold_units_mtd is preserved alongside new total_sold_units_window — good for staged frontend rollout, but the legacy key name is now misleading (no longer MTD). Consider deprecating in a future cleanup once consumers migrate.",
+    "Approximate scaling verified live: 30d=23,952 / 60d=46,088 (1.92x) / 90d=66,670 (2.78x) — slight sub-linearity reflects real weekly seasonality, well within tolerance bands in the regression test.",
+    "Frontend CoverPill tooltip uses native HTML title attribute (not a JS tooltip) — this is mobile-unfriendly (no hover on touch devices) but matches the request and is simple/cheap. Future enhancement: swap to a shadcn Tooltip for touch + a11y.",
+    "CSV export filename includes window_days ('stock-mix-full-30d-2026-05-31.csv') — good. Header row has a BOM (\\ufeff) which Excel needs but is a tiny CSV-parsing gotcha for downstream pipes; acceptable for end-user exports.",
+    "DateWindowSelector default-highlight uses inline className string (bg-[#1a5c38]) rather than aria-pressed — works for visual state but accessibility-wise a button with aria-pressed=true would be cleaner for screen readers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91_exec_stockmix_window.py"
+  ],
+  "success_rate": { "backend": "100% (11/11)", "frontend": "100% on requested flows" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression file: /app/backend/tests/test_iteration_91_exec_stockmix_window.py — must export REACT_APP_BACKEND_URL before running (uses os.environ.get('REACT_APP_BACKEND_URL').rstrip('/')). Live measurements at iter91: window_days=30 → total_sold=23,952 group_woc=13.4 weeks; 60d → 46,088 / 13.9 weeks; 90d → 66,670 / 14.4 weeks; total_stock_units constant at 74,917 across all windows. CSV export filename pattern: stock-mix-full-{N}d-{yesterday}.csv with 13 columns + Total row. Cover pill tooltip is delivered via the native HTML 'title' attribute — assert via element.get_attribute('title') and look for the substring 'Weeks of Cover = Stock'. Formula caption: 'Weeks of Cover = Stock Units ÷ (Sold in {N}d ÷ {X.X} weeks)' with X.X = 4.3 / 8.6 / 12.9.",
+  "rca of the issue": "N/A — feature works as specified. Backend tests confirm shape, scaling, default, and invalid-fallback. Frontend e2e confirms UI toggle behavior, CSV download, and tooltip content."
+}

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import ExecutiveSummarySnapshot from "@/components/ExecutiveSummarySnapshot";
+import DateWindowSelector from "@/components/DateWindowSelector";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import { categoryFor } from "@/lib/productCategory";
@@ -1143,9 +1144,9 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
  * mismatches obvious; the Cover column turns each row into an
  * actionable buy/markdown trigger.
  */
-const CoverPill = ({ weeks, bold = false }) => {
+const CoverPill = ({ weeks, bold = false, stockUnits, soldUnits, weeksInWindow, windowDays }) => {
   if (weeks == null) {
-    return <span className="text-muted text-[10px] italic" title="No MTD sales — idle stock">Idle</span>;
+    return <span className="text-muted text-[10px] italic" title="No in-window sales — idle stock">Idle</span>;
   }
   // Thresholds (in weeks): <4 restock · 4–17 healthy · >17 markdown.
   // 17 wks ≈ 120 days, 4 wks = 28 days — matches the original day-based
@@ -1158,10 +1159,26 @@ const CoverPill = ({ weeks, bold = false }) => {
     weeks < 4 ? "Restock"
     : weeks > 17 ? "Markdown"
     : "Healthy";
+  // Build a formula-aware tooltip when caller passes the inputs so the
+  // user can hover any cover number and see exactly how it was derived.
+  let title = `${weeks.toFixed(1)} weeks of cover · ${label.toLowerCase()} candidate (<4w restock · 4–17w healthy · >17w markdown)`;
+  if (
+    stockUnits != null && soldUnits != null &&
+    weeksInWindow && soldUnits > 0
+  ) {
+    const weekly = soldUnits / weeksInWindow;
+    const winLbl = windowDays ? `${windowDays}d` : `${weeksInWindow}w`;
+    title =
+      `Weeks of Cover = Stock ÷ (Sold in ${winLbl} ÷ ${weeksInWindow.toFixed(1)} weeks)\n` +
+      `= ${fmtNum(stockUnits)} ÷ (${fmtNum(soldUnits)} ÷ ${weeksInWindow.toFixed(1)})\n` +
+      `= ${fmtNum(stockUnits)} ÷ ${weekly.toFixed(1)} units/week\n` +
+      `= ${weeks.toFixed(1)} weeks  →  ${label}`;
+  }
   return (
     <span
-      className={`inline-flex items-center justify-end gap-1 rounded-md border ${bold ? "font-bold text-[11px]" : "font-semibold text-[10.5px]"} px-1.5 py-0.5 tabular-nums ${tone}`}
-      title={`${weeks.toFixed(1)} weeks of cover · ${label.toLowerCase()} candidate (<4w restock · 4–17w healthy · >17w markdown)`}
+      className={`inline-flex items-center justify-end gap-1 rounded-md border ${bold ? "font-bold text-[11px]" : "font-semibold text-[10.5px]"} px-1.5 py-0.5 tabular-nums ${tone} cursor-help`}
+      title={title}
+      data-testid="exec-stockmix-cover-pill"
     >
       {weeks.toFixed(1)}w
     </span>
@@ -1195,6 +1212,7 @@ const _downloadCsv = (filename, rows) => {
 };
 
 const QuickActions = ({ stockMix }) => {
+  const windowDays = stockMix?.window_days || 30;
   const buckets = useMemo(() => {
     const markdown = [];
     const restock = [];
@@ -1225,12 +1243,26 @@ const QuickActions = ({ stockMix }) => {
 
   const exportCsv = () => {
     const ts = new Date().toISOString().slice(0, 10);
-    const head = ["Bucket", "Category", "Subcategory", "Stock Units", "Sold MTD", "Weeks of Cover", "ASP (KES)", "Tied-up KES"];
+    const soldLbl = `Sold (${windowDays}d)`;
+    const head = ["Bucket", "Category", "Subcategory", "Stock Units", "Stock %", soldLbl, "Sold %", "Gap (pp)", "Weeks of Cover", "ASP (KES)", "Tied-up KES"];
     const rows = [head];
-    for (const r of buckets.markdown) rows.push(["Markdown", r.category, r.subcategory, r.stock_units, r.sold_units, r.weeks_of_cover?.toFixed(1) || "", r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
-    for (const r of buckets.restock) rows.push(["Restock",  r.category, r.subcategory, r.stock_units, r.sold_units, r.weeks_of_cover?.toFixed(1) || "", r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
-    for (const r of buckets.idle)    rows.push(["Idle",     r.category, r.subcategory, r.stock_units, r.sold_units, "",                                  r.asp_mtd?.toFixed(0) || "", r.tied_up_kes?.toFixed(0) || ""]);
-    _downloadCsv(`stock-mix-actions-${ts}.csv`, rows);
+    const fmtRow = (bucket, r) => [
+      bucket,
+      r.category,
+      r.subcategory,
+      Math.round(r.stock_units || 0),
+      r.stock_pct?.toFixed(2) || "",
+      Math.round(r.sold_units || 0),
+      r.sold_pct?.toFixed(2) || "",
+      r.gap_pct?.toFixed(2) || "",
+      r.weeks_of_cover != null ? r.weeks_of_cover.toFixed(2) : "",
+      r.asp_mtd != null ? r.asp_mtd.toFixed(0) : "",
+      r.tied_up_kes != null ? Math.round(r.tied_up_kes) : "",
+    ];
+    for (const r of buckets.markdown) rows.push(fmtRow("Markdown", r));
+    for (const r of buckets.restock)  rows.push(fmtRow("Restock",  r));
+    for (const r of buckets.idle)     rows.push(fmtRow("Idle",     r));
+    _downloadCsv(`stock-mix-actions-${windowDays}d-${ts}.csv`, rows);
   };
 
   const hasAnything = buckets.markdown.length || buckets.restock.length || buckets.idle.length;
@@ -1323,19 +1355,79 @@ const QuickActions = ({ stockMix }) => {
   );
 };
 
-const StockMix = ({ stockMix }) => {
+const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false }) => {
   if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
     return null;
   }
   const rows = stockMix.categories;
+  const wd = stockMix.window_days || windowDays || 30;
+  const wiw = stockMix.weeks_in_window || (wd / 7);
+  const soldLbl = `Sold (last ${wd}d)`;
+
+  // Full-table CSV export — every category roll-up + every nested
+  // subcategory, with every visible column. This is the "everything
+  // from the table" export leadership asked for (vs the bucketed
+  // Quick Actions CSV which only includes Markdown / Restock / Idle).
+  const exportFullCsv = () => {
+    const ts = new Date().toISOString().slice(0, 10);
+    const head = [
+      "Level", "Category", "Subcategory",
+      "Stock Units", "Stock %",
+      soldLbl, "Sold %",
+      "Gap (pp)",
+      "Weeks of Cover", "Cover Tier",
+      "ASP (KES)", "Tied-up KES",
+      "Read",
+    ];
+    const out = [head];
+    const tier = (w) => w == null ? "Idle" : w < 4 ? "Restock" : w > 17 ? "Markdown" : "Healthy";
+    const read = (gap) => gap > 5 ? "Over-stocked" : gap < -5 ? "Hot — restock" : "Balanced";
+    for (const r of rows) {
+      out.push([
+        "Category", r.category, "",
+        Math.round(r.stock_units || 0), (r.stock_pct ?? 0).toFixed(2),
+        Math.round(r.sold_units || 0), (r.sold_pct ?? 0).toFixed(2),
+        (r.gap_pct ?? 0).toFixed(2),
+        r.weeks_of_cover != null ? r.weeks_of_cover.toFixed(2) : "",
+        tier(r.weeks_of_cover),
+        r.asp_mtd != null ? Math.round(r.asp_mtd) : "",
+        r.tied_up_kes != null ? Math.round(r.tied_up_kes) : "",
+        read(r.gap_pct ?? 0),
+      ]);
+      for (const sc of (r.subcategories || [])) {
+        out.push([
+          "Subcategory", r.category, sc.subcategory,
+          Math.round(sc.stock_units || 0), (sc.stock_pct ?? 0).toFixed(2),
+          Math.round(sc.sold_units || 0), (sc.sold_pct ?? 0).toFixed(2),
+          (sc.gap_pct ?? 0).toFixed(2),
+          sc.weeks_of_cover != null ? sc.weeks_of_cover.toFixed(2) : "",
+          tier(sc.weeks_of_cover),
+          sc.asp_mtd != null ? Math.round(sc.asp_mtd) : "",
+          sc.tied_up_kes != null ? Math.round(sc.tied_up_kes) : "",
+          read(sc.gap_pct ?? 0),
+        ]);
+      }
+    }
+    // Footer total row
+    out.push([
+      "Total", "All categories", "",
+      Math.round(stockMix.total_stock_units || 0), "100.00",
+      Math.round(stockMix.total_sold_units_mtd || 0), "100.00",
+      "", stockMix.total_weeks_of_cover != null ? stockMix.total_weeks_of_cover.toFixed(2) : "",
+      tier(stockMix.total_weeks_of_cover),
+      "", "", "",
+    ]);
+    _downloadCsv(`stock-mix-full-${wd}d-${ts}.csv`, out);
+  };
+
   return (
     <div className="card-white p-4 sm:p-5" data-testid="exec-stockmix-section">
       <SectionTitle
         title="Stock Mix — What's selling vs what we have"
         subtitle={
           <span>
-            Share of units on hand (group-wide inventory) compared with share of units sold MTD, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
-            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold MTD: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span>
+            Share of units on hand (group-wide inventory) compared with share of units sold over the selected window, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
+            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold ({wd}d): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span>
             {stockMix.total_weeks_of_cover != null && (
               <span> · Group cover: <span className="font-bold text-foreground tabular-nums">{stockMix.total_weeks_of_cover.toFixed(1)}w</span></span>
             )}
@@ -1343,6 +1435,50 @@ const StockMix = ({ stockMix }) => {
           </span>
         }
       />
+
+      {/* Toolbar — window selector + full-table CSV export + formula */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <DateWindowSelector
+            value={wd}
+            onChange={onWindowChange}
+            presets={[
+              { v: 30, l: "30d" },
+              { v: 60, l: "60d" },
+              { v: 90, l: "90d" },
+            ]}
+            testId="exec-stockmix-window"
+            label="Sales window"
+          />
+          {windowLoading && (
+            <span className="text-[10.5px] text-muted italic" data-testid="exec-stockmix-window-loading">re-windowing…</span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={exportFullCsv}
+          data-testid="exec-stockmix-export-full-btn"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border bg-white text-[11px] font-semibold hover:border-brand/60 hover:text-brand transition-colors"
+          title="Download the full Stock Mix table — every category, subcategory, and column — as CSV"
+        >
+          <DownloadSimple size={13} weight="bold" />
+          Export full table CSV
+        </button>
+      </div>
+
+      {/* Formula caption — explicit, so leadership sees exactly how
+          Weeks of Cover is derived without having to hover. */}
+      <div
+        className="rounded-md border border-border bg-panel/40 px-3 py-2 mb-3 text-[11.5px] text-foreground"
+        data-testid="exec-stockmix-formula-caption"
+      >
+        <span className="font-bold text-muted uppercase tracking-wide text-[10px] mr-2">Formula</span>
+        <span className="tabular-nums">
+          Weeks of Cover&nbsp;=&nbsp;Stock Units&nbsp;÷&nbsp;(Sold in {wd}d&nbsp;÷&nbsp;{wiw.toFixed(1)} weeks)
+        </span>
+        <span className="text-muted ml-2">— hover any Cover pill to see the row-level calculation.</span>
+      </div>
+
       <QuickActions stockMix={stockMix} />
       <div className="overflow-x-auto rounded-lg border border-border bg-white">
         <table className="w-full min-w-max text-[12.5px]" data-testid="exec-stockmix-table">
@@ -1351,10 +1487,13 @@ const StockMix = ({ stockMix }) => {
               <th className="px-3 py-2 font-semibold whitespace-nowrap">Category</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock Units</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock %</th>
-              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold MTD</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">{soldLbl}</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
-              <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Weeks of cover = stock units ÷ (avg daily MTD units sold × 7). <4w restock candidate · 4–17w healthy · >17w markdown candidate.">Cover (wks)</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title={`Weeks of Cover = Stock Units ÷ (Sold in ${wd}d ÷ ${wiw.toFixed(1)} weeks). <4w restock · 4–17w healthy · >17w markdown.`}
+              >Cover (wks)</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap">Read</th>
             </tr>
           </thead>
@@ -1395,7 +1534,16 @@ const StockMix = ({ stockMix }) => {
                         {gap > 0 ? "+" : ""}{gap.toFixed(1)}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right"><CoverPill weeks={r.weeks_of_cover} bold /></td>
+                    <td className="px-3 py-2 text-right">
+                      <CoverPill
+                        weeks={r.weeks_of_cover}
+                        bold
+                        stockUnits={r.stock_units}
+                        soldUnits={r.sold_units}
+                        weeksInWindow={wiw}
+                        windowDays={wd}
+                      />
+                    </td>
                     <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
                       {oversupply && <span className="text-amber-700">{read}</span>}
                       {undersupply && <span className="text-rose-700">{read}</span>}
@@ -1425,7 +1573,15 @@ const StockMix = ({ stockMix }) => {
                             {sgap > 0 ? "+" : ""}{sgap.toFixed(1)}
                           </span>
                         </td>
-                        <td className="px-3 py-1.5 text-right"><CoverPill weeks={sc.weeks_of_cover} /></td>
+                        <td className="px-3 py-1.5 text-right">
+                          <CoverPill
+                            weeks={sc.weeks_of_cover}
+                            stockUnits={sc.stock_units}
+                            soldUnits={sc.sold_units}
+                            weeksInWindow={wiw}
+                            windowDays={wd}
+                          />
+                        </td>
                         <td className="px-3 py-1.5 text-[10.5px] font-semibold whitespace-nowrap">
                           {sOver && <span className="text-amber-700">{sRead}</span>}
                           {sUnder && <span className="text-rose-700">{sRead}</span>}
@@ -1446,7 +1602,16 @@ const StockMix = ({ stockMix }) => {
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}</td>
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
               <td className="px-3 py-2"></td>
-              <td className="px-3 py-2 text-right"><CoverPill weeks={stockMix.total_weeks_of_cover} bold /></td>
+              <td className="px-3 py-2 text-right">
+                <CoverPill
+                  weeks={stockMix.total_weeks_of_cover}
+                  bold
+                  stockUnits={stockMix.total_stock_units}
+                  soldUnits={stockMix.total_sold_units_mtd}
+                  weeksInWindow={wiw}
+                  windowDays={wd}
+                />
+              </td>
               <td className="px-3 py-2"></td>
             </tr>
           </tfoot>
@@ -1483,6 +1648,16 @@ const ExecutiveSummary = () => {
   const [countryData, setCountryData] = useState(null); // payload of the country-filtered fetch
   const [countryLoading, setCountryLoading] = useState(false);
 
+  // Iter 91 — Stock Mix sales window. 30 / 60 / 90 day rolling window
+  // that drives BOTH the Sold column and Weeks of Cover. Re-fetch the
+  // exec-summary endpoint with `window_days` when it changes; the
+  // result is cached client-side so flipping between presets is fast
+  // after the first hit. `stockMixOverride` lets us swap *just* the
+  // stock_mix block without re-painting the rest of the page.
+  const [stockWindowDays, setStockWindowDays] = useState(30);
+  const [stockMixOverride, setStockMixOverride] = useState(null);
+  const [stockMixLoading, setStockMixLoading] = useState(false);
+
   useEffect(() => {
     let cancel = false;
     setLoading(true);
@@ -1512,6 +1687,30 @@ const ExecutiveSummary = () => {
       .finally(() => { if (!cancel) setCountryLoading(false); });
     return () => { cancel = true; };
   }, [selectedCountry]);
+
+  // Iter 91 — re-fetch exec-summary with the chosen `window_days` so
+  // the Stock Mix Sold% / Cover columns re-window without altering the
+  // YTD/MTD KPI cards above. Only `stock_mix` from the returned payload
+  // is consumed; everything else is ignored. Country filter, if set,
+  // tags along so the window-scoped numbers stay consistent with the
+  // country-scoped view.
+  useEffect(() => {
+    // Default 30d ships in the initial fetch — skip refetch in that case.
+    if (stockWindowDays === 30 && !selectedCountry) {
+      setStockMixOverride(null);
+      return;
+    }
+    let cancel = false;
+    setStockMixLoading(true);
+    const params = { window_days: stockWindowDays };
+    if (selectedCountry) params.country = selectedCountry;
+    api
+      .get("/exec-summary", { params, timeout: 90000 })
+      .then(({ data: d }) => { if (!cancel) setStockMixOverride(d?.stock_mix || null); })
+      .catch(() => { if (!cancel) setStockMixOverride(null); })
+      .finally(() => { if (!cancel) setStockMixLoading(false); });
+    return () => { cancel = true; };
+  }, [stockWindowDays, selectedCountry]);
 
   // Mobile snapshot — full-screen overlay (same pattern as Overview):
   // page swaps to a stripped compact view, "Save image" downloads a
@@ -1684,7 +1883,12 @@ const ExecutiveSummary = () => {
       </div>
 
       {/* SECTION 4 — Stock Mix: what's selling vs what we have */}
-      <StockMix stockMix={data.stock_mix} />
+      <StockMix
+        stockMix={stockMixOverride || (countryData?.stock_mix) || data.stock_mix}
+        windowDays={stockWindowDays}
+        onWindowChange={setStockWindowDays}
+        windowLoading={stockMixLoading}
+      />
 
       {/* SECTION 5 — Store performance (moved to bottom per leadership
           pref — the per-store grain reads last after the higher-level
