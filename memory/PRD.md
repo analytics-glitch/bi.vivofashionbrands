@@ -4,6 +4,15 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+
+### Recent (Feb 2026 — Iter 91) — Executive Summary: Stock Mix windowing + tooltip + full CSV export
+- **User ask**: (a) Add 30/60/90-day filter to the Stock Mix table, (b) ensure CSV/Excel export includes everything from the table, (c) show the Weeks-of-Cover formula on hover AND surface it on top of the table.
+- **Backend** (`/api/exec-summary`): endpoint now accepts `window_days: int = 30`. `_stock_mix_block` rewritten to drive BOTH Sold% and Weeks-of-Cover from a single rolling window (default 30, valid: 30/60/90; anything else clamps to 30). `weeks_of_cover = stock_units ÷ (units_window ÷ weeks_in_window)` where `weeks_in_window = window_days/7`. New fields returned: `window_days`, `weeks_in_window`, `sold_window {from,to,days}`. Legacy `total_sold_units_mtd` key preserved (now holds windowed sold) + new explicit `total_sold_units_window`. No extra upstream calls — leverages the already-warmed `/subcategory-sales` cache.
+- **Frontend** (`ExecutiveSummary.jsx`): new `DateWindowSelector` above the table (30/60/90 only, default 30), formula caption banner (`Weeks of Cover = Stock Units ÷ (Sold in Nd ÷ X.X weeks)`), `Export full table CSV` button (every category + subcategory + all 13 columns + Total row, filename `stock-mix-full-{N}d-{date}.csv`), and `CoverPill` now renders a formula-aware `title` tooltip showing the row-level calculation (Stock ÷ (Sold ÷ weeks) = weeks).
+- **State**: `stockWindowDays`/`stockMixOverride`/`stockMixLoading` in `ExecutiveSummary`; only the stock_mix block is swapped, the rest of the page never re-renders. Client-side cache key includes `window_days` so flipping presets is instant after first hit.
+- **Verified live**: 30d → 23,952 sold / 13.4w cover · 60d → 46,088 / 13.9w · 90d → 66,670 / 14.4w (total_stock_units 74,917 constant). Backend pytest 11/11 passed, frontend e2e 100% on testid'd flows.
+
+
 ### Recent (Feb 2026 — Iter 89m) — Executive Summary: Targets + Stock Mix + Store contribution + reorder
 - **User ask**: (a) Move "What's hot · What's not" to the bottom of the page, (b) In Store Performance add % contribution to total revenue, (c) Add YTD performance against the Yearly Targets (2026 budget sheet), (d) Add Stock Mix — what's selling vs what we have.
 - **Budget data ingestion** — new file `/app/backend/store_targets.py` holds the 2026 monthly targets per store (28 Kenya retail stores + Uganda 2 + Rwanda 1 + Online country roll-up using "Gross SZ" monthlies). Helpers `_prorata_to_date` and `_mtd_prorata` produce day-of-month-pro-rata YTD/MTD targets so progress bars don't jump at month boundaries.
