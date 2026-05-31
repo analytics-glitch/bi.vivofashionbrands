@@ -5,6 +5,12 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91b) — Executive Summary: Stock Mix Active/Retired/All toggle
+- **User ask**: Add the same 3-way Active / Retired / All pill (shared `StyleStatusToggle`) on the Exec Summary Stock Mix table.
+- **Backend** (`/api/exec-summary`): now accepts `style_status: "active"|"retired"|"all"` (default `all`). `_stock_mix_block` filters inventory via `filter_rows(annotate_status(inv_rows, field='style_name'), style_status, …)` — same idiom used on Inventory/Products/Exports. Subcategory sales are deliberately NOT filtered (the `/subcategory-sales` upstream is aggregated above the style grain). Response now echoes `stock_mix.style_status`.
+- **Frontend** (`ExecutiveSummary.jsx`): new `stockStyleStatus` state (default `all`), `StyleStatusToggle` rendered next to the DateWindowSelector with `testIdPrefix="exec-stockmix-style-status"`. When the user picks Active/Retired the `style_status` param rides along on the existing window-driven re-fetch. When the user picks "All" the param is dropped entirely so the URL stays clean and backend default is used. A small amber caption pill appears next to the Formula row when a non-`all` filter is active, explaining that the filter only narrows stock (Sold% stays on the full sales basis).
+- **Verified live**: window_days=30 stock totals — `all`=74,917 / `active`=70,270 / `retired`=4,647 (sum = all ✓). Sales constant at 23,952 across filters. Backend pytest 16/16, frontend e2e 100%.
+
 ### Recent (Feb 2026 — Iter 91) — Executive Summary: Stock Mix windowing + tooltip + full CSV export
 - **User ask**: (a) Add 30/60/90-day filter to the Stock Mix table, (b) ensure CSV/Excel export includes everything from the table, (c) show the Weeks-of-Cover formula on hover AND surface it on top of the table.
 - **Backend** (`/api/exec-summary`): endpoint now accepts `window_days: int = 30`. `_stock_mix_block` rewritten to drive BOTH Sold% and Weeks-of-Cover from a single rolling window (default 30, valid: 30/60/90; anything else clamps to 30). `weeks_of_cover = stock_units ÷ (units_window ÷ weeks_in_window)` where `weeks_in_window = window_days/7`. New fields returned: `window_days`, `weeks_in_window`, `sold_window {from,to,days}`. Legacy `total_sold_units_mtd` key preserved (now holds windowed sold) + new explicit `total_sold_units_window`. No extra upstream calls — leverages the already-warmed `/subcategory-sales` cache.

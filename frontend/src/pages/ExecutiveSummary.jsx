@@ -1486,6 +1486,15 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
           Weeks of Cover&nbsp;=&nbsp;Stock Units&nbsp;÷&nbsp;(Sold in {wd}d&nbsp;÷&nbsp;{wiw.toFixed(1)} weeks)
         </span>
         <span className="text-muted ml-2">— hover any Cover pill to see the row-level calculation.</span>
+        {styleStatus && styleStatus !== "all" && (
+          <span
+            className="ml-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-50 border border-amber-200 text-amber-800"
+            data-testid="exec-stockmix-filter-note"
+            title="The style-status filter only narrows the inventory side of the comparison; subcategory sales remain unfiltered because they're aggregated above the style grain."
+          >
+            Note: filter narrows stock only — Sold% uses full sales.
+          </span>
+        )}
       </div>
 
       <QuickActions stockMix={stockMix} />
