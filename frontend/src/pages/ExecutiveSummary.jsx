@@ -1644,6 +1644,351 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
   );
 };
 
+/**
+ * JuneProductionPlan — given a revenue target for next month (default
+ * KES 114M for June), allocate it across subcategories using the 60-day
+ * revenue mix, convert each subcategory's target revenue into demand
+ * units via ASP, add an 8-week safety stock, subtract current on-hand,
+ * and recommend the units to PRODUCE.
+ *
+ * Excludes Retired styles AND Idle subcategories (no recent sales) —
+ * those get markdown / clearance actions instead, not production.
+ *
+ * Logic per subcategory:
+ *   weeks_in_window  = 60 / 7 ≈ 8.57
+ *   weekly_rate      = sold_units_60d / weeks_in_window
+ *   revenue_60d      = sold_units_60d × asp_mtd        (from API)
+ *   revenue_mix_%    = revenue_60d / total_revenue_60d
+ *   june_target_rev  = total_target × revenue_mix_%
+ *   demand_units     = june_target_rev / asp_mtd       (≈ 1 month sales)
+ *   safety_units     = 8 × weekly_rate
+ *   required_end     = demand_units + safety_units
+ *   to_produce       = max(0, required_end − stock_on_hand)
+ *   weeks_of_cover   = stock_on_hand / weekly_rate
+ *   lead_time_alert  = weeks_of_cover < 8 AND to_produce > 0
+ *                      → will stock out before production lands
+ *
+ * The 60-day window is fixed (per user choice); we issue our own
+ * /exec-summary?window_days=60&style_status=active request which is
+ * cached client-side so it is essentially free on repeat renders.
+ */
+const TARGET_LS_KEY = "_vivo_june_production_target";
+const DEFAULT_JUNE_TARGET = 114_000_000;
+const SAFETY_WEEKS = 8;
+const LEAD_TIME_WEEKS = 8;
+
+const JuneProductionPlan = () => {
+  const [planMix, setPlanMix] = useState(null);
+  const [planLoading, setPlanLoading] = useState(true);
+  const [planError, setPlanError] = useState(null);
+  const [target, setTarget] = useState(() => {
+    try {
+      const raw = localStorage.getItem(TARGET_LS_KEY);
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? n : DEFAULT_JUNE_TARGET;
+    } catch {
+      return DEFAULT_JUNE_TARGET;
+    }
+  });
+  // Buffered text input — only commit to `target` on blur / Enter so
+  // typing intermediate values like "11" doesn't recompute every keystroke.
+  const [targetDraft, setTargetDraft] = useState(String(target));
+
+  useEffect(() => {
+    try { localStorage.setItem(TARGET_LS_KEY, String(target)); } catch { /* ignore */ }
+  }, [target]);
+
+  useEffect(() => {
+    let cancel = false;
+    setPlanLoading(true);
+    setPlanError(null);
+    // 60-day, active-styles-only — gives us the clean signal for the
+    // production planning math. Hits the same cache as Stock Mix so
+    // marginal cost is nil.
+    api
+      .get("/exec-summary", { params: { window_days: 60, style_status: "active" }, timeout: 90000 })
+      .then(({ data: d }) => { if (!cancel) setPlanMix(d?.stock_mix || null); })
+      .catch((e) => { if (!cancel) setPlanError(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!cancel) setPlanLoading(false); });
+    return () => { cancel = true; };
+  }, []);
+
+  // Get the next month's name for the header. Render is driven off
+  // `as_of` proxy — falls back to "Next month" if unavailable.
+  const nextMonthLabel = useMemo(() => {
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return next.toLocaleString("en", { month: "long", year: "numeric" });
+  }, []);
+
+  const rows = useMemo(() => {
+    if (!planMix) return null;
+    const wiw = planMix.weeks_in_window || (60 / 7);
+
+    // Flatten to subcategories with their parent category. Drop
+    // anything missing the prerequisites (Idle = no sales, ASP = 0).
+    const flat = [];
+    for (const c of planMix.categories || []) {
+      for (const sc of c.subcategories || []) {
+        if (!sc.sold_units || sc.sold_units <= 0) continue;
+        if (!sc.asp_mtd || sc.asp_mtd <= 0) continue;
+        if (sc.weeks_of_cover == null) continue; // Idle guard
+        const revenue = (sc.sold_units || 0) * (sc.asp_mtd || 0);
+        flat.push({
+          category: c.category,
+          subcategory: sc.subcategory,
+          stock: sc.stock_units || 0,
+          sold_60d: sc.sold_units || 0,
+          asp: sc.asp_mtd || 0,
+          weeks_of_cover: sc.weeks_of_cover,
+          revenue_60d: revenue,
+        });
+      }
+    }
+    const total_revenue = flat.reduce((s, r) => s + r.revenue_60d, 0) || 1;
+
+    // Allocate the target across subcategories using the 60d revenue mix.
+    let plan = flat.map((r) => {
+      const revenue_mix = r.revenue_60d / total_revenue;
+      const june_target_rev = target * revenue_mix;
+      const weekly_rate = r.sold_60d / wiw;
+      const demand_units = june_target_rev / r.asp;
+      const safety_units = SAFETY_WEEKS * weekly_rate;
+      const required_end = demand_units + safety_units;
+      const to_produce = Math.max(0, required_end - r.stock);
+      const lead_time_alert = r.weeks_of_cover < LEAD_TIME_WEEKS && to_produce > 0;
+      return {
+        ...r,
+        revenue_mix_pct: revenue_mix * 100,
+        june_target_rev,
+        weekly_rate,
+        demand_units,
+        safety_units,
+        required_end,
+        to_produce,
+        lead_time_alert,
+        produce_value_kes: to_produce * r.asp,
+      };
+    });
+    // Sort by units to produce desc — biggest production needs first.
+    plan.sort((a, b) => b.to_produce - a.to_produce);
+
+    const total_to_produce = plan.reduce((s, r) => s + r.to_produce, 0);
+    const total_produce_value = plan.reduce((s, r) => s + r.produce_value_kes, 0);
+    const alert_count = plan.filter((r) => r.lead_time_alert).length;
+
+    return { plan, total_to_produce, total_produce_value, alert_count, total_revenue, wiw };
+  }, [planMix, target]);
+
+  const exportCsv = () => {
+    if (!rows) return;
+    const ts = new Date().toISOString().slice(0, 10);
+    const head = [
+      "Category", "Subcategory",
+      `Revenue Mix % (60d)`, `June Target Rev (KES)`,
+      "ASP (KES)", "Weekly Rate (units)",
+      "Demand Units (June)", "Safety Stock (8w units)", "Required End Stock",
+      "On Hand Today", "TO PRODUCE", "Estimated Value (KES)",
+      "Current WoC (wks)", "Lead-time Alert",
+    ];
+    const out = [head];
+    for (const r of rows.plan) {
+      out.push([
+        r.category, r.subcategory,
+        r.revenue_mix_pct.toFixed(2),
+        Math.round(r.june_target_rev),
+        Math.round(r.asp),
+        r.weekly_rate.toFixed(1),
+        Math.round(r.demand_units),
+        Math.round(r.safety_units),
+        Math.round(r.required_end),
+        Math.round(r.stock),
+        Math.round(r.to_produce),
+        Math.round(r.produce_value_kes),
+        r.weeks_of_cover.toFixed(1),
+        r.lead_time_alert ? "YES — expedite" : "",
+      ]);
+    }
+    out.push([
+      "Total", "",
+      "100.00",
+      Math.round(target),
+      "", "",
+      "", "", "",
+      "", Math.round(rows.total_to_produce),
+      Math.round(rows.total_produce_value),
+      "", `${rows.alert_count} alerts`,
+    ]);
+    _downloadCsv(`june-production-plan-${ts}.csv`, out);
+  };
+
+  const commitTarget = () => {
+    const cleaned = Number(String(targetDraft).replace(/[^0-9.]/g, ""));
+    if (Number.isFinite(cleaned) && cleaned > 0) {
+      setTarget(cleaned);
+      setTargetDraft(String(cleaned));
+    } else {
+      setTargetDraft(String(target));
+    }
+  };
+
+  return (
+    <div className="card-white p-4 sm:p-5" data-testid="exec-production-plan-section">
+      <SectionTitle
+        title={`${nextMonthLabel} Production Plan`}
+        subtitle={
+          <span>
+            Allocates the target across subcategories using the last <span className="font-bold">60-day revenue mix</span>, converts to demand units via ASP, adds an <span className="font-bold">8-week safety stock</span>, subtracts current on-hand, and recommends what to <span className="font-bold">produce</span>. Excludes Retired styles and Idle subcategories — they get clearance/markdown actions instead.
+          </span>
+        }
+      />
+
+      {/* Target input + summary stats */}
+      <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="block">
+            <span className="block text-[10.5px] font-bold uppercase tracking-wide text-muted mb-1">Revenue target</span>
+            <div className="inline-flex items-center rounded-lg border border-border bg-white overflow-hidden">
+              <span className="px-2.5 py-1.5 text-[11.5px] font-bold text-muted bg-panel border-r border-border">KES</span>
+              <input
+                type="text"
+                value={targetDraft}
+                data-testid="exec-production-target-input"
+                onChange={(e) => setTargetDraft(e.target.value.replace(/[^0-9.]/g, ""))}
+                onBlur={commitTarget}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                className="px-2.5 py-1.5 text-[13px] font-bold tabular-nums focus:outline-none w-[140px]"
+              />
+            </div>
+            <div className="text-[10.5px] text-muted mt-1">
+              <span className="tabular-nums">{fmtKES(target)}</span> · saved locally
+            </div>
+          </label>
+          <div className="flex items-center gap-2 flex-wrap text-[10.5px]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Window: 60d</span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Safety: {SAFETY_WEEKS}w</span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Lead time: {LEAD_TIME_WEEKS}w</span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 px-2 py-0.5 font-semibold">Active only</span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 text-rose-800 px-2 py-0.5 font-semibold">Idle excluded</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={!rows}
+          data-testid="exec-production-plan-export-btn"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border bg-white text-[11px] font-semibold hover:border-brand/60 hover:text-brand transition-colors disabled:opacity-50"
+        >
+          <DownloadSimple size={13} weight="bold" />
+          Export production plan CSV
+        </button>
+      </div>
+
+      {planLoading && <Loading label="Computing production plan…" />}
+      {planError && <ErrorBox message={planError} />}
+      {!planLoading && !planError && rows && (
+        <>
+          {/* Headline KPI strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3" data-testid="exec-production-plan-summary">
+            <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
+              <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Total to produce</div>
+              <div className="text-[18px] font-extrabold tabular-nums">{fmtNum(rows.total_to_produce)}u</div>
+            </div>
+            <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
+              <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Est. retail value</div>
+              <div className="text-[18px] font-extrabold tabular-nums">{fmtKES(rows.total_produce_value)}</div>
+            </div>
+            <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
+              <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Subcats in plan</div>
+              <div className="text-[18px] font-extrabold tabular-nums">{rows.plan.filter((r) => r.to_produce > 0).length}</div>
+            </div>
+            <div className={`rounded-lg border px-3 py-2 ${rows.alert_count > 0 ? "border-rose-300 bg-rose-50" : "border-border bg-panel/40"}`}>
+              <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Lead-time alerts</div>
+              <div className={`text-[18px] font-extrabold tabular-nums ${rows.alert_count > 0 ? "text-rose-700" : ""}`}>{rows.alert_count}</div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-border bg-white">
+            <table className="w-full min-w-max text-[12.5px]" data-testid="exec-production-plan-table">
+              <thead className="bg-panel">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Subcategory</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Share of revenue this subcategory contributed in the last 60 days">Mix %</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Target revenue × revenue mix %">Target Rev</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Target revenue ÷ ASP — roughly 1 month of demand at current ASP">Demand (units)</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="8 weeks × weekly run-rate — minimum stock to keep on hand after June">Safety</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">On hand</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">To produce</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Est. value</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title={`Lead-time alert fires when current weeks of cover < ${LEAD_TIME_WEEKS}w AND production is needed — stock will deplete before the new order lands.`}>Risk</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.plan.map((r) => {
+                  if (r.to_produce <= 0) return null;
+                  return (
+                    <tr key={`${r.category}-${r.subcategory}`} className="border-t border-border/50 hover:bg-panel/40 transition-colors" data-testid={`exec-production-plan-row-${r.subcategory}`}>
+                      <td className="px-3 py-2">
+                        <div className="font-semibold">{r.subcategory}</div>
+                        <div className="text-[10.5px] text-muted">{r.category}</div>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{r.revenue_mix_pct.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtKES(r.june_target_rev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.demand_units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtNum(r.safety_units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-extrabold text-brand">{fmtNum(r.to_produce)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtKES(r.produce_value_kes)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {r.lead_time_alert ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-1.5 py-0.5 font-bold text-[10.5px]"
+                            data-testid={`exec-production-plan-alert-${r.subcategory}`}
+                            title={`Current cover is only ${r.weeks_of_cover.toFixed(1)}w but lead time is ${LEAD_TIME_WEEKS}w — stock will deplete before production lands. Expedite or split-source.`}
+                          >
+                            <Warning size={11} weight="bold" />
+                            {r.weeks_of_cover.toFixed(1)}w cover · expedite
+                          </span>
+                        ) : (
+                          <span className="text-emerald-700 text-[10.5px] font-semibold">OK · {r.weeks_of_cover.toFixed(1)}w cover</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="bg-panel/70 border-t-2 border-border">
+                <tr className="font-bold">
+                  <td className="px-3 py-2">Total</td>
+                  <td className="px-3 py-2 text-right tabular-nums">100%</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtKES(target)}</td>
+                  <td className="px-3 py-2"></td>
+                  <td className="px-3 py-2"></td>
+                  <td className="px-3 py-2"></td>
+                  <td className="px-3 py-2 text-right tabular-nums text-brand">{fmtNum(rows.total_to_produce)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtKES(rows.total_produce_value)}</td>
+                  <td className="px-3 py-2 text-right text-[10.5px]">
+                    {rows.alert_count > 0 ? (
+                      <span className="text-rose-700 font-bold">{rows.alert_count} alerts</span>
+                    ) : (
+                      <span className="text-emerald-700">All OK</span>
+                    )}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div className="text-[10.5px] text-muted mt-2">
+            Demand = Target ÷ ASP &nbsp;·&nbsp;
+            Required end stock = Demand + Safety ({SAFETY_WEEKS}w × weekly rate) &nbsp;·&nbsp;
+            To produce = max(0, Required end − On hand)
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 const ExecutiveSummary = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1911,6 +2256,11 @@ const ExecutiveSummary = () => {
         styleStatus={stockStyleStatus}
         onStyleStatusChange={setStockStyleStatus}
       />
+
+      {/* SECTION 4.5 — Production plan for next month, driven off the
+          60-day revenue mix. Self-fetching; only shown to all roles
+          that can already see Exec Summary. */}
+      <JuneProductionPlan />
 
       {/* SECTION 5 — Store performance (moved to bottom per leadership
           pref — the per-store grain reads last after the higher-level

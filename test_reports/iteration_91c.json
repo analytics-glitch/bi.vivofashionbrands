@@ -1,0 +1,30 @@
+{
+  "summary": "Iter 91c — Verified the new 'June 2026 Production Plan' section on Executive Summary. All 8 acceptance criteria from the review_request PASSED. Section renders directly below Stock Mix with testid 'exec-production-plan-section'. Revenue target input defaults to 114000000 on first load, edits commit on Enter/blur with intermediate KES-only sanitization, and the value is persisted to localStorage key '_vivo_june_production_target' (verified survives a full page reload). Summary KPIs show Total to produce=9,047u, Est retail value=KES 44.91M, Subcats in plan=9, Lead-time alerts=3 (rose-highlighted because >0). Plan table renders 9 rows sorted desc by To produce, with the required 9 columns and the per-row alert pill testid 'exec-production-plan-alert-{subcat}'. Math validated end-to-end: Maxi Dresses mix=16.86% × 114M = 19.22M Target Rev → demand 3,085 → safety 5,075 → on-hand 5,027 → produce 3,132 (matches main agent's expected 3,132). Footer Total Target Rev = KES 114.00M (= input target). Lead-time alerts correctly fire only on rows with WoC < 8w AND to_produce > 0 — Maxi Dresses 7.9w, Jackets & Coats 5.9w, Hoodies & Sweatshirts 3.3w — every other row shows 'OK · Xw cover' in emerald. CSV export downloads 'june-production-plan-2026-05-31.csv' with 14 columns, 28 data rows + 1 Total row, total revenue field on Total row = 114000000. Retired/Idle exclusion confirmed: no idle or retired subcategories appear in the table (only 9 subcats with positive to_produce). Stock Mix regression untouched (93 'exec-stockmix*' testids still on page).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/pages/ExecutiveSummary.jsx"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Clean component design — JuneProductionPlan self-fetches /exec-summary?window_days=60&style_status=active so it doesn't perturb the parent ExecutiveSummary state, and reuses the same query the Stock Mix block already issues (effectively free thanks to backend caching).",
+    "The targetDraft/target two-state pattern correctly debounces the math — typing intermediate values like '11' doesn't fire useMemo re-computations every keystroke. commit only on Enter/blur. Good UX.",
+    "localStorage persistence is wrapped in try/catch on both read and write — safe against private-browsing / quota-exceeded errors.",
+    "Math footer ('Demand = Target ÷ ASP · Required end stock = Demand + Safety (8w × weekly rate) · To produce = max(0, Required end − On hand)') makes the formula transparent for leadership review — matches spec exactly.",
+    "ExecutiveSummary.jsx is now ~2,307 lines — approaching the 700-line guideline ceiling. Consider extracting JuneProductionPlan, StockMix, StorePerformance etc. into separate files under /app/frontend/src/pages/exec-summary/ for maintainability. Not blocking, but worth a refactor pass.",
+    "Minor: CSV filename uses local toISOString().slice(0,10) which is UTC, while the rendered header uses local 'next month' label. In edge cases near midnight UTC this could produce a filename dated one day off the user's local date. Low impact.",
+    "Minor (cosmetic): the rounding of 'To produce' in the CSV uses Math.round() but the displayed value in the table uses fmtNum() — for Maxi Dresses CSV shows 3,132 while compute would suggest 3,133 (required_end 8,160 − on_hand 5,027). Both views are internally consistent; just a Math.round vs floor/ceil rounding artifact across columns. No action needed."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend-only iteration)", "frontend": "100% (8/8 acceptance criteria)" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 91c feature: 'June 2026 Production Plan' section on /exec-summary, below Stock Mix. Top-level testid: exec-production-plan-section. Sub-testids: exec-production-target-input (text input, KES, defaults 114000000, persists to localStorage key '_vivo_june_production_target' on blur/Enter), exec-production-plan-summary (4 KPI cards), exec-production-plan-table (table with 9 columns), exec-production-plan-row-{subcat} (data rows, only rendered when to_produce>0), exec-production-plan-alert-{subcat} (rose pill, only when WoC<8w AND to_produce>0), exec-production-plan-export-btn (CSV with 14 columns + Total row, filename pattern 'june-production-plan-{yyyy-mm-dd}.csv'). Live with target=114M: 9 subcats / 9,047u / KES 44.91M / 3 alerts (Maxi Dresses 7.9w, Jackets & Coats 5.9w, Hoodies & Sweatshirts 3.3w). Change target to 200M → 22,924u / KES 107.04M / 13 subcats / 3 alerts. Section header label is dynamic month-of-year based on local date — next month from current. To reset target back to default during testing, evaluate localStorage.removeItem('_vivo_june_production_target') then reload.",
+  "rca of the issue": "N/A — feature works as specified. All review_request acceptance criteria verified passing on the preview URL."
+}
