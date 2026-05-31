@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import ExecutiveSummarySnapshot from "@/components/ExecutiveSummarySnapshot";
 import DateWindowSelector from "@/components/DateWindowSelector";
+import StyleStatusToggle from "@/components/StyleStatusToggle";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import { categoryFor } from "@/lib/productCategory";
@@ -1355,7 +1356,7 @@ const QuickActions = ({ stockMix }) => {
   );
 };
 
-const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false }) => {
+const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false, styleStatus = "all", onStyleStatusChange }) => {
   if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
     return null;
   }
@@ -1436,7 +1437,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false 
         }
       />
 
-      {/* Toolbar — window selector + full-table CSV export + formula */}
+      {/* Toolbar — window selector + style-status filter + full-table CSV export + formula */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2 flex-wrap">
           <DateWindowSelector
@@ -1450,6 +1451,14 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false 
             testId="exec-stockmix-window"
             label="Sales window"
           />
+          {onStyleStatusChange && (
+            <StyleStatusToggle
+              value={styleStatus}
+              onChange={onStyleStatusChange}
+              size="xs"
+              testIdPrefix="exec-stockmix-style-status"
+            />
+          )}
           {windowLoading && (
             <span className="text-[10.5px] text-muted italic" data-testid="exec-stockmix-window-loading">re-windowing…</span>
           )}
@@ -1655,6 +1664,7 @@ const ExecutiveSummary = () => {
   // after the first hit. `stockMixOverride` lets us swap *just* the
   // stock_mix block without re-painting the rest of the page.
   const [stockWindowDays, setStockWindowDays] = useState(30);
+  const [stockStyleStatus, setStockStyleStatus] = useState("all");
   const [stockMixOverride, setStockMixOverride] = useState(null);
   const [stockMixLoading, setStockMixLoading] = useState(false);
 
@@ -1695,14 +1705,15 @@ const ExecutiveSummary = () => {
   // tags along so the window-scoped numbers stay consistent with the
   // country-scoped view.
   useEffect(() => {
-    // Default 30d ships in the initial fetch — skip refetch in that case.
-    if (stockWindowDays === 30 && !selectedCountry) {
+    // Default 30d + All ships in the initial fetch — skip refetch in that case.
+    if (stockWindowDays === 30 && stockStyleStatus === "all" && !selectedCountry) {
       setStockMixOverride(null);
       return;
     }
     let cancel = false;
     setStockMixLoading(true);
     const params = { window_days: stockWindowDays };
+    if (stockStyleStatus && stockStyleStatus !== "all") params.style_status = stockStyleStatus;
     if (selectedCountry) params.country = selectedCountry;
     api
       .get("/exec-summary", { params, timeout: 90000 })
@@ -1710,7 +1721,7 @@ const ExecutiveSummary = () => {
       .catch(() => { if (!cancel) setStockMixOverride(null); })
       .finally(() => { if (!cancel) setStockMixLoading(false); });
     return () => { cancel = true; };
-  }, [stockWindowDays, selectedCountry]);
+  }, [stockWindowDays, stockStyleStatus, selectedCountry]);
 
   // Mobile snapshot — full-screen overlay (same pattern as Overview):
   // page swaps to a stripped compact view, "Save image" downloads a
@@ -1888,6 +1899,8 @@ const ExecutiveSummary = () => {
         windowDays={stockWindowDays}
         onWindowChange={setStockWindowDays}
         windowLoading={stockMixLoading}
+        styleStatus={stockStyleStatus}
+        onStyleStatusChange={setStockStyleStatus}
       />
 
       {/* SECTION 5 — Store performance (moved to bottom per leadership

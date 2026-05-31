@@ -3240,7 +3240,7 @@ _OVERVIEW_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"]
 # and dynamic: end-of-window is always *yesterday* (UTC), so the page
 # never shows a partial-day or zero-units anomaly.
 @api_router.get("/exec-summary")
-async def exec_summary_endpoint(country: Optional[str] = None, window_days: int = 30):
+async def exec_summary_endpoint(country: Optional[str] = None, window_days: int = 30, style_status: Optional[str] = None):
     """At-a-glance executive scorecard.
 
     Returns a single payload with both YTD and MTD blocks. Each block
@@ -3618,6 +3618,17 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
         except Exception:
             inv_rows = []
             subwin_rows = []
+        # Iter 91b — apply the Active / Retired / All style-status post-
+        # filter to inventory. We do NOT filter the subcategory sales
+        # because /subcategory-sales is aggregated above the style grain;
+        # this matches how the Inventory page itself uses the toggle.
+        # When `style_status` is unset or "all", `filter_rows` is a no-op.
+        if inv_rows:
+            inv_rows = filter_rows(
+                annotate_status(inv_rows, field="style_name"),
+                style_status,
+                field="style_name",
+            )
         # Roll inventory units on hand by (category, subcategory) and
         # by category total. The subcategory layer lets the frontend
         # nest sub-rows under each category — same join key as the
@@ -3740,6 +3751,7 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
                 "to":   win_to.isoformat(),
                 "method": f"rolling_{wd}d",
             },
+            "style_status": (style_status or "all").lower(),
             "categories": rows,
         }
 

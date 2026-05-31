@@ -1,0 +1,32 @@
+{
+  "summary": "Iter 91b — Tested Executive Summary 'Stock Mix' style_status filter (Active/Retired/All toggle). Backend pytest: 16/16 passed. Frontend e2e: all three data-testids render, default=All highlighted via aria-pressed, clicking Retired/Active triggers refetch with correct style_status param, 'Total on hand' updates to 4,647 (retired) / 70,270 (active) / 74,917 (all), Sold (30d) and Sold% remain constant at 23,952 across all filters (sales unfiltered as designed), Quick Actions & category rows update, combined with window_days 30/60/90 — both params ride along in a single /exec-summary request. Returning to 'All' drops style_status param entirely (default behavior preserved). Live math verified: 70,270 + 4,647 = 74,917 (all = active + retired exactly).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91b_exec_stockmix_style_status.py",
+    "/app/test_reports/pytest/iter91b_stockmix_style_status.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend exec_summary_endpoint (server.py L3243) cleanly threads (country, window_days, style_status) into _stock_mix_block; the filter_rows(annotate_status(...)) pattern is consistent with the same idiom used in /inventory-snapshot, /products, /exports endpoints — good DRY reuse of the merch retired-style list semantics.",
+    "stock_mix.style_status echo field is added unconditionally (defaults to 'all' lowercase) which keeps the response shape predictable for the frontend regardless of whether the client sends the param.",
+    "Frontend ExecutiveSummary.jsx L1709 has a smart short-circuit: when stockWindowDays===30 AND stockStyleStatus==='all' AND no country, no style_status param is sent — leverages backend default. Verified live: after toggling back to 'All' the URL becomes /exec-summary?window_days=90 (no style_status). Backward-compat win.",
+    "StyleStatusToggle component is shared across Inventory/Products/Exports/SOR/Exec — single source of truth for the 3-way pill. Default value prop comment in the component still says \"Default in callers should be 'active'\" but ExecutiveSummary intentionally overrides to 'all' (which is correct for Exec — leadership wants the full picture by default). The component's internal `v = value || \"active\"` fallback is never hit here because ExecSummary always passes a value, but it's a latent inconsistency to note.",
+    "Sales numbers (subcategory-sales aggregate) are correctly NOT filtered by style_status — verified live: total_sold_units_mtd = 23,952 across all 3 filters. The 'Group cover' weeks figure thus changes dramatically (13.4w / 12.6w / 0.8w) because cover = stock ÷ sold/weeks, and stock changes while sold doesn't. This is an interesting analytical artifact — 'retired stock' shows 0.8w cover meaning retired styles are sold very fast relative to remaining stock, OR conversely it's misleading because the sold-window includes BOTH active+retired sales but stock is retired-only. Worth a tooltip note in a future iteration.",
+    "Quick Actions block (markdown candidates count) also updates correctly with the filter: 14 candidates (all) → 13 (active) → 1 (retired). Confirms the filter propagates beyond just the totals header."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91b_exec_stockmix_style_status.py"
+  ],
+  "success_rate": { "backend": "100% (16/16)", "frontend": "100% on requested flows" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 91b feature: 3-way style_status pill on Exec Summary > Stock Mix. testid prefix: exec-stockmix-style-status (-all, -active, -retired). Default value = 'all' (echoed back as stock_mix.style_status). Live measurements: window_days=30 totals stock all=74,917 / active=70,270 / retired=4,647 (sum invariant). Sales (total_sold_units_mtd / total_sold_units_window) are IDENTICAL across all three filters — subcategory-sales is aggregated above the style grain. When user re-selects 'All' the frontend drops the style_status param entirely from the URL (only sends if value !== 'all') — relies on backend default. Combinable with 30/60/90 window selector — both params ride in same request. Regression file: /app/backend/tests/test_iteration_91b_exec_stockmix_style_status.py — set REACT_APP_BACKEND_URL before pytest.",
+  "rca of the issue": "N/A — feature works as specified. All 6 acceptance criteria from the review_request verified passing."
+}
