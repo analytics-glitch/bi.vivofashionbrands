@@ -5,6 +5,20 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91c) — Executive Summary: June Production Plan recommendation engine
+- **User ask**: "Assume revenue target for June is 114M — how would you use this information to guide what to produce in June?"
+- **Approach**: Allocate target across subcategories using 60-day revenue mix, convert to demand units via ASP, add safety stock, subtract on-hand, recommend production. Excludes Retired and Idle subcats (they get clearance actions instead).
+- **User choices**: Safety = 8 weeks · Window = 60 days · Exclude Retired AND Idle · Frontend-only target input persisted to localStorage (default KES 114M) · Lead-time alert when current WoC < 8w AND production > 0.
+- **Frontend** (`ExecutiveSummary.jsx`): new `JuneProductionPlan` component renders just below Stock Mix. Self-fetches `/exec-summary?window_days=60&style_status=active` (cached, ≈free). Math:
+  - `revenue_60d = sold_units × asp_mtd` per subcategory · `revenue_mix = revenue_60d ÷ total_revenue_60d`
+  - `june_target_rev = target × revenue_mix` · `demand_units = june_target_rev ÷ asp_mtd`
+  - `safety_units = 8 × weekly_rate` where `weekly_rate = sold_60d ÷ (60/7)`
+  - `to_produce = max(0, demand_units + safety_units − stock_on_hand)`
+  - `lead_time_alert = weeks_of_cover < 8 AND to_produce > 0`
+- **UI**: KES target input (sanitised, commits on Enter/blur, localStorage-persisted), settings pills (Window 60d · Safety 8w · Lead time 8w · Active only · Idle excluded), 4-card KPI strip (Total produce · Est retail value · Subcats in plan · Lead-time alerts), per-subcat table sorted by to_produce desc with risk pill column, CSV export, math footer caption.
+- **Live results** (target=KES 114M): 9 subcats in plan · 9,047u to produce · KES 44.91M est value · **3 lead-time alerts** (Maxi Dresses 7.9w · Jackets & Coats 5.9w · Hoodies & Sweatshirts 3.3w). Maxi Dresses is the biggest production need (3,132u) but flagged to expedite because current cover deplete before production lands.
+- **Verified**: Frontend e2e 8/8 acceptance criteria passed. Math validated end-to-end (mix × target = target rev; total target rev = input target; safety = 8 × weekly_rate).
+
 ### Recent (Feb 2026 — Iter 91b) — Executive Summary: Stock Mix Active/Retired/All toggle
 - **User ask**: Add the same 3-way Active / Retired / All pill (shared `StyleStatusToggle`) on the Exec Summary Stock Mix table.
 - **Backend** (`/api/exec-summary`): now accepts `style_status: "active"|"retired"|"all"` (default `all`). `_stock_mix_block` filters inventory via `filter_rows(annotate_status(inv_rows, field='style_name'), style_status, …)` — same idiom used on Inventory/Products/Exports. Subcategory sales are deliberately NOT filtered (the `/subcategory-sales` upstream is aggregated above the style grain). Response now echoes `stock_mix.style_status`.
