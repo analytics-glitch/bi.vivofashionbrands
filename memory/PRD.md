@@ -5,6 +5,17 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91d) — Production Plan: seasonality lifts + factory capacity constraint
+- **User ask**: Add seasonality lift multipliers to the production plan AND constrain to factory capacity of 28,000 units/month.
+- **Seasonality** (per-category, editable, localStorage-persisted): defaults reflect East Africa June (cool dry season in highlands) — `Outerwear 1.25, Bottoms 1.05, Skirts 0.95, Sale 0.00, rest 1.00`. Lifts inflate BOTH demand_units AND safety_units per row. Inline grid editor in a collapsible panel under the toolbar; Reset Defaults restores the seed values.
+- **Capacity allocation**: default 28,000 u/mo input (editable, persisted). Three-branch logic:
+  1. `total_ideal ≤ capacity` → `allocated = ideal` (no scaling)
+  2. `alert_total < capacity < total_ideal` → alerts produced FULL, non-alerts scaled pro-rata to `(capacity − alert_total) / non_alert_total`
+  3. `alert_total ≥ capacity` → alerts themselves scaled pro-rata to `capacity / alert_total`; non-alerts = 0
+- **UI**: capacity input next to revenue target; utilization bar (emerald < 80%, amber when capped) with warning text showing shortfall units + retail value; new Lift and Gap columns in the table; CSV export expanded to 17 columns (adds Seasonal Lift, Produce-ideal, Produce-allocated, Capacity Gap).
+- **Live verified math**: defaults give 11,461u / KES 56.07M / 41% util / 3 alerts (Sweaters & Ponchos lifted 1,714→3,051 ✓ at 1.25×). At capacity=8000 (forced cap): warning fires correctly, alerts produced FULL (4,761u), non-alerts scaled to 48%, sum=8,000 exactly. At capacity=3000 (< alert demand): alerts scaled to 63%, non-alerts=0, sum=3,000 exactly.
+- **Testing**: Frontend e2e **13/13 acceptance criteria PASSED**. Math verified to the unit.
+
 ### Recent (Feb 2026 — Iter 91c) — Executive Summary: June Production Plan recommendation engine
 - **User ask**: "Assume revenue target for June is 114M — how would you use this information to guide what to produce in June?"
 - **Approach**: Allocate target across subcategories using 60-day revenue mix, convert to demand units via ASP, add safety stock, subtract on-hand, recommend production. Excludes Retired and Idle subcats (they get clearance actions instead).
