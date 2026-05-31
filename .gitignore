@@ -175,3 +175,4 @@ credentials.json
 *.key
 .credentials
 frontend/node_modules/.cache/default-development/54.pack
+frontend/node_modules/.cache/default-development/66.pack

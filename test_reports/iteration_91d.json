@@ -1,0 +1,28 @@
+{
+  "summary": "Iter 91d — Verified seasonality lift multipliers + factory capacity constraint on June 2026 Production Plan. ALL 13 acceptance criteria PASS. Defaults render exactly as spec: capacity input=28000 (data-testid='exec-production-capacity-input'), seasonality panel shows per-category lift inputs (Outerwear 1.25, Bottoms 1.05, Skirts 0.95, Dresses/Mens/Tops/Two-Piece Sets 1.00). With defaults, KPIs show Total to produce=11,461u (lifted from 9,047 baseline), capacity util 41% (emerald bar), 3 lead-time alerts, no warning. Lift column renders correctly: 1.25× rows (Sweaters & Ponchos 3,051, Jackets & Coats 1,254, Hoodies & Sweatshirts 375) are emerald-highlighted; 1.05× and 1.00× neutral. Capacity allocation logic verified end-to-end: (a) CAP=8000 with 11,461 ideal → warning fires ('shortfall 3,461u · KES 15.54M · non-alerts scaled to 48%'), alerts produced FULL (Maxi 3,132 + Jackets 1,254 + Hoodies 375 = 4,761), non-alerts scaled (Sweaters 1,475 · Loose Tops 782 · Full Length Pants 748 · Jumpsuits 173 · Midriff 57 · Pants&Waterfall 4 = 3,239), sum allocated = 8,000 EXACTLY ✓. (b) CAP=3000 (< alert demand 4,761) → warning 'alert demand exceeds capacity — even alerts scaled to 63%', alerts scaled to 63% (Maxi 1,974 + Jackets 790 + Hoodies 236 = 3,000 EXACTLY), all non-alerts = 0, SUBCATS IN PLAN drops to 3 ✓. Gap column appears in table with negative values when capped; '—' shown for alerts at full. KPI sublines 'ideal: 11,461u' and 'gap: KES 39.70M' render. Persistence verified: localStorage keys '_vivo_factory_capacity' and '_vivo_seasonality_lifts' written on edit; capacity=3000 survives full page reload; seasonality reset button restores Outerwear from 2.00 back to 1.25. Math footer reads exactly as spec: 'Demand = (Target ÷ ASP) × Lift · Safety = 8w × Weekly rate × Lift · Required end stock = Demand + Safety · Produce (ideal) = max(0, Required end − On hand) · Produce (allocated) = capacity-prioritised (alerts first, then pro-rata)'. Regression: Stock Mix section + earlier production plan acceptance criteria still pass (target=114M default, KES 114.00M total target rev on footer, alerts row pills functioning).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/pages/ExecutiveSummary.jsx"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Seasonality panel only renders lift inputs for categories that have rows in the current production plan (e.g., Accessories, Sale, Other are absent from the UI because no subcat from them currently has to_produce>0). The defaults are still persisted in localStorage (Sale:0 confirmed in LS dump). Consider showing ALL categories from DEFAULT_SEASONALITY so users can pre-set lifts for upcoming season changes. Low priority — not blocking.",
+    "Capacity input shows leading zero artifact after typing '2.00' into a lift input (rendered as '02.00' in the DOM until blur). Saved value is correct (1.25 after reset works). Cosmetic only.",
+    "ExecutiveSummary.jsx now ~2,400+ lines after this iteration. Recommend extracting JuneProductionPlan into /app/frontend/src/pages/exec-summary/JuneProductionPlan.jsx before next major change — already flagged in iter 91c.",
+    "Math is internally consistent: at CAP=8000, sum of allocated = 8,000 exactly; at CAP=3000, sum of allocated = 3,000 exactly. Rounding done well — no off-by-one in the displayed total. CSV export columns were not explicitly downloaded this iteration but the in-DOM table has all required columns (Subcategory, Mix%, Target Rev, Lift, Demand, Safety, On hand, Produce[allocated], Gap, Est Value, Risk) so the CSV builder should be a direct projection.",
+    "Allocation algorithm correctly handles all three branches per spec: (1) ideal fits, (2) alerts fit + non-alerts pro-rata, (3) alerts themselves pro-rata. Edge case verified: CAP=3000 with alert_total=4,761 → ratio 0.630 applied uniformly to the 3 alert rows, sum lands on 3,000 exactly via Math.round distribution."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend-only iteration)", "frontend": "100% (13/13 acceptance criteria)" },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 91d feature: Seasonality lift multipliers + factory capacity constraint on /exec-summary's June Production Plan. New testids: exec-production-capacity-input (default 28000, LS key '_vivo_factory_capacity'), exec-production-seasonality-toggle (open/close panel), exec-production-seasonality-panel, exec-production-lift-{Category} (numeric inputs), exec-production-seasonality-reset, exec-production-capacity-bar (emerald<80%, amber when capped), exec-production-capacity-warning (only when capped). Seasonality LS key: '_vivo_seasonality_lifts'. Default lifts: Outerwear 1.25, Bottoms 1.05, Skirts 0.95, Sale 0.00, rest 1.00. Live defaults: target=114M, capacity=28000, lifts on → 11,461u / KES 56.07M / 9 subcats / 3 alerts / 41% util. To reset for clean testing: localStorage.removeItem('_vivo_june_production_target','_vivo_factory_capacity','_vivo_seasonality_lifts') then reload. NOTE: panel only renders lift inputs for categories present in current plan rows — Accessories/Sale/Other won't show inputs but their defaults persist in LS.",
+  "rca of the issue": "N/A — all spec acceptance criteria pass. Allocation math verified to the unit (CAP=8000 → exactly 8,000 allocated; CAP=3000 → exactly 3,000 allocated)."
+}

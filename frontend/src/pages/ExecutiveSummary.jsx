@@ -1649,54 +1649,107 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
  * KES 114M for June), allocate it across subcategories using the 60-day
  * revenue mix, convert each subcategory's target revenue into demand
  * units via ASP, add an 8-week safety stock, subtract current on-hand,
- * and recommend the units to PRODUCE.
+ * and recommend the units to PRODUCE — capped at the factory's monthly
+ * capacity (default 28,000 units) and lifted by per-category seasonal
+ * multipliers leadership can dial in.
  *
  * Excludes Retired styles AND Idle subcategories (no recent sales) —
  * those get markdown / clearance actions instead, not production.
  *
  * Logic per subcategory:
- *   weeks_in_window  = 60 / 7 ≈ 8.57
- *   weekly_rate      = sold_units_60d / weeks_in_window
- *   revenue_60d      = sold_units_60d × asp_mtd        (from API)
- *   revenue_mix_%    = revenue_60d / total_revenue_60d
- *   june_target_rev  = total_target × revenue_mix_%
- *   demand_units     = june_target_rev / asp_mtd       (≈ 1 month sales)
- *   safety_units     = 8 × weekly_rate
- *   required_end     = demand_units + safety_units
- *   to_produce       = max(0, required_end − stock_on_hand)
- *   weeks_of_cover   = stock_on_hand / weekly_rate
- *   lead_time_alert  = weeks_of_cover < 8 AND to_produce > 0
- *                      → will stock out before production lands
+ *   weeks_in_window     = 60 / 7 ≈ 8.57
+ *   weekly_rate         = sold_units_60d / weeks_in_window
+ *   revenue_60d         = sold_units_60d × asp_mtd        (from API)
+ *   revenue_mix_%       = revenue_60d / total_revenue_60d
+ *   june_target_rev     = total_target × revenue_mix_%
+ *   season_lift         = seasonality_lift[category]      (default 1.0)
+ *   demand_units        = (june_target_rev / asp_mtd) × season_lift
+ *   safety_units        = 8 × weekly_rate × season_lift
+ *   required_end        = demand_units + safety_units
+ *   to_produce_ideal    = max(0, required_end − stock_on_hand)
+ *   weeks_of_cover      = stock_on_hand / weekly_rate
+ *   lead_time_alert     = weeks_of_cover < 8 AND to_produce_ideal > 0
+ *
+ * Capacity allocation:
+ *   If sum(to_produce_ideal) ≤ capacity → allocated = ideal.
+ *   Else:
+ *     1. Lead-time-alert subcats get their full ideal first (must-make).
+ *     2. Remaining capacity is split across the rest proportional to
+ *        each subcat's ideal-to-produce share.
+ *     3. If alert-only demand > capacity, alerts themselves are scaled.
+ *   `gap = ideal − allocated` surfaces the shortfall row-by-row.
  *
  * The 60-day window is fixed (per user choice); we issue our own
  * /exec-summary?window_days=60&style_status=active request which is
  * cached client-side so it is essentially free on repeat renders.
  */
 const TARGET_LS_KEY = "_vivo_june_production_target";
+const CAPACITY_LS_KEY = "_vivo_factory_capacity";
+const SEASONALITY_LS_KEY = "_vivo_seasonality_lifts";
 const DEFAULT_JUNE_TARGET = 114_000_000;
+const DEFAULT_CAPACITY = 28_000;
 const SAFETY_WEEKS = 8;
 const LEAD_TIME_WEEKS = 8;
+// East Africa seasonality defaults for the June plan. Kenya highland
+// dry-cool season means warmer apparel lifts; Sale is dropped because
+// we don't produce against the Sale ledger. Leadership can override
+// any value inline — saved to localStorage. Categories not listed
+// default to 1.00 (no lift).
+const DEFAULT_SEASONALITY = {
+  Outerwear: 1.25,
+  Dresses: 1.00,
+  Tops: 1.00,
+  Bottoms: 1.05,
+  Skirts: 0.95,
+  "Two-Piece Sets": 1.00,
+  Mens: 1.00,
+  Accessories: 1.00,
+  Sale: 0.00,
+  Other: 1.00,
+};
+
+const _readLsNumber = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const _readLsObject = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 const JuneProductionPlan = () => {
   const [planMix, setPlanMix] = useState(null);
   const [planLoading, setPlanLoading] = useState(true);
   const [planError, setPlanError] = useState(null);
-  const [target, setTarget] = useState(() => {
-    try {
-      const raw = localStorage.getItem(TARGET_LS_KEY);
-      const n = raw ? Number(raw) : NaN;
-      return Number.isFinite(n) && n > 0 ? n : DEFAULT_JUNE_TARGET;
-    } catch {
-      return DEFAULT_JUNE_TARGET;
-    }
-  });
+  const [target, setTarget] = useState(() => _readLsNumber(TARGET_LS_KEY, DEFAULT_JUNE_TARGET));
+  const [capacity, setCapacity] = useState(() => _readLsNumber(CAPACITY_LS_KEY, DEFAULT_CAPACITY));
+  const [seasonality, setSeasonality] = useState(() => _readLsObject(SEASONALITY_LS_KEY, DEFAULT_SEASONALITY));
+  const [seasonalityOpen, setSeasonalityOpen] = useState(false);
   // Buffered text input — only commit to `target` on blur / Enter so
   // typing intermediate values like "11" doesn't recompute every keystroke.
   const [targetDraft, setTargetDraft] = useState(String(target));
+  const [capacityDraft, setCapacityDraft] = useState(String(capacity));
 
   useEffect(() => {
     try { localStorage.setItem(TARGET_LS_KEY, String(target)); } catch { /* ignore */ }
   }, [target]);
+  useEffect(() => {
+    try { localStorage.setItem(CAPACITY_LS_KEY, String(capacity)); } catch { /* ignore */ }
+  }, [capacity]);
+  useEffect(() => {
+    try { localStorage.setItem(SEASONALITY_LS_KEY, JSON.stringify(seasonality)); } catch { /* ignore */ }
+  }, [seasonality]);
 
   useEffect(() => {
     let cancel = false;
@@ -1748,37 +1801,97 @@ const JuneProductionPlan = () => {
     const total_revenue = flat.reduce((s, r) => s + r.revenue_60d, 0) || 1;
 
     // Allocate the target across subcategories using the 60d revenue mix.
+    // Seasonal lift inflates BOTH demand and safety (we need a bigger
+    // stock buffer for an expected higher-velocity month).
     let plan = flat.map((r) => {
       const revenue_mix = r.revenue_60d / total_revenue;
       const june_target_rev = target * revenue_mix;
       const weekly_rate = r.sold_60d / wiw;
-      const demand_units = june_target_rev / r.asp;
-      const safety_units = SAFETY_WEEKS * weekly_rate;
+      const season_lift = Number.isFinite(seasonality[r.category]) ? seasonality[r.category] : 1.0;
+      const demand_units_base = june_target_rev / r.asp;
+      const safety_units_base = SAFETY_WEEKS * weekly_rate;
+      const demand_units = demand_units_base * season_lift;
+      const safety_units = safety_units_base * season_lift;
       const required_end = demand_units + safety_units;
-      const to_produce = Math.max(0, required_end - r.stock);
-      const lead_time_alert = r.weeks_of_cover < LEAD_TIME_WEEKS && to_produce > 0;
+      const to_produce_ideal = Math.max(0, required_end - r.stock);
+      const lead_time_alert = r.weeks_of_cover < LEAD_TIME_WEEKS && to_produce_ideal > 0;
       return {
         ...r,
         revenue_mix_pct: revenue_mix * 100,
         june_target_rev,
         weekly_rate,
+        season_lift,
+        demand_units_base,
         demand_units,
         safety_units,
         required_end,
-        to_produce,
+        to_produce_ideal,
         lead_time_alert,
-        produce_value_kes: to_produce * r.asp,
       };
     });
-    // Sort by units to produce desc — biggest production needs first.
+
+    // Capacity allocation.
+    //   1. If ideal ≤ capacity → allocated = ideal (no scaling).
+    //   2. Else: reserve capacity for lead-time alerts first (must-make),
+    //      then split the remainder pro-rata across non-alert subcats.
+    //   3. If alert-only demand already exceeds capacity, alerts
+    //      themselves are scaled down pro-rata.
+    const total_ideal = plan.reduce((s, r) => s + r.to_produce_ideal, 0);
+    const cap = Math.max(0, capacity || 0);
+    const isCapped = total_ideal > cap && cap > 0;
+    let alerts_full_count = 0;
+    let alerts_scale = 1.0;
+    let nonalerts_scale = 1.0;
+    if (!isCapped) {
+      plan = plan.map((r) => ({ ...r, to_produce: r.to_produce_ideal }));
+    } else {
+      const alert_total = plan.reduce((s, r) => s + (r.lead_time_alert ? r.to_produce_ideal : 0), 0);
+      if (alert_total >= cap) {
+        // Alerts alone exceed capacity — scale alerts, kill non-alerts.
+        alerts_scale = cap / Math.max(alert_total, 1);
+        plan = plan.map((r) => ({
+          ...r,
+          to_produce: r.lead_time_alert ? r.to_produce_ideal * alerts_scale : 0,
+        }));
+      } else {
+        // Alerts get full, scale non-alerts to fit the remainder.
+        const non_alert_total = total_ideal - alert_total;
+        const remaining = cap - alert_total;
+        nonalerts_scale = non_alert_total > 0 ? remaining / non_alert_total : 0;
+        alerts_full_count = plan.filter((r) => r.lead_time_alert).length;
+        plan = plan.map((r) => ({
+          ...r,
+          to_produce: r.lead_time_alert ? r.to_produce_ideal : r.to_produce_ideal * nonalerts_scale,
+        }));
+      }
+    }
+    // Compute the gap and est value off the *allocated* numbers.
+    plan = plan.map((r) => ({
+      ...r,
+      gap_units: Math.max(0, r.to_produce_ideal - r.to_produce),
+      produce_value_kes: r.to_produce * r.asp,
+      gap_value_kes: Math.max(0, r.to_produce_ideal - r.to_produce) * r.asp,
+    }));
+    // Sort by allocated units to produce desc — biggest production needs first.
     plan.sort((a, b) => b.to_produce - a.to_produce);
 
     const total_to_produce = plan.reduce((s, r) => s + r.to_produce, 0);
+    const total_to_produce_ideal = total_ideal;
     const total_produce_value = plan.reduce((s, r) => s + r.produce_value_kes, 0);
+    const total_gap_units = plan.reduce((s, r) => s + r.gap_units, 0);
+    const total_gap_value = plan.reduce((s, r) => s + r.gap_value_kes, 0);
     const alert_count = plan.filter((r) => r.lead_time_alert).length;
+    const capacity_util_pct = cap > 0 ? (total_to_produce / cap) * 100 : 0;
 
-    return { plan, total_to_produce, total_produce_value, alert_count, total_revenue, wiw };
-  }, [planMix, target]);
+    return {
+      plan,
+      total_to_produce, total_to_produce_ideal, total_produce_value,
+      total_gap_units, total_gap_value,
+      alert_count, alerts_full_count, alerts_scale, nonalerts_scale,
+      isCapped, capacity_util_pct,
+      total_revenue, wiw,
+    };
+  }, [planMix, target, capacity, seasonality]);
 
   const exportCsv = () => {
     if (!rows) return;
@@ -1786,9 +1899,10 @@ const JuneProductionPlan = () => {
     const head = [
       "Category", "Subcategory",
       `Revenue Mix % (60d)`, `June Target Rev (KES)`,
-      "ASP (KES)", "Weekly Rate (units)",
+      "Seasonal Lift", "ASP (KES)", "Weekly Rate (units)",
       "Demand Units (June)", "Safety Stock (8w units)", "Required End Stock",
-      "On Hand Today", "TO PRODUCE", "Estimated Value (KES)",
+      "On Hand Today", "TO PRODUCE (ideal)", "TO PRODUCE (allocated)",
+      "Capacity Gap (units)", "Estimated Value (KES)",
       "Current WoC (wks)", "Lead-time Alert",
     ];
     const out = [head];
@@ -1797,13 +1911,16 @@ const JuneProductionPlan = () => {
         r.category, r.subcategory,
         r.revenue_mix_pct.toFixed(2),
         Math.round(r.june_target_rev),
+        r.season_lift.toFixed(2),
         Math.round(r.asp),
         r.weekly_rate.toFixed(1),
         Math.round(r.demand_units),
         Math.round(r.safety_units),
         Math.round(r.required_end),
         Math.round(r.stock),
+        Math.round(r.to_produce_ideal),
         Math.round(r.to_produce),
+        Math.round(r.gap_units),
         Math.round(r.produce_value_kes),
         r.weeks_of_cover.toFixed(1),
         r.lead_time_alert ? "YES — expedite" : "",
@@ -1813,11 +1930,14 @@ const JuneProductionPlan = () => {
       "Total", "",
       "100.00",
       Math.round(target),
+      "",
       "", "",
       "", "", "",
-      "", Math.round(rows.total_to_produce),
+      "", Math.round(rows.total_to_produce_ideal),
+      Math.round(rows.total_to_produce),
+      Math.round(rows.total_gap_units),
       Math.round(rows.total_produce_value),
-      "", `${rows.alert_count} alerts`,
+      "", `${rows.alert_count} alerts · capacity ${Math.round(capacity)}`,
     ]);
     _downloadCsv(`june-production-plan-${ts}.csv`, out);
   };
@@ -1831,6 +1951,32 @@ const JuneProductionPlan = () => {
       setTargetDraft(String(target));
     }
   };
+  const commitCapacity = () => {
+    const cleaned = Number(String(capacityDraft).replace(/[^0-9.]/g, ""));
+    if (Number.isFinite(cleaned) && cleaned >= 0) {
+      setCapacity(cleaned);
+      setCapacityDraft(String(cleaned));
+    } else {
+      setCapacityDraft(String(capacity));
+    }
+  };
+  // List of categories present in the plan (for inline editing of lifts)
+  const categoriesInPlan = useMemo(() => {
+    if (!planMix) return [];
+    const set = new Set();
+    for (const c of planMix.categories || []) {
+      if ((c.subcategories || []).some((sc) => sc.sold_units > 0 && sc.asp_mtd > 0 && sc.weeks_of_cover != null)) {
+        set.add(c.category);
+      }
+    }
+    return Array.from(set).sort();
+  }, [planMix]);
+  const updateLift = (cat, val) => {
+    const v = Number(val);
+    if (!Number.isFinite(v) || v < 0) return;
+    setSeasonality((prev) => ({ ...prev, [cat]: v }));
+  };
+  const resetSeasonality = () => setSeasonality(DEFAULT_SEASONALITY);
 
   return (
     <div className="card-white p-4 sm:p-5" data-testid="exec-production-plan-section">
@@ -1843,7 +1989,7 @@ const JuneProductionPlan = () => {
         }
       />
 
-      {/* Target input + summary stats */}
+      {/* Target + Capacity inputs + summary stats */}
       <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
         <div className="flex items-center gap-3 flex-wrap">
           <label className="block">
@@ -1864,12 +2010,39 @@ const JuneProductionPlan = () => {
               <span className="tabular-nums">{fmtKES(target)}</span> · saved locally
             </div>
           </label>
+          <label className="block">
+            <span className="block text-[10.5px] font-bold uppercase tracking-wide text-muted mb-1">Factory capacity</span>
+            <div className="inline-flex items-center rounded-lg border border-border bg-white overflow-hidden">
+              <input
+                type="text"
+                value={capacityDraft}
+                data-testid="exec-production-capacity-input"
+                onChange={(e) => setCapacityDraft(e.target.value.replace(/[^0-9]/g, ""))}
+                onBlur={commitCapacity}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                className="px-2.5 py-1.5 text-[13px] font-bold tabular-nums focus:outline-none w-[100px]"
+              />
+              <span className="px-2.5 py-1.5 text-[11.5px] font-bold text-muted bg-panel border-l border-border">u / mo</span>
+            </div>
+            <div className="text-[10.5px] text-muted mt-1">
+              <span className="tabular-nums">{fmtNum(capacity)}</span> units/month
+            </div>
+          </label>
           <div className="flex items-center gap-2 flex-wrap text-[10.5px]">
             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Window: 60d</span>
             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Safety: {SAFETY_WEEKS}w</span>
             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-panel/60 px-2 py-0.5 font-semibold">Lead time: {LEAD_TIME_WEEKS}w</span>
             <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 px-2 py-0.5 font-semibold">Active only</span>
             <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 text-rose-800 px-2 py-0.5 font-semibold">Idle excluded</span>
+            <button
+              type="button"
+              onClick={() => setSeasonalityOpen((o) => !o)}
+              data-testid="exec-production-seasonality-toggle"
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-semibold transition-colors ${seasonalityOpen ? "border-brand bg-brand text-white" : "border-border bg-white hover:border-brand/60"}`}
+              title="Adjust per-category seasonal lift multipliers for the production plan"
+            >
+              Seasonality {seasonalityOpen ? "▲" : "▼"}
+            </button>
           </div>
         </div>
         <button
@@ -1884,19 +2057,105 @@ const JuneProductionPlan = () => {
         </button>
       </div>
 
+      {/* Seasonality editor — collapsible panel showing per-category
+          lift multipliers. 1.00 = no lift, 1.25 = +25%, 0.00 = drop. */}
+      {seasonalityOpen && categoriesInPlan.length > 0 && (
+        <div
+          className="rounded-lg border border-brand/30 bg-brand/5 p-3 mb-3"
+          data-testid="exec-production-seasonality-panel"
+        >
+          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+            <div>
+              <div className="text-[11px] font-extrabold uppercase tracking-wide text-brand">Seasonal lift multipliers</div>
+              <div className="text-[10.5px] text-muted">
+                Inflates both demand and safety stock per category. 1.00 = no lift · 1.25 = +25% · 0.00 = exclude (no production).
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={resetSeasonality}
+              data-testid="exec-production-seasonality-reset"
+              className="text-[10.5px] font-semibold text-brand hover:underline"
+              title="Reset to defaults (Outerwear 1.25, Bottoms 1.05, Skirts 0.95, Sale 0.00, rest 1.00)"
+            >
+              Reset defaults
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {categoriesInPlan.map((cat) => {
+              const v = Number.isFinite(seasonality[cat]) ? seasonality[cat] : 1.0;
+              const tone = v > 1.05 ? "border-emerald-300 bg-emerald-50"
+                : v < 0.95 ? "border-rose-300 bg-rose-50"
+                : "border-border bg-white";
+              return (
+                <label key={cat} className={`flex items-center gap-2 rounded-md border px-2 py-1.5 ${tone}`}>
+                  <span className="flex-1 text-[11px] font-bold truncate">{cat}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={v}
+                    data-testid={`exec-production-lift-${cat}`}
+                    onChange={(e) => updateLift(cat, e.target.value)}
+                    className="w-[60px] text-[12px] font-bold tabular-nums text-right bg-transparent focus:outline-none"
+                  />
+                  <span className="text-[10px] text-muted">×</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {planLoading && <Loading label="Computing production plan…" />}
       {planError && <ErrorBox message={planError} />}
       {!planLoading && !planError && rows && (
         <>
+          {/* Capacity utilization bar — only when constrained or near-max */}
+          {capacity > 0 && (
+            <div
+              className={`rounded-lg border px-3 py-2 mb-3 ${rows.isCapped ? "border-amber-300 bg-amber-50" : (rows.capacity_util_pct >= 80 ? "border-amber-200 bg-amber-50/40" : "border-border bg-panel/40")}`}
+              data-testid="exec-production-capacity-bar"
+            >
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex-1 min-w-[200px]">
+                  <div className="flex items-baseline justify-between gap-2 mb-1">
+                    <span className="text-[10.5px] font-bold uppercase tracking-wide text-muted">Factory utilization</span>
+                    <span className="text-[11.5px] font-bold tabular-nums">
+                      {fmtNum(rows.total_to_produce)}u / {fmtNum(capacity)}u ·
+                      <span className={`ml-1 ${rows.isCapped ? "text-amber-700" : ""}`}>{Math.round(rows.capacity_util_pct)}%</span>
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-white border border-border overflow-hidden">
+                    <div
+                      className={`h-full ${rows.isCapped ? "bg-amber-500" : "bg-emerald-500"} transition-all`}
+                      style={{ width: `${Math.min(100, rows.capacity_util_pct)}%` }}
+                    />
+                  </div>
+                </div>
+                {rows.isCapped && (
+                  <div className="text-[11px] font-semibold text-amber-800 max-w-md" data-testid="exec-production-capacity-warning">
+                    <Warning size={12} weight="bold" className="inline -mt-0.5 mr-1" />
+                    Capacity-capped. Ideal need was <span className="tabular-nums font-bold">{fmtNum(rows.total_to_produce_ideal)}u</span> — shortfall <span className="tabular-nums font-bold">{fmtNum(rows.total_gap_units)}u</span> ({fmtKES(rows.total_gap_value)} retail value).
+                    {" "}{rows.alerts_full_count > 0 && <>Alerts produced in full; non-alerts scaled to <span className="tabular-nums font-bold">{Math.round(rows.nonalerts_scale * 100)}%</span> of ideal.</>}
+                    {rows.alerts_scale < 1 && <>Alert demand exceeds capacity — even alerts scaled to <span className="tabular-nums font-bold">{Math.round(rows.alerts_scale * 100)}%</span>.</>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Headline KPI strip */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3" data-testid="exec-production-plan-summary">
             <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
               <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Total to produce</div>
               <div className="text-[18px] font-extrabold tabular-nums">{fmtNum(rows.total_to_produce)}u</div>
+              {rows.isCapped && <div className="text-[10px] text-muted">ideal: {fmtNum(rows.total_to_produce_ideal)}u</div>}
             </div>
             <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
               <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Est. retail value</div>
               <div className="text-[18px] font-extrabold tabular-nums">{fmtKES(rows.total_produce_value)}</div>
+              {rows.isCapped && <div className="text-[10px] text-muted">gap: {fmtKES(rows.total_gap_value)}</div>}
             </div>
             <div className="rounded-lg border border-border bg-panel/40 px-3 py-2">
               <div className="text-[10px] uppercase font-bold tracking-wide text-muted">Subcats in plan</div>
@@ -1915,17 +2174,21 @@ const JuneProductionPlan = () => {
                   <th className="px-3 py-2 font-semibold whitespace-nowrap">Subcategory</th>
                   <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Share of revenue this subcategory contributed in the last 60 days">Mix %</th>
                   <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Target revenue × revenue mix %">Target Rev</th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Target revenue ÷ ASP — roughly 1 month of demand at current ASP">Demand (units)</th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="8 weeks × weekly run-rate — minimum stock to keep on hand after June">Safety</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Seasonality multiplier applied to this category (edit in Seasonality panel above)">Lift</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Lifted demand units = (Target Rev ÷ ASP) × Lift">Demand (units)</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="8 weeks × weekly run-rate × Lift — minimum stock to keep on hand after June">Safety</th>
                   <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">On hand</th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">To produce</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title="Allocated production after applying the factory capacity cap. When capacity is hit, lead-time-alert lines get priority.">Produce</th>
+                  {rows.isCapped && (
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap text-right text-amber-800" title="Units cut from the ideal production plan due to capacity constraint">Gap</th>
+                  )}
                   <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Est. value</th>
                   <th className="px-3 py-2 font-semibold whitespace-nowrap text-right" title={`Lead-time alert fires when current weeks of cover < ${LEAD_TIME_WEEKS}w AND production is needed — stock will deplete before the new order lands.`}>Risk</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.plan.map((r) => {
-                  if (r.to_produce <= 0) return null;
+                  if (r.to_produce_ideal <= 0) return null;
                   return (
                     <tr key={`${r.category}-${r.subcategory}`} className="border-t border-border/50 hover:bg-panel/40 transition-colors" data-testid={`exec-production-plan-row-${r.subcategory}`}>
                       <td className="px-3 py-2">
@@ -1934,10 +2197,26 @@ const JuneProductionPlan = () => {
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{r.revenue_mix_pct.toFixed(1)}%</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtKES(r.june_target_rev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10.5px] font-bold ${r.season_lift > 1.05 ? "text-emerald-700 bg-emerald-50" : r.season_lift < 0.95 ? "text-rose-700 bg-rose-50" : "text-muted"}`}>
+                          {r.season_lift.toFixed(2)}×
+                        </span>
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.demand_units)}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtNum(r.safety_units)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock)}</td>
                       <td className="px-3 py-2 text-right tabular-nums font-extrabold text-brand">{fmtNum(r.to_produce)}</td>
+                      {rows.isCapped && (
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {r.gap_units > 0 ? (
+                            <span className="text-amber-700 font-semibold" title={`${fmtNum(r.gap_units)} units cut · ${fmtKES(r.gap_value_kes)} retail value`}>
+                              −{fmtNum(r.gap_units)}
+                            </span>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-right tabular-nums">{fmtKES(r.produce_value_kes)}</td>
                       <td className="px-3 py-2 text-right">
                         {r.lead_time_alert ? (
@@ -1965,7 +2244,11 @@ const JuneProductionPlan = () => {
                   <td className="px-3 py-2"></td>
                   <td className="px-3 py-2"></td>
                   <td className="px-3 py-2"></td>
+                  <td className="px-3 py-2"></td>
                   <td className="px-3 py-2 text-right tabular-nums text-brand">{fmtNum(rows.total_to_produce)}</td>
+                  {rows.isCapped && (
+                    <td className="px-3 py-2 text-right tabular-nums text-amber-800">−{fmtNum(rows.total_gap_units)}</td>
+                  )}
                   <td className="px-3 py-2 text-right tabular-nums">{fmtKES(rows.total_produce_value)}</td>
                   <td className="px-3 py-2 text-right text-[10.5px]">
                     {rows.alert_count > 0 ? (
@@ -1979,9 +2262,11 @@ const JuneProductionPlan = () => {
             </table>
           </div>
           <div className="text-[10.5px] text-muted mt-2">
-            Demand = Target ÷ ASP &nbsp;·&nbsp;
-            Required end stock = Demand + Safety ({SAFETY_WEEKS}w × weekly rate) &nbsp;·&nbsp;
-            To produce = max(0, Required end − On hand)
+            Demand = (Target ÷ ASP) × Lift &nbsp;·&nbsp;
+            Safety = {SAFETY_WEEKS}w × Weekly rate × Lift &nbsp;·&nbsp;
+            Required end stock = Demand + Safety &nbsp;·&nbsp;
+            Produce (ideal) = max(0, Required end − On hand) &nbsp;·&nbsp;
+            Produce (allocated) = capacity-prioritised (alerts first, then pro-rata)
           </div>
         </>
       )}
