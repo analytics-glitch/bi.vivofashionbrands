@@ -10142,9 +10142,28 @@ async def analytics_inventory_summary(
         _inv_cache["ts"] = 0
         _inv_cache["key"] = None
     locs = _split_csv(locations)
+    # Iter 91h — when the caller scopes by POS `locations`, also fetch
+    # warehouse-classified locations so the warehouse stock KPI is
+    # never accidentally excluded just because warehouses aren't POS.
+    # The POS filter is intended to constrain customer-facing retail;
+    # warehouse holdings should always be visible alongside.
+    locs_fetch = locs
+    if locs:
+        try:
+            full_inv = await fetch_all_inventory(country=country, product=product)
+            wh_locs = {
+                r.get("location_name") for r in (full_inv or [])
+                if r.get("location_name") and is_warehouse_location(r.get("location_name"))
+            }
+            locs_fetch = list({*locs, *wh_locs})
+        except Exception:
+            # Fall back to the user-supplied set on any failure — at
+            # worst the warehouse KPI reverts to the previous (filtered)
+            # behaviour, no crash.
+            locs_fetch = locs
     inv = await fetch_all_inventory(
         country=country, location=location, product=product,
-        locations=locs if locs else None,
+        locations=locs_fetch if locs_fetch else None,
     )
 
     by_country: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"country": "", "units": 0.0, "skus": 0, "locations": set()})

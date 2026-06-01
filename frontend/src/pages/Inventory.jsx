@@ -308,9 +308,12 @@ const Inventory = () => {
 
   // Store vs Warehouse split derived from filtered rows.
   const storeVsWarehouse = useMemo(() => {
+    // Iter 91h — keep this regex in sync with backend WAREHOUSE_KEYS
+    // (server.py). "online - shop zetu" is online-fulfilment, not a
+    // store, so it must be classified as warehouse here too.
     const isWarehouse = (loc) => {
       const s = (loc || "").toLowerCase();
-      return /warehouse|wholesale|holding|staging|sale stock/.test(s);
+      return /warehouse|wholesale|holding|staging|sale stock|online - shop zetu/.test(s);
     };
     let store = 0;
     let warehouse = 0;

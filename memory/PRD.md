@@ -5,6 +5,17 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91h) — Inventory page: full warehouse stock visible regardless of POS scope
+- **User reported**: On Inventory page, "Stock in Warehouse" KPI showed only 3,207 units (just Online - Shop Zetu) instead of the full ~31,369 (Warehouse Finished Goods + Online - Shop Zetu).
+- **Root cause**: The POS multi-select at the top of the Inventory page passes `locations=<31 POS>` to `/api/analytics/inventory-summary`, which scopes the inventory fetch to those POS only. "Warehouse Finished Goods" isn't a POS, so its 28k units were excluded entirely. The only warehouse-classified location in the POS set was "Online - Shop Zetu".
+- **Fix**: In `/api/analytics/inventory-summary`, when a `locations` filter is supplied, the endpoint now auto-extends the fetch set to include all warehouse-classified locations (via `is_warehouse_location()`). This way the warehouse KPI is never accidentally excluded by a POS filter (warehouses aren't POS).
+- **Also patched**: Inventory.jsx client-side regex (line 314) — added "online - shop zetu" so the in-page classifier (used when search/category/style-status filters trigger client-side rollups) stays in sync with the backend `WAREHOUSE_KEYS`.
+- **Verified live (preview)**:
+  - Total Available Units: 46,674 → **74,804** ✓
+  - Stock in Stores: 43,467 → **43,471** (unchanged) ✓
+  - Stock in Warehouse: 3,207 → **31,333** ✓
+  - "Stock by location" chart now correctly shows Warehouse Finished Goods at 27,773 (top of list)
+
 ### Recent (Feb 2026 — Iter 91g) — Online - Shop Zetu treated as warehouse app-wide
 - **User ask**: Ensure Online - Shop Zetu stock is treated as warehouse across ALL pages, not just Exec Summary.
 - **Audit findings**: Frontend has only display labels (no client-side classification). Backend has the single helper `is_warehouse_location()` BUT `marketing_intel.py` carried a deliberate duplicate copy (to avoid a circular import) — that duplicate did not have the fix from Iter 91f.
