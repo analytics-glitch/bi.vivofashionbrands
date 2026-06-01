@@ -5,6 +5,13 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91e) — Stock Mix: custom date range + Warehouse/Stores split
+- **User ask**: (a) add a custom date range option to the Stock Mix table (alongside 30/60/90 presets), (b) add Warehouse units + Stores units columns with their respective % shares; sums must tally back exactly to the existing Stock Units column.
+- **Backend** (`/api/exec-summary`): now accepts `date_from` and `date_to` ISO date params. When BOTH are valid, they override `window_days` and drive a custom-range Stock Mix block; if `date_from > date_to` they are silently swapped. Single-side params fall back to the preset. Inventory rollup now classifies each row via `is_warehouse_location()` (matches WAREHOUSE_NAMES set: Warehouse Finished Goods, Vivo Warehouse, Shop Zetu Warehouse) and emits per-row `stock_units_warehouse`, `stock_units_stores`, `stock_pct_warehouse`, `stock_pct_stores`, plus group totals `total_stock_units_warehouse`, `total_stock_units_stores`.
+- **Invariant**: `stock_units_warehouse + stock_units_stores == stock_units` on every category, subcategory, and the Total row. Live: `74,890 = 28,162 + 46,728` ✓.
+- **Frontend** (`ExecutiveSummary.jsx`): toolbar now shows a "CUSTOM" date-pair (data-testids `exec-stockmix-custom-from`/`-to`, `-clear`); preset selector clears highlight when custom is active (passes `value={-1}` so no button matches). Formula caption shows actual range (data-testid `exec-stockmix-window-span`, e.g., "range 2026-03-01 → 2026-03-31"). Table head/body/foot extended with 4 new columns: Warehouse, WH %, Stores, Store %. Subtitle expanded to show split: `Total on hand: 74,890u (28,162u warehouse · 46,728u stores)`. CSV exporter emits warehouse/stores columns at positions 6-9 of each row plus Total row.
+- **Testing**: Backend pytest **11/11 PASSED** (invariant test + custom-range swap + single-side fallback). Frontend e2e 100% on testid'd flows.
+
 ### Recent (Feb 2026 — Iter 91d) — Production Plan: seasonality lifts + factory capacity constraint
 - **User ask**: Add seasonality lift multipliers to the production plan AND constrain to factory capacity of 28,000 units/month.
 - **Seasonality** (per-category, editable, localStorage-persisted): defaults reflect East Africa June (cool dry season in highlands) — `Outerwear 1.25, Bottoms 1.05, Skirts 0.95, Sale 0.00, rest 1.00`. Lifts inflate BOTH demand_units AND safety_units per row. Inline grid editor in a collapsible panel under the toolbar; Reset Defaults restores the seed values.
