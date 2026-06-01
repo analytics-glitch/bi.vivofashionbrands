@@ -5,6 +5,16 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91j) — Inventory STS: auto-scope inventory to selected POS
+- **User ask**: When a POS is selected, expect the Inventory column to show ONLY that POS's stock (not POS + all warehouses combined).
+- **Diagnosis**: Default `stockScope = "combined"` meant `current_stock` always included store stock + ALL warehouse stock, even when a POS was filtered. With POS=Vivo Garden City: Dresses showed 9,487u (Combined) instead of the expected 548u (Stores-only).
+- **Fix (chosen option b)**: replaced fixed `stockScope` state with a derived value driven by `stockScopeOverride`:
+  - `userOverride === null` → auto mode. Effective scope = `posSelected ? "stores" : "combined"`.
+  - User clicks Stores / Warehouse / Combined → their choice wins and persists.
+  - "Reset auto" link appears next to the toggle to revert.
+- **UX hints**: green pill near the toggle ("Auto · POS-only") whenever auto-scoping is active; matching green pill under the Stock-to-Sales · by Subcategory section header ("POS scope: inventory limited to Vivo Garden City") so users immediately understand why the numbers changed.
+- **Verified live**: POS=Vivo Garden City → Outerwear 144/168, Bottoms 138/217, Sweaters & Ponchos 84/87 — all realistic single-POS numbers; Stockout Risk flags now scale to local context (e.g. Hoodies 16 sold / 2 stock → +1.89% variance → Healthy by quantity but flagged appropriately).
+
 ### Recent (Feb 2026 — Iter 91i) — Inventory STS: removed by-Category table, enriched by-Subcategory
 - **User ask**: (a) Remove "Stock-to-Sales · by Category" table; keep "by Subcategory" only. (b) Add custom date range alongside 7/14/30/60/90 window selector. (c) Rename "% of Total Sales" → "% Units Sales", "% of Total Inventory" → "% Units Inventory", and "Inventory" → "Inventory Units". (d) Add "Weeks of Cover" + "SOR" columns with formula tooltips on hover. (e) Add a Total row at the bottom for every column.
 - **Frontend (`Inventory.jsx`)**: removed the by-Category card; moved the DateWindowSelector to the by-Subcategory header; added a custom date-range input pair (`inv-sts-custom-from`/`-to` with × clear). When custom range is active, preset highlight clears (value=-1) and the effective window-days is computed from the range length (drives Cover math). Effective window flows to both flat-table footer + accordion via new `stsEffectiveDays` state.

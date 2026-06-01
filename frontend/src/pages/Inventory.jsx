@@ -93,7 +93,20 @@ const Inventory = () => {
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
   // Iter 89w-c — STS / "Stock to Sales" scope.  Default "combined"
   // so the page shows the full chain-wide picture on first load.
-  const [stockScope, setStockScope] = useState("combined");
+  // Iter 91j — STS Stock scope.
+  //   • When the user picks a POS, the natural expectation is that
+  //     Inventory column reflects ONLY that POS — so we auto-scope
+  //     to "stores" (POS-only stock).
+  //   • When no POS is selected, we keep the historical default of
+  //     "combined" (store + warehouse).
+  //   • If the user explicitly clicks a scope toggle, their choice
+  //     wins (tracked via `stockScopeOverride`). The "Auto" hint pill
+  //     resets to derived behaviour.
+  const [stockScopeOverride, setStockScopeOverride] = useState(null);
+  const posSelected = channels.length > 0;
+  const stockScope = stockScopeOverride ?? (posSelected ? "stores" : "combined");
+  const stockScopeIsAuto = stockScopeOverride === null;
+  const setStockScope = (v) => setStockScopeOverride(v);
   // Iter 89w — Active/Retired/All toggle. Default "all" so the live
   // catalog shows both active and retired styles on first load —
   // matches user expectation that the page reflects ALL inventory by
@@ -686,6 +699,30 @@ const Inventory = () => {
                 </button>
               ))}
             </div>
+            {/* Iter 91j — auto-scope hint. Visible whenever the scope
+                is being driven by the POS selection rather than an
+                explicit user click. Click resets nothing — the user
+                must click a different scope to override. */}
+            {stockScopeIsAuto && posSelected && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap"
+                data-testid="inv-stock-scope-auto-hint"
+                title="Inventory column is scoped to your selected POS. Pick Warehouse or Combined above to override."
+              >
+                Auto · POS-only
+              </span>
+            )}
+            {!stockScopeIsAuto && (
+              <button
+                type="button"
+                onClick={() => setStockScopeOverride(null)}
+                data-testid="inv-stock-scope-auto-reset"
+                className="text-[10px] font-semibold text-brand hover:underline whitespace-nowrap"
+                title="Revert to auto: Stores when a POS is selected, Combined otherwise"
+              >
+                Reset auto
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -978,7 +1015,19 @@ const Inventory = () => {
             <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
               <SectionTitle
                 title="Stock-to-Sales · by Subcategory"
-                subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
+                subtitle={
+                  <span>
+                    Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance.
+                    {posSelected && stockScopeIsAuto && (
+                      <span
+                        className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap align-middle"
+                        data-testid="sts-subcat-pos-scope-pill"
+                      >
+                        POS scope: inventory limited to {channels.length === 1 ? channels[0] : `${channels.length} POS`}
+                      </span>
+                    )}
+                  </span>
+                }
               />
               <div className="flex items-center gap-2 flex-wrap">
                 <DateWindowSelector
