@@ -1,0 +1,35 @@
+{
+  "summary": "Iter 91e — Stock Mix warehouse/stores split + custom date range. Both backend and frontend fully verified. 11/11 pytest passed; UI shows new columns, custom range refetches, formula caption + span render correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91e_stock_mix_wh_stores.py",
+    "/app/test_reports/pytest/iter_91e.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend invariant code (server.py L3673-3690) correctly splits inventory by is_warehouse_location() so warehouse + stores always equals stock_units; verified live: 74,890 = 28,162 + 46,728.",
+    "Custom-range swap logic at server.py L3615-3616 silently swaps date_from > date_to — verified via test.",
+    "Single-side date fallback works (only date_from or only date_to ⇒ falls back to window_days preset).",
+    "Frontend (ExecutiveSummary.jsx L1372-1429) CSV exporter places Warehouse Units, Warehouse %, Stores Units, Stores % at column positions 6-9 of every category, subcategory, and the Total row — exactly as RC described.",
+    "Subtitle '(28,162u warehouse · 46,728u stores)' renders correctly via L1440.",
+    "Clear-X button (data-testid=exec-stockmix-custom-clear) is conditionally rendered only when a custom range is active — visible in screenshot after dates are filled. This is the expected design."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91e_stock_mix_wh_stores.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100%"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "None — read-only tests against live data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test file test_iteration_91e_stock_mix_wh_stores.py covers: (a) custom range honoured, (b) silent swap when from>to, (c) single-side fallback to window_days, (d) warehouse+stores invariant on totals/categories/subcategories, (e) per-row pct sum to 100. Frontend verified visually: headers (Warehouse, WH %, Stores, Store %), subtitle split, window-span caption ('· range YYYY-MM-DD → YYYY-MM-DD'), custom date inputs trigger refetch (Sold header switches to last Nd). Live numbers confirmed: total 74,890=28,162+46,728; Dresses 23,938=7,760+16,178.",
+  "rca of the issue": "N/A — no defects found."
+}

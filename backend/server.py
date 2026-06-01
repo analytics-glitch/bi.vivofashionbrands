@@ -3240,7 +3240,13 @@ _OVERVIEW_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"]
 # and dynamic: end-of-window is always *yesterday* (UTC), so the page
 # never shows a partial-day or zero-units anomaly.
 @api_router.get("/exec-summary")
-async def exec_summary_endpoint(country: Optional[str] = None, window_days: int = 30, style_status: Optional[str] = None):
+async def exec_summary_endpoint(
+    country: Optional[str] = None,
+    window_days: int = 30,
+    style_status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     """At-a-glance executive scorecard.
 
     Returns a single payload with both YTD and MTD blocks. Each block
@@ -3594,13 +3600,34 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
         Subcategories with no in-window sales but stock-on-hand return
         None (rendered as "Idle stock" on the frontend).
         """
-        from datetime import timedelta
-        # Clamp window_days to the supported preset range to keep the
-        # snapshot/cache keys bounded — anything outside falls back to 30.
-        wd = window_days if window_days in (30, 60, 90) else 30
-        win_to = yesterday
-        win_from = yesterday - timedelta(days=wd - 1)
-        weeks_in_window = wd / 7.0
+        from datetime import timedelta, date as _date_cls
+        # Iter 91e — custom date range support. If both date_from AND
+        # date_to are passed AND valid, honour them; otherwise fall back
+        # to the rolling `window_days` preset. The window length still
+        # drives `weeks_in_window` for the cover formula so the math
+        # stays unit-consistent.
+        custom_from = None
+        custom_to = None
+        if date_from and date_to:
+            try:
+                custom_from = _date_cls.fromisoformat(date_from)
+                custom_to = _date_cls.fromisoformat(date_to)
+                if custom_from > custom_to:
+                    custom_from, custom_to = custom_to, custom_from
+            except (TypeError, ValueError):
+                custom_from = None
+                custom_to = None
+        if custom_from and custom_to:
+            win_from = custom_from
+            win_to = custom_to
+            wd = (win_to - win_from).days + 1
+        else:
+            # Clamp window_days to the supported preset range to keep the
+            # snapshot/cache keys bounded — anything outside falls back to 30.
+            wd = window_days if window_days in (30, 60, 90) else 30
+            win_to = yesterday
+            win_from = yesterday - timedelta(days=wd - 1)
+        weeks_in_window = max(wd / 7.0, 1.0 / 7.0)
         # Inventory + window subcat sales fetched in parallel — the
         # subcat-sales fetch hits the same cached endpoint other
         # sections use, so the marginal cost is one cache lookup.
@@ -3633,8 +3660,16 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
         # by category total. The subcategory layer lets the frontend
         # nest sub-rows under each category — same join key as the
         # window subcategory sales rows.
+        # Iter 91e — also split each tier into Warehouse vs Stores so
+        # the table can show where the stock physically sits. The sums
+        # (warehouse + store) tally back exactly to the existing total
+        # Stock Units column.
         sub_stock: Dict[Tuple[str, str], float] = defaultdict(float)
+        sub_stock_wh: Dict[Tuple[str, str], float] = defaultdict(float)
+        sub_stock_st: Dict[Tuple[str, str], float] = defaultdict(float)
         cat_stock: Dict[str, float] = defaultdict(float)
+        cat_stock_wh: Dict[str, float] = defaultdict(float)
+        cat_stock_st: Dict[str, float] = defaultdict(float)
         for r in inv_rows or []:
             pt = (r.get("product_type") or "").strip()
             cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
@@ -3644,8 +3679,15 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
                 continue
             if u <= 0:
                 continue
-            sub_stock[(cat, pt or "Unspecified")] += u
+            sub_key = (cat, pt or "Unspecified")
+            sub_stock[sub_key] += u
             cat_stock[cat] += u
+            if is_warehouse_location(r.get("location_name")):
+                sub_stock_wh[sub_key] += u
+                cat_stock_wh[cat] += u
+            else:
+                sub_stock_st[sub_key] += u
+                cat_stock_st[cat] += u
         # Roll units sold (within the selected window) by
         # (category, subcategory) — and also keep KES revenue per
         # (cat,sub) so we can derive an ASP for the tied-up-stock
@@ -3670,6 +3712,8 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
             cat_sold[cat] += u
             cat_rev[cat] += rev
         total_stock = sum(cat_stock.values()) or 1.0
+        total_stock_wh = sum(cat_stock_wh.values())
+        total_stock_st = sum(cat_stock_st.values())
         total_sold = sum(cat_sold.values()) or 1.0
 
         def _weeks_of_cover(stock_u: float, units_win: float) -> Optional[float]:
@@ -3696,6 +3740,8 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
             sub_rows: List[Dict[str, Any]] = []
             for (_c, sub) in sub_keys:
                 ssu = sub_stock.get((cat, sub), 0.0)
+                ssu_wh = sub_stock_wh.get((cat, sub), 0.0)
+                ssu_st = sub_stock_st.get((cat, sub), 0.0)
                 sso = sub_sold.get((cat, sub), 0.0)
                 ssr = sub_rev.get((cat, sub), 0.0)
                 # ASP (KES per unit) computed from window sales — falls
@@ -3706,6 +3752,10 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
                 sub_rows.append({
                     "subcategory": sub,
                     "stock_units": ssu,
+                    "stock_units_warehouse": ssu_wh,
+                    "stock_units_stores": ssu_st,
+                    "stock_pct_warehouse": (ssu_wh / ssu) * 100.0 if ssu > 0 else 0.0,
+                    "stock_pct_stores": (ssu_st / ssu) * 100.0 if ssu > 0 else 0.0,
                     "sold_units": sso,
                     "stock_pct": (ssu / total_stock) * 100.0,
                     "sold_pct":  (sso / total_sold)  * 100.0,
@@ -3716,9 +3766,15 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
                 })
             sub_rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
             cat_asp = (cat_rev.get(cat, 0.0) / cat_sold.get(cat, 0.0)) if cat_sold.get(cat, 0.0) > 0 else 0.0
+            stock_u_wh = cat_stock_wh.get(cat, 0.0)
+            stock_u_st = cat_stock_st.get(cat, 0.0)
             rows.append({
                 "category": cat,
                 "stock_units": stock_u,
+                "stock_units_warehouse": stock_u_wh,
+                "stock_units_stores": stock_u_st,
+                "stock_pct_warehouse": (stock_u_wh / stock_u) * 100.0 if stock_u > 0 else 0.0,
+                "stock_pct_stores": (stock_u_st / stock_u) * 100.0 if stock_u > 0 else 0.0,
                 "sold_units": sold_u,
                 "stock_pct": stock_pct,
                 "sold_pct": sold_pct,
@@ -3736,6 +3792,10 @@ async def exec_summary_endpoint(country: Optional[str] = None, window_days: int 
         total_woc = _weeks_of_cover(total_stock, total_sold) if total_stock > 1 and total_sold > 0 else None
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
+            "total_stock_units_warehouse": total_stock_wh,
+            "total_stock_units_stores": total_stock_st,
+            "total_stock_pct_warehouse": (total_stock_wh / total_stock) * 100.0 if total_stock > 0 else 0.0,
+            "total_stock_pct_stores": (total_stock_st / total_stock) * 100.0 if total_stock > 0 else 0.0,
             "total_sold_units_mtd": total_sold if total_sold > 1 else 0,  # legacy key, now holds window sold
             "total_sold_units_window": total_sold if total_sold > 1 else 0,
             "total_weeks_of_cover": total_woc,

@@ -1356,7 +1356,7 @@ const QuickActions = ({ stockMix }) => {
   );
 };
 
-const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false, styleStatus = "all", onStyleStatusChange }) => {
+const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false, styleStatus = "all", onStyleStatusChange, customRange, onCustomRangeChange }) => {
   if (!stockMix || !stockMix.categories || stockMix.categories.length === 0) {
     return null;
   }
@@ -1374,6 +1374,8 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
     const head = [
       "Level", "Category", "Subcategory",
       "Stock Units", "Stock %",
+      "Warehouse Units", "Warehouse %",
+      "Stores Units", "Stores %",
       soldLbl, "Sold %",
       "Gap (pp)",
       "Weeks of Cover", "Cover Tier",
@@ -1387,6 +1389,8 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
       out.push([
         "Category", r.category, "",
         Math.round(r.stock_units || 0), (r.stock_pct ?? 0).toFixed(2),
+        Math.round(r.stock_units_warehouse || 0), (r.stock_pct_warehouse ?? 0).toFixed(2),
+        Math.round(r.stock_units_stores || 0), (r.stock_pct_stores ?? 0).toFixed(2),
         Math.round(r.sold_units || 0), (r.sold_pct ?? 0).toFixed(2),
         (r.gap_pct ?? 0).toFixed(2),
         r.weeks_of_cover != null ? r.weeks_of_cover.toFixed(2) : "",
@@ -1399,6 +1403,8 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         out.push([
           "Subcategory", r.category, sc.subcategory,
           Math.round(sc.stock_units || 0), (sc.stock_pct ?? 0).toFixed(2),
+          Math.round(sc.stock_units_warehouse || 0), (sc.stock_pct_warehouse ?? 0).toFixed(2),
+          Math.round(sc.stock_units_stores || 0), (sc.stock_pct_stores ?? 0).toFixed(2),
           Math.round(sc.sold_units || 0), (sc.sold_pct ?? 0).toFixed(2),
           (sc.gap_pct ?? 0).toFixed(2),
           sc.weeks_of_cover != null ? sc.weeks_of_cover.toFixed(2) : "",
@@ -1413,6 +1419,8 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
     out.push([
       "Total", "All categories", "",
       Math.round(stockMix.total_stock_units || 0), "100.00",
+      Math.round(stockMix.total_stock_units_warehouse || 0), (stockMix.total_stock_pct_warehouse ?? 0).toFixed(2),
+      Math.round(stockMix.total_stock_units_stores || 0), (stockMix.total_stock_pct_stores ?? 0).toFixed(2),
       Math.round(stockMix.total_sold_units_mtd || 0), "100.00",
       "", stockMix.total_weeks_of_cover != null ? stockMix.total_weeks_of_cover.toFixed(2) : "",
       tier(stockMix.total_weeks_of_cover),
@@ -1428,7 +1436,9 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         subtitle={
           <span>
             Share of units on hand (group-wide inventory) compared with share of units sold over the selected window, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
-            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span> · Sold ({wd}d): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span>
+            <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span>
+            <span className="text-muted"> (</span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_warehouse)}u</span><span className="text-muted"> warehouse · </span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}u</span><span className="text-muted"> stores)</span>
+            <span> · Sold ({wd}d): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span></span>
             {stockMix.total_weeks_of_cover != null && (
               <span> · Group cover: <span className="font-bold text-foreground tabular-nums">{stockMix.total_weeks_of_cover.toFixed(1)}w</span></span>
             )}
@@ -1437,12 +1447,18 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         }
       />
 
-      {/* Toolbar — window selector + style-status filter + full-table CSV export + formula */}
+      {/* Toolbar — window selector + style-status filter + custom range + full-table CSV export + formula */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2 flex-wrap">
           <DateWindowSelector
-            value={wd}
-            onChange={onWindowChange}
+            value={customRange?.from && customRange?.to ? -1 : wd}
+            onChange={(v) => {
+              // Clear any custom range whenever the user picks a preset
+              if (customRange?.from || customRange?.to) {
+                onCustomRangeChange?.({ from: "", to: "" });
+              }
+              onWindowChange?.(v);
+            }}
             presets={[
               { v: 30, l: "30d" },
               { v: 60, l: "60d" },
@@ -1451,6 +1467,41 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
             testId="exec-stockmix-window"
             label="Sales window"
           />
+          {/* Custom date range — feeds `date_from` / `date_to` to the
+              endpoint. When both fields are populated, the preset
+              selector becomes a no-op and the formula caption shows
+              the actual span. */}
+          <div
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-2 py-1"
+            data-testid="exec-stockmix-custom-range"
+            title="Override the preset window with an explicit date range. Both From and To required."
+          >
+            <span className="text-[10.5px] font-bold uppercase tracking-wide text-muted">Custom</span>
+            <input
+              type="date"
+              value={customRange?.from || ""}
+              onChange={(e) => onCustomRangeChange?.({ ...(customRange || {}), from: e.target.value })}
+              data-testid="exec-stockmix-custom-from"
+              className="text-[10.5px] font-semibold bg-transparent focus:outline-none border-0 px-1 py-0.5"
+            />
+            <span className="text-[10.5px] text-muted">→</span>
+            <input
+              type="date"
+              value={customRange?.to || ""}
+              onChange={(e) => onCustomRangeChange?.({ ...(customRange || {}), to: e.target.value })}
+              data-testid="exec-stockmix-custom-to"
+              className="text-[10.5px] font-semibold bg-transparent focus:outline-none border-0 px-1 py-0.5"
+            />
+            {(customRange?.from || customRange?.to) && (
+              <button
+                type="button"
+                onClick={() => onCustomRangeChange?.({ from: "", to: "" })}
+                data-testid="exec-stockmix-custom-clear"
+                className="text-[10.5px] text-rose-600 hover:text-rose-700 font-bold px-1"
+                title="Clear custom range, revert to preset window"
+              >×</button>
+            )}
+          </div>
           {onStyleStatusChange && (
             <StyleStatusToggle
               value={styleStatus}
@@ -1485,6 +1536,11 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         <span className="tabular-nums">
           Weeks of Cover&nbsp;=&nbsp;Stock Units&nbsp;÷&nbsp;(Sold in {wd}d&nbsp;÷&nbsp;{wiw.toFixed(1)} weeks)
         </span>
+        {stockMix.sold_window?.from && stockMix.sold_window?.to && (
+          <span className="text-muted ml-2" data-testid="exec-stockmix-window-span">
+            · range <span className="font-semibold text-foreground tabular-nums">{stockMix.sold_window.from}</span> → <span className="font-semibold text-foreground tabular-nums">{stockMix.sold_window.to}</span>
+          </span>
+        )}
         <span className="text-muted ml-2">— hover any Cover pill to see the row-level calculation.</span>
         {styleStatus && styleStatus !== "all" && (
           <span
@@ -1505,6 +1561,22 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
               <th className="px-3 py-2 font-semibold whitespace-nowrap">Category</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock Units</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock %</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title="Units sitting in central warehouse locations (Warehouse Finished Goods, Vivo Warehouse, etc.). Stock Units = Warehouse + Stores."
+              >Warehouse</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title="Share of this row's stock that sits in the warehouse."
+              >WH %</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title="Units sitting on shop floors (all non-warehouse POS locations)."
+              >Stores</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title="Share of this row's stock that sits on shop floors."
+              >Store %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">{soldLbl}</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
@@ -1545,6 +1617,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{r.stock_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units_warehouse)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted">{(r.stock_pct_warehouse ?? 0).toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units_stores)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted">{(r.stock_pct_stores ?? 0).toFixed(1)}%</td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{r.sold_pct.toFixed(1)}%</td>
                     <td className="px-3 py-2 text-right">
@@ -1584,6 +1660,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                         </td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.stock_units)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{sc.stock_pct.toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.stock_units_warehouse)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-muted">{(sc.stock_pct_warehouse ?? 0).toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.stock_units_stores)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-muted">{(sc.stock_pct_stores ?? 0).toFixed(1)}%</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.sold_units)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{sc.sold_pct.toFixed(1)}%</td>
                         <td className="px-3 py-1.5 text-right">
@@ -1617,6 +1697,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
               <td className="px-3 py-2">Total</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_stock_units)}</td>
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_stock_units_warehouse)}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-muted">{(stockMix.total_stock_pct_warehouse ?? 0).toFixed(1)}%</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-muted">{(stockMix.total_stock_pct_stores ?? 0).toFixed(1)}%</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}</td>
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
               <td className="px-3 py-2"></td>
@@ -2304,6 +2388,7 @@ const ExecutiveSummary = () => {
   // stock_mix block without re-painting the rest of the page.
   const [stockWindowDays, setStockWindowDays] = useState(30);
   const [stockStyleStatus, setStockStyleStatus] = useState("all");
+  const [stockCustomRange, setStockCustomRange] = useState({ from: "", to: "" });
   const [stockMixOverride, setStockMixOverride] = useState(null);
   const [stockMixLoading, setStockMixLoading] = useState(false);
 
@@ -2344,14 +2429,21 @@ const ExecutiveSummary = () => {
   // tags along so the window-scoped numbers stay consistent with the
   // country-scoped view.
   useEffect(() => {
-    // Default 30d + All ships in the initial fetch — skip refetch in that case.
-    if (stockWindowDays === 30 && stockStyleStatus === "all" && !selectedCountry) {
+    const hasCustom = !!(stockCustomRange.from && stockCustomRange.to);
+    // Default 30d + All + no-custom-range ships in the initial fetch.
+    if (stockWindowDays === 30 && stockStyleStatus === "all" && !selectedCountry && !hasCustom) {
       setStockMixOverride(null);
       return;
     }
     let cancel = false;
     setStockMixLoading(true);
-    const params = { window_days: stockWindowDays };
+    const params = {};
+    if (hasCustom) {
+      params.date_from = stockCustomRange.from;
+      params.date_to = stockCustomRange.to;
+    } else {
+      params.window_days = stockWindowDays;
+    }
     if (stockStyleStatus && stockStyleStatus !== "all") params.style_status = stockStyleStatus;
     if (selectedCountry) params.country = selectedCountry;
     api
@@ -2360,7 +2452,7 @@ const ExecutiveSummary = () => {
       .catch(() => { if (!cancel) setStockMixOverride(null); })
       .finally(() => { if (!cancel) setStockMixLoading(false); });
     return () => { cancel = true; };
-  }, [stockWindowDays, stockStyleStatus, selectedCountry]);
+  }, [stockWindowDays, stockStyleStatus, selectedCountry, stockCustomRange.from, stockCustomRange.to]);
 
   // Mobile snapshot — full-screen overlay (same pattern as Overview):
   // page swaps to a stripped compact view, "Save image" downloads a
@@ -2540,6 +2632,8 @@ const ExecutiveSummary = () => {
         windowLoading={stockMixLoading}
         styleStatus={stockStyleStatus}
         onStyleStatusChange={setStockStyleStatus}
+        customRange={stockCustomRange}
+        onCustomRangeChange={setStockCustomRange}
       />
 
       {/* SECTION 4.5 — Production plan for next month, driven off the
