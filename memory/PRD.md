@@ -5,6 +5,45 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91o) — Audit findings batch fix (8 issues addressed, 8 documented for follow-up)
+
+User shared 21-issue audit from production deployment. After triage, applied surgical fixes for 8 well-bounded items; documented the rest as follow-up work that needs deeper investigation or user input.
+
+**Canonical decision (user pick — 01 Jun 2026):** **NET sales** is the canonical headline figure across the dashboard. Consequence: return-rate formula → `Returns ÷ (Returns + Net Sales)`.
+
+#### ✅ Fixed in this iter
+
+| ID | Title | Change |
+|---|---|---|
+| **ISS-005** | MTD date reversal ("1 Jun 2026 – 31 May 2026") | `/api/exec-summary` now clamps `mtd_to = max(mtd_from, yesterday)` so day-1-of-month renders a clean single-day window (`2026-06-01 → 2026-06-01`) instead of an inverted range. `days` count guarded with `max(1, …)`. |
+| **ISS-006** | Churn rate clamped to 100% (symptom mask) | Removed `min(rate, 100.0)` clamps in both Mongo and upstream-fallback paths. `base = active + churned` is bounded ≤100 by construction, so the clamp was redundant and obscured potential regressions. |
+| **ISS-007** | Walk-in sales share > 100% (gross vs net scope mismatch) | `/customers/walk-ins` now exposes `walk_in_share_sales_pct_raw` + `walk_in_share_unreliable` flag. When raw ratio exceeds 100%, `walk_in_share_sales_pct` is set to `null` so the UI renders "—" instead of "110.01%". Raw values preserved for diagnostics — no clamping. |
+| **ISS-008** | Return rate formula inconsistent | Changed in **3 call sites** (`fetch` post-process, `agg_kpis`, `_orders_rollup`): formula is now `Returns ÷ (Returns + Net Sales)` per user's canonical NET pick. Falls back to `Returns ÷ Gross` only when `net_sales` is missing from older snapshots. |
+| **ISS-009** | Implausible turn-in rates (208%, 1,200%) propagate to Δ | Added data-quality guard in `Footfall.jsx`: when current OR previous `turn_in_rate > 100%` the Δ-pp is suppressed (null → renders "—"). Sensor-issue flag stays visible via the existing ⚠ marker (Iter 84h.1). |
+| **ISS-004** | Δ conversion = ▼103.26pp (mathematically impossible) | Same guard: when current OR previous `conversion_rate > 100%`, `conv_delta_pp` is suppressed. Upstream-sensor data anomaly is now explicit instead of producing nonsense Δ values. |
+| **ISS-010** | Customers page contradictions (multiple repeat rates) | Frequency-chart insight line now reads `repeat_customers / total_customers` from the upstream `/customers` payload (single source of truth) instead of recomputing locally from frequency buckets. KPI card and chart narrative now always agree by construction. |
+| **ISS-014** | Recon check "walkins_denominator" misnamed | Renamed to `walkin_sales_denominator_kes` and updated the failure message to explicitly state this validates the **KES sales** denominator (not footfall count). The footfall denominator already has its own freshness check via the `data_freshness.footfall` section. |
+| **ISS-017** | Pricing → Overview redirect | Already resolved in Iter 91n (page removed entirely per explicit user request). |
+
+#### 📋 Deferred — require deeper investigation or user input
+
+| ID | Title | Why deferred |
+|---|---|---|
+| **ISS-001 / 003 / 011 / 012 / 020 / 021** | Page-by-page divergence of headline Total Sales / Orders / Units (Overview, Locations, Footfall, CEO Report, Targets, Exec Summary, Inventory) | Each page reads from a different combination of `/kpis`, `/sales-summary`, `/exec-summary`, `/inventory-summary`, `/locations`. `/kpis` itself reconciles (audit confirmed). The drift comes from different scoping rules per page (channel inclusion of Shop Zetu Online, snapshot timing). Requires a full audit pass per page consumer — too deep to land safely in a 21-issue batch. Plan a dedicated iter where each page is traced + locked to a single source. |
+| **ISS-002 / 013** | Replenishment pick list dated 2026-05-31 on 1 Jun + 6 heavy-guard rejections | Requires investigating the background snapshotter loop for `/replenishment-report` + the HEAVY_GUARD concurrency limit. Risk of breaking the entire replenishment pipeline if mistuned. Needs a focused iter. |
+| **ISS-015** | Cache hit rate 86% → 73%, 412% repeat-miss | Diagnosis-only at this point. Need to see which keys are short-TTL'd (likely intra-day windows). Iter 84b/c/d already raised TTLs but `repeat_miss_pct > 100` suggests a new offender. |
+| **ISS-016** | June 2026 targets = KES 0 for all stores | Need user to provide June targets or confirm pulling from same source as 2026 annuals (`store_targets.py`). |
+| **ISS-018** | Anomaly thresholds (≥200 visitors / ≥KES 100K) too high for 1-day window | The 200-visitor floor in `leaderboard.py` is for monthly Top-Conversion winner selection (appropriate). Could not locate a 1-day window anomaly path matching the audit description — likely the audit's heuristic, not a code-level threshold. Need user to point at the specific anomaly surface that's silent. |
+| **ISS-019** | IBT shows "10,517 transfers > 5 days ago not marked done" | Need user verification: is this a real backlog (warehouse hasn't picked) or a stuck status flag? Data-side decision, not code. |
+
+#### Verification (preview)
+- `/api/exec-summary.windows.mtd.current` = `['2026-06-01', '2026-06-01']` ✓ (no longer reversed)
+- `/api/kpis?…` return_rate = 4.10% which matches new `returns / (returns + net)` formula (was 4.01% via old `returns / gross`) ✓
+- `/api/customers/walk-ins?channel=Online - Shop Zetu` returns 86.91% with `walk_in_share_unreliable: false` ✓
+- `/api/customers/churn-rate?2026-05-01..2026-05-31` returns rate=0.0%, base=8269 (no clamp, structural ceiling holds) ✓
+- `/api/admin/reconciliation-check` walkin check renamed ✓ + ok=true (KES match expected/got=1,154,306) ✓
+- Frontend: Customers page Repeat-rate narrative now sources from `cust.repeat_customers / cust.total_customers` ✓
+
 ### Recent (Feb 2026 — Iter 91n) — Removed Production Plan section + Pricing page
 
 - **User ask**: Remove the "July 2026 Production Plan" table from Executive Summary and remove the Pricing page entirely.

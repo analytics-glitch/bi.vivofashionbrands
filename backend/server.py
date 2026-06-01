@@ -808,7 +808,19 @@ def _apply_aggregate_correction(
         payload["avg_selling_price"] = ts / n_units
     gross = payload.get("gross_sales")
     returns = payload.get("total_returns")
-    if isinstance(gross, (int, float)) and isinstance(returns, (int, float)) and gross:
+    net = payload.get("net_sales")
+    # ISS-008 — canonical return-rate formula (user pick): Returns ÷
+    # (Returns + Net Sales). NET is the canonical headline figure across
+    # the dashboard, so the return rate denominator stays consistent
+    # with the net-sales-basis user sees in the KPI tiles.
+    if isinstance(returns, (int, float)) and isinstance(net, (int, float)):
+        denom = (returns + net)
+        if denom:
+            payload["return_rate"] = (returns / denom) * 100
+        else:
+            payload["return_rate"] = 0
+    elif isinstance(gross, (int, float)) and isinstance(returns, (int, float)) and gross:
+        # Fallback when net_sales isn't on the payload (older snapshots)
         payload["return_rate"] = (returns / gross) * 100
     return payload
 
@@ -1322,7 +1334,9 @@ def agg_kpis(list_of_kpis: List[Dict[str, Any]]) -> Dict[str, Any]:
         total["total_units"] += k.get("total_units") or 0
     total["avg_basket_size"] = (total["total_sales"] / total["total_orders"]) if total["total_orders"] else 0
     total["avg_selling_price"] = (total["total_sales"] / total["total_units"]) if total["total_units"] else 0
-    total["return_rate"] = (total["total_returns"] / total["gross_sales"] * 100) if total["gross_sales"] else 0
+    # ISS-008 — canonical return rate: Returns ÷ (Returns + Net Sales).
+    _denom = total["total_returns"] + total["net_sales"]
+    total["return_rate"] = (total["total_returns"] / _denom * 100) if _denom else 0
     return total
 
 
@@ -2640,7 +2654,8 @@ async def _compute_kpis_from_orders(
         "total_units": units,
         "avg_basket_size": round(total_sales / total_orders, 2) if total_orders else 0,
         "avg_selling_price": round(total_sales / units, 2) if units else 0,
-        "return_rate": round(returns / gross_sales * 100, 2) if gross_sales else 0,
+        # ISS-008 — canonical: Returns ÷ (Returns + Net Sales)
+        "return_rate": round(returns / (returns + net_sales) * 100, 2) if (returns + net_sales) else 0,
     }
 
 
@@ -3274,6 +3289,11 @@ async def exec_summary_endpoint(
     yesterday = today_utc - timedelta(days=1)
     ytd_from = date(today_utc.year, 1, 1)
     mtd_from = date(today_utc.year, today_utc.month, 1)
+    # ISS-005 — on day-1-of-month (e.g. June 1), `mtd_from` (June 1) is
+    # AFTER `yesterday` (May 31). Clamp the MTD upper bound so the
+    # window never reverses; on day 1 the window collapses to a single
+    # day = the 1st itself (returning 0s — correct, no data yet today).
+    mtd_to = max(mtd_from, yesterday)
 
     def _shift_year(d: date) -> date:
         # Handle Feb-29 in a leap year by clamping to Feb-28 in the
@@ -3286,8 +3306,8 @@ async def exec_summary_endpoint(
     windows = {
         "ytd_cur": (ytd_from, yesterday),
         "ytd_ly":  (_shift_year(ytd_from), _shift_year(yesterday)),
-        "mtd_cur": (mtd_from, yesterday),
-        "mtd_ly":  (_shift_year(mtd_from), _shift_year(yesterday)),
+        "mtd_cur": (mtd_from, mtd_to),
+        "mtd_ly":  (_shift_year(mtd_from), _shift_year(mtd_to)),
     }
 
     # Call the four high-level endpoints for each window in parallel
@@ -3822,8 +3842,8 @@ async def exec_summary_endpoint(
         "windows": {
             "ytd": {"current": [ytd_from.isoformat(), yesterday.isoformat()],
                     "ly":      [_shift_year(ytd_from).isoformat(), _shift_year(yesterday).isoformat()]},
-            "mtd": {"current": [mtd_from.isoformat(), yesterday.isoformat()],
-                    "ly":      [_shift_year(mtd_from).isoformat(), _shift_year(yesterday).isoformat()]},
+            "mtd": {"current": [mtd_from.isoformat(), mtd_to.isoformat()],
+                    "ly":      [_shift_year(mtd_from).isoformat(), _shift_year(mtd_to).isoformat()]},
         },
         "targets": _targets_block(),
         "stock_mix": stock_mix,
@@ -3834,8 +3854,8 @@ async def exec_summary_endpoint(
             "categories": _category_block(blocks["ytd_cur"]["subcategories"], blocks["ytd_ly"]["subcategories"]),
         },
         "mtd": {
-            "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"], days=(yesterday - mtd_from).days + 1),
-            "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"], days=(yesterday - mtd_from).days + 1),
+            "kpis":       _kpi_block(blocks["mtd_cur"], blocks["mtd_ly"], days=max(1, (mtd_to - mtd_from).days + 1)),
+            "countries":  _country_block(blocks["mtd_cur"], blocks["mtd_ly"], days=max(1, (mtd_to - mtd_from).days + 1)),
             "stores":     _store_table(blocks["mtd_cur"]["sales"], blocks["mtd_ly"]["sales"]),
             "categories": _category_block(blocks["mtd_cur"]["subcategories"], blocks["mtd_ly"]["subcategories"]),
         },
@@ -5490,8 +5510,12 @@ async def get_customers_churn_rate(
                 raise RuntimeError("customer_lifetime_roster is empty — falling back to upstream")
         base = active_in_period + churned_in_period
         rate = (churned_in_period / base * 100) if base else 0
+        # ISS-006 — base = (active + churned), so rate is bounded to
+        # [0, 100] by construction. No clamp required; emitting the raw
+        # value keeps audit transparency (any future regression would
+        # surface as a true >100 value rather than be silently masked).
         out["churned_customers"] = churned_in_period
-        out["churn_rate"] = round(min(rate, 100.0), 2)
+        out["churn_rate"] = round(rate, 2)
         out["active_in_period"] = active_in_period
         out["customer_base"] = base
         return out
@@ -5563,8 +5587,9 @@ async def get_customers_churn_rate(
 
     base = active_in_period + churned_in_period
     rate = (churned_in_period / base * 100) if base else 0
+    # ISS-006 — same structural guarantee as the Mongo path above
     out["churned_customers"] = churned_in_period
-    out["churn_rate"] = round(min(rate, 100.0), 2)
+    out["churn_rate"] = round(rate, 2)
     out["active_in_period"] = active_in_period
     out["customer_base"] = base
     return out
@@ -6197,6 +6222,16 @@ async def _get_walk_ins_impl(
     except Exception as e:
         logger.warning(f"[walk-ins] /kpis denominator fetch failed, using /orders sum: {e}")
 
+    # ISS-007 — walk_sales (from /orders raw line items) and
+    # kpi_total_sales (from /kpis, post-discount) can come from
+    # different bases when a single channel is filtered (e.g. Online −
+    # Shop Zetu raw line items > net /kpis figure). Detect the
+    # impossible ratio and surface it as `share_unreliable` so the UI
+    # renders "—" instead of "110%". We do NOT clamp the underlying
+    # values — both raw figures are preserved.
+    raw_share_sales = (walk_sales / kpi_total_sales * 100) if kpi_total_sales else 0.0
+    share_unreliable = raw_share_sales > 100.0
+    share_sales_pct = round(raw_share_sales, 2) if not share_unreliable else None
     return {
         "walk_in_orders": walk_orders_n,
         # Iter 87 — per-spec: each walk-in transaction counts as one
@@ -6212,7 +6247,9 @@ async def _get_walk_ins_impl(
         "total_orders": total_orders_n,
         "total_sales_kes": round(kpi_total_sales, 2),  # authoritative (matches Overview/Products)
         "walk_in_share_orders_pct": round((walk_orders_n / total_orders_n * 100), 2) if total_orders_n else 0.0,
-        "walk_in_share_sales_pct": round((walk_sales / kpi_total_sales * 100), 2) if kpi_total_sales else 0.0,
+        "walk_in_share_sales_pct": share_sales_pct,
+        "walk_in_share_sales_pct_raw": round(raw_share_sales, 2),
+        "walk_in_share_unreliable": share_unreliable,
         "by_country": by_country_out,
         "by_location": by_location_out,
         "detection_rule": "customer_id NULL · customer_type Guest/Walk-in/Anonymous · customer in roster with BLANK name (~379 IDs) · customer_name contains 'walk'/'vivo'/'safari'/store name",
@@ -14486,12 +14523,15 @@ async def admin_reconciliation_check(
             soft_zero_got=True,
         ),
         _check(
-            "walkins_denominator",
+            "walkin_sales_denominator_kes",
             kpi_total_sales, walk_denom,
             "/api/customers/walk-ins total_sales_kes ≠ /kpis.total_sales. "
-            "walk-ins fetches its own /kpis denominator independently, so "
-            "snapshot-refresh race conditions during the recon window can "
-            "produce small drift. Investigate only if Δ > 5 %.",
+            "This validates the KES sales denominator used to compute "
+            "walk_in_share_sales_pct — NOT the footfall denominator used "
+            "for conversion-rate. Walk-ins fetches its own /kpis "
+            "denominator independently, so snapshot-refresh race "
+            "conditions during the recon window can produce small drift. "
+            "Investigate only if Δ > 5 %.",
             pct_tolerance=5.0,
             soft_zero_got=True,
         ),

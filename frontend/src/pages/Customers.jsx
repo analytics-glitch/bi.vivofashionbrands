@@ -1363,9 +1363,19 @@ const Customers = () => {
               return { ...b, count: c, prev: p, pct: curPct, prevPct, ppDelta: curPct - prevPct };
             });
             const oneOrderShare = data[0]?.pct || 0;
-            const repeatRate = 100 - oneOrderShare;
+            // ISS-010 — drive repeat rate from the upstream /customers
+            // payload so the chart's narrative line matches the KPI
+            // card above (single source of truth). Previously this was
+            // recomputed locally from frequency buckets and could
+            // disagree with the KPI when bucket boundaries differed
+            // from the upstream's repeat definition.
+            const upstreamTotal = cust?.total_customers || 0;
+            const upstreamRepeat = cust?.repeat_customers || 0;
+            const repeatRate = upstreamTotal ? (upstreamRepeat / upstreamTotal) * 100 : (100 - oneOrderShare);
             const prevOneOrderShare = data[0]?.prevPct || 0;
-            const prevRepeatRate = 100 - prevOneOrderShare;
+            const prevUpstreamTotal = custPrev?.total_customers || 0;
+            const prevUpstreamRepeat = custPrev?.repeat_customers || 0;
+            const prevRepeatRate = prevUpstreamTotal ? (prevUpstreamRepeat / prevUpstreamTotal) * 100 : (100 - prevOneOrderShare);
             const repeatRateDelta = repeatRate - prevRepeatRate; // pp
             const hasCompare = compareLbl && prevTotal > 0;
             const avgOrdersPerReturning = (() => {

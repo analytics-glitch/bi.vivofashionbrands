@@ -275,7 +275,13 @@ const Footfall = () => {
 
       // Conversion change is in PERCENTAGE POINTS (pp), not % change —
       // since conversion is itself a %.
-      const convDeltaPp = prevConv != null ? conversion - prevConv : null;
+      // ISS-004 — guard against impossible deltas. A conversion_rate
+      // is bounded [0, 100]; either value > 100 indicates upstream
+      // sensor data-quality issue (orders > footfall). When that
+      // happens, suppress the Δ so the UI shows "—" instead of an
+      // impossible value like ▼103.26pp.
+      const convOutOfRange = (conversion != null && conversion > 100) || (prevConv != null && prevConv > 100);
+      const convDeltaPp = (prevConv != null && !convOutOfRange) ? conversion - prevConv : null;
 
       // Iter 84h — Outside Traffic + Turn-in Rate.
       // Some stores have no pavement counter → outside_traffic=0/null →
@@ -291,7 +297,10 @@ const Footfall = () => {
         ? ((prevR?.total_footfall || 0) / prevOutside) * 100
         : null;
       // Turn-in change is in pp like conversion.
-      const turnInDeltaPp = (turnIn != null && prevTurnIn != null)
+      // ISS-009 — same data-quality guard as conversion delta:
+      // turn_in_rate > 100 means outside_traffic sensor undercounted.
+      const turnInOutOfRange = (turnIn != null && turnIn > 100) || (prevTurnIn != null && prevTurnIn > 100);
+      const turnInDeltaPp = (turnIn != null && prevTurnIn != null && !turnInOutOfRange)
         ? turnIn - prevTurnIn
         : null;
       const outsideDelta = prevOutside ? ((outside - prevOutside) / prevOutside) * 100 : null;
