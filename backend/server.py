@@ -7192,6 +7192,10 @@ async def analytics_sales_projection(
 WAREHOUSE_NAMES = {
     "Warehouse Finished Goods", "Warehouse",
     "Vivo Warehouse", "Shop Zetu Warehouse",
+    # Iter 91f — Online - Shop Zetu fulfils from stockholding, not a
+    # walk-in retail floor, so it is classified as warehouse across
+    # the app (Stock Mix split, store rankings, IBT, replenishment).
+    "Online - Shop Zetu",
 }
 
 
@@ -8703,6 +8707,9 @@ WAREHOUSE_KEYS = (
     "warehouse", "wholesale", "holding", "sale stock", "bundling",
     "defect", "shopping bags", "buying and merchandise", "mockup",
     "online orders location",
+    # Iter 91f — Online - Shop Zetu is online-fulfilment, not a store.
+    # Substring "online - shop zetu" matches the exact location name.
+    "online - shop zetu",
 )
 
 # Simple in-memory cache for inventory fan-out (60s TTL — L1 hot

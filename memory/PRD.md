@@ -5,6 +5,11 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91f) — Online - Shop Zetu reclassified as warehouse
+- **User ask**: Treat "Online - Shop Zetu" as a warehouse, not a store (it's an online-fulfilment stockholding location, not a walk-in retail floor).
+- **Change**: Added `"Online - Shop Zetu"` to `WAREHOUSE_NAMES` and `"online - shop zetu"` to `WAREHOUSE_KEYS` in `/app/backend/server.py`. The substring key matches the exact location name (which uses a hyphen, not a space). Applies app-wide via `is_warehouse_location()` — Stock Mix split, store rankings, IBT logic, replenishment, SOR, and Locations all now treat this location as warehouse.
+- **Verified live**: After change, warehouse: 28,162 → 31,369 (+3,207); stores: 46,728 → 43,521 (−3,207); total 74,890 unchanged. Invariant preserved.
+
 ### Recent (Feb 2026 — Iter 91e) — Stock Mix: custom date range + Warehouse/Stores split
 - **User ask**: (a) add a custom date range option to the Stock Mix table (alongside 30/60/90 presets), (b) add Warehouse units + Stores units columns with their respective % shares; sums must tally back exactly to the existing Stock Units column.
 - **Backend** (`/api/exec-summary`): now accepts `date_from` and `date_to` ISO date params. When BOTH are valid, they override `window_days` and drive a custom-range Stock Mix block; if `date_from > date_to` they are silently swapped. Single-side params fall back to the preset. Inventory rollup now classifies each row via `is_warehouse_location()` (matches WAREHOUSE_NAMES set: Warehouse Finished Goods, Vivo Warehouse, Shop Zetu Warehouse) and emits per-row `stock_units_warehouse`, `stock_units_stores`, `stock_pct_warehouse`, `stock_pct_stores`, plus group totals `total_stock_units_warehouse`, `total_stock_units_stores`.
