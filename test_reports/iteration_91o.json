@@ -1,0 +1,44 @@
+{
+  "summary": "Iter 91o verification: all 8 surgical fixes verified. Backend (4 pytest cases) + frontend (Customers repeat-rate parity, Footfall delta-guard logic, Overview regression) all pass. Frontend guard verified via unit test mirroring JS logic + live data confirming backward-compat with 25 normal Δ rows. Customers page KPI (5.6%) now matches chart narrative repeat-rate (5.6%) exactly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91o_regression.py",
+    "/app/test_reports/pytest/iter_91o.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Footfall.jsx guards (lines 283-284, 302-305) are correctly symmetric — both current and previous out-of-range values trigger suppression. Logic is clean.",
+    "Customers.jsx repeat-rate (lines 1372-1378) now derives from cust.repeat_customers/cust.total_customers — single source of truth shared with KPI card. Good fix.",
+    "Footfall.jsx is 1030 lines — close to 700-line guideline. Consider splitting into FootfallTable/FootfallTurnIn/FootfallExploration subcomponents in a future refactor (non-blocking)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91o_regression.py"
+  ],
+  "success_rate": {
+    "backend": "100% (4/4)",
+    "frontend": "100% (3/3 surfaces verified)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "None — used live preview data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter 91o fixes are GREEN. Live dataset (Previous month / vs Last Month compare) currently has NO rows with conversion_rate>100 or turn_in_rate>100, so the ISS-004/009 guard cannot be visually triggered in production. Validated guard logic via unit test (test_iss009_guard_logic_unit) covering current>100, prev>100, both>100, boundary=100, prev=None. 25 of 27 ff-table rows show normal Δ Conv (pp) values — backward compat confirmed. ff-bottom-turnin-table renders only when at least one bottom turn-in store exists; was not present in run dataset. ISS-010 verified visually: KPI card 5.6% == chart narrative 5.6% exact match.",
+  "test_results_detail": {
+    "ISS-007_walk_ins_unreliable_flag": "PASS — /api/customers/walk-ins returns walk_in_share_unreliable (bool) + walk_in_share_sales_pct_raw (float)",
+    "ISS-014_recon_check_renamed": "PASS — 'walkin_sales_denominator_kes' key present in /api/admin/reconciliation-check",
+    "ISS-008_return_rate_formula": "PASS — /api/kpis return_rate in plausible range (0..30%)",
+    "ISS-004_ISS-009_guard_unit": "PASS — 6 assertions on guard logic (current>100, prev>100, both, normal, boundary=100, prev=null)",
+    "ISS-009_backward_compat_live": "PASS — 25 normal rows in ff-table show '▲/▼ ±X.XXpp' correctly",
+    "ISS-010_repeat_rate_parity": "PASS — KPI card 5.6% matches chart narrative 'Repeat rate: 5.6%'",
+    "Overview_regression": "PASS — kpi-units renders 'TOTAL UNITS SOLD 298', no JS pageerror captured",
+    "Console_errors": "None captured during Customers + Footfall + Overview navigation"
+  }
+}
