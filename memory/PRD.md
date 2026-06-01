@@ -5,6 +5,23 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91m) — Canonical "Units Sold" semantic layer wired across the dashboard
+
+- **Why**: Data Integrity Audit (Iter 91l) surfaced that "Units Sold" had three different definitions in production (sales-summary line items / top-skus catalogued rollup / STS Vivo-merchandise) producing three different numbers for the same filter state (e.g. 68,997 vs 67,408 vs 66,651 for last-90d). Leadership picked **Definition C — Vivo Merchandise** (excludes Accessories/Sale/Other categories and Third-Party Brands) as the canonical truth on 2026-02.
+- **Backend semantic layer**: `services/metric_definitions.py::compute_merch_units_sold()` is the single helper that defines Units Sold. Delegates to upstream `/subcategory-stock-sales`/`/subcategory-sales` (which already enforces the merch filter) and excludes non-merch categories (Accessories, Sale, Other) + unmapped subcategories.
+- **New endpoint**: `GET /api/analytics/canonical-units-sold` (server.py:8687) — returns `{units_sold:int, definition:"vivo_merchandise", filter:{...}}` for any (date_from, date_to, country?, channel?, locations?) tuple. Every UI surface that displays "Units Sold" now reads from this endpoint.
+- **Frontend wiring**:
+  - **Overview** (`Overview.jsx`): new `canonicalUnits` + `canonicalUnitsPrev` state, fetched in parallel with the bootstrap call. `kpis` useMemo overrides `total_units` with the canonical value (falls back to raw `/kpis.total_units` while canonical is loading). "Total Units Sold" KPI tile formula updated to reference Definition C and the merch exclusions.
+  - **ExecutiveSummary** (`ExecutiveSummary.jsx`): new `canonUnits` state, fetched for all 4 windows (YTD cur, YTD LY, MTD cur, MTD LY) using the same `data.windows` ranges the rest of the page already drives. `unitsKpi` memo derives `{ytd, mtd}` from canonical, recomputes `delta_pct` from `(cur - ly) / ly`. KPI card now reads `unitsKpi` instead of `k("units")`.
+- **Audit script** (`tests/audit_91l_data_integrity.py`): added canonical extractor as a 4th column in the Units Sold group AND relaxed the verdict so canonical is treated as ground truth — drift in legacy extractors becomes "informational" (expected by design) instead of "defect (zero tolerance)". Post-change run shows **0 defects** across all 4 metric groups.
+- **Verified live**:
+  - Backend canonical endpoint: 66,651 (last-90d) · 19,810 (Kenya MTD) · 46,607 (current quarter) · 0 (empty combo) — every value matches the STS units_sold column exactly.
+  - Overview tile: today (1 Jun 2026) shows 218 canonical (vs raw 222 from `/kpis` — merch-only delta visible).
+  - Executive Summary tile: YTD 106,418 (LY 101,176, ↑5.2%) — uses canonical for both cur and LY windows.
+  - Pytest: 7/7 PASSED (test_iteration_91h_canonical_units.py).
+- **Architectural payoff**: Any future endpoint that needs "Units Sold" must call `compute_merch_units_sold()` — the definition lives in exactly one place and is documented inline. The audit script will re-flag drift on the next run if a new endpoint diverges.
+- **Tech-debt note**: ExecutiveSummary.jsx is ~2,500 lines — flagged for sub-component split in a future iter (pre-existing, not introduced by 91m).
+
 ### Recent (Feb 2026 — Iter 91l) — Tech debt: single `extend_locations_with_warehouses()` helper
 
 - **Why**: Iter 91h (KPI fix) and Iter 91k (STS fix) both solved the same underlying problem — "augment a POS multi-select with warehouse-classified locations so warehouse stock is never accidentally excluded by a POS scope" — but with two different implementation shapes that had already drifted out of sync in production (KPI set-union vs STS two-pass-append-with-dedup). The drift between Iter 91h and Iter 91k caused the +2,361-unit production discrepancy.
