@@ -9392,12 +9392,28 @@ async def analytics_sts_by_subcat(
         if locs and stock_scope in ("warehouse", "combined"):
             # POS-scoped pull above already excluded warehouse rows. For
             # `warehouse` and `combined`, add country-wide warehouse rows.
+            #
+            # Iter 91k — dedup against the user-selected POS set.
+            # "Online - Shop Zetu" is in the POS picker AND is classified
+            # as warehouse (Iter 91f). If the user has it selected as a
+            # POS channel, the POS pull above already includes those
+            # rows; we MUST skip them here or they'd be counted twice
+            # (and STS_total would drift higher than KPI's inventory-
+            # summary which dedups via a set-union at fetch time).
+            locs_set = set(locs)
             wh_inv = await fetch_all_inventory(country=country) or []
             if stock_scope == "warehouse":
                 # Reset to warehouse-only; ignore the POS-scoped store rows.
                 stock_by_subcat = defaultdict(float)
             for r in wh_inv:
-                if not is_warehouse_location(r.get("location_name")):
+                loc_name = r.get("location_name")
+                if not is_warehouse_location(loc_name):
+                    continue
+                if loc_name in locs_set:
+                    # Already counted in the POS pass — skip to avoid
+                    # double-counting locations that are BOTH in the
+                    # user's POS selection AND classified as warehouse
+                    # (e.g. Online - Shop Zetu).
                     continue
                 pt = r.get("product_type")
                 if not pt:

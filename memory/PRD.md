@@ -5,6 +5,22 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91k) — STS endpoint: dedup POS warehouses to prevent double-count
+
+**ROOT CAUSE found via production audit (user reported KPI 74,242 vs STS Total 76,603 = +2,361 unit drift)**
+
+- User had multi-POS selected including "Online - Shop Zetu" (URL: `?ch=Safari+Sarit,Online+-+Shop+Zetu,…`).
+- Iter 91f reclassified "Online - Shop Zetu" as a warehouse (it's online-fulfilment, not a walk-in store).
+- The KPI endpoint `/inventory-summary` (Iter 91h) handles this via a `set()` union when extending the fetch set → no double-count.
+- The STS endpoint `/stock-to-sales-by-subcat` had a different code path: it (a) fetched POS-scoped inventory (which included Online - Shop Zetu's rows because the user selected it as a POS), then (b) appended ALL warehouse-classified inventory on top. Online - Shop Zetu's rows got added twice → +2,361 units after merch filter.
+
+**Fix (`/api/analytics/stock-to-sales-by-subcat`)**: in the warehouse-append loop, skip rows whose `location_name` is already in the user-selected POS set (`locs`). One-line dedup brings the endpoint in line with `inventory-summary`'s set-union behaviour.
+
+**Verified** (reproduced exact production case `locations=Safari Sarit,Online - Shop Zetu,Vivo Westgate,Vivo Garden City`):
+- Pre-fix: STS would over-count Online - Shop Zetu (~3,207u) → +2,361 net drift after merch filter (matches user's screenshot exactly)
+- Post-fix: KPI 32,797 vs STS merch 32,422 → gap = 375 (matches the expected non-merch directional gap)
+- Regression: default state (no POS, combined) still reconciles correctly: KPI 74,106 vs STS merch 73,078 → Δ = 1,028 (= exactly the non-merch SKUs)
+
 ### Recent (Feb 2026 — Iter 91j) — Inventory STS: auto-scope inventory to selected POS
 - **User ask**: When a POS is selected, expect the Inventory column to show ONLY that POS's stock (not POS + all warehouses combined).
 - **Diagnosis**: Default `stockScope = "combined"` meant `current_stock` always included store stock + ALL warehouse stock, even when a POS was filtered. With POS=Vivo Garden City: Dresses showed 9,487u (Combined) instead of the expected 548u (Stores-only).
