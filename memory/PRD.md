@@ -5,6 +5,26 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91q) — Audit batch 3: ISS-018 + ISS-019 + production-verify script
+
+#### ✅ Fixed in this iter
+
+| ID | Title | Change |
+|---|---|---|
+| **ISS-018** | Notifications anomaly detection silent for 1-day events | `notifications._synthesise_anomalies` was calling `fetch("/footfall", {})` and `fetch("/sales-summary", {})` with empty params — letting upstream default to a wide rolling window. A 1-day spike got diluted across 7-30 days and never tripped the 50% CR / 30% return-rate threshold. Now pins the window to `yesterday → today` in EAT so anomalies fire within 24 h. **Verified live**: 3 anomalies now firing (Online Shop Zetu return rate at 47.4%, 44.9%, 40.4%) that were previously silent. |
+| **ISS-019** | IBT nav badge showed 10,517 "stuck transfers" on production (badge bug, not real backlog) | The `_seen_coll` tracker recorded every IBT suggestion ever surfaced and only decremented when an admin clicked "Mark Done" (never happens in practice). Suggestions that became irrelevant (stock rebalanced) stayed counted forever. **Fix**: `/api/ibt/late-count` now requires BOTH `first_seen ≤ 5d-cutoff` AND `last_seen ≥ 1d-cutoff` so the badge shows truly stuck transfers (old AND still actively recommended today). **Verified**: count dropped from 6,617 → 230 actionable items on preview (production should drop from 10,517 → ~few hundred after deploy). |
+
+**ISS-018 surface identification**: The "≥200 visitors / ≥KES 100K sales" thresholds the audit mentioned are exclusively in `leaderboard.py` (monthly winner + 7-day Store-of-the-Week selection) — those are by-design fixed-window leaderboards and do NOT respond to the user's 1-day date filter. The actual user-facing silent surface was `notifications._synthesise_anomalies` (above), which is what gets shown in the "Today" notifications drawer.
+
+#### Production deploy verification
+
+Added `/app/backend/tests/verify_production_91p.py` — runs 4 critical checks against `bi.vivofashionbrands.com` (ISS-001 YTD parity, ISS-008 return rate formula, ISS-013 heavy-guard limit, ISS-019 late-count). Run AFTER clicking Deploy: `PROD_TOKEN=… python /app/backend/tests/verify_production_91p.py`.
+
+#### Outstanding from the 21-issue audit
+
+- 🟡 **ISS-015** — Cache hit-rate degradation (86 → 73%) — diagnosis only at this stage
+- 🟢 **ISS-016** — June 2026 targets = 0 — need user data input
+
 ### Recent (Feb 2026 — Iter 91p) — Audit batch 2: Page divergence root-cause + Replenishment ops fixes
 
 Continuing the 21-issue production audit triage. Three more items resolved with full regression coverage (testing agent 100% on backend + frontend).

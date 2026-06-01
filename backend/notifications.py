@@ -161,9 +161,19 @@ async def _synthesise_anomalies() -> List[Dict[str, Any]]:
         return []
     out: List[Dict[str, Any]] = []
     period = _today_period()
+    # ISS-018 — Anomaly detection was passing `{}` to /footfall, which
+    # let upstream pick the default window (often a wide rolling
+    # average). A single-store spike yesterday could be diluted across
+    # 7-30 days and never trip the 50% CR / 30% return-rate threshold.
+    # We now pin the window to yesterday → today so anomalies surface
+    # within 24 h of occurrence regardless of upstream defaults.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _today = (_dt.now(_tz.utc) + _td(hours=3)).date()  # EAT
+    _yest = _today - _td(days=1)
+    _win = {"date_from": _yest.isoformat(), "date_to": _today.isoformat()}
     # Footfall — CR ≥ 50% is implausible; raise it.
     try:
-        ff = await fetch("/footfall", {})
+        ff = await fetch("/footfall", _win)
     except Exception:
         ff = []
     for r in ff or []:
@@ -185,7 +195,7 @@ async def _synthesise_anomalies() -> List[Dict[str, Any]]:
             break
     # Sales summary — flag return-rate ≥ 30% at location level.
     try:
-        ss = await fetch("/sales-summary", {})
+        ss = await fetch("/sales-summary", _win)
     except Exception:
         ss = []
     for r in ss or []:

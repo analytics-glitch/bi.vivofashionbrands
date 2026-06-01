@@ -291,20 +291,38 @@ async def late_transfer_count(days: int = 5, user: User = Depends(get_current_us
     """Count of suggestions first seen >`days` days ago that still
     haven't been marked done. Powers the red badge on the IBT nav
     item — surfaces stuck transfers that nobody has actioned.
+
+    ISS-019 — Originally this counted every suggestion >5d old that
+    wasn't manually marked done, which compounded forever (10,517 on
+    production). Real workflow: a suggestion that was relevant 30 days
+    ago but is no longer surfaced today (stock has since rebalanced) is
+    NOT stuck — it's stale. We now require both:
+      • first_seen ≤ 5-day cutoff (genuinely old) AND
+      • last_seen ≥ 1-day cutoff (still actively recommended today)
+    so the badge reflects *actionable* stuck transfers only.
     """
     from datetime import timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=int(max(1, days)))
+    now = datetime.now(timezone.utc)
+    old_cutoff = now - timedelta(days=int(max(1, days)))
+    # "Still active today" window — 1 day. The IBT engine re-tracks
+    # on every surface, so a 1-day last_seen window catches anything
+    # currently being recommended without false positives.
+    active_cutoff = now - timedelta(days=1)
 
-    # All "old" seen keys.
+    # All "old AND still active" seen keys.
     seen_keys = []
     cursor = _seen_coll.find(
-        {"first_seen": {"$lte": cutoff}},
-        {"_id": 1, "style_name": 1, "to_store": 1, "first_seen": 1},
+        {
+            "first_seen": {"$lte": old_cutoff},
+            "last_seen": {"$gte": active_cutoff},
+        },
+        {"_id": 1, "style_name": 1, "to_store": 1, "first_seen": 1, "last_seen": 1},
     )
     async for d in cursor:
         seen_keys.append({
             "style_to_key": f"{d.get('style_name')}||{d.get('to_store')}",
             "first_seen": d.get("first_seen"),
+            "last_seen": d.get("last_seen"),
             "style_name": d.get("style_name"),
             "to_store": d.get("to_store"),
         })
