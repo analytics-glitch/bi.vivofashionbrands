@@ -5,6 +5,19 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91g) — Online - Shop Zetu treated as warehouse app-wide
+- **User ask**: Ensure Online - Shop Zetu stock is treated as warehouse across ALL pages, not just Exec Summary.
+- **Audit findings**: Frontend has only display labels (no client-side classification). Backend has the single helper `is_warehouse_location()` BUT `marketing_intel.py` carried a deliberate duplicate copy (to avoid a circular import) — that duplicate did not have the fix from Iter 91f.
+- **Fix**: Added `"online - shop zetu"` to the marketing_intel local key list with a comment noting server.py is the source of truth. Both helpers now agree.
+- **Verified across endpoints** (11/11 backend pytest):
+  - `/api/exec-summary` Stock Mix: warehouse 31,369 / stores 43,521 / total 74,890 (invariant ✓)
+  - `/api/analytics/sell-through-by-location`: Zetu excluded from store rankings
+  - `/api/analytics/ibt-suggestions`: Zetu never appears as from_store or to_store
+  - `/api/analytics/aged-stock`: Zetu units roll into warehouse bucket
+  - `/api/marketing/slow-movers`: Zetu excluded from "where stocked" list
+  - `/api/analytics/replenishment-report`: Zetu not a destination
+- **Tech debt note from testing agent**: Two `is_warehouse_location()` copies (server.py + marketing_intel.py) drift independently. Long-term: extract `WAREHOUSE_KEYS` to a shared utility module.
+
 ### Recent (Feb 2026 — Iter 91f) — Online - Shop Zetu reclassified as warehouse
 - **User ask**: Treat "Online - Shop Zetu" as a warehouse, not a store (it's an online-fulfilment stockholding location, not a walk-in retail floor).
 - **Change**: Added `"Online - Shop Zetu"` to `WAREHOUSE_NAMES` and `"online - shop zetu"` to `WAREHOUSE_KEYS` in `/app/backend/server.py`. The substring key matches the exact location name (which uses a hyphen, not a space). Applies app-wide via `is_warehouse_location()` — Stock Mix split, store rankings, IBT logic, replenishment, SOR, and Locations all now treat this location as warehouse.
