@@ -5,6 +5,25 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91p) — Audit batch 2: Page divergence root-cause + Replenishment ops fixes
+
+Continuing the 21-issue production audit triage. Three more items resolved with full regression coverage (testing agent 100% on backend + frontend).
+
+#### ✅ Fixed in this iter
+
+| ID | Title | Change |
+|---|---|---|
+| **ISS-001** family (incl. **003 / 011 / 012 / 020 / 021**) | Page-by-page headline divergence (Total Sales 919.59K vs 967.44K vs 815.52K vs 984.79K; Exec YTD 449.82M vs Targets 450.92M) | Root cause: `/api/exec-summary` derived headline revenue/orders/units by summing `/sales-summary` rows (store-channel feed, omits Online/Shop Zetu when not in snapshot). Now `_block` fans out to `/kpis` per window alongside `/sales-summary`, and `_kpi_block` reads `kpis.total_sales` / `total_orders` / `total_units` as the canonical headline. `/sales-summary` data is kept for per-store table + country breakdown only (where the per-channel grain is required). Falls back to legacy `_sum_sales(rows)` only when `/kpis` is empty for the window. **Verified**: `/api/kpis YTD = /api/exec-summary YTD = 449,823,575.00` exact match; MTD + country=Kenya windows also reconcile to <1 KES. |
+| **ISS-002** | Replenishments header read "Today's pick list · 2026-05-31" on 1 Jun (team picking from yesterday-stamped list) | Frontend hard-coded `dateFrom = dateTo = yesterday`. Fixed: default window is now `yesterday → today` in **Africa/Nairobi (EAT)**, header label always anchors to today's EAT date, sub-pill `· window <from> → <to>` shows the actual sell-through data window. Backend default already covered the same window (yesterday→today), so no backend change was needed — purely a label/UI fix. |
+| **ISS-013** | 6 heavy-guard rejections on `/analytics/replenishment-report` per audit window | `_HEAVY_LIMITS['/analytics/replenishment-report']`: 1 → 2 (concurrent slots). `_HEAVY_ACQUIRE_TIMEOUT_SEC`: 2.0 s → 8.0 s. `_repl_inflight` dedup already shares one compute across identical concurrent requests, so the bump only opens slots for distinct cache keys (different country / window). **Verified**: 2 concurrent calls with different windows both returned 200 (no 503). |
+
+#### Outstanding from the 21-issue audit (still deferred)
+
+- **ISS-015** — Cache hit-rate degradation (86 → 73%) — diagnosis only at this stage
+- **ISS-016** — June 2026 targets = 0 — need user data input
+- **ISS-018** — 1-day anomaly thresholds — need user to point at specific surface
+- **ISS-019** — 10,517 stuck IBT transfers — needs user verification (real backlog vs flag bug)
+
 ### Recent (Feb 2026 — Iter 91o) — Audit findings batch fix (8 issues addressed, 8 documented for follow-up)
 
 User shared 21-issue audit from production deployment. After triage, applied surgical fixes for 8 well-bounded items; documented the rest as follow-up work that needs deeper investigation or user input.
