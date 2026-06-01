@@ -1,0 +1,36 @@
+{
+  "summary": "Iter 91g — Verified Online - Shop Zetu is classified as warehouse across ALL warehouse-classification-dependent backend endpoints. 11/11 pytest passed against the public preview URL with the admin token.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/aged-stock", "issue": "Heavy endpoint occasionally returns 502 from preview ingress on cold cache (transient — passes on retry). Test wrapped in retry helper."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91g_shopzetu_warehouse.py",
+    "/app/test_reports/pytest/iter_91g.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py has is_warehouse_location() as the single source of truth (line 8832) and WAREHOUSE_KEYS now includes 'online - shop zetu' (line 8712). WAREHOUSE_NAMES (line 7192-7200) also includes the exact-case 'Online - Shop Zetu' for set-membership checks used in two places.",
+    "marketing_intel.py has a deliberate duplicate is_warehouse_location() (line 98) with a comment noting server.py is the source of truth — kept local to avoid circular import. The substring 'online - shop zetu' is correctly included (line 118). Both helpers verified to agree via unit test.",
+    "Live invariant on /api/exec-summary: stock_mix.total_stock_units == warehouse + stores. Warehouse bucket holds 31,369 units (well above the 20,000 floor) confirming Zetu's ~3,207 units are now classified there. Total ≈ 74,890 matches the expected live figure.",
+    "/api/analytics/sell-through-by-location, /api/analytics/ibt-suggestions, /api/analytics/aged-stock, /api/marketing/slow-movers, /api/analytics/replenishment-report all confirmed to EXCLUDE Online - Shop Zetu from store-side outputs.",
+    "Note: there are TWO is_warehouse_location() implementations in the codebase (server.py + marketing_intel.py). They drift independently — the unit test in this iteration is now the regression guard. Long-term consider refactoring marketing_intel.py to read WAREHOUSE_KEYS from a shared utility module to eliminate the duplication entirely."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91g_shopzetu_warehouse.py (new — 11 tests)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "N/A (backend-only request)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026",
+  "seed_data_creation": "None — read-only tests against live data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration_91g_shopzetu_warehouse.py covers: (a) unit-level — both is_warehouse_location() helpers in server.py and marketing_intel.py return True for 'Online - Shop Zetu' AND False for real stores AND are case-insensitive; (b) /api/exec-summary stock_mix invariant (warehouse + stores == total, warehouse > 20k floor); (c) /api/analytics/sell-through-by-location excludes Zetu from rankings; (d) /api/analytics/ibt-suggestions never emits Zetu as either from_store or to_store; (e) /api/analytics/aged-stock has no Zetu pos_location rows; (f) /api/marketing/slow-movers excludes Zetu from 'where stocked'; (g) /api/analytics/replenishment-report has no Zetu destination. The aged-stock endpoint can 502 on cold cache from the preview ingress — _get_with_retry helper handles it with 3 retries × 180s timeout × 5s sleep.",
+  "rca of the issue": "N/A — feature parity verification, no defects found."
+}

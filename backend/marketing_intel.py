@@ -98,7 +98,14 @@ def category_for(subcat: Optional[str]) -> str:
 def is_warehouse_location(name: Optional[str]) -> bool:
     """Locations that should be excluded from the "where it's stocked"
     list per user spec ("exclude Warehouse Finished Goods location").
-    Conservative regex to also drop staging/holding/wholesale buckets."""
+    Conservative regex to also drop staging/holding/wholesale buckets.
+
+    Iter 91f — Online - Shop Zetu is an online-fulfilment stockholding
+    location, classified as warehouse across the app. Keep this list
+    in sync with `WAREHOUSE_KEYS` in server.py — server.py is the
+    primary source of truth; this local copy exists only to avoid a
+    server↔marketing_intel circular import.
+    """
     if not name:
         return False
     s = name.lower()
@@ -108,6 +115,7 @@ def is_warehouse_location(name: Optional[str]) -> bool:
         "holding",
         "staging",
         "sale stock",
+        "online - shop zetu",
     ))
 
 
