@@ -115,7 +115,7 @@ _STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"]
 # Exports tab (inventory-only — the page-level guard in Exports.jsx
 # hides every non-inventory tab for this role).
 _WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"]
-_ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "pricing", "data-quality", "allocations", "replenishments", "marketing", "range-mgmt"]
+_ANALYST = _VIEWER + ["inventory", "re-order", "ibt", "products", "data-quality", "allocations", "replenishments", "marketing", "range-mgmt"]
 _EXEC = _ANALYST + ["ceo-report", "targets", "exports", "exec-summary"]
 _ADMIN = _EXEC + ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"]
 ROLE_PAGES = {

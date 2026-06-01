@@ -69,7 +69,7 @@ pricing:        { "direction": "increase"|"decrease"?, "min_change_pct": <number
 customers:      { "mode": "top"|"absent"|"new", "days_absent_min": <int>?, "top_n": <1-20>? }
 stores:         { "metric": "sales"|"footfall"|"conversion_rate"|"avg_basket", "order": "desc"|"asc", "top_n": <1-20>? }
 reorder:        { "urgency_in": ["CRITICAL"|"HIGH"|"MEDIUM"|"LOW"]? }
-page:           { "page": "overview"|"locations"|"footfall"|"customers"|"products"|"inventory"|"re-order"|"ibt"|"pricing"|"ceo-report"|"data-quality"|"exports" }
+page:           { "page": "overview"|"locations"|"footfall"|"customers"|"products"|"inventory"|"re-order"|"ibt"|"ceo-report"|"data-quality"|"exports" }
 unknown:        {}
 
 Rules:
@@ -510,7 +510,7 @@ async def ask(
         link_map = {
             "overview": "/", "locations": "/locations", "footfall": "/footfall",
             "customers": "/customers", "products": "/products", "inventory": "/inventory",
-            "re-order": "/re-order", "reorder": "/re-order", "ibt": "/ibt", "pricing": "/pricing",
+            "re-order": "/re-order", "reorder": "/re-order", "ibt": "/ibt",
             "ceo-report": "/ceo-report", "ceo": "/ceo-report",
             "data-quality": "/data-quality", "exports": "/exports",
         }

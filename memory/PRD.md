@@ -5,6 +5,19 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91n) — Removed Production Plan section + Pricing page
+
+- **User ask**: Remove the "July 2026 Production Plan" table from Executive Summary and remove the Pricing page entirely.
+- **Production Plan removed** (`ExecutiveSummary.jsx`): deleted the entire `JuneProductionPlan` component (~629 lines) including its docstring, supporting helpers (`_readLsNumber`, `_readLsObject`), constants (TARGET_LS_KEY, CAPACITY_LS_KEY, SEASONALITY_LS_KEY, DEFAULT_JUNE_TARGET, DEFAULT_CAPACITY, SAFETY_WEEKS, LEAD_TIME_WEEKS, DEFAULT_SEASONALITY), and the `<JuneProductionPlan />` call site. Section 4.5 of the page is gone; the layout flows directly from Stock Mix into Store Performance.
+- **Pricing page removed**:
+  - `App.js`: removed lazy import + `/pricing` route
+  - `Sidebar.jsx`: removed nav entry + unused `CurrencyCircleDollar` icon import
+  - `lib/permissions.js`: removed `"pricing"` from ANALYST role and from the `routeMap` used by `homePageFor`
+  - `backend/auth.py`: removed `"pricing"` from `_ANALYST`. Verified `/api/auth/me.allowed_pages` no longer includes pricing.
+  - `backend/ask.py`: dropped `"pricing": "/pricing"` from the `page` intent's link_map (the analytics-side `"pricing"` intent that surfaces price-change analysis via natural language search is preserved — it doesn't depend on a UI route).
+  - Deleted `/app/frontend/src/pages/Pricing.jsx`
+- **Verified live (preview)**: Exec Summary loads without Production Plan section; sidebar has no Pricing entry; direct nav to `/pricing` falls through to the catch-all (no Pricing page rendered); admin `allowed_pages` no longer contains "pricing".
+
 ### Recent (Feb 2026 — Iter 91m) — Canonical "Units Sold" semantic layer wired across the dashboard
 
 - **Why**: Data Integrity Audit (Iter 91l) surfaced that "Units Sold" had three different definitions in production (sales-summary line items / top-skus catalogued rollup / STS Vivo-merchandise) producing three different numbers for the same filter state (e.g. 68,997 vs 67,408 vs 66,651 for last-90d). Leadership picked **Definition C — Vivo Merchandise** (excludes Accessories/Sale/Other categories and Third-Party Brands) as the canonical truth on 2026-02.
