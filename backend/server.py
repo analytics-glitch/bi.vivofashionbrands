@@ -8684,6 +8684,46 @@ async def get_category_country_matrix(
     }
 
 
+@api_router.get("/analytics/canonical-units-sold")
+async def analytics_canonical_units_sold(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    locations: Optional[str] = None,
+):
+    """Iter 91m — canonical "Units Sold" endpoint (Vivo merchandise only).
+
+    Single source of truth used by every UI surface that shows a
+    Units Sold KPI. Delegates to `services.metric_definitions.
+    compute_merch_units_sold` so the definition lives in exactly one
+    place. Leadership picked Definition C (catalogued Vivo merchandise,
+    excludes Third-Party-Brands and non-merch categories) on
+    2026-02 — see `services/metric_definitions.py` docstring.
+
+    Response shape:
+        {
+            "units_sold": <int>,
+            "definition": "vivo_merchandise",
+            "filter": { date_from, date_to, country, channel, locations },
+        }
+    """
+    from services.metric_definitions import compute_merch_units_sold
+    total = await compute_merch_units_sold(
+        date_from=date_from, date_to=date_to,
+        country=country, channel=channel, locations=locations,
+    )
+    return {
+        "units_sold": int(total),
+        "definition": "vivo_merchandise",
+        "filter": {
+            "date_from": date_from, "date_to": date_to,
+            "country": country, "channel": channel, "locations": locations,
+        },
+    }
+
+
+
 @api_router.get("/subcategory-stock-sales")
 async def get_subcategory_stock_sales(
     date_from: Optional[str] = None,

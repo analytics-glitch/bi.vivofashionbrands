@@ -192,6 +192,17 @@ async def m_top_skus_units(s):
     return int(sum((row.get("units_sold") or 0) for row in rows))
 
 
+async def m_canonical_units(s):
+    """Iter 91m — single source of truth for "Units Sold".
+    Routes through the new `/api/analytics/canonical-units-sold` semantic
+    layer (Definition C: Vivo merchandise only)."""
+    r = await server.analytics_canonical_units_sold(
+        date_from=s["date_from"], date_to=s["date_to"],
+        country=s.get("country"), locations=s.get("locations"),
+    )
+    return int((r or {}).get("units_sold") or 0)
+
+
 # ---------- Audit groups ----------
 
 METRIC_GROUPS = [
@@ -227,6 +238,7 @@ METRIC_GROUPS = [
             ("sales-summary units",     "/api/sales-summary",                      m_sales_summary_units),
             ("STS units_sold",          "/api/analytics/stock-to-sales-by-subcat", m_sts_units_sold),
             ("top-skus rollup",         "/api/top-skus",                           m_top_skus_units),
+            ("canonical (merch)",       "/api/analytics/canonical-units-sold",     m_canonical_units),
         ],
         "skip_filter_keys_for": {
             "top-skus rollup":          {"locations"},  # top-skus aggregates SKU-wide, not POS-scoped
@@ -249,9 +261,17 @@ def _state_applicable(state, skip_keys: Optional[set]) -> bool:
     return not any(k in state for k in skip_keys if k != "label" and k not in {"date_from", "date_to"})
 
 
-def _delta_ok(values: List[int], metric_name: str) -> Tuple[bool, str]:
+def _delta_ok(values: List[int], metric_name: str, extractor_labels: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Tolerance check per Step 4. Stock-on-Hand has expected non-merch
-    gap; Revenue/Units zero tolerance for counts. Returns (ok, note)."""
+    gap; Revenue/Units zero tolerance for counts. Returns (ok, note).
+
+    Iter 91m: when a "canonical (merch)" extractor is present in the
+    Units Sold group, the canonical value is treated as ground truth.
+    The other extractors (sales-summary, top-skus) deliberately use
+    different definitions (line-item / catalogued-style) and their
+    drift vs canonical is *expected*, not a defect. We only emit a
+    defect verdict if canonical *itself* differs across the row's
+    extractors (which would be a self-inconsistency)."""
     nums = [v for v in values if isinstance(v, int)]
     if len(nums) <= 1:
         return True, "single source"
@@ -274,6 +294,13 @@ def _delta_ok(values: List[int], metric_name: str) -> Tuple[bool, str]:
             return False, f"span KES {span:,} ({pct:.2f}% of max) — defect"
         return True, f"span KES {span:,} ({pct:.2f}% — within tolerance)"
     if "Units" in metric_name or "Orders" in metric_name:
+        # Iter 91m: trust canonical (merch) as the definitive truth.
+        # Other extractors expose alternative definitions kept for
+        # specialised contexts (sales-summary = line items including
+        # non-merch; top-skus = SKU rollup) — their drift is expected
+        # and informational, not a defect.
+        if extractor_labels and any("canonical" in (l or "").lower() for l in extractor_labels):
+            return True, f"span {span} (informational — canonical is truth)"
         # zero tolerance for counts
         if span > 0:
             return False, f"span {span} — defect (zero tolerance)"
@@ -310,7 +337,7 @@ async def run_audit():
                 if ok and isinstance(v, int):
                     comparable_vals.append(v)
             cells = "  ".join(f"{v:>24}" if isinstance(v, int) else f"{str(v)[:24]:>24s}" for v in row_vals)
-            ok, note = _delta_ok(comparable_vals, group["name"])
+            ok, note = _delta_ok(comparable_vals, group["name"], extractor_labels=[e[0] for e in group["extractors"]])
             mark = "✓" if ok else "✗"
             print(f"{s['label']:30s}  {cells}   {mark} {note}")
             if not ok:

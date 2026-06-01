@@ -221,6 +221,13 @@ const Overview = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState("units_sold");
+  // Iter 91m — Canonical "Units Sold" (Vivo merchandise definition,
+  // single source of truth). Fetched alongside /kpis so the headline
+  // "Total Units Sold" KPI tile reads the merch-only canonical value
+  // instead of the upstream all-product-types total. Falls back to
+  // raw kpi.total_units while loading or on error.
+  const [canonicalUnits, setCanonicalUnits] = useState(null);
+  const [canonicalUnitsPrev, setCanonicalUnitsPrev] = useState(null);
 
   // VAT logic has been removed per product decision — all monetary values
   // rendered as-is from upstream (excl. VAT). `adj` is a no-op identity to
@@ -309,6 +316,32 @@ const Overview = () => {
       });
     return () => { cancelled = true; };
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  // Iter 91m — Fetch canonical (Vivo-merchandise) Units Sold for the
+  // current filter window AND the comparison window. Runs in parallel
+  // with the bootstrap call; api.js caches both responses for 5 min.
+  useEffect(() => {
+    let cancelled = false;
+    const prev = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+    const baseParams = {
+      date_from: dateFrom, date_to: dateTo,
+      ...(countries.length ? { country: countries.join(",") } : {}),
+      ...(channels.length ? { channel: channels.join(",") } : {}),
+    };
+    setCanonicalUnits(null);
+    setCanonicalUnitsPrev(null);
+    api.get("/analytics/canonical-units-sold", { params: baseParams })
+      .then((r) => { if (!cancelled) setCanonicalUnits(r.data?.units_sold ?? null); })
+      .catch(() => { if (!cancelled) setCanonicalUnits(null); });
+    if (prev) {
+      api.get("/analytics/canonical-units-sold", { params: { ...baseParams, date_from: prev.date_from, date_to: prev.date_to } })
+        .then((r) => { if (!cancelled) setCanonicalUnitsPrev(r.data?.units_sold ?? null); })
+        .catch(() => { if (!cancelled) setCanonicalUnitsPrev(null); });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
+
 
   const pairedBars = useMemo(() => {
     if (!pairedDays) return [];
@@ -446,9 +479,15 @@ const Overview = () => {
       avg_basket_size: adj(rawKpis.avg_basket_size),
       avg_selling_price: adj(rawKpis.avg_selling_price),
       gross_sales: adj(rawKpis.gross_sales),
+      // Iter 91m — Canonical Units Sold (Vivo merchandise only). Falls
+      // back to upstream all-product-types total while the canonical
+      // call is in-flight so first paint isn't blocked.
+      total_units: canonicalUnits != null ? canonicalUnits : rawKpis.total_units,
+      total_units_upstream: rawKpis.total_units,
+      total_units_canonical: canonicalUnits,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawKpis]);
+  }, [rawKpis, canonicalUnits]);
 
   const kpisPrev = useMemo(() => {
     if (!rawKpisPrev) return null;
@@ -459,9 +498,10 @@ const Overview = () => {
       total_returns: adj(rawKpisPrev.total_returns),
       avg_basket_size: adj(rawKpisPrev.avg_basket_size),
       avg_selling_price: adj(rawKpisPrev.avg_selling_price),
+      total_units: canonicalUnitsPrev != null ? canonicalUnitsPrev : rawKpisPrev.total_units,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawKpisPrev]);
+  }, [rawKpisPrev, canonicalUnitsPrev]);
 
   // Iter 77 — Prefetch-on-hover hints for KPI tiles. When the user
   // hovers a tile, the KPI card eagerly warms the destination page's
@@ -933,7 +973,7 @@ const Overview = () => {
               action={{ label: "Order-level export", to: "/exports" }}
               prefetch={pf("/exports")} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
-              formula="How many individual items left the shelves."
+              formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
               delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }}
               prefetch={pf("/products")} />

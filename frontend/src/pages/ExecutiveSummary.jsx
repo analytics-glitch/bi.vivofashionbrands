@@ -2460,6 +2460,36 @@ const ExecutiveSummary = () => {
   // in the same order on every render.
   const [snapshot, setSnapshot] = useState(false);
 
+  // Iter 91m — Canonical Units Sold (Vivo merchandise only). Fetched
+  // for all 4 windows (YTD cur/LY, MTD cur/LY) so the headline "Units
+  // Sold" KPI tile reads the same single source of truth as the rest
+  // of the dashboard. Falls back to upstream data.kpis.units while
+  // in-flight.
+  const [canonUnits, setCanonUnits] = useState(null);
+  useEffect(() => {
+    if (!data?.windows) return;
+    let cancel = false;
+    const fetch1 = (range) => {
+      const [from, to] = range || [];
+      if (!from || !to) return Promise.resolve(null);
+      const params = { date_from: from, date_to: to };
+      if (selectedCountry) params.country = selectedCountry;
+      return api.get("/analytics/canonical-units-sold", { params })
+        .then((r) => r.data?.units_sold ?? null)
+        .catch(() => null);
+    };
+    const ytd = data.windows.ytd || {};
+    const mtd = data.windows.mtd || {};
+    Promise.all([
+      fetch1(ytd.current), fetch1(ytd.ly),
+      fetch1(mtd.current), fetch1(mtd.ly),
+    ]).then(([yCur, yLy, mCur, mLy]) => {
+      if (cancel) return;
+      setCanonUnits({ ytd_cur: yCur, ytd_ly: yLy, mtd_cur: mCur, mtd_ly: mLy });
+    });
+    return () => { cancel = true; };
+  }, [data, selectedCountry]);
+
   if (loading) return <Loading label="Loading executive summary…" />;
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Empty label="No data available." />;
@@ -2475,6 +2505,28 @@ const ExecutiveSummary = () => {
     ytd: data.ytd.kpis[key],
     mtd: data.mtd.kpis[key],
   });
+  // Iter 91m — Canonical Units Sold override. When the canonical fetch
+  // has resolved, replace the upstream units KPI block with merch-only
+  // values + recomputed delta_pct so the KPI tile + delta both reflect
+  // the canonical truth.
+  const _pct = (cur, ly) => {
+    if (cur == null || ly == null || ly === 0) return null;
+    return ((cur - ly) / ly) * 100;
+  };
+  const unitsKpi = (() => {
+    if (!canonUnits) return k("units");
+    const yCur = canonUnits.ytd_cur, yLy = canonUnits.ytd_ly;
+    const mCur = canonUnits.mtd_cur, mLy = canonUnits.mtd_ly;
+    const upstream = k("units");
+    return {
+      ytd: yCur != null
+        ? { cur: yCur, ly: yLy ?? upstream.ytd?.ly ?? 0, delta_pct: _pct(yCur, yLy) }
+        : upstream.ytd,
+      mtd: mCur != null
+        ? { cur: mCur, ly: mLy ?? upstream.mtd?.ly ?? 0, delta_pct: _pct(mCur, mLy) }
+        : upstream.mtd,
+    };
+  })();
 
   if (snapshot) {
     return <ExecutiveSummarySnapshot data={data} onClose={() => setSnapshot(false)} />;
@@ -2523,7 +2575,7 @@ const ExecutiveSummary = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <KpiCard testId="kpi-revenue"   label="Total Revenue"        icon={TrendUp}       fmt={fmtKES} ytd={k("revenue").ytd}   mtd={k("revenue").mtd} />
         <KpiCard testId="kpi-avgday"    label="Avg Sales / Day"      icon={Coins}         fmt={fmtKES} ytd={k("avg_sales_per_day").ytd} mtd={k("avg_sales_per_day").mtd} />
-        <KpiCard testId="kpi-units"     label="Units Sold"           icon={Package}                   ytd={k("units").ytd}     mtd={k("units").mtd} />
+        <KpiCard testId="kpi-units"     label="Units Sold"           icon={Package}                   ytd={unitsKpi.ytd}     mtd={unitsKpi.mtd} />
         <KpiCard testId="kpi-footfall"  label="Footfall"             icon={Footprints}                ytd={k("footfall").ytd}  mtd={k("footfall").mtd} />
         <KpiCard testId="kpi-basket"    label="Avg Basket"           icon={Coins}         fmt={fmtKES} ytd={k("avg_basket").ytd} mtd={k("avg_basket").mtd} />
         <KpiCard testId="kpi-asp"       label="ASP"                  icon={Tag}           fmt={fmtKES} ytd={k("asp").ytd}        mtd={k("asp").mtd} />

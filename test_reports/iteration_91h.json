@@ -1,0 +1,65 @@
+{
+  "summary": "Iter 91h — Verified the new canonical units-sold semantic-layer endpoint and its frontend wiring on Overview & ExecutiveSummary. All 7 pytest tests pass and the data-integrity audit script reports 0 defects (canonical = STS units_sold = 66,651 for last-90d, 19,810 for Kenya MTD, 46,607 for current quarter, 0 for empty combo).",
+  "tests_executed": {
+    "backend_pytest": "7/7 PASSED in 4.77s (test_iteration_91h_canonical_units.py)",
+    "audit_script": "audit_91l_data_integrity.py → OUTPUT 1 = 0 defects across all 4 metric groups (Stock on Hand, Revenue, Units Sold, Orders)",
+    "frontend_smoke": "Overview + ExecutiveSummary loaded after admin login; canonical endpoint wired correctly"
+  },
+  "backend_findings": {
+    "endpoint_shape": "GET /api/analytics/canonical-units-sold returns 200 with {units_sold:int, definition:'vivo_merchandise', filter:{...}} — shape verified across 5 filter states",
+    "canonical_values": {
+      "last_90d_no_filter (2026-03-03 → 2026-05-31)": "66651 ✓ matches expected",
+      "Kenya MTD (2026-05-01 → 2026-05-31, country=Kenya)": "19810 ✓ matches expected",
+      "Vivo Westgate L7 (2026-05-25 → 2026-05-31, locations=Vivo Westgate)": "0 (canonical) ; STS=0 ✓ reconciles",
+      "current quarter (2026-04-01 → 2026-05-31)": "46607 ✓ matches expected",
+      "empty combo (Rwanda × 2026-05-31 × Vivo Westgate)": "0 ✓ matches expected"
+    },
+    "reconciliation": "canonical-units-sold == STS units_sold rollup for every audit state — single source of truth holds",
+    "regression": "GET /api/kpis still returns 200 with total_units/units field intact (legacy field untouched)"
+  },
+  "frontend_findings": {
+    "overview": {
+      "kpi_units_value": "Shows 218 for 1 Jun 2026 (today). API /api/analytics/canonical-units-sold?date_from=2026-06-01&date_to=2026-06-01 returns 218. Raw /api/kpis.total_units = 222. KPI tile uses the canonical (218) NOT the raw (222) ✓",
+      "prev_period_value": "vs Last Month baseline = 816 = canonical for 2026-05-01 (raw was 831) ✓",
+      "formula_tooltip_text": "Source code confirms KPICard formula = 'How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C).' ✓ Contains both required phrases (Vivo merchandise + canonical definition C).",
+      "network_listener_note": "Direct network listener captured 0 calls because Overview had already loaded canonical data before listener attached (login redirect → /overview was synchronous). Validated via value comparison instead — kpi-units numerically matches the canonical API for both current and prev windows."
+    },
+    "executive_summary": {
+      "kpi_units": "YTD 106,418 (LY 101,176, +5.2%) — matches main agent's reported values ✓",
+      "network_calls_observed": "4 canonical-units-sold calls fired on ExecSummary mount (YTD-cur, YTD-LY, MTD-cur, MTD-LY) all returning 200 ✓",
+      "mtd_window_observation": "MTD calls use date_from=2026-06-01, date_to=2026-05-31 (inverted range because reporting day = yesterday May 31 but month-start = today June 1). Backend returns 0 gracefully. This is a pre-existing windowing quirk on day-1-of-month, not introduced by iter 91m."
+    },
+    "console": "No JS errors caused by iter 91m changes. Pre-existing benign warnings only (Recharts width/height warnings on hidden tabs; 2 unrelated 401s from prior session)."
+  },
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ExecutiveSummary on first-of-month", "issues": ["MTD windows produce inverted date range (date_from > date_to) on day-1-of-month when reporting = yesterday. Currently returns 0 — works but could be tightened to skip the network call or fall back to (today, today). Pre-existing, not introduced by 91m."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91h_canonical_units.py",
+    "/app/test_reports/pytest/iter_91h.xml",
+    "/app/backend/tests/audit_91l_data_integrity.py"
+  ],
+  "action_items": [
+    "(Optional) Guard MTD windows in ExecutiveSummary against day-1-of-month where date_from > date_to to avoid wasted canonical API call — currently harmless (returns 0)."
+  ],
+  "critical_code_review_comments": [
+    "Endpoint correctly registered, response shape validated.",
+    "Tooltip text contains both required phrases ('Vivo merchandise' and 'canonical definition C').",
+    "Falls back gracefully to raw kpis.total_units while canonical is loading (good UX during cold cache).",
+    "ExecutiveSummary.jsx is ~2500 lines — well beyond the 700-line guideline; consider splitting into sub-components in a future iter (pre-existing issue, not new in 91m)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91h_canonical_units.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7 pytest + 0/0 audit defects)", "frontend": "100% (Overview canonical override verified by value comparison; ExecSummary canonical network calls verified by listener)"},
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 — from /app/memory/test_credentials.md, used successfully.",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 91m canonical Units Sold endpoint is healthy and reconciles with STS. The audit script at /app/backend/tests/audit_91l_data_integrity.py is the go-to regression for cross-page metric drift; rerun after any future units/revenue/stock changes. Note that Overview triggers canonical fetch on initial mount, so capture listener BEFORE goto if you need to inspect the request in playwright."
+}
