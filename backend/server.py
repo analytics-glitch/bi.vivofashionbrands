@@ -257,15 +257,22 @@ _HEAVY_LIMITS = {
     # Endpoint path → max concurrent in-flight requests on this pod.
     "/sor": 3,
     "/analytics/style-location-breakdown": 2,
-    "/analytics/replenishment-report": 1,
+    # ISS-013 — was 1; raised to 2 so a second user requesting a
+    # different country/window doesn't get a 503 just because the
+    # first compute is still running. `_repl_inflight` already
+    # deduplicates same-cache-key callers, so concurrent identical
+    # requests share a single compute regardless of this limit.
+    "/analytics/replenishment-report": 2,
     "/customers/walk-ins": 3,
     "/analytics/customer-retention": 2,
     "/analytics/ibt-warehouse-to-store": 3,
 }
 # Acquire wait — how long a queued request will wait for a slot
-# before giving up with a 503. Short on purpose: a fast 503 is better
-# UX than a 60s hang.
-_HEAVY_ACQUIRE_TIMEOUT_SEC = 2.0
+# before giving up with a 503.
+# ISS-013 — raised from 2 s to 8 s so a queued user (rare) sees the
+# pick list load after a brief delay instead of a hard 503. The cold
+# compute is 30-60 s but the typical request hits the 30-min cache.
+_HEAVY_ACQUIRE_TIMEOUT_SEC = 8.0
 # Total times we've returned 503 from the heavy-guard; surfaced on the
 # admin cache-stats endpoint so we can spot capacity pressure.
 _HEAVY_GUARD_REJECTIONS: Dict[str, int] = {}
@@ -3326,11 +3333,20 @@ async def exec_summary_endpoint(
         sc_kwargs = {"date_from": df, "date_to": dt}
         if country:
             sc_kwargs["country"] = country
-        ss, ff, cu, sc = await asyncio.gather(
+        # ISS-001 — also fetch the canonical /kpis payload per window
+        # so the Exec Summary's headline revenue/orders/units come from
+        # the SAME source as Overview / Locations. Previously revenue
+        # was summed from /sales-summary rows, producing 449.82M vs
+        # /kpis 450.92M (≈1.1M drift seen on YTD).
+        kpi_kwargs = {"date_from": df, "date_to": dt}
+        if country:
+            kpi_kwargs["country"] = country
+        ss, ff, cu, sc, kp = await asyncio.gather(
             get_sales_summary(date_from=df, date_to=dt),
             get_footfall(date_from=df, date_to=dt),
             get_customers(date_from=df, date_to=dt),
             get_subcategory_sales(**sc_kwargs),
+            get_kpis(**kpi_kwargs),
             return_exceptions=True,
         )
 
@@ -3344,6 +3360,7 @@ async def exec_summary_endpoint(
             "footfall": _safe(ff, []),
             "customers": _safe(cu, {}),
             "subcategories": _safe(sc, []),
+            "kpis": _safe(kp, {}),
         }
 
     blocks = dict(zip(
@@ -3394,12 +3411,27 @@ async def exec_summary_endpoint(
         return ((cur - ly) / ly) * 100.0
 
     def _kpi_block(cur: Dict[str, Any], ly: Dict[str, Any], days: int = 0) -> Dict[str, Any]:
-        # Physical-only sales sums (Staff/Online excluded) AND group-
-        # wide sums kept separately. Revenue KPI uses ALL channels
-        # (incl. Online) to match the "Total Revenue, all channels"
-        # spec — but store-table revenue excludes Staff/Online.
-        rev_cur, ord_cur, units_cur = _sum_sales(cur["sales"])
-        rev_ly, ord_ly, units_ly = _sum_sales(ly["sales"])
+        # ISS-001 — Headline revenue / orders / units come from the
+        # CANONICAL /kpis payload (same source as Overview & Locations)
+        # so the Exec Summary's top tiles cannot drift from the rest
+        # of the dashboard. Per-store table + country breakdown still
+        # use /sales-summary because they need the per-channel grain.
+        kp_cur = cur.get("kpis") or {}
+        kp_ly  = ly.get("kpis") or {}
+        # If /kpis was unavailable for the window, gracefully fall back
+        # to the /sales-summary sum (legacy behaviour).
+        if kp_cur.get("total_sales") is not None:
+            rev_cur = float(kp_cur.get("total_sales") or 0)
+            ord_cur = float(kp_cur.get("total_orders") or 0)
+            units_cur = float(kp_cur.get("total_units") or 0)
+        else:
+            rev_cur, ord_cur, units_cur = _sum_sales(cur["sales"])
+        if kp_ly.get("total_sales") is not None:
+            rev_ly = float(kp_ly.get("total_sales") or 0)
+            ord_ly = float(kp_ly.get("total_orders") or 0)
+            units_ly = float(kp_ly.get("total_units") or 0)
+        else:
+            rev_ly, ord_ly, units_ly = _sum_sales(ly["sales"])
         ff_cur = _sum_footfall(cur["footfall"])
         ff_ly = _sum_footfall(ly["footfall"])
         cust_cur = cur["customers"] or {}

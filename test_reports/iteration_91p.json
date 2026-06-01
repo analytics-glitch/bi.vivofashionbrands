@@ -1,0 +1,46 @@
+{
+  "summary": "Iter 91p verification complete. All 3 issues green: ISS-001 (exec-summary YTD/MTD/Kenya-YTD revenue+units exactly reconcile with /api/kpis to <1 KES/unit drift), ISS-002 (Replenishments header reads 'Today's pick list · 2026-06-01' with sub-pill '· window 2026-05-31 → 2026-06-01'; date inputs default to yesterday→today EAT), ISS-013 (cache-stats reports /analytics/replenishment-report heavy-guard limit=2; 2 concurrent calls with different params both returned 200, no 503). Overview kpi-units regression intact (Total Units Sold 302).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_91p.py",
+    "/app/test_reports/pytest/iter_91p.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py _kpi_block (line ~3413) correctly falls back to _sum_sales(rows) when /kpis empty — preserves legacy behaviour and prevents NaN blow-up for very-low-traffic windows.",
+    "_HEAVY_LIMITS bump from 1→2 plus 8s acquire timeout is well-reasoned (comments at lines 256-275 capture rationale); _repl_inflight dedupes same-key callers, so identical concurrent requests still share compute regardless of limit.",
+    "Replenishments.jsx todayEat/yesterdayEat memos use UTC+3 offset — correct for EAT but will fail if Kenya ever observes DST. Not a real risk (Kenya has no DST), document only.",
+    "Header h2 includes the sub-pill span inside the same heading element. Screen-reader-friendly but the span uses normal-case + smaller font so visual hierarchy is preserved. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_91p.py",
+    "/app/test_reports/pytest/iter_91p.xml"
+  ],
+  "success_rate": {
+    "backend": "100% (5/5)",
+    "frontend": "100% (4/4 assertions on Replenishments header/window/date-inputs + Overview kpi-units regression)"
+  },
+  "test_credentials": "admin@vivofashiongroup.com / VivoAdmin!2026 (read from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — used live preview data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Today in EAT (Africa/Nairobi, UTC+3) at run time = 2026-06-01; yesterday = 2026-05-31. /api/kpis YTD total_sales = 449,823,575.00 and /api/exec-summary ytd.kpis.revenue.cur = 449,823,575.00 — EXACT reconciliation. Note that exec-summary returns headline KPIs under 'ytd.kpis.*' and 'mtd.kpis.*' (NOT 'ytd.revenue.*'). cache-stats heavy_guard.limits['/analytics/replenishment-report']=2. Both concurrent /analytics/replenishment-report calls completed in ~20s with 200s thanks to _repl_inflight dedup + bumped semaphore. No browser console errors during Replenishments + Overview navigation (only recharts width(-1) warnings during reflow, harmless).",
+  "test_results_detail": {
+    "ISS-001_ytd_reconcile": "PASS — exec ytd.kpis.revenue.cur == kpis.total_sales (Δ < 1 KES), units match exactly",
+    "ISS-001_mtd_reconcile": "PASS — exec mtd.kpis.revenue.cur == kpis.total_sales (window 2026-06-01→2026-06-01)",
+    "ISS-001_country_kenya_ytd": "PASS — country=Kenya YTD revenue parity (Δ < 1 KES)",
+    "ISS-013_cache_stats_limit_2": "PASS — heavy_guard.limits['/analytics/replenishment-report']=2",
+    "ISS-013_two_concurrent_no_503": "PASS — 2 concurrent requests with different date windows both returned 200 (no 503)",
+    "ISS-002_header_today_label": "PASS — header text = 'Today's pick list · 2026-06-01 · window 2026-05-31 → 2026-06-01'",
+    "ISS-002_date_input_defaults": "PASS — dateFrom=2026-05-31 (yesterday EAT), dateTo=2026-06-01 (today EAT)",
+    "Overview_kpi_units_regression": "PASS — kpi-units renders 'Total Units Sold 302' (canonical merch unchanged)"
+  }
+}

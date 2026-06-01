@@ -49,13 +49,27 @@ const Replenishments = () => {
   const { user } = useAuth();
   const isAdmin = _isAdminOrOwner(user);
 
-  const yesterday = useMemo(() => {
+  // ISS-002 — Pick list date defaults to TODAY in Africa/Nairobi (EAT),
+  // not UTC's yesterday. The label reads "Today's pick list · <today>"
+  // so on day-1-of-month (e.g. Jun 1) the team isn't looking at a
+  // header that says May 31 while actually picking today's orders.
+  // The backend's default window covers "yesterday → today" (2 days
+  // inclusive) so live sell-through is baked in regardless of the
+  // user-facing label.
+  const todayEat = useMemo(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return fmtDateInput(d);
+    // Convert to EAT (UTC+3): add 3 hours, then format as ISO date
+    const eat = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+    return eat.toISOString().slice(0, 10);
   }, []);
-  const [dateFrom, setDateFrom] = useState(yesterday);
-  const [dateTo, setDateTo] = useState(yesterday);
+  const yesterdayEat = useMemo(() => {
+    const d = new Date();
+    const eat = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+    eat.setUTCDate(eat.getUTCDate() - 1);
+    return eat.toISOString().slice(0, 10);
+  }, []);
+  const [dateFrom, setDateFrom] = useState(yesterdayEat);
+  const [dateTo, setDateTo] = useState(todayEat);
 
   // Owner config (persisted server-side). Roster state moved into
   // <ReplenishmentRosterCard> (iter 78); we still keep a "saved" tick
@@ -343,7 +357,12 @@ const Replenishments = () => {
     doc.save(`${safe}_replenishment_${dateFrom}.pdf`);
   };
 
-  const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom} → ${dateTo}`;
+  // ISS-002 — Header label always anchors on "today" (EAT). The
+  // sub-line shows the actual window (yesterday → today) so the picker
+  // knows what sell-through data is being considered, but the heading
+  // never falls behind the calendar day.
+  const dateLabel = todayEat;
+  const windowLabel = dateFrom === dateTo ? dateFrom : `${dateFrom} → ${dateTo}`;
   const summary = data.summary;
 
   return (
@@ -372,6 +391,9 @@ const Replenishments = () => {
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <h2 className="font-extrabold text-[14px] text-[#0f3d24] inline-flex items-center gap-2">
             <Package size={16} weight="duotone" /> Today's pick list · {dateLabel}
+            <span className="text-[10.5px] font-medium text-muted normal-case ml-1.5">
+              · window {windowLabel}
+            </span>
           </h2>
           <label className="inline-flex items-center gap-2 text-[12px] font-semibold">
             <CalendarIcon size={14} weight="bold" className="text-brand" /> From
