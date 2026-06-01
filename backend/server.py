@@ -8836,6 +8836,48 @@ def is_warehouse_location(name: Optional[str]) -> bool:
     return any(k in n for k in WAREHOUSE_KEYS)
 
 
+async def extend_locations_with_warehouses(
+    locs: Optional[List[str]],
+    country: Optional[str] = None,
+    product: Optional[str] = None,
+) -> List[str]:
+    """Iter 91l — single source of truth for "augment a POS multi-select
+    with warehouse-classified locations so warehouse stock is never
+    accidentally excluded by a POS scope".
+
+    Pre-Iter-91l this logic was duplicated in two places (KPI's
+    `/inventory-summary` and STS's `/stock-to-sales-by-subcat`) with
+    different shapes (set-union vs sequential-append-with-dedup). They
+    drifted out of sync in production — `inventory-summary` deduped
+    correctly while `stock-to-sales-by-subcat` double-counted any
+    location that was BOTH a POS AND a warehouse (e.g. Online -
+    Shop Zetu), producing a +2.4K-unit drift between two KPIs on
+    the same page. This helper guarantees the same union semantics
+    everywhere.
+
+    Behaviour:
+      • Empty `locs` → returns `[]` unchanged. The caller will
+        typically pass `None`/no-`locations` to `fetch_all_inventory`
+        in that case, which already covers the whole inventory.
+      • Non-empty `locs` → returns `set(locs) ∪ set(warehouse_locs)`
+        materialised as a list. Warehouse-classified locations not
+        already in `locs` are appended; duplicates are deduped.
+
+    The warehouse set is derived from `fetch_all_inventory(country,
+    product)` so it honours the same scope as the caller. This call
+    is cached (60s L1 + 30min Mongo snapshot) so the marginal cost
+    of the helper is one cache lookup.
+    """
+    if not locs:
+        return []
+    full_inv = await fetch_all_inventory(country=country, product=product)
+    wh_locs = {
+        r.get("location_name") for r in (full_inv or [])
+        if r.get("location_name") and is_warehouse_location(r.get("location_name"))
+    }
+    return list({*locs, *wh_locs})
+
+
 # Locations that should be EXCLUDED from inventory analysis entirely
 # (non-retail, non-physical, non-real-stock locations).
 INVENTORY_EXCLUDED_LOCATIONS = {
@@ -9366,11 +9408,20 @@ async def analytics_sts_by_subcat(
     cs = _split_csv(country)
     stock_by_subcat: Optional[Dict[str, float]] = None
     if locs or cs or stock_scope != "stores":
-        # Always do a local roll-up when filters are active OR we need to
-        # split warehouse vs floor stock. Without it the upstream's
-        # group-wide stock-only number wins.
+        # Iter 91l — single fetch path via the shared
+        # `extend_locations_with_warehouses` helper. The helper folds
+        # warehouse locations into `locs` (set-deduped) when the scope
+        # requires them, so a single `fetch_all_inventory` call returns
+        # exactly the rows we need — no second warehouse pass, no
+        # double-count risk. Replaces the prior two-pass approach (POS
+        # pull + warehouse append) which double-counted any location
+        # that was BOTH a POS AND a warehouse (e.g. Online - Shop Zetu).
         if locs:
-            inv = await fetch_all_inventory(country=country, locations=locs) or []
+            if stock_scope in ("warehouse", "combined"):
+                fetch_locs = await extend_locations_with_warehouses(locs, country=country)
+            else:
+                fetch_locs = list(locs)
+            inv = await fetch_all_inventory(country=country, locations=fetch_locs) or []
         else:
             inv = await fetch_all_inventory(country=country) or []
         stock_by_subcat = defaultdict(float)
@@ -9379,46 +9430,16 @@ async def analytics_sts_by_subcat(
             if not pt:
                 continue
             is_wh = is_warehouse_location(r.get("location_name"))
-            # `stock_scope` filter: only count rows that match the requested
-            # scope. When `locations` (POS list) is set the inventory call
-            # already excluded warehouse rows so this filter is effectively
-            # a no-op in that path — we honour `combined` by additionally
-            # pulling country-scoped warehouse rows below.
+            # Honour the requested scope after fetch — `combined` keeps
+            # everything; `stores` drops warehouse-classified rows even
+            # though they were fetched (needed for the warehouse-side
+            # share calculations elsewhere); `warehouse` keeps only
+            # warehouse rows.
             if stock_scope == "stores" and is_wh:
                 continue
             if stock_scope == "warehouse" and not is_wh:
                 continue
             stock_by_subcat[pt] += float(r.get("available") or 0)
-        if locs and stock_scope in ("warehouse", "combined"):
-            # POS-scoped pull above already excluded warehouse rows. For
-            # `warehouse` and `combined`, add country-wide warehouse rows.
-            #
-            # Iter 91k — dedup against the user-selected POS set.
-            # "Online - Shop Zetu" is in the POS picker AND is classified
-            # as warehouse (Iter 91f). If the user has it selected as a
-            # POS channel, the POS pull above already includes those
-            # rows; we MUST skip them here or they'd be counted twice
-            # (and STS_total would drift higher than KPI's inventory-
-            # summary which dedups via a set-union at fetch time).
-            locs_set = set(locs)
-            wh_inv = await fetch_all_inventory(country=country) or []
-            if stock_scope == "warehouse":
-                # Reset to warehouse-only; ignore the POS-scoped store rows.
-                stock_by_subcat = defaultdict(float)
-            for r in wh_inv:
-                loc_name = r.get("location_name")
-                if not is_warehouse_location(loc_name):
-                    continue
-                if loc_name in locs_set:
-                    # Already counted in the POS pass — skip to avoid
-                    # double-counting locations that are BOTH in the
-                    # user's POS selection AND classified as warehouse
-                    # (e.g. Online - Shop Zetu).
-                    continue
-                pt = r.get("product_type")
-                if not pt:
-                    continue
-                stock_by_subcat[pt] += float(r.get("available") or 0)
         total_stock_local = sum(stock_by_subcat.values()) or 0
     elif cs:
         # Country-only scope (no POS filter). Upstream `/subcategory-stock-sales`
@@ -10158,25 +10179,10 @@ async def analytics_inventory_summary(
         _inv_cache["ts"] = 0
         _inv_cache["key"] = None
     locs = _split_csv(locations)
-    # Iter 91h — when the caller scopes by POS `locations`, also fetch
-    # warehouse-classified locations so the warehouse stock KPI is
-    # never accidentally excluded just because warehouses aren't POS.
-    # The POS filter is intended to constrain customer-facing retail;
-    # warehouse holdings should always be visible alongside.
-    locs_fetch = locs
-    if locs:
-        try:
-            full_inv = await fetch_all_inventory(country=country, product=product)
-            wh_locs = {
-                r.get("location_name") for r in (full_inv or [])
-                if r.get("location_name") and is_warehouse_location(r.get("location_name"))
-            }
-            locs_fetch = list({*locs, *wh_locs})
-        except Exception:
-            # Fall back to the user-supplied set on any failure — at
-            # worst the warehouse KPI reverts to the previous (filtered)
-            # behaviour, no crash.
-            locs_fetch = locs
+    # Iter 91l — single helper now owns the "POS + warehouse" extension
+    # logic. Same call shape used by STS-by-subcat, so the two KPIs
+    # can never drift again.
+    locs_fetch = await extend_locations_with_warehouses(locs, country=country, product=product) if locs else None
     inv = await fetch_all_inventory(
         country=country, location=location, product=product,
         locations=locs_fetch if locs_fetch else None,

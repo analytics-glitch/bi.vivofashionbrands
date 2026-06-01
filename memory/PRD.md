@@ -5,6 +5,21 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91l) — Tech debt: single `extend_locations_with_warehouses()` helper
+
+- **Why**: Iter 91h (KPI fix) and Iter 91k (STS fix) both solved the same underlying problem — "augment a POS multi-select with warehouse-classified locations so warehouse stock is never accidentally excluded by a POS scope" — but with two different implementation shapes that had already drifted out of sync in production (KPI set-union vs STS two-pass-append-with-dedup). The drift between Iter 91h and Iter 91k caused the +2,361-unit production discrepancy.
+- **Fix**: extracted the canonical implementation into `extend_locations_with_warehouses(locs, country, product) -> List[str]` at `/app/backend/server.py:8839`. Both `/api/analytics/inventory-summary` and `/api/analytics/stock-to-sales-by-subcat` now call this helper. Removed ~45 lines of duplicated logic from the STS endpoint (eliminated the entire two-pass warehouse-append branch — single fetch + post-filter is now sufficient).
+- **Reconciliation matrix** (preview, post-refactor):
+  | Filter state | KPI | STS_merch | Δ (= expected non-merch) |
+  |---|---|---|---|
+  | Default (no POS, combined) | 74,106 | 73,078 | +1,028 ✓ |
+  | POS = Online - Shop Zetu only, combined | 30,846 | 30,474 | +372 ✓ |
+  | Multi-POS incl. Online - Shop Zetu, combined | 32,797 | 32,422 | +375 ✓ (was +2,361 in prod pre-fix) |
+  | Multi-POS no warehouse, combined | 32,797 | 32,422 | +375 ✓ |
+  | Country = Kenya, combined | 64,015 | 63,020 | +995 ✓ |
+  | Single POS, stock_scope=warehouse | 30,846 | 30,474 | +372 ✓ |
+- **Architectural payoff**: this class of bug ("warehouse + POS double-count") can no longer recur because the union logic lives in exactly one place. Any future endpoint that needs POS-aware inventory just imports the helper.
+
 ### Recent (Feb 2026 — Iter 91k) — STS endpoint: dedup POS warehouses to prevent double-count
 
 **ROOT CAUSE found via production audit (user reported KPI 74,242 vs STS Total 76,603 = +2,361 unit drift)**
