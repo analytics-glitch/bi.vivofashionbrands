@@ -281,6 +281,7 @@ export const SortableTable = ({
                     className={`${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""}`}
                     onClick={() => toggleSort(c.key)}
                     style={c.width ? { width: c.width } : undefined}
+                    title={c.headerTitle || undefined}
                   >
                     <span className="inline-flex items-center gap-1">
                       {c.label}

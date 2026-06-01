@@ -80,6 +80,15 @@ const Inventory = () => {
   // regardless of what the global filter bar is set to.  Overrides
   // `dateFrom` / `dateTo` only for the 3 STS endpoints below.
   const [stsWindowDays, setStsWindowDays] = useState(30);
+  // Iter 91i — custom date range for the STS-by-Subcategory table.
+  // When both from + to are populated they OVERRIDE the preset window
+  // and feed the /stock-to-sales-by-subcat endpoint directly. Clearing
+  // either input reverts to the preset.
+  const [stsCustomRange, setStsCustomRange] = useState({ from: "", to: "" });
+  // Effective window length (in days, inclusive) computed by the fetch
+  // effect — read by the table to derive weeks_of_cover. Keeps the UI
+  // perfectly synced with the data that was actually requested.
+  const [stsEffectiveDays, setStsEffectiveDays] = useState(30);
   // Stock-to-Sales stock scope: which inventory rolls up into the
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
   // Iter 89w-c — STS / "Stock to Sales" scope.  Default "combined"
@@ -126,12 +135,32 @@ const Inventory = () => {
     const refreshParams = dataVersion > 0 ? { ...invParams, refresh: true } : invParams;
     // Iter 89w-h — STS-specific date window (default 30d) overrides the
     // global filter bar dates ONLY for the stock-to-sales endpoints.
-    const stsTo = new Date();
-    stsTo.setUTCDate(stsTo.getUTCDate() - 1);
-    const stsFromDate = new Date(stsTo);
-    stsFromDate.setUTCDate(stsFromDate.getUTCDate() - stsWindowDays + 1);
-    const stsDateFrom = stsFromDate.toISOString().slice(0, 10);
-    const stsDateTo = stsTo.toISOString().slice(0, 10);
+    // Iter 91i — if a custom range is set, use it instead of the preset.
+    let stsDateFrom;
+    let stsDateTo;
+    let stsEffectiveWindowDays = stsWindowDays;
+    if (stsCustomRange.from && stsCustomRange.to) {
+      // Normalise: swap if user typed them reversed; clamp to today.
+      let f = stsCustomRange.from;
+      let t = stsCustomRange.to;
+      if (f > t) { const tmp = f; f = t; t = tmp; }
+      stsDateFrom = f;
+      stsDateTo = t;
+      // Days inclusive of both endpoints — used for cover/weeks math.
+      const fDate = new Date(f + "T00:00:00Z");
+      const tDate = new Date(t + "T00:00:00Z");
+      stsEffectiveWindowDays = Math.max(1, Math.round((tDate - fDate) / (24 * 3600 * 1000)) + 1);
+    } else {
+      const stsTo = new Date();
+      stsTo.setUTCDate(stsTo.getUTCDate() - 1);
+      const stsFromDate = new Date(stsTo);
+      stsFromDate.setUTCDate(stsFromDate.getUTCDate() - stsWindowDays + 1);
+      stsDateFrom = stsFromDate.toISOString().slice(0, 10);
+      stsDateTo = stsTo.toISOString().slice(0, 10);
+    }
+    // Surface the effective window in state so the table can derive
+    // weeks_of_cover off the same number the API was called with.
+    setStsEffectiveDays(stsEffectiveWindowDays);
     const dateParams = {
       date_from: stsDateFrom, date_to: stsDateTo,
       country: countryCsv, locations: locationsCsv,
@@ -176,7 +205,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays, stsCustomRange.from, stsCustomRange.to]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -945,49 +974,59 @@ const Inventory = () => {
             </div>
           </div>
 
-          <div className="card-white p-5" data-testid="sts-by-category-table">
+          <div className="card-white p-5" data-testid="sts-by-subcategory-table">
             <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
               <SectionTitle
-                title="Stock-to-Sales · by Category"
-                subtitle="Aggregated groups (Dresses, Tops, Bottoms, …). Variance compares sales share vs stock share. Red = action needed (stockout or overstock risk). Green = healthy balance."
+                title="Stock-to-Sales · by Subcategory"
+                subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
               />
-              <DateWindowSelector
-                value={stsWindowDays}
-                onChange={setStsWindowDays}
-                testId="inv-sts-window"
-              />
+              <div className="flex items-center gap-2 flex-wrap">
+                <DateWindowSelector
+                  value={(stsCustomRange.from && stsCustomRange.to) ? -1 : stsWindowDays}
+                  onChange={(v) => {
+                    if (stsCustomRange.from || stsCustomRange.to) {
+                      setStsCustomRange({ from: "", to: "" });
+                    }
+                    setStsWindowDays(v);
+                  }}
+                  testId="inv-sts-window"
+                />
+                {/* Iter 91i — custom date range. Both fields required to
+                    activate; the preset highlight clears while custom is
+                    in effect; the × clears the override. */}
+                <div
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-2 py-1"
+                  data-testid="inv-sts-custom-range"
+                  title="Override the preset window with an explicit date range."
+                >
+                  <span className="text-[10.5px] font-bold uppercase tracking-wide text-muted">Custom</span>
+                  <input
+                    type="date"
+                    value={stsCustomRange.from || ""}
+                    onChange={(e) => setStsCustomRange((p) => ({ ...p, from: e.target.value }))}
+                    data-testid="inv-sts-custom-from"
+                    className="text-[10.5px] font-semibold bg-transparent focus:outline-none border-0 px-1 py-0.5"
+                  />
+                  <span className="text-[10.5px] text-muted">→</span>
+                  <input
+                    type="date"
+                    value={stsCustomRange.to || ""}
+                    onChange={(e) => setStsCustomRange((p) => ({ ...p, to: e.target.value }))}
+                    data-testid="inv-sts-custom-to"
+                    className="text-[10.5px] font-semibold bg-transparent focus:outline-none border-0 px-1 py-0.5"
+                  />
+                  {(stsCustomRange.from || stsCustomRange.to) && (
+                    <button
+                      type="button"
+                      onClick={() => setStsCustomRange({ from: "", to: "" })}
+                      data-testid="inv-sts-custom-clear"
+                      className="text-[10.5px] text-rose-600 hover:text-rose-700 font-bold px-1"
+                      title="Clear custom range, revert to preset window"
+                    >×</button>
+                  )}
+                </div>
+              </div>
             </div>
-            <SortableTable
-              testId="inv-sts-cat"
-              exportName={`inventory-sts-by-category_${exportSlug}.csv`}
-              initialSort={{ key: "variance_abs", dir: "desc" }}
-              columns={[
-                { key: "category", label: "Category", align: "left" },
-                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
-                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
-                {
-                  key: "variance", label: "Variance", numeric: true,
-                  sortValue: (r) => Math.abs(r.variance || 0), // sort by magnitude → biggest risks top
-                  render: (r) => <VarianceCellPts value={r.variance} />,
-                  csv: (r) => r.variance?.toFixed(2),
-                },
-                {
-                  key: "risk_flag", label: "Risk Flag", align: "left",
-                  render: (r) => <span className="text-[11px] text-muted">{varianceStyle(r.variance).flag}</span>,
-                  csv: (r) => varianceStyle(r.variance).flag,
-                },
-              ]}
-              rows={filteredStsByCat}
-            />
-          </div>
-
-          <div className="card-white p-5" data-testid="sts-by-subcategory-table">
-            <SectionTitle
-              title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
-            />
             <div className="flex justify-end mb-2 -mt-1">
               <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid="sts-view-toggle">
                 <button
@@ -1012,8 +1051,32 @@ const Inventory = () => {
                 categoryFor={categoryFor}
                 testId="inv-sts-subcat-grouped"
                 exportName={`inventory-sts-by-subcategory-grouped_${exportSlug}.csv`}
+                windowDays={stsEffectiveDays}
               />
             ) : (
+            (() => {
+              // Iter 91i — compute totals + per-row cover/SOR before the
+              // table renders so the footer + Cover/SOR cells all use
+              // identical math. Cover = stock ÷ weekly_rate where
+              // weekly_rate = units_sold ÷ (window_days/7). SOR =
+              // units_sold ÷ (units_sold + stock) × 100.
+              const wiw = Math.max(stsEffectiveDays / 7, 1 / 7);
+              const tot = (filteredSubcatSS || []).reduce(
+                (a, r) => {
+                  a.units += r.units_sold || 0;
+                  a.stock += r.current_stock || 0;
+                  a.pct_sold += r.pct_of_total_sold || 0;
+                  a.pct_stock += r.pct_of_total_stock || 0;
+                  return a;
+                },
+                { units: 0, stock: 0, pct_sold: 0, pct_stock: 0 }
+              );
+              const totCover = tot.units > 0 ? tot.stock / (tot.units / wiw) : null;
+              const totSor = (tot.units + tot.stock) > 0 ? (tot.units / (tot.units + tot.stock)) * 100 : 0;
+              const totVariance = tot.pct_sold - tot.pct_stock;
+              const coverFormula = `Weeks of Cover = Stock Units ÷ (Units Sold ÷ ${wiw.toFixed(1)} weeks)`;
+              const sorFormula = "Sell-Out Rate (SOR) = Units Sold ÷ (Units Sold + Stock) × 100";
+              return (
             <SortableTable
               testId="inv-sts-subcat"
               exportName={`inventory-sts-by-subcategory_${exportSlug}.csv`}
@@ -1029,9 +1092,64 @@ const Inventory = () => {
                 },
                 { key: "subcategory", label: "Subcategory", align: "left" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
-                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
+                { key: "current_stock", label: "Inventory Units", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "pct_of_total_sold", label: "% Units Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2) },
+                { key: "pct_of_total_stock", label: "% Units Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2) },
+                {
+                  key: "weeks_of_cover", label: "Cover (wks)", numeric: true,
+                  headerTitle: `${coverFormula}. <4w = restock · 4–17w = healthy · >17w = markdown candidate.`,
+                  sortValue: (r) => {
+                    if (!(r.units_sold > 0)) return -1;
+                    return (r.current_stock || 0) / ((r.units_sold || 0) / wiw);
+                  },
+                  render: (r) => {
+                    if (!(r.units_sold > 0)) return <span className="text-muted text-[10px] italic">Idle</span>;
+                    const w = (r.current_stock || 0) / ((r.units_sold || 0) / wiw);
+                    const tone = w < 4 ? "text-rose-700 bg-rose-50 border-rose-200"
+                      : w > 17 ? "text-amber-700 bg-amber-50 border-amber-200"
+                      : "text-emerald-700 bg-emerald-50 border-emerald-200";
+                    const weekly = (r.units_sold || 0) / wiw;
+                    const title = `${coverFormula}\n= ${fmtNum(r.current_stock)} ÷ (${fmtNum(r.units_sold)} ÷ ${wiw.toFixed(1)})\n= ${fmtNum(r.current_stock)} ÷ ${weekly.toFixed(1)} units/week\n= ${w.toFixed(1)} weeks`;
+                    return (
+                      <span
+                        className={`inline-flex items-center gap-0.5 rounded-md border font-semibold text-[10.5px] px-1.5 py-0.5 tabular-nums ${tone} cursor-help`}
+                        title={title}
+                      >
+                        {w.toFixed(1)}w
+                      </span>
+                    );
+                  },
+                  csv: (r) => r.units_sold > 0 ? ((r.current_stock || 0) / ((r.units_sold || 0) / wiw)).toFixed(2) : "",
+                },
+                {
+                  key: "sor_pct", label: "SOR %", numeric: true,
+                  headerTitle: `${sorFormula}. Higher = stock turns faster; 100% means everything sold; 0% means nothing has sold yet.`,
+                  sortValue: (r) => {
+                    const denom = (r.units_sold || 0) + (r.current_stock || 0);
+                    return denom > 0 ? ((r.units_sold || 0) / denom) * 100 : 0;
+                  },
+                  render: (r) => {
+                    const denom = (r.units_sold || 0) + (r.current_stock || 0);
+                    if (denom <= 0) return <span className="text-muted text-[10px]">—</span>;
+                    const sor = ((r.units_sold || 0) / denom) * 100;
+                    const tone = sor >= 50 ? "text-emerald-700"
+                      : sor >= 20 ? "text-foreground"
+                      : "text-rose-700";
+                    const title = `${sorFormula}\n= ${fmtNum(r.units_sold)} ÷ (${fmtNum(r.units_sold)} + ${fmtNum(r.current_stock)})\n= ${fmtNum(r.units_sold)} ÷ ${fmtNum(denom)}\n= ${sor.toFixed(2)}%`;
+                    return (
+                      <span
+                        className={`tabular-nums font-semibold ${tone} cursor-help`}
+                        title={title}
+                      >
+                        {sor.toFixed(1)}%
+                      </span>
+                    );
+                  },
+                  csv: (r) => {
+                    const denom = (r.units_sold || 0) + (r.current_stock || 0);
+                    return denom > 0 ? (((r.units_sold || 0) / denom) * 100).toFixed(2) : "";
+                  },
+                },
                 {
                   key: "variance", label: "Variance", numeric: true,
                   sortValue: (r) => Math.abs(r.variance || 0),
@@ -1045,7 +1163,29 @@ const Inventory = () => {
                 },
               ]}
               rows={filteredSubcatSS}
+              footerRow={
+                <>
+                  <td className="px-3 py-2 font-extrabold" data-testid="inv-sts-subcat-total-label">Total</td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold">{fmtNum(tot.units)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold">{fmtNum(tot.stock)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold">{fmtPct(tot.pct_sold, 2)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold">{fmtPct(tot.pct_stock, 2)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold" title={coverFormula}>
+                    {totCover != null ? `${totCover.toFixed(1)}w` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold" title={sorFormula}>
+                    {totSor.toFixed(1)}%
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums font-extrabold">
+                    {totVariance >= 0 ? "+" : ""}{totVariance.toFixed(2)} pts
+                  </td>
+                  <td className="px-3 py-2" />
+                </>
+              }
             />
+              );
+            })()
             )}
           </div>
 
