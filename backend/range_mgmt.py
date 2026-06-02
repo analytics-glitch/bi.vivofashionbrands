@@ -101,7 +101,21 @@ def classify_style(style: dict) -> dict:
         asp_6m, original_price, units_since_launch, weekly_avg,
         style_status, retired_at
     """
+    # Iter 91v — Recompute age from the RESOLVED launch_date so it
+    # always reconciles with the displayed Launch Date column. The
+    # upstream `style_age_weeks` is based on vendor metadata's launch
+    # date which often disagrees with the historically-observed first
+    # sale date persisted in `style_launch_dates_by_number`.
+    from datetime import date as _date
     age = style.get("style_age_weeks") or 0.0
+    _lnch = style.get("launch_date")
+    if _lnch and len(_lnch) >= 10:
+        try:
+            _ld = _date.fromisoformat(_lnch[:10])
+            _today = _date.today()
+            age = max(0.0, (_today - _ld).days / 7.0)
+        except (ValueError, TypeError):
+            pass
     lifetime_sor = style.get("sor_since_launch")
     woc = style.get("woc")
     last_sale_days = style.get("days_since_last_sale")
@@ -231,45 +245,59 @@ def rag_status(count: int, target: Tuple[int, int]) -> str:
 
 
 def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None) -> Dict[str, Any]:
-    """Aggregate KPIs per tier.
+    """Aggregate KPIs per tier + Active/Retired/Total roll-ups.
 
-    Iter 91u — each tier now includes `revenue_lifetime` and
-    `units_lifetime` so the FE can render 4 metrics per card
-    (count · % share · revenue · units). A new `Retired` bucket is
-    added when `retired_rows` is passed in (style_status==retired
-    upstream — not the auto-classifier "Retire" tier).
+    Iter 91u — each tier carries `revenue_lifetime` + `units_lifetime`.
+    Iter 91v — also rolls up Active (= sum of Tier 1-4), Retired
+    (style_status==retired upstream), Total (Active + Retired), each
+    with the same shape AND a lifetime SOR % for the bucket.
     """
     counts: Dict[str, int] = {"Tier 1": 0, "Tier 2": 0, "Tier 3": 0, "Tier 4": 0, "Retire": 0}
     revenue: Dict[str, float] = {"Tier 1": 0.0, "Tier 2": 0.0, "Tier 3": 0.0, "Tier 4": 0.0, "Retire": 0.0}
     units: Dict[str, int] = {"Tier 1": 0, "Tier 2": 0, "Tier 3": 0, "Tier 4": 0, "Retire": 0}
+    sor_weighted: Dict[str, float] = {"Tier 1": 0.0, "Tier 2": 0.0, "Tier 3": 0.0, "Tier 4": 0.0, "Retire": 0.0}
+    sor_weight_sum: Dict[str, float] = {"Tier 1": 0.0, "Tier 2": 0.0, "Tier 3": 0.0, "Tier 4": 0.0, "Retire": 0.0}
     overdue_w8 = 0
     near_decision_gate = 0
     for r in classified:
         t = r["tier"]
         counts[t] = counts.get(t, 0) + 1
         revenue[t] = revenue.get(t, 0.0) + float(r.get("sales_since_launch") or 0)
-        units[t] = units.get(t, 0) + int(r.get("units_since_launch") or 0)
+        u = int(r.get("units_since_launch") or 0)
+        units[t] = units.get(t, 0) + u
+        sor = r.get("lifetime_sor_pct")
+        if sor is not None and u > 0:
+            # Volume-weighted SOR — bigger sellers move the avg more.
+            sor_weighted[t] += float(sor) * u
+            sor_weight_sum[t] += u
         if t == "Tier 4" and (r.get("style_age_weeks") or 0) >= 8 and not r.get("passed_week8"):
             overdue_w8 += 1
         if r.get("near_week8") or r.get("near_week12"):
             near_decision_gate += 1
 
-    # Retired bucket (style_status==retired upstream) — physically
-    # retired, not the auto-classifier's "Retire" decision tier.
     retired_count = 0
     retired_revenue = 0.0
     retired_units = 0
+    retired_sor_w = 0.0
+    retired_sor_ws = 0.0
     for r in (retired_rows or []):
         retired_count += 1
         retired_revenue += float(r.get("sales_since_launch") or 0)
-        retired_units += int(r.get("units_since_launch") or 0)
+        u = int(r.get("units_since_launch") or 0)
+        retired_units += u
+        sor = r.get("lifetime_sor_pct") or r.get("sor_since_launch")
+        if sor is not None and u > 0:
+            retired_sor_w += float(sor) * u
+            retired_sor_ws += u
 
     total = sum(counts[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
-    # Share denominator includes physically-retired styles too so the
-    # 5 cards sum to 100 % of the universe leadership sees.
     share_denom = total + retired_count
+
     def _pct(n: int) -> float:
         return round((n / share_denom) * 100, 1) if share_denom else 0.0
+
+    def _wavg(num: float, denom: float) -> Optional[float]:
+        return round(num / denom, 1) if denom else None
 
     tier_summary = {
         t: {
@@ -277,6 +305,7 @@ def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None)
             "pct_styles": _pct(counts[t]),
             "revenue_lifetime": round(revenue[t], 2),
             "units_lifetime": units[t],
+            "sor_lifetime_pct": _wavg(sor_weighted[t], sor_weight_sum[t]),
         }
         for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
     }
@@ -285,12 +314,34 @@ def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None)
         "pct_styles": _pct(retired_count),
         "revenue_lifetime": round(retired_revenue, 2),
         "units_lifetime": retired_units,
+        "sor_lifetime_pct": _wavg(retired_sor_w, retired_sor_ws),
+    }
+    # Aggregate rollups
+    active_count = total
+    active_revenue = sum(revenue[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    active_units = sum(units[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    active_sor_w = sum(sor_weighted[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    active_sor_ws = sum(sor_weight_sum[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    tier_summary["Active"] = {
+        "count": active_count,
+        "pct_styles": _pct(active_count),
+        "revenue_lifetime": round(active_revenue, 2),
+        "units_lifetime": active_units,
+        "sor_lifetime_pct": _wavg(active_sor_w, active_sor_ws),
+    }
+    total_count = active_count + retired_count
+    tier_summary["Total"] = {
+        "count": total_count,
+        "pct_styles": 100.0 if total_count else 0.0,
+        "revenue_lifetime": round(active_revenue + retired_revenue, 2),
+        "units_lifetime": active_units + retired_units,
+        "sor_lifetime_pct": _wavg(active_sor_w + retired_sor_w, active_sor_ws + retired_sor_ws),
     }
 
     return {
         "total_active_styles": total,
         "tier_counts": counts,
-        "tier_summary": tier_summary,  # Iter 91u — per-card metrics
+        "tier_summary": tier_summary,
         "rag": {
             "total": (
                 "green" if TOTAL_TARGET[0] <= total <= TOTAL_TARGET[1]

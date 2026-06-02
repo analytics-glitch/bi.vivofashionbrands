@@ -57,14 +57,14 @@ const StatusPill = ({ status }) => {
   );
 };
 
-// Iter 91u — extended card: count · % styles · revenue · units.
-// Click → opens a modal listing the top performing styles in this
-// tier. Uses the new `tier_summary` block from /range-mgmt/classify.
-const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, target, rag, testId, onClick, tone: customTone }) => {
+// Iter 91u — extended card.
+// Iter 91v — also surfaces SOR % per bucket.
+const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, sorPct, target, rag, testId, onClick, tone: customTone }) => {
   const tone = RAG[rag] || RAG.amber;
   const t = customTone || TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   const [lo, hi] = target || [0, 0];
   const isRetired = tier === "Retired";
+  const isAgg = tier === "Total" || tier === "Active" || isRetired;
   return (
     <button
       type="button"
@@ -82,7 +82,6 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, t
       <div className="mt-0.5 text-[10.5px]" style={{ color: t.text, opacity: 0.85 }}>
         {pctStyles == null ? "—" : `${pctStyles.toFixed(1)}% of styles`}
       </div>
-      {/* Revenue + Units lifetime — pair of compact rows */}
       <div className="mt-2 space-y-0.5 text-[10.5px]" style={{ color: t.text }}>
         <div className="flex justify-between">
           <span style={{ opacity: 0.7 }}>Revenue</span>
@@ -92,8 +91,12 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, t
           <span style={{ opacity: 0.7 }}>Units</span>
           <span className="font-semibold num">{fmtNum(unitsLifetime || 0)}</span>
         </div>
+        <div className="flex justify-between">
+          <span style={{ opacity: 0.7 }}>SOR</span>
+          <span className="font-semibold num">{sorPct == null ? "—" : `${sorPct.toFixed(1)}%`}</span>
+        </div>
       </div>
-      {!isRetired && (
+      {!isAgg && (
         <>
           <div className="mt-1.5 text-[10.5px]" style={{ color: t.text, opacity: 0.85 }}>
             Target: {lo}–{hi}
@@ -178,13 +181,35 @@ const RangeManagement = () => {
         override_tier: "Tier 2",
         reason: "Bulk graduation from Range Mgmt UI",
       });
-      // Refresh classification so the tier counts update.
       setRefreshToken((x) => x + 1);
       window.alert(`Promoted ${r.data?.upserted ?? n} styles to Tier 2.`);
     } catch (e) {
       window.alert("Bulk promote failed: " + (e?.response?.data?.detail || e.message));
     } finally {
       setPromoting(false);
+    }
+  };
+
+  // Iter 91v — Promote a single style row via the candidates table.
+  // Mirrors the bulk-promote API but for one style at a time so the
+  // user can graduate selectively (e.g., promote the top performer
+  // immediately, hold off on the bottom of the list).
+  const [promotingOne, setPromotingOne] = useState(null); // style_name during in-flight
+  const promoteOne = async (styleName) => {
+    const ok = window.confirm(`Promote "${styleName}" to Tier 2?`);
+    if (!ok) return;
+    setPromotingOne(styleName);
+    try {
+      await api.post("/range-mgmt/overrides/bulk-promote", {
+        style_names: [styleName],
+        override_tier: "Tier 2",
+        reason: "Individual promote from Range Mgmt UI",
+      });
+      setRefreshToken((x) => x + 1);
+    } catch (e) {
+      window.alert("Promote failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setPromotingOne(null);
     }
   };
 
@@ -328,7 +353,32 @@ const RangeManagement = () => {
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="tier-kpi-row">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3" data-testid="tier-kpi-row">
+              {/* Iter 91v — Total + Active aggregate cards (left) */}
+              <TierKpiCard
+                key="Total"
+                tier="Total"
+                count={summary.tier_summary?.Total?.count ?? 0}
+                pctStyles={summary.tier_summary?.Total?.pct_styles}
+                revenueLifetime={summary.tier_summary?.Total?.revenue_lifetime}
+                unitsLifetime={summary.tier_summary?.Total?.units_lifetime}
+                sorPct={summary.tier_summary?.Total?.sor_lifetime_pct}
+                tone={{ bg: "#e0e7ff", text: "#1e3a8a", label: "Total" }}
+                testId="tier-card-Total"
+                onClick={() => setDrillTier("Total")}
+              />
+              <TierKpiCard
+                key="Active"
+                tier="Active"
+                count={summary.tier_summary?.Active?.count ?? 0}
+                pctStyles={summary.tier_summary?.Active?.pct_styles}
+                revenueLifetime={summary.tier_summary?.Active?.revenue_lifetime}
+                unitsLifetime={summary.tier_summary?.Active?.units_lifetime}
+                sorPct={summary.tier_summary?.Active?.sor_lifetime_pct}
+                tone={{ bg: "#dcfce7", text: "#14532d", label: "Active" }}
+                testId="tier-card-Active"
+                onClick={() => setDrillTier("Active")}
+              />
               {["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => {
                 const ts = summary.tier_summary?.[t] || {};
                 return (
@@ -339,6 +389,7 @@ const RangeManagement = () => {
                     pctStyles={ts.pct_styles}
                     revenueLifetime={ts.revenue_lifetime}
                     unitsLifetime={ts.units_lifetime}
+                    sorPct={ts.sor_lifetime_pct}
                     target={summary.targets?.[t]}
                     rag={summary.rag?.[t]}
                     testId={`tier-card-${t.replace(/\s+/g, "-")}`}
@@ -346,7 +397,6 @@ const RangeManagement = () => {
                   />
                 );
               })}
-              {/* Iter 91u — 5th card: physically-retired styles */}
               <TierKpiCard
                 key="Retired"
                 tier="Retired"
@@ -354,6 +404,7 @@ const RangeManagement = () => {
                 pctStyles={summary.tier_summary?.Retired?.pct_styles}
                 revenueLifetime={summary.tier_summary?.Retired?.revenue_lifetime}
                 unitsLifetime={summary.tier_summary?.Retired?.units_lifetime}
+                sorPct={summary.tier_summary?.Retired?.sor_lifetime_pct}
                 tone={{ bg: "#fecaca", text: "#7f1d1d", label: "Retired" }}
                 testId="tier-card-Retired"
                 onClick={() => setDrillTier("Retired")}
@@ -432,6 +483,7 @@ const RangeManagement = () => {
                       <th className="p-2 font-semibold text-muted text-right">Reorders</th>
                       <th className="p-2 font-semibold text-muted text-right">Stock</th>
                       <th className="p-2 font-semibold text-muted text-right">Last sale</th>
+                      <th className="p-2 font-semibold text-muted text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -456,6 +508,17 @@ const RangeManagement = () => {
                         <td className="p-2 text-right num">{c.reorder_count}</td>
                         <td className="p-2 text-right num">{fmtNum(c.current_stock)}</td>
                         <td className="p-2 text-right num">{c.last_sale_days == null ? "—" : `${c.last_sale_days}d`}</td>
+                        <td className="p-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => promoteOne(c.style_name)}
+                            disabled={promotingOne === c.style_name}
+                            className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                            data-testid={`grad-promote-one-${i}`}
+                          >
+                            {promotingOne === c.style_name ? "…" : "Promote"}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -508,6 +571,47 @@ const RangeManagement = () => {
                 options={["On Track", "At Risk", "Overdue", "Retire"].map((s) => ({ value: s, label: s }))}
                 value={statusFilter} onChange={setStatusFilter} placeholder="All statuses" width={160} />
             </div>
+          </div>
+
+          {/* Iter 91v — Tier filter pills above the table for quick-glance
+              filtering. Reflects + drives the same `tierFilter` state as
+              the MultiSelect above. Clicking a pill toggles its state. */}
+          <div className="flex flex-wrap gap-2 mb-3" data-testid="tier-filter-pills">
+            <button
+              type="button"
+              onClick={() => setTierFilter([])}
+              className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-colors ${
+                tierFilter.length === 0
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+              }`}
+              data-testid="tier-pill-all"
+            >
+              All ({fmtNum(rows.length)})
+            </button>
+            {["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"].map((t) => {
+              const active = tierFilter.includes(t);
+              const count = summary?.tier_counts?.[t] ?? 0;
+              const style = TIER_STYLES[t] || TIER_STYLES["Tier 4"];
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() =>
+                    setTierFilter((prev) =>
+                      prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
+                    )
+                  }
+                  className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-colors ${
+                    active ? "ring-2 ring-offset-1 ring-slate-900" : "hover:opacity-80"
+                  }`}
+                  style={{ background: style.bg, color: style.text, borderColor: style.text + "33" }}
+                  data-testid={`tier-pill-${t.replace(/\s+/g, "-")}`}
+                >
+                  {t} ({fmtNum(count)})
+                </button>
+              );
+            })}
           </div>
 
           {/* Section 2 — Classification table */}
@@ -735,7 +839,11 @@ const RangeManagement = () => {
           rows={
             drillTier === "Retired"
               ? (data?.retired_rows || [])
-              : (data?.rows || []).filter((r) => r.tier === drillTier)
+              : drillTier === "Active"
+                ? (data?.rows || [])
+                : drillTier === "Total"
+                  ? ([...(data?.rows || []), ...(data?.retired_rows || [])])
+                  : (data?.rows || []).filter((r) => r.tier === drillTier)
           }
           onClose={() => setDrillTier(null)}
         />
@@ -751,6 +859,42 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
   const sorted = [...rows].sort(
     (a, b) => (b.sales_since_launch || 0) - (a.sales_since_launch || 0),
   );
+  // Iter 91v — CSV export of the drill rows (top→bottom by revenue).
+  // Saves the user from another export round-trip when they want to
+  // share the tier breakdown via email/slack.
+  const exportCsv = () => {
+    const cols = [
+      ["style_name", "Style"],
+      ["style_number", "Style #"],
+      ["brand", "Brand"],
+      ["subcategory", "Subcategory"],
+      ["tier", "Tier"],
+      ["launch_date", "Launch Date"],
+      ["style_age_weeks", "Age (weeks)"],
+      ["units_since_launch", "Units Since Launch"],
+      ["sales_since_launch", "Revenue Since Launch (KES)"],
+      ["original_price", "Full Price (Kenya)"],
+      ["avg_price_since_launch", "Avg Price (Kenya)"],
+      ["lifetime_sor_pct", "SOR Lifetime %"],
+      ["current_stock", "Current Stock"],
+      ["woc", "Weeks of Cover"],
+      ["last_sale_days", "Days Since Last Sale"],
+    ];
+    const esc = (v) => {
+      if (v == null) return "";
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = cols.map((c) => c[1]).join(",");
+    const body = sorted.map((r) => cols.map((c) => esc(r[c[0]])).join(",")).join("\n");
+    const blob = new Blob([`\ufeff${header}\n${body}\n`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `range-mgmt-${tier.replace(/\s+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <div
       className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
@@ -766,14 +910,24 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
             <h3 className="font-extrabold text-[15px]" data-testid="tier-drill-title">{tier} · {fmtNum(sorted.length)} styles</h3>
             <p className="text-[11px] text-muted mt-0.5">Sorted by lifetime revenue. Click anywhere outside to close.</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted hover:text-fg text-xl leading-none"
-            data-testid="tier-drill-close"
-          >
-            ×
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportCsv}
+              className="px-3 py-1 rounded-lg bg-emerald-700 text-white text-[11px] font-semibold hover:bg-emerald-800"
+              data-testid="tier-drill-export"
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted hover:text-fg text-xl leading-none px-2"
+              data-testid="tier-drill-close"
+            >
+              ×
+            </button>
+          </div>
         </div>
         <div className="p-3">
           {sorted.length === 0 ? (
