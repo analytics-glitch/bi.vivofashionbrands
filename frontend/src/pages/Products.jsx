@@ -9,7 +9,6 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
-import DateWindowSelector from "@/components/DateWindowSelector";
 import SortableTable from "@/components/SortableTable";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
@@ -45,7 +44,11 @@ const Products = () => {
   // Iter 89w-h — per-table window override for the STS / SOR tables.
   // 30-day default; user can change. Threads through SOR + the two
   // stock-to-sales aggregate endpoints.
-  const [stsWindowDays, setStsWindowDays] = useState(30);
+  // Iter 91s — SOR window toggle removed from the UI per leadership
+  // request (Jun 2026). The internal state is preserved at the canonical
+  // 30-day default which all the page's SOR / L-10 / All-Styles
+  // sections continue to consume; only the visible toggle is hidden.
+  const [stsWindowDays] = useState(30);
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
@@ -226,15 +229,6 @@ const Products = () => {
               value={styleStatus}
               onChange={setStyleStatus}
               testIdPrefix="products-style-status"
-            />
-          </div>
-          <div className="flex flex-col">
-            <div className="eyebrow mb-1">SOR window</div>
-            <DateWindowSelector
-              value={stsWindowDays}
-              onChange={setStsWindowDays}
-              testId="products-sor-window"
-              label=""
             />
           </div>
           <div className="w-full sm:w-44">
