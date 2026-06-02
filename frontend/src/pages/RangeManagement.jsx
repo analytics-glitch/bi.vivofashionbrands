@@ -539,6 +539,11 @@ const RangeManagement = () => {
                   // — no new endpoint needed.
                   { key: "style_number", label: "Style #", align: "left",
                     render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span> },
+                  // Iter 91s+ — Style Launch Date: shows the all-time
+                  // first sale date for the style_number (canonical
+                  // across re-issues). Independent of selected period.
+                  { key: "launch_date", label: "Launch Date", align: "left",
+                    render: (r) => <span className="text-[11px]">{r.launch_date || "—"}</span> },
                   { key: "units_since_launch", label: "Units Since Launch", numeric: true,
                     render: (r) => fmtNum(r.units_since_launch) },
                   { key: "sales_since_launch", label: "Revenue Since Launch", numeric: true,

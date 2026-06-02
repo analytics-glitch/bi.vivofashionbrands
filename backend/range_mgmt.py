@@ -177,6 +177,19 @@ def classify_style(style: dict) -> dict:
         "weekly_avg": round(weekly_avg, 2),
         "launch_date": style.get("launch_date"),
         "style_number": style.get("style_number"),
+        # Iter 91s — Pass-through fields the Tier table now surfaces.
+        # These come from /analytics/sor-all-styles row and were being
+        # dropped by `classify_style` until the FE asked for them. Each
+        # is fed verbatim — no transformation here so the table number
+        # matches the SOR endpoint number exactly.
+        "units_since_launch": style.get("units_since_launch"),
+        "sales_since_launch": style.get("sales_since_launch"),
+        "original_price": style.get("original_price"),
+        "avg_price_since_launch": style.get("avg_price_since_launch"),
+        "units_6m": style.get("units_6m"),
+        "sales_6m": style.get("sales_6m"),
+        "sor_since_launch": style.get("sor_since_launch"),
+        "sor_6m": style.get("sor_6m"),
         "tier": tier,
         "status": status,
         "recommended_action": rec,
