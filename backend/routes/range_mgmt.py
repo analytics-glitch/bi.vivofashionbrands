@@ -158,6 +158,16 @@ async def classify(
 
     classified = classify_all(sor_rows or [], include_retired=include_retired)
 
+    # Iter 91u — physically-retired rows (style_status=="retired"
+    # upstream) for the new "Retired" KPI card. Re-classify with
+    # include_retired so we can isolate them; the auto-classifier's
+    # "Retire" tier is a separate concept (auto-flag for retirement,
+    # not yet actioned).
+    retired_only: List[dict] = []
+    for r in (sor_rows or []):
+        if r.get("style_status") == "retired":
+            retired_only.append(r)
+
     # Iter 89w-f — apply manual tier overrides (merch team can promote
     # styles to Tier 2 / demote / hold against the auto-classifier).
     overrides = await _load_overrides()
@@ -182,7 +192,7 @@ async def classify(
     moves = diff_movements(classified, prev_map)
     await _record_movements(moves)
 
-    summary = summarise(classified)
+    summary = summarise(classified, retired_only)
     pipeline = retirement_pipeline(classified)
     candidates = tier3_to_tier2_candidates(classified)
 
@@ -190,6 +200,7 @@ async def classify(
         "as_of": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "rows": classified,
+        "retired_rows": retired_only,  # Iter 91u — fuel the FE Retired card drill-down
         "retirement_pipeline": pipeline,
         "tier3_graduation_candidates": candidates,
         "recent_movements": moves[:200],  # cap for response size

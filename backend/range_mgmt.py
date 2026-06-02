@@ -230,21 +230,67 @@ def rag_status(count: int, target: Tuple[int, int]) -> str:
     return "red"
 
 
-def summarise(classified: List[dict]) -> Dict[str, Any]:
+def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None) -> Dict[str, Any]:
+    """Aggregate KPIs per tier.
+
+    Iter 91u — each tier now includes `revenue_lifetime` and
+    `units_lifetime` so the FE can render 4 metrics per card
+    (count · % share · revenue · units). A new `Retired` bucket is
+    added when `retired_rows` is passed in (style_status==retired
+    upstream — not the auto-classifier "Retire" tier).
+    """
     counts: Dict[str, int] = {"Tier 1": 0, "Tier 2": 0, "Tier 3": 0, "Tier 4": 0, "Retire": 0}
+    revenue: Dict[str, float] = {"Tier 1": 0.0, "Tier 2": 0.0, "Tier 3": 0.0, "Tier 4": 0.0, "Retire": 0.0}
+    units: Dict[str, int] = {"Tier 1": 0, "Tier 2": 0, "Tier 3": 0, "Tier 4": 0, "Retire": 0}
     overdue_w8 = 0
     near_decision_gate = 0
     for r in classified:
-        counts[r["tier"]] = counts.get(r["tier"], 0) + 1
-        if r["tier"] == "Tier 4" and (r.get("style_age_weeks") or 0) >= 8 and not r.get("passed_week8"):
+        t = r["tier"]
+        counts[t] = counts.get(t, 0) + 1
+        revenue[t] = revenue.get(t, 0.0) + float(r.get("sales_since_launch") or 0)
+        units[t] = units.get(t, 0) + int(r.get("units_since_launch") or 0)
+        if t == "Tier 4" and (r.get("style_age_weeks") or 0) >= 8 and not r.get("passed_week8"):
             overdue_w8 += 1
         if r.get("near_week8") or r.get("near_week12"):
             near_decision_gate += 1
 
+    # Retired bucket (style_status==retired upstream) — physically
+    # retired, not the auto-classifier's "Retire" decision tier.
+    retired_count = 0
+    retired_revenue = 0.0
+    retired_units = 0
+    for r in (retired_rows or []):
+        retired_count += 1
+        retired_revenue += float(r.get("sales_since_launch") or 0)
+        retired_units += int(r.get("units_since_launch") or 0)
+
     total = sum(counts[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    # Share denominator includes physically-retired styles too so the
+    # 5 cards sum to 100 % of the universe leadership sees.
+    share_denom = total + retired_count
+    def _pct(n: int) -> float:
+        return round((n / share_denom) * 100, 1) if share_denom else 0.0
+
+    tier_summary = {
+        t: {
+            "count": counts[t],
+            "pct_styles": _pct(counts[t]),
+            "revenue_lifetime": round(revenue[t], 2),
+            "units_lifetime": units[t],
+        }
+        for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
+    }
+    tier_summary["Retired"] = {
+        "count": retired_count,
+        "pct_styles": _pct(retired_count),
+        "revenue_lifetime": round(retired_revenue, 2),
+        "units_lifetime": retired_units,
+    }
+
     return {
         "total_active_styles": total,
         "tier_counts": counts,
+        "tier_summary": tier_summary,  # Iter 91u — per-card metrics
         "rag": {
             "total": (
                 "green" if TOTAL_TARGET[0] <= total <= TOTAL_TARGET[1]
@@ -255,6 +301,7 @@ def summarise(classified: List[dict]) -> Dict[str, Any]:
         },
         "targets": {**TIER_TARGETS, "total": TOTAL_TARGET},
         "flagged_for_retirement": counts.get("Retire", 0),
+        "physically_retired_count": retired_count,
         "overdue_for_week8_read": overdue_w8,
         "approaching_decision_gates": near_decision_gate,
     }

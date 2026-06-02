@@ -57,13 +57,19 @@ const StatusPill = ({ status }) => {
   );
 };
 
-const TierKpiCard = ({ tier, count, target, rag, testId }) => {
+// Iter 91u — extended card: count · % styles · revenue · units.
+// Click → opens a modal listing the top performing styles in this
+// tier. Uses the new `tier_summary` block from /range-mgmt/classify.
+const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, target, rag, testId, onClick, tone: customTone }) => {
   const tone = RAG[rag] || RAG.amber;
-  const t = TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
+  const t = customTone || TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   const [lo, hi] = target || [0, 0];
+  const isRetired = tier === "Retired";
   return (
-    <div
-      className="rounded-xl p-4 border"
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-xl p-4 border text-left hover:shadow-md transition-shadow cursor-pointer"
       style={{ background: t.bg, borderColor: t.text + "22" }}
       data-testid={testId}
     >
@@ -73,13 +79,31 @@ const TierKpiCard = ({ tier, count, target, rag, testId }) => {
       <div className="font-extrabold mt-1 num leading-none" style={{ color: t.text, fontSize: "26px" }}>
         {fmtNum(count)}
       </div>
-      <div className="mt-1.5 text-[11px]" style={{ color: t.text, opacity: 0.85 }}>
-        Target: {lo}–{hi}
+      <div className="mt-0.5 text-[10.5px]" style={{ color: t.text, opacity: 0.85 }}>
+        {pctStyles == null ? "—" : `${pctStyles.toFixed(1)}% of styles`}
       </div>
-      <div className={`inline-block mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${tone.bg} ${tone.text}`}>
-        {tone.label}
+      {/* Revenue + Units lifetime — pair of compact rows */}
+      <div className="mt-2 space-y-0.5 text-[10.5px]" style={{ color: t.text }}>
+        <div className="flex justify-between">
+          <span style={{ opacity: 0.7 }}>Revenue</span>
+          <span className="font-semibold num">KES {fmtNum(Math.round(revenueLifetime || 0))}</span>
+        </div>
+        <div className="flex justify-between">
+          <span style={{ opacity: 0.7 }}>Units</span>
+          <span className="font-semibold num">{fmtNum(unitsLifetime || 0)}</span>
+        </div>
       </div>
-    </div>
+      {!isRetired && (
+        <>
+          <div className="mt-1.5 text-[10.5px]" style={{ color: t.text, opacity: 0.85 }}>
+            Target: {lo}–{hi}
+          </div>
+          <div className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${tone.bg} ${tone.text}`}>
+            {tone.label}
+          </div>
+        </>
+      )}
+    </button>
   );
 };
 
@@ -103,6 +127,10 @@ const RangeManagement = () => {
   const [statusFilter, setStatusFilter] = useState([]);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  // Iter 91u — drill-down modal state: when set to a tier name, the
+  // modal renders the top performing styles for that tier (or the
+  // physically-retired list when set to "Retired").
+  const [drillTier, setDrillTier] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 150);
@@ -300,17 +328,36 @@ const RangeManagement = () => {
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="tier-kpi-row">
-              {["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => (
-                <TierKpiCard
-                  key={t}
-                  tier={t}
-                  count={summary.tier_counts?.[t] ?? 0}
-                  target={summary.targets?.[t]}
-                  rag={summary.rag?.[t]}
-                  testId={`tier-card-${t.replace(/\s+/g, "-")}`}
-                />
-              ))}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="tier-kpi-row">
+              {["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => {
+                const ts = summary.tier_summary?.[t] || {};
+                return (
+                  <TierKpiCard
+                    key={t}
+                    tier={t}
+                    count={ts.count ?? summary.tier_counts?.[t] ?? 0}
+                    pctStyles={ts.pct_styles}
+                    revenueLifetime={ts.revenue_lifetime}
+                    unitsLifetime={ts.units_lifetime}
+                    target={summary.targets?.[t]}
+                    rag={summary.rag?.[t]}
+                    testId={`tier-card-${t.replace(/\s+/g, "-")}`}
+                    onClick={() => setDrillTier(t)}
+                  />
+                );
+              })}
+              {/* Iter 91u — 5th card: physically-retired styles */}
+              <TierKpiCard
+                key="Retired"
+                tier="Retired"
+                count={summary.tier_summary?.Retired?.count ?? 0}
+                pctStyles={summary.tier_summary?.Retired?.pct_styles}
+                revenueLifetime={summary.tier_summary?.Retired?.revenue_lifetime}
+                unitsLifetime={summary.tier_summary?.Retired?.units_lifetime}
+                tone={{ bg: "#fecaca", text: "#7f1d1d", label: "Retired" }}
+                testId="tier-card-Retired"
+                onClick={() => setDrillTier("Retired")}
+              />
             </div>
             {/* Iter 89w-f — data-ceiling footer note */}
             <p
@@ -681,6 +728,93 @@ const RangeManagement = () => {
           </div>
         </>
       )}
+      {/* Iter 91u — Tier drill-down modal */}
+      {drillTier && (
+        <TierDrillModal
+          tier={drillTier}
+          rows={
+            drillTier === "Retired"
+              ? (data?.retired_rows || [])
+              : (data?.rows || []).filter((r) => r.tier === drillTier)
+          }
+          onClose={() => setDrillTier(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+// Iter 91u — modal listing top-performing styles in the clicked tier.
+// Sorts by lifetime revenue descending; shows the 8 columns most
+// relevant to "how is this tier performing".
+const TierDrillModal = ({ tier, rows, onClose }) => {
+  const sorted = [...rows].sort(
+    (a, b) => (b.sales_since_launch || 0) - (a.sales_since_launch || 0),
+  );
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+      onClick={onClose}
+      data-testid="tier-drill-modal"
+    >
+      <div
+        className="bg-white rounded-2xl max-w-6xl w-full max-h-[85vh] overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b sticky top-0 bg-white">
+          <div>
+            <h3 className="font-extrabold text-[15px]" data-testid="tier-drill-title">{tier} · {fmtNum(sorted.length)} styles</h3>
+            <p className="text-[11px] text-muted mt-0.5">Sorted by lifetime revenue. Click anywhere outside to close.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted hover:text-fg text-xl leading-none"
+            data-testid="tier-drill-close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="p-3">
+          {sorted.length === 0 ? (
+            <p className="text-center text-muted py-8 text-[12px]">No styles in this tier.</p>
+          ) : (
+            <SortableTable
+              testId="tier-drill-table"
+              pageSize={50}
+              initialSort={{ key: "sales_since_launch", dir: "desc" }}
+              columns={[
+                {
+                  key: "style_name", label: "Style", align: "left",
+                  render: (r) => (
+                    <div className="max-w-[260px]">
+                      <div className="font-medium truncate text-[11.5px]" title={r.style_name}>{r.style_name}</div>
+                      <div className="text-muted text-[10px]">{r.brand} · {r.subcategory}</div>
+                    </div>
+                  ),
+                },
+                {
+                  key: "style_number", label: "Style #", align: "left",
+                  render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span>,
+                },
+                { key: "launch_date", label: "Launch", align: "left",
+                  render: (r) => <span className="text-[11px]">{r.launch_date || "—"}</span> },
+                { key: "units_since_launch", label: "Units", numeric: true,
+                  render: (r) => fmtNum(r.units_since_launch) },
+                { key: "sales_since_launch", label: "Revenue", numeric: true,
+                  render: (r) => r.sales_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.sales_since_launch))}` },
+                { key: "lifetime_sor_pct", label: "SOR %", numeric: true,
+                  render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%` },
+                { key: "current_stock", label: "Stock", numeric: true,
+                  render: (r) => fmtNum(r.current_stock) },
+                { key: "last_sale_days", label: "Last Sale", numeric: true,
+                  render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d` },
+              ]}
+              rows={sorted}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 };

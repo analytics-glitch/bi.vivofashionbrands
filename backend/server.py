@@ -4676,6 +4676,12 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         state["chunks_skipped"] = 0
         by_style_name: Dict[str, Tuple[str, str]] = {}
         by_style_number: Dict[str, Tuple[str, str]] = {}
+        # Iter 91u — Also harvest first-sale unit_price in Kenya per
+        # style_number. "First price ever sold in Kenya" is leadership's
+        # canonical definition of Full Price (vs the upstream MSRP
+        # which can lag promotions). Stored alongside the launch date
+        # so Range Mgmt can render Full Price directly.
+        first_price_ke: Dict[str, Tuple[str, float]] = {}  # sn → (first_date, unit_price_kes)
         for cdf, cdt in chunks:
             try:
                 r = await fetch(
@@ -4714,6 +4720,35 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
                             by_style_number[sn] = (min(cf, created), max(cl, created))
                         else:
                             by_style_number[sn] = (created, created)
+                        # First Kenya sale price — strictly the FIRST
+                        # transaction in Kenya for this style_number.
+                        # Skip when country isn't Kenya or unit_price
+                        # is missing. Use $min on the date to ensure
+                        # we keep the earliest observation's price.
+                        ctry = (row.get("country") or "").strip()
+                        if ctry == "Kenya":
+                            # Use only positive-quantity sale lines —
+                            # excludes returns (which carry the same
+                            # unit_price but a negative quantity). The
+                            # upstream `sale_kind` is "order" for sale
+                            # lines and "return" for refunds; we filter
+                            # on quantity too for defence in depth.
+                            sk = (row.get("sale_kind") or "order").lower()
+                            try:
+                                qty = float(row.get("quantity") or 0)
+                            except (TypeError, ValueError):
+                                qty = 0
+                            if sk == "return" or qty <= 0:
+                                pass
+                            else:
+                                try:
+                                    up = float(row.get("unit_price_kes") or 0)
+                                except (TypeError, ValueError):
+                                    up = 0
+                                if up > 0:
+                                    cur = first_price_ke.get(sn)
+                                    if cur is None or created < cur[0]:
+                                        first_price_ke[sn] = (created, up)
                 state["chunks_done"] += 1
                 state["style_numbers_observed"] = len(by_style_number)
                 # Stream progress: every 6 chunks persist & update the
@@ -4721,6 +4756,7 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
                 if state["chunks_done"] % 6 == 0:
                     await _persist_style_launch_dates(by_style_name)
                     await _persist_style_launch_dates_by_number(by_style_number)
+                    await _persist_first_sale_price_ke(first_price_ke)
                     state["earliest_dates_sample"] = sorted(
                         set(v[0] for v in by_style_number.values())
                     )[:8]
@@ -4731,6 +4767,11 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         # Final persist + snapshot sample.
         await _persist_style_launch_dates(by_style_name)
         await _persist_style_launch_dates_by_number(by_style_number)
+        logger.info(
+            "[heal-launch-dates] final persist: %d by_name, %d by_number, %d first-price-KE",
+            len(by_style_name), len(by_style_number), len(first_price_ke),
+        )
+        await _persist_first_sale_price_ke(first_price_ke)
         state["earliest_dates_sample"] = sorted(
             set(v[0] for v in by_style_number.values())
         )[:8]
@@ -11653,6 +11694,86 @@ async def _persist_style_launch_dates_by_number(
         logger.warning("[style-dates] by-number persist failed: %s", e)
 
 
+async def _persist_first_sale_price_ke(
+    observed: Dict[str, Tuple[str, float]],
+) -> None:
+    """Iter 91u — Persist FIRST Kenya sale price per style_number.
+
+    "Full Price" per leadership pref = the price at which the style
+    first sold in Kenya (catches MSRP before any promotion).
+    Stored in the same by-number Mongo collection so a single fetch
+    serves both `first_sale_iso` and `first_sale_price_kes`. We use
+    a per-style atomic check: only overwrite when the new
+    observation's date is strictly EARLIER than the stored one.
+    """
+    if not observed:
+        return
+    try:
+        from pymongo import UpdateOne
+        ops = []
+        for sn, (when, price) in observed.items():
+            if not sn or not when or price <= 0:
+                continue
+            # Atomic earliest-wins write. We can't use `$min` for the
+            # whole sub-doc because the price isn't being minimised —
+            # the rule is "price at the earliest date wins". So we
+            # filter by `first_price_observed_at` larger than the new
+            # observation OR field missing.
+            ops.append(UpdateOne(
+                {
+                    "style_number": sn,
+                    "$or": [
+                        {"first_price_observed_at": {"$exists": False}},
+                        {"first_price_observed_at": {"$gt": when}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "first_sale_price_kes": price,
+                        "first_price_observed_at": when,
+                    },
+                },
+                upsert=False,  # the row exists already (created by launch-date persist)
+            ))
+        if ops:
+            await db.style_launch_dates_by_number.bulk_write(ops, ordered=False)
+            logger.info(
+                "[first-sale-price] persisted %d style_numbers with first Kenya price",
+                len(ops),
+            )
+    except Exception as e:
+        logger.warning("[first-sale-price] persist failed: %s", e)
+
+
+async def _hydrate_first_sale_prices_by_number(
+    style_numbers: List[str],
+) -> Dict[str, float]:
+    """Iter 91u — Return `{style_number: first_sale_price_kes}` for
+    persisted entries. Used by sor-all-styles to override the
+    upstream-MSRP `original_price` with the historically-observed
+    first Kenya sale price."""
+    if not style_numbers:
+        return {}
+    try:
+        cursor = db.style_launch_dates_by_number.find(
+            {
+                "style_number": {"$in": style_numbers},
+                "first_sale_price_kes": {"$gt": 0},
+            },
+            {"_id": 0, "style_number": 1, "first_sale_price_kes": 1},
+        )
+        out: Dict[str, float] = {}
+        async for doc in cursor:
+            sn = doc.get("style_number")
+            p = doc.get("first_sale_price_kes")
+            if sn and p:
+                out[sn] = float(p)
+        return out
+    except Exception as e:
+        logger.warning("[first-sale-price] hydrate failed: %s", e)
+        return {}
+
+
 async def _hydrate_launch_dates_by_number(
     style_numbers: List[str],
 ) -> Dict[str, str]:
@@ -11888,6 +12009,14 @@ async def analytics_sor_all_styles(
     persisted_launch_by_number: Dict[str, str] = await _hydrate_launch_dates_by_number(
         _style_numbers_for_hydrate
     )
+    # Iter 91u — Also hydrate the first Kenya sale price (canonical
+    # "Full Price" per leadership pref). Falls back to upstream
+    # `original_price` (MSRP) when no Kenya first-sale observation
+    # exists yet (rare — once the historical sweep has run, every
+    # style with any Kenya history gets a value).
+    persisted_first_price: Dict[str, float] = await _hydrate_first_sale_prices_by_number(
+        _style_numbers_for_hydrate
+    )
 
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
@@ -12026,8 +12155,12 @@ async def analytics_sor_all_styles(
             "soh_store": round(store, 2),
             "pct_in_wh": round(pct_in_wh, 1),
             "asp_6m": round(asp_6m, 2),
+            # Iter 91u — Full Price = first Kenya sale price (per
+            # leadership pref Jun 2026). Falls back to upstream MSRP
+            # for styles missing a historical Kenya observation.
             "original_price": round(
-                style_orig_price.get(s)
+                persisted_first_price.get(_sn_for_lookup or "", 0)
+                or style_orig_price.get(s)
                 or (float(sm.get("gross_sales") or 0) / units_6m if units_6m else 0),
                 2,
             ),
