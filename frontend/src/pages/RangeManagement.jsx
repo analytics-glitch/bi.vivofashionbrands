@@ -196,6 +196,15 @@ const RangeManagement = () => {
       ["reorder_count", "Reorder Count"],
       ["full_price_pct", "Full Price %"],
       ["current_stock", "Current Stock"],
+      ["style_number", "Style Number"],
+      ["units_since_launch", "Units Since Launch"],
+      ["sales_since_launch", "Revenue Since Launch (KES)"],
+      ["original_price", "Full Price (Kenya)"],
+      ["avg_price_since_launch", "Avg Price (Kenya)"],
+      ["units_6m", "Units (6m)"],
+      ["sales_6m", "Revenue (6m)"],
+      ["sor_since_launch", "SOR Since Launch %"],
+      ["sor_6m", "SOR (6m) %"],
       ["weekly_avg", "Weekly Avg"],
       ["launch_date", "Launch Date"],
       ["recommended_action", "Recommended Action"],
@@ -521,6 +530,31 @@ const RangeManagement = () => {
                     render: (r) => r.full_price_pct == null ? "—" : `${r.full_price_pct.toFixed(0)}%`,
                   },
                   { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                  // Iter 91s — leadership requested 9 new columns on the
+                  // Tier Classification table. "Full Price" is the
+                  // upstream-recorded MSRP (highest price the style was
+                  // sold at in Kenya); "Avg Price" is lifetime ASP
+                  // (Kenya-scoped when the page is filtered to Kenya).
+                  // Numerals come straight from /analytics/sor-all-styles
+                  // — no new endpoint needed.
+                  { key: "style_number", label: "Style #", align: "left",
+                    render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span> },
+                  { key: "units_since_launch", label: "Units Since Launch", numeric: true,
+                    render: (r) => fmtNum(r.units_since_launch) },
+                  { key: "sales_since_launch", label: "Revenue Since Launch", numeric: true,
+                    render: (r) => r.sales_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.sales_since_launch))}` },
+                  { key: "original_price", label: "Full Price (Kenya)", numeric: true,
+                    render: (r) => r.original_price == null ? "—" : `KES ${fmtNum(Math.round(r.original_price))}` },
+                  { key: "avg_price_since_launch", label: "Avg Price (Kenya)", numeric: true,
+                    render: (r) => r.avg_price_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.avg_price_since_launch))}` },
+                  { key: "units_6m", label: "Units (6m)", numeric: true,
+                    render: (r) => fmtNum(r.units_6m) },
+                  { key: "sales_6m", label: "Revenue (6m)", numeric: true,
+                    render: (r) => r.sales_6m == null ? "—" : `KES ${fmtNum(Math.round(r.sales_6m))}` },
+                  { key: "sor_since_launch", label: "SOR Since Launch", numeric: true,
+                    render: (r) => r.sor_since_launch == null ? "—" : `${r.sor_since_launch.toFixed(1)}%` },
+                  { key: "sor_6m", label: "SOR (6m)", numeric: true,
+                    render: (r) => r.sor_6m == null ? "—" : `${r.sor_6m.toFixed(1)}%` },
                   {
                     key: "status", label: "Status", align: "left",
                     render: (r) => <StatusPill status={r.status} />,

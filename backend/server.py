@@ -3803,10 +3803,20 @@ async def exec_summary_endpoint(
         # Inventory + window subcat sales fetched in parallel — the
         # subcat-sales fetch hits the same cached endpoint other
         # sections use, so the marginal cost is one cache lookup.
+        # Iter 91s — also fetch a parallel 30-day subcat-sales slice
+        # so the WoC column can always use a 30-day burn rate (user
+        # pref Jun 2026), independent of the user-selected window.
+        woc_to = yesterday
+        woc_from = yesterday - timedelta(days=29)  # 30 inclusive days
         try:
             subwin_task = asyncio.create_task(get_subcategory_sales(
                 date_from=win_from.isoformat(),
                 date_to=win_to.isoformat(),
+                country=country,
+            ))
+            woc_task = asyncio.create_task(get_subcategory_sales(
+                date_from=woc_from.isoformat(),
+                date_to=woc_to.isoformat(),
                 country=country,
             ))
             inv_task = asyncio.create_task(
@@ -3814,9 +3824,11 @@ async def exec_summary_endpoint(
             )
             inv_rows = await inv_task
             subwin_rows = await subwin_task
+            woc_rows = await woc_task
         except Exception:
             inv_rows = []
             subwin_rows = []
+            woc_rows = []
         # Iter 91b — apply the Active / Retired / All style-status post-
         # filter to inventory. We do NOT filter the subcategory sales
         # because /subcategory-sales is aggregated above the style grain;
@@ -3883,19 +3895,37 @@ async def exec_summary_endpoint(
             sub_rev[(cat, pt or "Unspecified")] += rev
             cat_sold[cat] += u
             cat_rev[cat] += rev
+        # Iter 91s — separate 30-day units-sold map for WoC denominator.
+        sub_sold_30d: Dict[Tuple[str, str], float] = defaultdict(float)
+        cat_sold_30d: Dict[str, float] = defaultdict(float)
+        for sc in woc_rows or []:
+            pt = (sc.get("subcategory") or "").strip()
+            cat = SUBCATEGORY_TO_CATEGORY.get(pt) or "Other"
+            try:
+                u = float(sc.get("units_sold") or 0)
+            except (TypeError, ValueError):
+                u = 0.0
+            sub_sold_30d[(cat, pt or "Unspecified")] += u
+            cat_sold_30d[cat] += u
         total_stock = sum(cat_stock.values()) or 1.0
         total_stock_wh = sum(cat_stock_wh.values())
         total_stock_st = sum(cat_stock_st.values())
         total_sold = sum(cat_sold.values()) or 1.0
 
-        def _weeks_of_cover(stock_u: float, units_win: float) -> Optional[float]:
-            """weeks = stock ÷ (units_window ÷ weeks_in_window).
-            Returns None when there's no in-window sales signal — those
-            rows render as "Idle stock" on the frontend instead of as
-            a misleading "infinite weeks of cover" number."""
-            if units_win <= 0:
+        # Iter 91s — WoC always uses a 30-day burn rate, regardless of
+        # the user-selected `window_days`. 30 days ÷ 7 days/week ≈ 4.333
+        # weeks. The other columns (Sold%, Gap%) still respect the
+        # user-selected window so the table tells two layered stories.
+        WOC_WEEKS = 30.0 / 7.0
+        def _weeks_of_cover(stock_u: float, units_30d: float) -> Optional[float]:
+            """weeks = stock ÷ (units_30d ÷ 4.333). Returns None when
+            there's no 30-day sales signal — those rows render as
+            "Idle stock" on the frontend instead of an infinite weeks
+            of cover. Uses 30-day units regardless of the user's
+            selected window (per Jun 2026 leadership pref)."""
+            if units_30d <= 0:
                 return None
-            weekly = units_win / weeks_in_window
+            weekly = units_30d / WOC_WEEKS
             return stock_u / weekly if weekly > 0 else None
 
         cats = sorted(set(cat_stock.keys()) | set(cat_sold.keys()))
@@ -3932,7 +3962,7 @@ async def exec_summary_endpoint(
                     "stock_pct": (ssu / total_stock) * 100.0,
                     "sold_pct":  (sso / total_sold)  * 100.0,
                     "gap_pct":   ((ssu / total_stock) * 100.0) - ((sso / total_sold) * 100.0),
-                    "weeks_of_cover": _weeks_of_cover(ssu, sso),
+                    "weeks_of_cover": _weeks_of_cover(ssu, sub_sold_30d.get((cat, sub), 0.0)),
                     "asp_mtd": sub_asp,
                     "tied_up_kes": ssu * sub_asp,
                 })
@@ -3951,7 +3981,7 @@ async def exec_summary_endpoint(
                 "stock_pct": stock_pct,
                 "sold_pct": sold_pct,
                 "gap_pct": stock_pct - sold_pct,
-                "weeks_of_cover": _weeks_of_cover(stock_u, sold_u),
+                "weeks_of_cover": _weeks_of_cover(stock_u, cat_sold_30d.get(cat, 0.0)),
                 "asp_mtd": cat_asp,
                 "tied_up_kes": stock_u * cat_asp,
                 "subcategories": sub_rows,
@@ -3959,9 +3989,10 @@ async def exec_summary_endpoint(
         # Sort by absolute gap descending so the biggest mismatches
         # surface at the top of the list.
         rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
-        # Group-wide weeks of cover — uses the same window so it
-        # divides consistently against the per-row figures.
-        total_woc = _weeks_of_cover(total_stock, total_sold) if total_stock > 1 and total_sold > 0 else None
+        # Group-wide weeks of cover — also uses the 30-day denominator
+        # per the same Iter 91s leadership pref.
+        total_sold_30d = sum(cat_sold_30d.values())
+        total_woc = _weeks_of_cover(total_stock, total_sold_30d) if total_stock > 1 and total_sold_30d > 0 else None
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
             "total_stock_units_warehouse": total_stock_wh,
@@ -5540,37 +5571,36 @@ async def get_stock_to_sales(
         loc_set = {x.strip() for x in locs}
         rows = [r for r in rows if r.get("location") in loc_set]
 
-    # Enrich each row with a per-location Weeks-of-Cover calculated from
-    # the last 3 FULL calendar months of sell-through (changed Feb 2026
-    # from a 28-day rolling window — too noisy on weekly granularity).
-    #   weeks_of_cover = current_stock ÷ (units_sold_3m ÷ 12)
-    #   (avg_monthly = units_3m ÷ 3, weekly = avg_monthly ÷ 4 ⇒ units_3m ÷ 12)
+    # Enrich each row with a per-location Weeks-of-Cover. User pref
+    # (Jun 2026): WoC must always use the **last 30 days** of units
+    # regardless of the user's selected date filter, so the column has
+    # a single consistent meaning across every page (Stock-to-Sales,
+    # Inventory, SOR, Range Mgmt, Exec Summary).
+    #   weeks_of_cover = current_stock ÷ (units_sold_30d ÷ 4.333)
     try:
         from datetime import datetime, timedelta
         today = datetime.utcnow().date()
-        # End-of-previous-month boundary so the current in-progress
-        # month doesn't pollute the run-rate.
-        woc_to = today.replace(day=1) - timedelta(days=1)
-        first_of_to_month = woc_to.replace(day=1)
-        one_back = (first_of_to_month - timedelta(days=1)).replace(day=1)
-        woc_from = (one_back - timedelta(days=1)).replace(day=1)
+        woc_to = today - timedelta(days=1)
+        woc_from = woc_to - timedelta(days=29)  # 30 inclusive days
         sor_base = {"date_from": woc_from.isoformat(), "date_to": woc_to.isoformat()}
         woc_cs = cs or [None]
         sor_results = await asyncio.gather(*[fetch("/stock-to-sales", {**sor_base, "country": c}) for c in woc_cs])
-        units_3m_by_loc: Dict[str, float] = defaultdict(float)
+        units_30d_by_loc: Dict[str, float] = defaultdict(float)
         for g in sor_results:
             for r in g or []:
                 loc = r.get("location")
                 if loc:
-                    units_3m_by_loc[loc] += float(r.get("units_sold") or 0)
+                    units_30d_by_loc[loc] += float(r.get("units_sold") or 0)
         for r in rows:
-            u3m = units_3m_by_loc.get(r.get("location"), 0)
-            weekly = u3m / 12 if u3m else 0  # avg_monthly/4 = u3m/12
+            u30d = units_30d_by_loc.get(r.get("location"), 0)
+            # 30 days ÷ 7 days-per-week ≈ 4.333 weeks
+            weekly = u30d / 4.333 if u30d else 0
             stock = r.get("current_stock") or 0
             r["weeks_of_cover"] = (stock / weekly) if weekly else None
-            r["units_sold_3m"] = u3m
+            r["units_sold_30d"] = u30d
             # Legacy field kept for cached frontend payloads.
-            r["units_sold_28d"] = u3m
+            r["units_sold_28d"] = u30d
+            r["units_sold_3m"] = u30d
     except Exception:
         for r in rows:
             r.setdefault("weeks_of_cover", None)
@@ -10156,38 +10186,26 @@ async def analytics_weeks_of_cover(
 ):
     """Weeks of Cover per style + a chain-wide summary block.
 
+    User pref (Jun 2026): WoC must use the **last 30 days** of units
+    everywhere, regardless of selected date filter. The column has a
+    single consistent meaning across every page in the dashboard.
+
     Per-style:
-        weeks = current_stock / (units_sold_3m / 12)
+        weeks = current_stock / (units_sold_30d / 4.333)
 
     Chain summary (returned in `_summary` block):
         total_stock          — Σ current_stock across the WHOLE filtered
                                inventory (not just the top-N /sor styles)
-        total_units_3m       — chain-wide units sold in the last 3 FULL
-                               calendar months pulled from /sales-summary
-                               so it covers EVERY style, not the top 200
-        weeks_of_cover       — total_stock / (total_units_3m / 12)
-                               — this is what the Inventory page KPI card
-                               consumes; matches the visible Stock-in-
-                               Stores tile to the unit.
-
-    Why this shape: previously the FE computed group WoC by summing
-    over `rows`, which is at most 200 styles from /sor. With ~1,700
-    active styles, that under-counted both stock AND sales but the
-    NET error was a 50-60% understated WoC because the long tail has
-    proportionally less sales (so the 200 cap kept high-velocity styles
-    only — biasing the denominator up). Returning a backend-computed
-    summary fixes the slice mismatch and aligns with the
-    Stock-In-Stores card.
+        total_units_30d      — chain-wide units sold in the last 30 days
+        weeks_of_cover       — total_stock / (total_units_30d / 4.333)
 
     `stock_scope` still controls which inventory is in scope.
     """
     from datetime import datetime, timedelta
     today = datetime.utcnow().date()
-    dt = today.replace(day=1) - timedelta(days=1)  # last day of prev month
-    first_of_dt_month = dt.replace(day=1)
-    one_back = (first_of_dt_month - timedelta(days=1)).replace(day=1)
-    df = (one_back - timedelta(days=1)).replace(day=1)
-    window_days = (dt - df).days + 1  # inclusive
+    dt = today - timedelta(days=1)         # yesterday (last full day)
+    df = dt - timedelta(days=29)           # 30 inclusive days
+    window_days = 30
 
     cs = _split_csv(country)
     chs = _split_csv(channel) or _split_csv(locations)
@@ -10239,7 +10257,8 @@ async def analytics_weeks_of_cover(
         units_3m = r.get("units_sold") or 0
         style = r.get("style_name")
         stock = stock_by_style.get(style, 0)
-        weekly = units_3m / 12 if units_3m else 0
+        # Iter 91s — 30-day window: weekly = u30d / (30/7) = u30d / 4.333
+        weekly = units_3m / 4.333 if units_3m else 0
         weeks = (stock / weekly) if weekly else None
         out.append({
             "style_name": r.get("style_name"),
@@ -10247,17 +10266,16 @@ async def analytics_weeks_of_cover(
             "collection": r.get("collection"),
             "subcategory": r.get("product_type"),
             "current_stock": stock,
-            "units_sold_3m": units_3m,
+            "units_sold_30d": units_3m,
+            "units_sold_3m": units_3m,            # legacy alias (now 30d data)
             "units_sold_3m_window_days": window_days,
-            "units_sold_28d": units_3m,  # legacy alias
+            "units_sold_28d": units_3m,           # legacy alias
             "avg_weekly_sales": weekly,
             "weeks_of_cover": weeks,
             "sor_percent": r.get("sor_percent") or 0,
         })
 
-    # Chain-wide units-sold for the same 3-month window. /sales-summary
-    # gives one row per (country, channel) with `total_units` for the
-    # whole period — no top-N cap, so this is the correct denominator.
+    # Chain-wide units-sold for the same 30-day window.
     chain_total_units_3m = 0.0
     try:
         ss_rows = await get_sales_summary(
@@ -10265,23 +10283,21 @@ async def analytics_weeks_of_cover(
             country=country, channel=channel,
         )
         for s in ss_rows or []:
-            # /sales-summary uses `units_sold` for the per-location
-            # quantity field (not `total_units`). Other dashboards
-            # alias them — keep both for safety.
             chain_total_units_3m += float(
                 s.get("units_sold") or s.get("total_units") or 0
             )
     except Exception as e:
         logger.warning(f"[weeks-of-cover] /sales-summary failed: {e}")
 
-    chain_weekly = chain_total_units_3m / 12 if chain_total_units_3m else 0
+    chain_weekly = chain_total_units_3m / 4.333 if chain_total_units_3m else 0
     chain_woc = (chain_total_stock / chain_weekly) if chain_weekly else None
 
     return {
         "rows": out,
         "_summary": {
             "total_stock": chain_total_stock,
-            "total_units_3m": chain_total_units_3m,
+            "total_units_30d": chain_total_units_3m,
+            "total_units_3m": chain_total_units_3m,  # legacy alias
             "weekly_units": chain_weekly,
             "weeks_of_cover": chain_woc,
             "window_from": df.isoformat(),
@@ -11291,6 +11307,8 @@ async def _get_style_first_last_sale(
         # Iter 84i — also persist what curve-cache observed (same
         # invariant: MIN over all observations).
         asyncio.create_task(_persist_style_launch_dates(out))
+        # Iter 91s — also persist by style_number (canonical key).
+        asyncio.create_task(_persist_style_launch_dates_by_number(num_out))
         return out
 
     # ── Path 2: cold fan-out (rare — only if curve hasn't warmed) ──
@@ -11370,6 +11388,8 @@ async def _get_style_first_last_sale(
     # the earliest observation we've ever made; fire-and-forget so the
     # response path isn't blocked on Mongo.
     asyncio.create_task(_persist_style_launch_dates(out))
+    # Iter 91s — also persist by style_number (canonical key).
+    asyncio.create_task(_persist_style_launch_dates_by_number(num_out))
     return out
 
 
@@ -11382,9 +11402,25 @@ async def _get_style_first_last_sale(
 # the launch_date column populated for EVERY style — including ones
 # that haven't sold recently. Once a style has been observed at least
 # once with a first_sale date, we should remember it forever.
+# ──────────────────────────────────────────────────────────────────────
+# Why a separate persistent layer? `_style_dates_cache` lives in-process
+# (30 min TTL) and only knows about styles seen in the LAST 180 days
+# (the helper's look-back window). For the SOR export, the user wants
+# the launch_date column populated for EVERY style — including ones
+# that haven't sold recently. Once a style has been observed at least
+# once with a first_sale date, we should remember it forever.
 async def _persist_style_launch_dates(observed: Dict[str, Tuple[str, str]]) -> None:
     """Upsert MIN(first_sale_iso) for each style into Mongo. Idempotent —
-    safe to call from any code path that has a fresh `out` dict."""
+    safe to call from any code path that has a fresh `out` dict.
+
+    Iter 91s — Also writes a parallel index keyed by `style_number`
+    (extracted from the SKU prefix) so callers can hydrate launch
+    dates by the more-stable style_number identifier. Style names can
+    be reused across re-issues; style_number is canonical. The new
+    key is built from `observed` rows that carry a `style_number`
+    field, falling back to extract_style_number() on the style name
+    if the caller didn't pre-resolve it.
+    """
     if not observed:
         return
     try:
@@ -11393,6 +11429,7 @@ async def _persist_style_launch_dates(observed: Dict[str, Tuple[str, str]]) -> N
         # operator gives us exactly that semantic, atomic per-doc.
         from pymongo import UpdateOne
         ops = []
+        ops_num = []
         now_iso = datetime.now(timezone.utc).isoformat()
         for style, (first_iso, last_iso) in observed.items():
             if not style or not first_iso:
@@ -11413,6 +11450,74 @@ async def _persist_style_launch_dates(observed: Dict[str, Tuple[str, str]]) -> N
         # Persistence is fire-and-forget; never break the calling
         # endpoint just because the cache write failed.
         logger.warning("[style-dates] persist failed: %s", e)
+
+
+async def _persist_style_launch_dates_by_number(
+    observed_by_number: Dict[str, Tuple[str, str]],
+) -> None:
+    """Iter 91s — Style-number-keyed persistence of MIN(first_sale_iso).
+
+    `style_number` is the canonical identifier across reissues — the
+    same name can be re-used for a new style, but the SKU-prefix
+    style_number is unique. This collection is the source of truth
+    for the "launch date = first date the style ever sold" semantic
+    requested by leadership (Jun 2026). Refreshed on every SOR
+    fan-out, and a nightly job will sweep all of `orders_daily_
+    snapshots` to fold in historical sales that pre-date the rolling
+    180-day live window.
+    """
+    if not observed_by_number:
+        return
+    try:
+        from pymongo import UpdateOne
+        ops = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for sn, (first_iso, last_iso) in observed_by_number.items():
+            if not sn or not first_iso:
+                continue
+            ops.append(UpdateOne(
+                {"style_number": sn},
+                {
+                    "$min": {"first_sale_iso": first_iso},
+                    "$max": {"last_sale_iso": last_iso, "last_observed_at": now_iso},
+                    "$setOnInsert": {"created_at": now_iso},
+                },
+                upsert=True,
+            ))
+        if ops:
+            await db.style_launch_dates_by_number.bulk_write(ops, ordered=False)
+            logger.info(
+                "[style-dates] persisted %d style_numbers to style_launch_dates_by_number",
+                len(ops),
+            )
+    except Exception as e:
+        logger.warning("[style-dates] by-number persist failed: %s", e)
+
+
+async def _hydrate_launch_dates_by_number(
+    style_numbers: List[str],
+) -> Dict[str, str]:
+    """Iter 91s — Return `{style_number: first_sale_iso}` for any
+    style_numbers that have a persisted launch date in Mongo. Preferred
+    over `_hydrate_launch_dates_from_mongo` (which keys by style_name)
+    because style_number is stable across re-issues."""
+    if not style_numbers:
+        return {}
+    try:
+        cursor = db.style_launch_dates_by_number.find(
+            {"style_number": {"$in": style_numbers}},
+            {"_id": 0, "style_number": 1, "first_sale_iso": 1},
+        )
+        out: Dict[str, str] = {}
+        async for doc in cursor:
+            sn = doc.get("style_number")
+            fs = doc.get("first_sale_iso")
+            if sn and fs:
+                out[sn] = fs
+        return out
+    except Exception as e:
+        logger.warning("[style-dates] by-number hydrate failed: %s", e)
+        return {}
 
 
 async def _hydrate_launch_dates_from_mongo(
@@ -11477,6 +11582,9 @@ async def analytics_sor_all_styles(
     # look like they have more cover than they really do.
     three_m_from = today - timedelta(days=90)
     three_w_from = today - timedelta(days=21)
+    # Iter 91s — 30-day window drives the canonical WoC denominator
+    # across the dashboard (user pref Jun 2026).
+    thirty_d_from = today - timedelta(days=30)
     cs = _split_csv(country)
     chs = _split_csv(channel)
 
@@ -11516,12 +11624,14 @@ async def analytics_sor_all_styles(
     # cap is plenty for a fashion catalog where SKUs rarely outlive a year.
     lifetime_from = today - timedelta(days=1095)
 
-    six_m_skus, three_w_skus, lifetime_skus, three_m_skus, inventory, style_dates = await asyncio.gather(
+    six_m_skus, three_w_skus, lifetime_skus, three_m_skus, thirty_d_skus, inventory, style_dates = await asyncio.gather(
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
         _topskus(lifetime_from.isoformat(), today.isoformat()),
         # Iter 89c — 3-month aggregation drives the WoC weekly_avg.
         _topskus(three_m_from.isoformat(), today.isoformat()),
+        # Iter 91s — 30-day aggregation is the canonical WoC source.
+        _topskus(thirty_d_from.isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
         _get_style_first_last_sale(country, channel, days=180),
     )
@@ -11532,6 +11642,7 @@ async def analytics_sor_all_styles(
     three_w_map = {r.get("style_name"): r for r in three_w_skus if r.get("style_name") in candidates}
     lifetime_map = {r.get("style_name"): r for r in lifetime_skus if r.get("style_name") in candidates}
     three_m_map = {r.get("style_name"): r for r in three_m_skus if r.get("style_name") in candidates}
+    thirty_d_map = {r.get("style_name"): r for r in thirty_d_skus if r.get("style_name") in candidates}
 
     # Original price = modal unit price observed across the lifetime
     # /top-skus pull (gross_sales ÷ units_sold ≈ ASP at full price for
@@ -11605,6 +11716,19 @@ async def analytics_sor_all_styles(
     # the launch_date column is populated for any style we've EVER
     # observed selling, not just the last 6 months.
     persisted_launch = await _hydrate_launch_dates_from_mongo(list(candidates))
+    # Iter 91s — Also hydrate by style_number (canonical identifier).
+    # Per leadership pref (Jun 2026): launch_date = first date the
+    # style_number ever sold. The by-number Mongo collection is
+    # authoritative because style_number is stable across re-issues
+    # whereas style_name can be re-used.
+    _style_numbers_for_hydrate: List[str] = []
+    for _s in candidates:
+        _sn = extract_style_number(sku_for_style.get(_s, ""))
+        if _sn:
+            _style_numbers_for_hydrate.append(_sn)
+    persisted_launch_by_number: Dict[str, str] = await _hydrate_launch_dates_by_number(
+        _style_numbers_for_hydrate
+    )
 
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
@@ -11684,7 +11808,15 @@ async def analytics_sor_all_styles(
         # historically-observed first sale. The persisted value is
         # AUTHORITATIVE because Mongo retains MIN(first_sale_iso) over
         # all runs — so it can only ever EARLIER-shift, never later.
-        persisted_first = persisted_launch.get(s)
+        # Iter 91s — Prefer the by-style_number record (canonical) over
+        # the legacy by-style_name record. style_number is stable
+        # across re-issues; style_name can be re-used.
+        _sn_for_lookup = extract_style_number(sku_for_style.get(s, ""))
+        persisted_first = None
+        if _sn_for_lookup:
+            persisted_first = persisted_launch_by_number.get(_sn_for_lookup)
+        if not persisted_first:
+            persisted_first = persisted_launch.get(s)
         if persisted_first:
             if launch_date_iso is None or persisted_first < launch_date_iso:
                 launch_date_iso = persisted_first
@@ -11697,18 +11829,20 @@ async def analytics_sor_all_styles(
                     age_weeks = min(persisted_age_days / 7.0, 26.0)
                 except Exception:
                     pass
-        # Iter 89c — Weeks-of-Cover uses the **last 3 months** (≈13
-        # weeks) burn rate instead of the 6-month / age-based rate.
-        # Tighter window means WoC is responsive to the current sell
-        # rate — a style that ramped recently shows tight cover; a
-        # style that's tailing off shows lots of cover. The launch-age
-        # cap is still applied so freshly-launched styles (< 13w old)
-        # use their actual age as the divisor, not a flat 13w.
-        units_3m = float((three_m_map.get(s) or {}).get("units_sold") or 0)
-        # Window length: min(13 weeks, actual style age). Styles older
-        # than 13w divide by exactly 13; younger styles by their age.
-        woc_window_weeks = min(13.0, max(age_weeks, 1.0))
-        weekly_avg = units_3m / woc_window_weeks if woc_window_weeks > 0 else 0.0
+        # Iter 91s — Weeks-of-Cover uses **last 30 days** of units
+        # (single canonical denominator across the dashboard, per Jun
+        # 2026 leadership pref). 30 days ÷ 7 days/week ≈ 4.333 weeks.
+        # The launch-age cap is still applied so freshly-launched
+        # styles (< 30d old) divide by their actual age, not a flat
+        # 30 days.
+        units_30d = float((thirty_d_map.get(s) or {}).get("units_sold") or 0)
+        # Window length: min(30 days, actual style age-in-days). Styles
+        # older than 30d divide by exactly 30/7 ≈ 4.333 wks; younger
+        # styles divide by their age in weeks (avoids inflating WoC
+        # for a 2-week-old style with one sale).
+        woc_age_weeks = max(age_weeks, 1.0 / 7.0)
+        woc_window_weeks = min(30.0 / 7.0, woc_age_weeks)
+        weekly_avg = units_30d / woc_window_weeks if woc_window_weeks > 0 else 0.0
         woc = (soh_total / weekly_avg) if weekly_avg > 0 else None
         units_3w = float(tw.get("units_sold") or 0)
         # Days since last sale: prefer the real /orders-derived date when
@@ -11741,6 +11875,14 @@ async def analytics_sor_all_styles(
             "days_since_last_sale": days_since_last,
             "sor_6m": round(sor_6m, 2),
             "units_since_launch": int(units_lt),
+            # Iter 91s — Lifetime revenue + avg price per style. When
+            # the endpoint is called with `country=Kenya`, these are
+            # Kenya-scoped already (lifetime_map is built from the
+            # country-filtered top-skus pull). The Range Mgmt tier
+            # table surfaces these as "Revenue since launch" and
+            # "Average Price (since launch)".
+            "sales_since_launch": round(gross_lt, 2),
+            "avg_price_since_launch": round(gross_lt / units_lt, 2) if units_lt else 0,
             "sor_since_launch": round(sor_since_launch, 2),
             "launch_date": launch_date_iso,
             "weekly_avg": round(weekly_avg, 2),

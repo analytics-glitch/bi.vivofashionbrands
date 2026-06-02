@@ -5,6 +5,23 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91s) — Launch-date by style_number · Tier table 9 new columns · WoC always trailing-30d
+
+Three leadership requests bundled together (Jun 2026):
+
+#### ✅ 1. Launch date = first date the style ever sold (by style_number)
+- New collection `style_launch_dates_by_number` keyed on the canonical 7-digit style_number (extracted from SKU prefix). Style_number is stable across re-issues whereas style_name can be reused.
+- New helpers `_persist_style_launch_dates_by_number` + `_hydrate_launch_dates_by_number`, called from both code paths of `_get_style_first_last_sale` (curve-cache & cold fan-out).
+- `analytics_sor_all_styles` per-style loop now prefers the by-number persisted value over the by-name persisted value when resolving launch_date. The 180-day live window still tightens the date if recent observations exist; persisted Mongo MIN value is the floor across all surfaces regardless of selected period.
+
+#### ✅ 2. Range Mgmt → Tier Classification table: 9 new columns
+Added to `/analytics/sor-all-styles` row output: `sales_since_launch` + `avg_price_since_launch`. Tier table now shows: Style #, Units Since Launch, Revenue Since Launch (KES), Full Price (Kenya), Avg Price (Kenya), Units (6m), Revenue (6m), SOR Since Launch, SOR (6m). CSV export updated.
+
+#### ✅ 3. Weeks of Cover: always trailing 30 days
+WoC denominator standardised on **the last 30 calendar days of units sold**, independent of the user's selected date filter. Formula: `weeks = current_stock ÷ (units_sold_30d ÷ 4.333)`. Touched: inventory-summary, weeks-of-cover, stock-to-sales-by-subcategory, sor-all-styles.
+
+**Verified live** (preview): `/analytics/weeks-of-cover` summary shows 7.8-week chain WoC (25,004 units in last 30d / 45,167 total stock); 1,487 sor rows carry the new `sales_since_launch` field.
+
 ### Recent (Feb 2026 — Iter 91r) — May 2026 snapshot corruption: heal + 3-layer defence
 
 **Incident**: User reported "May 2026 showing 9.6M sales, should be 102M" — the dashboard's monthly view was showing ~10 % of the true total.
