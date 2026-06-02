@@ -337,8 +337,8 @@ const Products = () => {
         </button>
       </div>
 
-      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} windowDays={stsWindowDays} />}
-      {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} windowDays={stsWindowDays} />}
+      {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
+      {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
       {tab === "products-plan" && <ProductsPlan />}
