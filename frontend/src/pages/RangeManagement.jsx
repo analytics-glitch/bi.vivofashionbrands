@@ -57,6 +57,124 @@ const StatusPill = ({ status }) => {
   );
 };
 
+// Iter 91q — Calculated-field formula reveal. Native `title` keeps the
+// implementation cheap (no Radix Portal per cell, no perf hit on 1k+
+// rows) while still supporting multi-line formulas via "\n". Pattern:
+//   `<FormulaCell title={`Formula\n= …\n= …`}>display value</FormulaCell>`
+// `\u00A0` (NBSP) keeps the underline tight against the value when it
+// wraps. Renders with a subtle dotted underline so users discover the
+// hover affordance without visual noise.
+const FormulaCell = ({ title, children }) => (
+  <span
+    title={title}
+    className="cursor-help underline decoration-dotted decoration-muted/40 underline-offset-2"
+  >
+    {children}
+  </span>
+);
+
+// Numeric helpers used inside formula tooltip strings.
+const _n = (v, dp = 0) =>
+  v == null || isNaN(v) ? "—" : Number(v).toLocaleString(undefined, { maximumFractionDigits: dp, minimumFractionDigits: dp });
+const _pct = (v, dp = 1) => (v == null ? "—" : `${Number(v).toFixed(dp)}%`);
+const _kes = (v) => (v == null ? "—" : `KES ${_n(Math.round(v))}`);
+
+// Per-row formula builders. Each returns a multi-line string used as
+// the cell's `title` so hovering reveals the exact calculation with
+// substituted row values — leadership pref Jun 2026.
+const fmt = {
+  reorders: (r) => {
+    const age = Number(r.style_age_weeks) || 0;
+    return [
+      "Reorders ≈ floor(Style Age in weeks ÷ 12)",
+      `= floor(${age.toFixed(1)} ÷ 12)`,
+      `= ${r.reorder_count ?? 0}`,
+      "",
+      "Approximates open-buy cycles (~12 weeks each).",
+    ].join("\n");
+  },
+  revenueLifetime: (r) => [
+    "Revenue Since Launch = Σ gross sales across the style's entire history",
+    `= ${_kes(r.sales_since_launch)}`,
+    "",
+    "Scope honours the page-level Country/Channel filter.",
+  ].join("\n"),
+  revenue6m: (r) => [
+    "Revenue (6m) = Σ gross sales in the last 180 days",
+    `= ${_kes(r.sales_6m)}`,
+  ].join("\n"),
+  unitsLifetime: (r) => [
+    "Units Since Launch = Σ units sold across the style's entire history",
+    `= ${_n(r.units_since_launch)} units`,
+  ].join("\n"),
+  units6m: (r) => [
+    "Units (6m) = Σ units sold in the last 180 days",
+    `= ${_n(r.units_6m)} units`,
+  ].join("\n"),
+  sorLifetime: (r) => {
+    const u = Number(r.units_since_launch) || 0;
+    const stk = Number(r.current_stock) || 0;
+    const denom = u + stk;
+    return [
+      "SOR Since Launch = Units Sold ÷ (Units Sold + Current Stock) × 100",
+      `= ${_n(u)} ÷ (${_n(u)} + ${_n(stk)}) × 100`,
+      `= ${_n(u)} ÷ ${_n(denom)} × 100`,
+      `= ${_pct(r.sor_since_launch)}`,
+    ].join("\n");
+  },
+  sor6m: (r) => {
+    const u = Number(r.units_6m) || 0;
+    const stk = Number(r.current_stock) || 0;
+    const denom = u + stk;
+    return [
+      "SOR (6m) = Units Sold in 6m ÷ (Units Sold in 6m + Stock) × 100",
+      `= ${_n(u)} ÷ (${_n(u)} + ${_n(stk)}) × 100`,
+      `= ${_n(u)} ÷ ${_n(denom)} × 100`,
+      `= ${_pct(r.sor_6m)}`,
+    ].join("\n");
+  },
+  woc: (r) => {
+    const stk = Number(r.current_stock) || 0;
+    const wa = Number(r.weekly_avg) || 0;
+    const units30d = +(wa * (30 / 7)).toFixed(0);
+    return [
+      "Weeks of Cover = Stock ÷ (Sold in 30d ÷ 4.3 weeks)",
+      `= ${_n(stk)} ÷ (${_n(units30d)} ÷ 4.3)`,
+      `= ${_n(stk)} ÷ ${_n(wa, 1)} units/week`,
+      r.woc == null ? "= — (no recent sales)" : `= ${Number(r.woc).toFixed(1)} weeks`,
+    ].join("\n");
+  },
+  age: (r) => [
+    "Age (weeks) = (Today − Launch Date) ÷ 7",
+    r.launch_date ? `= (Today − ${r.launch_date}) ÷ 7` : "= insufficient data",
+    `= ${_n(r.style_age_weeks, 1)} weeks`,
+  ].join("\n"),
+  avgPrice: (r) => {
+    const u = Number(r.units_since_launch) || 0;
+    const sales = Number(r.sales_since_launch) || 0;
+    return [
+      "Avg Price (Kenya) = Revenue Since Launch ÷ Units Since Launch",
+      `= ${_kes(sales)} ÷ ${_n(u)} units`,
+      `= ${_kes(r.avg_price_since_launch)}`,
+    ].join("\n");
+  },
+  fullPrice: (r) => [
+    "Full Price (Kenya) = unit price of the FIRST Kenya sale for this style_number",
+    `= ${_kes(r.original_price)}`,
+    "",
+    "Falls back to upstream MSRP when no historical Kenya observation exists.",
+  ].join("\n"),
+  fpPct: (r) => {
+    const asp = Number(r.avg_price_since_launch || r.asp_6m) || 0;
+    const fp = Number(r.original_price) || 0;
+    return [
+      "FP % = Avg Price ÷ Full Price × 100 (capped 100%)",
+      fp > 0 ? `= ${_kes(asp)} ÷ ${_kes(fp)} × 100` : "= — (no full price recorded)",
+      `= ${r.full_price_pct == null ? "—" : `${Number(r.full_price_pct).toFixed(0)}%`}`,
+    ].join("\n");
+  },
+};
+
 // Iter 91u — extended card.
 // Iter 91v — also surfaces SOR % per bucket.
 const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, sorPct, target, rag, testId, onClick, tone: customTone }) => {
@@ -628,8 +746,14 @@ const RangeManagement = () => {
                 initialSort={{ key: "tier", dir: "asc" }}
                 pageSize={75}
                 columns={[
+                  // Iter 91q — Column order per leadership spec
+                  // (Jun 2026): identity → tier → cycles → revenue →
+                  // units → sell-through → stock cover → dates →
+                  // pricing → status. Calculated fields wrap their
+                  // values in `FormulaCell` so a hover reveals the
+                  // exact formula with substituted row values.
                   {
-                    key: "style_name", label: "Style", align: "left",
+                    key: "style_name", label: "Style Name", align: "left",
                     render: (r) => (
                       <div className="max-w-[240px]">
                         <div className="font-medium truncate" title={r.style_name}>{r.style_name}</div>
@@ -638,7 +762,8 @@ const RangeManagement = () => {
                     ),
                     csv: (r) => r.style_name,
                   },
-                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
+                  { key: "style_number", label: "Style Number", align: "left",
+                    render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span> },
                   {
                     key: "tier", label: "Tier", align: "left",
                     render: (r) => (
@@ -656,61 +781,59 @@ const RangeManagement = () => {
                       </span>
                     ),
                   },
-                  {
-                    key: "style_age_weeks", label: "Age (wks)", numeric: true,
-                    render: (r) => fmtNum(r.style_age_weeks),
-                  },
-                  {
-                    key: "lifetime_sor_pct", label: "Lifetime SOR %", numeric: true,
-                    render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%`,
-                  },
-                  {
-                    key: "woc", label: "WOC", numeric: true,
-                    render: (r) => r.woc == null ? "—" : r.woc.toFixed(1),
-                  },
-                  {
-                    key: "last_sale_days", label: "Last Sale", numeric: true,
-                    render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d`,
-                  },
+                  { key: "subcategory", label: "Subcategory", align: "left",
+                    render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
                   {
                     key: "reorder_count", label: "Reorders", numeric: true,
-                    render: (r) => fmtNum(r.reorder_count),
+                    render: (r) => <FormulaCell title={fmt.reorders(r)}>{fmtNum(r.reorder_count)}</FormulaCell>,
                   },
+                  { key: "sales_since_launch", label: "Revenue Since Launch", numeric: true,
+                    render: (r) => r.sales_since_launch == null ? "—" : (
+                      <FormulaCell title={fmt.revenueLifetime(r)}>{`KES ${fmtNum(Math.round(r.sales_since_launch))}`}</FormulaCell>
+                    ) },
+                  { key: "sales_6m", label: "Revenue (6m)", numeric: true,
+                    render: (r) => r.sales_6m == null ? "—" : (
+                      <FormulaCell title={fmt.revenue6m(r)}>{`KES ${fmtNum(Math.round(r.sales_6m))}`}</FormulaCell>
+                    ) },
+                  { key: "units_since_launch", label: "Units Since Launch", numeric: true,
+                    render: (r) => <FormulaCell title={fmt.unitsLifetime(r)}>{fmtNum(r.units_since_launch)}</FormulaCell> },
+                  { key: "units_6m", label: "Units (6m)", numeric: true,
+                    render: (r) => <FormulaCell title={fmt.units6m(r)}>{fmtNum(r.units_6m)}</FormulaCell> },
+                  { key: "sor_since_launch", label: "SOR Lifetime", numeric: true,
+                    render: (r) => r.sor_since_launch == null ? "—" : (
+                      <FormulaCell title={fmt.sorLifetime(r)}>{`${r.sor_since_launch.toFixed(1)}%`}</FormulaCell>
+                    ) },
+                  { key: "sor_6m", label: "SOR (6m)", numeric: true,
+                    render: (r) => r.sor_6m == null ? "—" : (
+                      <FormulaCell title={fmt.sor6m(r)}>{`${r.sor_6m.toFixed(1)}%`}</FormulaCell>
+                    ) },
+                  { key: "current_stock", label: "SoH", numeric: true, render: (r) => fmtNum(r.current_stock) },
                   {
-                    key: "full_price_pct", label: "FP %", numeric: true,
-                    render: (r) => r.full_price_pct == null ? "—" : `${r.full_price_pct.toFixed(0)}%`,
+                    key: "woc", label: "WoC", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={fmt.woc(r)}>{r.woc == null ? "—" : r.woc.toFixed(1)}</FormulaCell>
+                    ),
                   },
-                  { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                  // Iter 91s — leadership requested 9 new columns on the
-                  // Tier Classification table. "Full Price" is the
-                  // upstream-recorded MSRP (highest price the style was
-                  // sold at in Kenya); "Avg Price" is lifetime ASP
-                  // (Kenya-scoped when the page is filtered to Kenya).
-                  // Numerals come straight from /analytics/sor-all-styles
-                  // — no new endpoint needed.
-                  { key: "style_number", label: "Style #", align: "left",
-                    render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span> },
-                  // Iter 91s+ — Style Launch Date: shows the all-time
-                  // first sale date for the style_number (canonical
-                  // across re-issues). Independent of selected period.
                   { key: "launch_date", label: "Launch Date", align: "left",
                     render: (r) => <span className="text-[11px]">{r.launch_date || "—"}</span> },
-                  { key: "units_since_launch", label: "Units Since Launch", numeric: true,
-                    render: (r) => fmtNum(r.units_since_launch) },
-                  { key: "sales_since_launch", label: "Revenue Since Launch", numeric: true,
-                    render: (r) => r.sales_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.sales_since_launch))}` },
+                  {
+                    key: "style_age_weeks", label: "Age (wks)", numeric: true,
+                    render: (r) => <FormulaCell title={fmt.age(r)}>{fmtNum(r.style_age_weeks)}</FormulaCell>,
+                  },
                   { key: "original_price", label: "Full Price (Kenya)", numeric: true,
-                    render: (r) => r.original_price == null ? "—" : `KES ${fmtNum(Math.round(r.original_price))}` },
+                    render: (r) => r.original_price == null ? "—" : (
+                      <FormulaCell title={fmt.fullPrice(r)}>{`KES ${fmtNum(Math.round(r.original_price))}`}</FormulaCell>
+                    ) },
                   { key: "avg_price_since_launch", label: "Avg Price (Kenya)", numeric: true,
-                    render: (r) => r.avg_price_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.avg_price_since_launch))}` },
-                  { key: "units_6m", label: "Units (6m)", numeric: true,
-                    render: (r) => fmtNum(r.units_6m) },
-                  { key: "sales_6m", label: "Revenue (6m)", numeric: true,
-                    render: (r) => r.sales_6m == null ? "—" : `KES ${fmtNum(Math.round(r.sales_6m))}` },
-                  { key: "sor_since_launch", label: "SOR Since Launch", numeric: true,
-                    render: (r) => r.sor_since_launch == null ? "—" : `${r.sor_since_launch.toFixed(1)}%` },
-                  { key: "sor_6m", label: "SOR (6m)", numeric: true,
-                    render: (r) => r.sor_6m == null ? "—" : `${r.sor_6m.toFixed(1)}%` },
+                    render: (r) => r.avg_price_since_launch == null ? "—" : (
+                      <FormulaCell title={fmt.avgPrice(r)}>{`KES ${fmtNum(Math.round(r.avg_price_since_launch))}`}</FormulaCell>
+                    ) },
+                  {
+                    key: "full_price_pct", label: "FP %", numeric: true,
+                    render: (r) => r.full_price_pct == null ? "—" : (
+                      <FormulaCell title={fmt.fpPct(r)}>{`${r.full_price_pct.toFixed(0)}%`}</FormulaCell>
+                    ),
+                  },
                   {
                     key: "status", label: "Status", align: "left",
                     render: (r) => <StatusPill status={r.status} />,

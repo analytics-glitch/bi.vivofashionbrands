@@ -5,6 +5,25 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Range Mgmt UX: formula tooltips, column reorder & 5-year heal sweep fix
+
+**Three asks bundled** (Jun 2026):
+
+#### 1. Historical launch dates were wrong (Zoya Fitness Shorts case)
+- **Symptom**: "Zoya Fitness Shorts" displayed launch date 2026-04-27 even though it first sold 2022-12-31 (SKU was originally `0920119BLAS` without the modern `Z` prefix).
+- **Root cause #1 — silent /orders truncation**: The 5-year sweep worker called upstream `/orders` without an explicit `limit`. The upstream defaults to **1,000 rows** when omitted; a 2022 holiday week carries ~3,800 lines, so ~74 % of orders were silently dropped — including the first 2022 Zoya Fitness Shorts sale. Fix: pass `limit=10000` (upstream max) in `_run_launch_date_heal()`.
+- **Root cause #2 — by-number lookup blocking by-name fallback**: When a SKU was historically renamed (e.g. `0920119` → `Z0920119`), the by-number Mongo record only carried the new-prefix's post-rename first-sale. The lookup preferred by-number unconditionally so the older by-name record (which retained the full 2022 history) was ignored. Fix: replaced the `if by_number else by_name` precedence with `min(by_number, by_name)` in `analytics_sor_all_styles`.
+- **Backfill**: Wiped `style_launch_dates*` collections and re-ran `POST /admin/heal-launch-dates?years_back=5&chunk_days=7`. 7,188 style_numbers + 5,549 style_names observed (vs 5,384 / 4,539 in the truncated run).
+- **Verified live**: `Zoya Fitness Shorts` → launch_date `2022-11-25`, age 183.6 weeks, tier promoted to **Tier 1 · Core Basics**, 15 inferred reorder cycles.
+
+#### 2. Tier Classification table: column order rewritten to leadership spec
+Order is now: Style Name · Style Number · Tier · Subcategory · Reorders · Revenue Since Launch · Revenue (6m) · Units Since Launch · Units (6m) · SOR Lifetime · SOR (6m) · SoH · WoC · Launch Date · Age (wks) · Full Price (Kenya) · Avg Price (Kenya) · FP % · Status · Recommended Action. Dropped the redundant `Last Sale` column.
+
+#### 3. Formula reveal on every calculated cell
+Added `FormulaCell` helper + per-row `fmt.*` builders. Every calculated field renders with a dotted-underline hover affordance; native `title` attribute shows a multi-line breakdown with row values substituted, mirroring the WoC example leadership shared. Coverage: Reorders, Revenue Since Launch, Revenue (6m), Units Since Launch, Units (6m), SOR Lifetime, SOR (6m), WoC, Age, Full Price, Avg Price, FP %. Example WoC tooltip: `Weeks of Cover = Stock ÷ (Sold in 30d ÷ 4.3 weeks) = 9,459 ÷ (3,614 ÷ 4.3) = 9,459 ÷ 843.3 units/week = 11.2 weeks → Healthy`.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Same style_number → single row (catalog rename dedup)
 
 **Issue**: User shared a Range Mgmt screenshot showing two rows with the same `style_number` (V0223139), same launch date, same age, but different names — "Vivo Basic Izzy Satin Bishop Sleeve T…" (Retired, 152 units) and "Vivo Izzy Satin Bishop Sleeve Top" (Tier 2 + MANUAL, 1,034 units). Upstream catalog rename caused `/top-skus` to echo BOTH names, doubling counts in every downstream surface.

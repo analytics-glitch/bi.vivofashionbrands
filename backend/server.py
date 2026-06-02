@@ -4684,10 +4684,21 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         first_price_ke: Dict[str, Tuple[str, float]] = {}  # sn → (first_date, unit_price_kes)
         for cdf, cdt in chunks:
             try:
+                # Iter 91q — Upstream /orders defaults to a 1,000-row
+                # cap when `limit` is omitted. A typical 2022-2024 week
+                # carries 3-4k order lines, so the silent truncation
+                # caused historical first-sale dates to land on the
+                # exact day the cap kicked in (whichever 1k rows the
+                # API happened to return), missing the true earliest
+                # sale. Explicit limit=10000 fetches the full week.
                 r = await fetch(
                     "/orders",
-                    {"date_from": cdf.isoformat(), "date_to": cdt.isoformat()},
-                    timeout_sec=45.0, max_attempts=2,
+                    {
+                        "date_from": cdf.isoformat(),
+                        "date_to": cdt.isoformat(),
+                        "limit": 10000,
+                    },
+                    timeout_sec=60.0, max_attempts=2,
                 )
                 if not isinstance(r, list):
                     state["chunks_skipped"] += 1
@@ -12190,15 +12201,22 @@ async def analytics_sor_all_styles(
         # historically-observed first sale. The persisted value is
         # AUTHORITATIVE because Mongo retains MIN(first_sale_iso) over
         # all runs — so it can only ever EARLIER-shift, never later.
-        # Iter 91s — Prefer the by-style_number record (canonical) over
-        # the legacy by-style_name record. style_number is stable
-        # across re-issues; style_name can be re-used.
+        # Iter 91s/91q — Use the EARLIEST of by-style_number and
+        # by-style_name persisted records. style_number is the canonical
+        # identifier when stable, but when a SKU was renamed historically
+        # (e.g. `0920119` → `Z0920119`), the by-number lookup only sees
+        # post-rename sales while the by-name lookup retains the full
+        # history. min() across both fields recovers the true first-sale.
         _sn_for_lookup = extract_style_number(sku_for_style.get(s, ""))
-        persisted_first = None
+        _cands_persisted: List[str] = []
         if _sn_for_lookup:
-            persisted_first = persisted_launch_by_number.get(_sn_for_lookup)
-        if not persisted_first:
-            persisted_first = persisted_launch.get(s)
+            _d1 = persisted_launch_by_number.get(_sn_for_lookup)
+            if _d1:
+                _cands_persisted.append(_d1)
+        _d2 = persisted_launch.get(s)
+        if _d2:
+            _cands_persisted.append(_d2)
+        persisted_first = min(_cands_persisted) if _cands_persisted else None
         if persisted_first:
             if launch_date_iso is None or persisted_first < launch_date_iso:
                 launch_date_iso = persisted_first
