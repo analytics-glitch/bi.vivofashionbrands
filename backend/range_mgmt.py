@@ -290,7 +290,13 @@ def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None)
             retired_sor_w += float(sor) * u
             retired_sor_ws += u
 
-    total = sum(counts[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    total = sum(counts[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"))
+    # Iter 91v+ — Active rollup includes the auto-classifier "Retire"
+    # tier (= styles flagged for retirement but still physically
+    # active). They're in `data.rows` and surface in the Total drill
+    # modal, so we must count them here for card↔modal parity.
+    # Physically-retired styles (style_status=="retired" upstream)
+    # are kept separate in the Retired card.
     share_denom = total + retired_count
 
     def _pct(n: int) -> float:
@@ -316,12 +322,14 @@ def summarise(classified: List[dict], retired_rows: Optional[List[dict]] = None)
         "units_lifetime": retired_units,
         "sor_lifetime_pct": _wavg(retired_sor_w, retired_sor_ws),
     }
-    # Aggregate rollups
+    # Aggregate rollups — Active spans every classified row (Tier 1-4
+    # plus auto-flagged "Retire") so the count matches what the user
+    # sees when they open the Active drill modal (= `data.rows`).
     active_count = total
-    active_revenue = sum(revenue[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
-    active_units = sum(units[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
-    active_sor_w = sum(sor_weighted[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
-    active_sor_ws = sum(sor_weight_sum[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"))
+    active_revenue = sum(revenue[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"))
+    active_units = sum(units[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"))
+    active_sor_w = sum(sor_weighted[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"))
+    active_sor_ws = sum(sor_weight_sum[t] for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"))
     tier_summary["Active"] = {
         "count": active_count,
         "pct_styles": _pct(active_count),
