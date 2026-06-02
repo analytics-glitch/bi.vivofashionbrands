@@ -5,6 +5,16 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Same style_number → single row (catalog rename dedup)
+
+**Issue**: User shared a Range Mgmt screenshot showing two rows with the same `style_number` (V0223139), same launch date, same age, but different names — "Vivo Basic Izzy Satin Bishop Sleeve T…" (Retired, 152 units) and "Vivo Izzy Satin Bishop Sleeve Top" (Tier 2 + MANUAL, 1,034 units). Upstream catalog rename caused `/top-skus` to echo BOTH names, doubling counts in every downstream surface.
+
+**Fix**: Added `_merge_rows_by_style_number(rows)` post-processor in `analytics_sor_all_styles` (server.py). Groups rows by canonical `style_number`, picks the variant with the highest `units_since_launch` as the canonical name, sums quantity/monetary fields across all variants, recomputes rates (SOR, ASP, FP%, WoC) from the merged sums, takes earliest launch_date and most-recent last_sale. Rows without a style_number pass through unchanged.
+
+**Verified live** (preview, Kenya scope, 1,290 styles): V0223139 now appears as a single Tier 1 row — name "Vivo Izzy Satin Bishop Sleeve Top", units_since_launch 1,068, stock 70, sor_since_launch 93.85 %. Full catalog audit shows **zero duplicate style_numbers** in both `/analytics/sor-all-styles` and `/range-mgmt/classify` outputs. Fix benefits every consumer of the SOR endpoint — Top Performers, IBT engine, SOR Report, Range Mgmt — not just the Range Management page.
+
+
+
 ### Recent (Feb 2026 — Iter 91s) — Launch-date by style_number · Tier table 9 new columns · WoC always trailing-30d
 
 Three leadership requests bundled together (Jun 2026):

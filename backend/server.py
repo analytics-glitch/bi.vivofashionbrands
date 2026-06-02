@@ -11825,6 +11825,100 @@ async def _hydrate_launch_dates_from_mongo(
         return {}
 
 
+def _merge_rows_by_style_number(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse multiple rows that share the same `style_number` into
+    one canonical row. Triggered by upstream catalog renames where the
+    same SKU prefix carries two `style_name`s in /top-skus.
+
+    Canonical name = the variant carrying the most `units_since_launch`
+    (= the currently-active label). All count / sum fields aggregate;
+    rates (SOR, ASP, FP%, WoC) get recomputed from the merged sums so
+    a 152-unit retired variant and a 1,034-unit live variant of the
+    same V… SKU appear as one row with 1,186 units lifetime.
+
+    Rows without a style_number pass through unchanged (no merge key).
+    """
+    if not rows:
+        return rows
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    passthrough: List[Dict[str, Any]] = []
+    for r in rows:
+        sn = (r.get("style_number") or "").strip()
+        if not sn:
+            passthrough.append(r)
+            continue
+        groups.setdefault(sn, []).append(r)
+
+    merged: List[Dict[str, Any]] = []
+    for sn, group in groups.items():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        # Canonical = max units_since_launch, tie-break on style_name.
+        canonical = max(
+            group,
+            key=lambda r: (int(r.get("units_since_launch") or 0), r.get("style_name") or ""),
+        )
+        m = dict(canonical)  # start from canonical so identity fields stick.
+        # Sum quantity / monetary fields across every variant.
+        for f in (
+            "units_6m", "units_3w", "units_since_launch",
+            "soh_total", "soh_wh", "soh_store",
+            "sales_6m", "sales_since_launch",
+            "weekly_avg",
+        ):
+            m[f] = sum(float(r.get(f) or 0) for r in group)
+        # Integer fields stay integers.
+        for f in ("units_6m", "units_3w", "units_since_launch"):
+            m[f] = int(m[f])
+        # Earliest launch date / first sale wins (long-tail observation).
+        lds = [r.get("launch_date") for r in group if r.get("launch_date")]
+        if lds:
+            m["launch_date"] = min(lds)
+        # Most-recent activity wins (smallest days_since_last_sale).
+        dsls = [r.get("days_since_last_sale") for r in group if r.get("days_since_last_sale") is not None]
+        if dsls:
+            m["days_since_last_sale"] = min(dsls)
+        # Style age — use the largest observation (a renamed style
+        # might still be the same physical SKU; the older age is real).
+        ages = [r.get("style_age_weeks") for r in group if r.get("style_age_weeks") is not None]
+        if ages:
+            m["style_age_weeks"] = max(ages)
+        # Original price — already keyed by style_number upstream; keep
+        # the canonical value but fall back to any sibling that has one.
+        if not m.get("original_price"):
+            for r in group:
+                if r.get("original_price"):
+                    m["original_price"] = r["original_price"]
+                    break
+        # Recompute derived rates from the summed buckets.
+        units_6m = float(m.get("units_6m") or 0)
+        sales_6m = float(m.get("sales_6m") or 0)
+        units_lt = float(m.get("units_since_launch") or 0)
+        sales_lt = float(m.get("sales_since_launch") or 0)
+        soh_total = float(m.get("soh_total") or 0)
+        soh_wh = float(m.get("soh_wh") or 0)
+        m["pct_in_wh"] = round((soh_wh / soh_total * 100.0), 1) if soh_total > 0 else 0.0
+        m["asp_6m"] = round((sales_6m / units_6m), 2) if units_6m > 0 else 0.0
+        m["avg_price_since_launch"] = round((sales_lt / units_lt), 2) if units_lt > 0 else 0.0
+        denom_6m = units_6m + soh_total
+        m["sor_6m"] = round((units_6m / denom_6m * 100.0), 2) if denom_6m > 0 else 0.0
+        denom_lt = units_lt + soh_total
+        m["sor_since_launch"] = round((units_lt / denom_lt * 100.0), 2) if denom_lt > 0 else 0.0
+        weekly_avg = float(m.get("weekly_avg") or 0)
+        m["weekly_avg"] = round(weekly_avg, 2)
+        m["woc"] = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
+        # Round monetary sums to 2dp.
+        m["sales_6m"] = round(float(m.get("sales_6m") or 0), 2)
+        m["sales_since_launch"] = round(float(m.get("sales_since_launch") or 0), 2)
+        m["soh_total"] = round(soh_total, 2)
+        m["soh_wh"] = round(soh_wh, 2)
+        m["soh_store"] = round(float(m.get("soh_store") or 0), 2)
+        merged.append(m)
+    return merged + passthrough
+
+
+
 @api_router.get("/analytics/sor-all-styles")
 async def analytics_sor_all_styles(
     country: Optional[str] = None,
@@ -12181,6 +12275,19 @@ async def analytics_sor_all_styles(
             "woc": round(woc, 1) if woc is not None else None,
             "style_age_weeks": round(age_weeks, 1),
         })
+    # Iter 91q — Merge rows that share a style_number. When a style is
+    # renamed in the source catalog (e.g. "Vivo Basic Izzy Satin..." →
+    # "Vivo Izzy Satin Bishop Sleeve Top"), the upstream /top-skus
+    # echoes BOTH names so we end up with two rows for the same
+    # physical SKU prefix. That double-counts everything and surfaces
+    # the same launch_date / style_number twice in Range Mgmt.
+    #
+    # Canonical name = the variant with the most units_since_launch
+    # (= the currently-active name). Numeric fields sum across all
+    # variants; rates (SOR, ASP, FP%) get recomputed from the sums.
+    # style_age_weeks / launch_date / original_price are keyed by
+    # style_number upstream so they agree across variants.
+    out = _merge_rows_by_style_number(out)
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _all_styles_cache[cache_key] = (_time.time(), out)
     evict_oldest(_all_styles_cache, max_entries=_ALL_STYLES_CACHE_MAX)
