@@ -1910,6 +1910,15 @@ async def _refresh_one_snapshot(
     logged but never overwrite a previously-good snapshot — that
     guarantee is what makes the snapshot layer a strict UX improvement
     over reading upstream live.
+
+    Iter 91r — Hardened against the 2 Jun 2026 incident in which the
+    May 2026 snapshot was overwritten with a partial 9.66M response
+    (true value ~102M; ~90% drop). The previous guard only fired for
+    *empty* responses or *recent* windows. We now also refuse to
+    overwrite if the new value would represent a > 50% drop vs the
+    existing snapshot on a *sealed past window* (window end ≤
+    yesterday) — that combination is almost certainly an upstream
+    ingestion lag, never a real business event.
     """
     try:
         data = await _get_kpis_live(
@@ -1921,6 +1930,34 @@ async def _refresh_one_snapshot(
             # during an upstream batch-lag window.
             return False
         snap_id = _snapshot_id(df, dt, country, channel)
+        # Iter 91r — regression guard: sealed past windows should not
+        # swing > 50 % downward between snapshots. Real refunds /
+        # adjustments tail off within ~7 days of a window closing, so
+        # any deeper drop means upstream returned partial data.
+        try:
+            prev = await db[_SNAPSHOT_COLL].find_one(
+                {"_id": snap_id},
+                {"_id": 0, "data.total_sales": 1},
+            )
+            if prev and prev.get("data"):
+                prev_sales = float(prev["data"].get("total_sales") or 0)
+                new_sales = float((data or {}).get("total_sales") or 0)
+                window_end = datetime.strptime(dt, "%Y-%m-%d").date()
+                today_utc = datetime.now(timezone.utc).date()
+                sealed = window_end < today_utc  # window ended before today
+                # Only guard on sealed windows. Today's MTD legitimately
+                # drops near midnight when new days roll in.
+                if sealed and prev_sales > 1_000_000 and new_sales < (prev_sales * 0.5):
+                    logger.error(
+                        "[snapshots] BLOCKED corrupting overwrite for %s: "
+                        "prev=%.0f new=%.0f (-%.1f%%). Sealed window — "
+                        "treating new value as upstream lag, keeping prior snapshot.",
+                        snap_id, prev_sales, new_sales,
+                        (prev_sales - new_sales) / prev_sales * 100,
+                    )
+                    return False
+        except Exception as _e:
+            logger.warning("[snapshots] regression-guard check failed for %s: %s", snap_id, _e)
         doc = {
             "_id": snap_id,
             "date_from": df,
@@ -2793,6 +2830,47 @@ async def _derive_kpis_no_country(
     return agg
 
 
+async def _chunked_window_fetch(
+    date_from: str, date_to: str,
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    chunk_days: int = 7,
+) -> Optional[Dict[str, Any]]:
+    """Iter 91r — Workaround for upstream Vivo BI's monthly-window
+    truncation bug. Fetch a window in `chunk_days`-sized slices and
+    aggregate to a single KPI dict. Used by `_get_kpis_live` as a
+    self-healing retry when a sealed-window response looks truncated
+    vs the stale cache. Idempotent — safe to call directly from
+    heal scripts too.
+    """
+    try:
+        df_d = datetime.strptime(date_from, "%Y-%m-%d").date()
+        dt_d = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    chunks: List[Tuple[str, str]] = []
+    cur = df_d
+    while cur <= dt_d:
+        end = min(cur + timedelta(days=chunk_days - 1), dt_d)
+        chunks.append((cur.isoformat(), end.isoformat()))
+        cur = end + timedelta(days=1)
+    parts: List[Dict[str, Any]] = []
+    for cdf, cdt in chunks:
+        try:
+            r = await fetch(
+                "/kpis",
+                {"date_from": cdf, "date_to": cdt, "country": country, "channel": channel},
+                timeout_sec=15.0, max_attempts=2,
+            )
+            if isinstance(r, dict):
+                parts.append(r)
+        except Exception:
+            continue
+    if not parts:
+        return None
+    return agg_kpis(parts)
+
+
 async def _get_kpis_live(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -2885,6 +2963,48 @@ async def _get_kpis_live(
             results = await asyncio.gather(*tasks)
             data = agg_kpis(results)
         data = {**data, "stale": False}
+        # SEALED-WINDOW TRUNCATION GUARD (Iter 91r — 2 Jun 2026):
+        # Upstream Vivo BI was observed returning ~10 % of the true
+        # total for the exact 2026-05-01..2026-05-31 window while
+        # returning correct totals for any weekly slice within it.
+        # When we detect a sealed past window (date_to < today) AND
+        # the response significantly disagrees with the stale-cached
+        # value, retry once with weekly chunking and use the chunked
+        # sum if it's substantially higher.
+        try:
+            if date_from and date_to:
+                _today_utc = datetime.now(timezone.utc).date()
+                _df_d = datetime.strptime(date_from, "%Y-%m-%d").date()
+                _dt_d = datetime.strptime(date_to, "%Y-%m-%d").date()
+                _is_sealed = _dt_d < _today_utc
+                _span = (_dt_d - _df_d).days + 1
+                _cached_prev = _kpi_stale_cache.get(cache_key)
+                _prev_sales = float(_cached_prev[1].get("total_sales") or 0) if _cached_prev else 0.0
+                _new_sales = float((data or {}).get("total_sales") or 0)
+                _looks_truncated = (
+                    _is_sealed and _span >= 14
+                    and _prev_sales > 1_000_000
+                    and _new_sales < (_prev_sales * 0.5)
+                )
+                if _looks_truncated:
+                    logger.warning(
+                        "[kpis] sealed window %s..%s appears truncated "
+                        "(new=%.0f vs prev=%.0f). Retrying via weekly chunks…",
+                        date_from, date_to, _new_sales, _prev_sales,
+                    )
+                    chunked = await _chunked_window_fetch(
+                        date_from, date_to, country=country, channel=channel,
+                    )
+                    if chunked and float(chunked.get("total_sales") or 0) > _new_sales * 1.5:
+                        logger.warning(
+                            "[kpis] chunked rebuild succeeded: total_sales=%.0f "
+                            "(orig=%.0f, +%.0fx)",
+                            float(chunked["total_sales"]), _new_sales,
+                            (float(chunked["total_sales"]) / _new_sales) if _new_sales else 0,
+                        )
+                        data = {**chunked, "stale": False, "source": "chunked-rebuild"}
+        except Exception as _e:
+            logger.warning(f"[kpis] sealed-window guard exception: {_e}")
         # UPSTREAM-NULL FALLBACK (May 2026): when Vivo BI's /kpis batch
         # hasn't materialised today's transactions yet, upstream returns
         # all-null fields even though /orders has the raw rows. In that

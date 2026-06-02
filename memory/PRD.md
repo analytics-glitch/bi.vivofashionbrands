@@ -5,6 +5,30 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### Recent (Feb 2026 — Iter 91r) — May 2026 snapshot corruption: heal + 3-layer defence
+
+**Incident**: User reported "May 2026 showing 9.6M sales, should be 102M" — the dashboard's monthly view was showing ~10 % of the true total.
+
+**Root cause**: A previously-good May 2026 KPI snapshot (~102M) was overwritten on 2 Jun 2026 05:45 UTC with a corrupted partial response (9.66M). Forensic finding: **upstream Vivo BI's `/kpis` endpoint returns truncated data when queried for the exact `2026-05-01..2026-05-31` window** — but returns the correct data for every weekly slice within it. The snapshotter trusted upstream and overwrote a known-good snapshot.
+
+**Why the existing guards didn't fire**:
+- `_kpis_response_is_empty` check missed it (9.66M isn't "empty", it's truncated)
+- `_window_is_recent` check missed it (May 2026 is a sealed past window, not "recent")
+
+**3-layer fix (Iter 91r)**
+
+1. **Immediate heal** (`/app/backend/scripts/heal_may_2026_snapshot.py`): Re-fetched May 2026 in 5 weekly chunks and wrote a clean aggregate snapshot. **Verified**: All-countries = **KES 101,581,535** (was 9.66M). Per-country: Kenya 84.34M, Uganda 6.93M, Rwanda 4.45M, Online 5.87M.
+2. **Snapshotter regression guard** (`_refresh_one_snapshot`): On a sealed past window (`date_to < today`) with an existing snapshot `> 1M KES`, refuse to overwrite if the new value is `< 50%` of prior. Logs the blocked overwrite as ERROR for ops visibility.
+3. **Live-path self-healing** (`_get_kpis_live` + new `_chunked_window_fetch` helper): When the upstream live response for a sealed window with span `≥ 14 days` is `< 50%` of the stale-cached value, automatically retry via 7-day chunks. If the chunked sum is `≥ 1.5×` the single-window result, use the chunked rebuild (logged as `source: chunked-rebuild`). This makes the system self-heal on the very next request if upstream truncates again.
+
+**Verified post-fix**:
+- May 2026 = KES 101,581,535 ✓
+- YTD = KES 452,037,880 (exec parity Δ=0)
+- IBT late-count = 227 (Iter 91q regression intact)
+- Apr 2026 = KES 93,167,255 (no false-positive on healthy window)
+
+**Tell the user**: Refresh the dashboard in your browser (the 5-min frontend cache will pick up the corrected snapshot). After clicking **Deploy**, run `/app/backend/tests/verify_production_91p.py` to confirm production is healthy.
+
 ### Recent (Feb 2026 — Iter 91q) — Audit batch 3: ISS-018 + ISS-019 + production-verify script
 
 #### ✅ Fixed in this iter
