@@ -4510,6 +4510,102 @@ async def admin_flush_kpi_cache(_: User = Depends(require_admin)):
     }
 
 
+@api_router.post("/admin/heal-kpi-snapshot")
+async def admin_heal_kpi_snapshot(
+    date_from: str,
+    date_to: str,
+    _: User = Depends(require_admin),
+):
+    """Iter 91r — Manually heal a corrupted KPI snapshot by re-fetching
+    via 7-day chunks and writing the aggregated correct value.
+
+    Use case: upstream Vivo BI was observed to return truncated data
+    for specific monthly windows (notably 2026-05-01..2026-05-31 on
+    2 Jun 2026, returning 9.66M vs the true ~102M). The snapshotter
+    captured the bad value before the regression guard was deployed.
+    This endpoint lets an admin force-overwrite the existing snapshot
+    with a chunked-rebuild — bypassing the regression guard since the
+    admin is explicitly asserting the chunked value is canonical.
+
+    Heals ALL countries (None / Kenya / Uganda / Rwanda / Online) for
+    the given window in one shot. Returns the per-country before/after
+    so the admin can verify the heal worked.
+
+    Curl example (production):
+        curl -X POST 'https://bi.vivofashionbrands.com/api/admin/heal-kpi-snapshot' \\
+             -H 'Authorization: Bearer <token>' \\
+             -H 'Content-Type: application/json' \\
+             -d '{"date_from":"2026-05-01","date_to":"2026-05-31"}'
+    """
+    countries = [None, "Kenya", "Uganda", "Rwanda", "Online"]
+    results = []
+    for c in countries:
+        # Read current (possibly corrupted) snapshot for visibility.
+        snap_id = _snapshot_id(date_from, date_to, c, None)
+        prev_doc = await db[_SNAPSHOT_COLL].find_one(
+            {"_id": snap_id},
+            {"_id": 0, "data.total_sales": 1, "data.total_orders": 1, "data.total_units": 1},
+        )
+        prev_sales = float((prev_doc or {}).get("data", {}).get("total_sales") or 0)
+        # Chunked rebuild via weekly slices.
+        rebuilt = await _chunked_window_fetch(
+            date_from, date_to, country=c, channel=None, chunk_days=7,
+        )
+        if not rebuilt or float(rebuilt.get("total_sales") or 0) <= 0:
+            results.append({
+                "country": c or "ALL",
+                "status": "skipped",
+                "reason": "chunked rebuild returned empty/null",
+                "prev_total_sales": prev_sales,
+            })
+            continue
+        new_sales = float(rebuilt.get("total_sales") or 0)
+        # Force-overwrite (bypasses the regression guard intentionally —
+        # admin assertion).
+        doc = {
+            "_id": snap_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "country": c,
+            "channel": None,
+            "data": rebuilt,
+            "snapshot_at": datetime.now(timezone.utc),
+        }
+        await db[_SNAPSHOT_COLL].replace_one({"_id": snap_id}, doc, upsert=True)
+        results.append({
+            "country": c or "ALL",
+            "status": "healed",
+            "prev_total_sales": prev_sales,
+            "new_total_sales": new_sales,
+            "delta_pct": ((new_sales - prev_sales) / prev_sales * 100) if prev_sales else None,
+            "new_orders": int(rebuilt.get("total_orders") or 0),
+            "new_units": int(rebuilt.get("total_units") or 0),
+        })
+    # Also bust the stale-cache + Redis entries for the window so the
+    # very next /kpis request reads the healed snapshot.
+    busted = 0
+    for k in list(_kpi_stale_cache.keys()):
+        # Cache keys are 5-tuples (endpoint, date_from, date_to, country, channel).
+        # Defensive: skip non-tuple / short-tuple keys (older formats).
+        if isinstance(k, tuple) and len(k) >= 3 and k[1] == date_from and k[2] == date_to:
+            _kpi_stale_cache.pop(k, None)
+            busted += 1
+    _FETCH_CACHE.clear()
+    logger.warning(
+        "[heal-kpi-snapshot] admin healed %s..%s — %d countries processed, %d stale-cache entries busted",
+        date_from, date_to, len(results), busted,
+    )
+    return {
+        "ok": True,
+        "window": {"date_from": date_from, "date_to": date_to},
+        "results": results,
+        "stale_cache_entries_busted": busted,
+    }
+
+
+
+
+
 @api_router.get("/admin/cache-stats")
 async def admin_cache_stats():
     """Live observability for the multi-tier cache layer added across
