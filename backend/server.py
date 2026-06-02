@@ -4634,6 +4634,165 @@ async def admin_heal_kpi_snapshot(
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Iter 91t — One-shot historical sweep of style launch dates
+# ──────────────────────────────────────────────────────────────────────
+_LAUNCH_HEAL_STATE: Dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "years_back": None,
+    "chunks_total": 0,
+    "chunks_done": 0,
+    "chunks_skipped": 0,
+    "style_numbers_observed": 0,
+    "earliest_dates_sample": [],
+    "last_error": None,
+}
+
+
+async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
+    """Background worker: fan-out historical /orders in fixed chunks
+    and persist MIN(first_sale_iso) per style_name + style_number.
+
+    Idempotent — `_persist_style_launch_dates*` use Mongo `$min` so
+    running this multiple times can only EARLIER-shift dates, never
+    backwards. Safe to run while production traffic is hitting the
+    page; the persist writes are bulk + un-ordered.
+    """
+    state = _LAUNCH_HEAL_STATE
+    try:
+        from datetime import date as _date
+        today = _date.today()
+        df_start = today - timedelta(days=365 * int(max(1, years_back)))
+        chunks: List[Tuple[_date, _date]] = []
+        cur = df_start
+        while cur <= today:
+            end = min(cur + timedelta(days=int(chunk_days) - 1), today)
+            chunks.append((cur, end))
+            cur = end + timedelta(days=1)
+        state["chunks_total"] = len(chunks)
+        state["chunks_done"] = 0
+        state["chunks_skipped"] = 0
+        by_style_name: Dict[str, Tuple[str, str]] = {}
+        by_style_number: Dict[str, Tuple[str, str]] = {}
+        for cdf, cdt in chunks:
+            try:
+                r = await fetch(
+                    "/orders",
+                    {"date_from": cdf.isoformat(), "date_to": cdt.isoformat()},
+                    timeout_sec=45.0, max_attempts=2,
+                )
+                if not isinstance(r, list):
+                    state["chunks_skipped"] += 1
+                    continue
+                for row in r:
+                    style = row.get("style_name")
+                    sku = row.get("sku") or ""
+                    # Upstream /orders uses `order_date` (YYYY-MM-DD)
+                    # for the per-line-item sale date. `created_at` and
+                    # `date` are kept as defensive fallbacks for any
+                    # callers wired before the upstream rename.
+                    created_raw = (
+                        row.get("order_date")
+                        or row.get("created_at")
+                        or row.get("date")
+                        or ""
+                    )
+                    created = str(created_raw)[:10]
+                    if not (style and created and len(created) == 10):
+                        continue
+                    if style in by_style_name:
+                        cf, cl = by_style_name[style]
+                        by_style_name[style] = (min(cf, created), max(cl, created))
+                    else:
+                        by_style_name[style] = (created, created)
+                    sn = extract_style_number(sku)
+                    if sn:
+                        if sn in by_style_number:
+                            cf, cl = by_style_number[sn]
+                            by_style_number[sn] = (min(cf, created), max(cl, created))
+                        else:
+                            by_style_number[sn] = (created, created)
+                state["chunks_done"] += 1
+                state["style_numbers_observed"] = len(by_style_number)
+                # Stream progress: every 6 chunks persist & update the
+                # snapshot sample so the admin polling can see motion.
+                if state["chunks_done"] % 6 == 0:
+                    await _persist_style_launch_dates(by_style_name)
+                    await _persist_style_launch_dates_by_number(by_style_number)
+                    state["earliest_dates_sample"] = sorted(
+                        set(v[0] for v in by_style_number.values())
+                    )[:8]
+            except Exception as e:
+                state["last_error"] = f"{cdf}..{cdt}: {e}"
+                state["chunks_skipped"] += 1
+                continue
+        # Final persist + snapshot sample.
+        await _persist_style_launch_dates(by_style_name)
+        await _persist_style_launch_dates_by_number(by_style_number)
+        state["earliest_dates_sample"] = sorted(
+            set(v[0] for v in by_style_number.values())
+        )[:8]
+        state["style_numbers_observed"] = len(by_style_number)
+    except Exception as e:
+        state["last_error"] = f"top-level: {e}"
+        logger.exception("[heal-launch-dates] worker crashed: %s", e)
+    finally:
+        state["running"] = False
+        state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+@api_router.post("/admin/heal-launch-dates")
+async def admin_heal_launch_dates(
+    years_back: int = 5,
+    chunk_days: int = 7,
+    _: User = Depends(require_admin),
+):
+    """Iter 91t — One-shot historical sweep to populate
+    `style_launch_dates_by_number` (and `style_launch_dates`) with
+    pre-180-day-window data.
+
+    Background task: launches once, then poll
+    `GET /api/admin/heal-launch-dates/status` for progress. Idempotent —
+    Mongo `$min` ensures earliest-only updates, so re-running just
+    widens history further back. Re-runs while a previous one is
+    running are no-ops (returns the in-progress state).
+
+    Use case: leadership saw the earliest launch date as 2025-12-15,
+    but several styles first sold in 2022-2024. The default 180-day
+    live fan-out can't see anything earlier, so this sweep is the only
+    way to backfill those launch dates. `years_back=5` × 7-day chunks
+    → ~260 chunks; typically 7-15 minutes wall-clock. 7-day chunking
+    stays safely under upstream's 5,000-row cap (~550 orders/day).
+    """
+    state = _LAUNCH_HEAL_STATE
+    if state["running"]:
+        return {"ok": True, "already_running": True, **state}
+    state.update({
+        "running": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "years_back": int(years_back),
+        "chunks_total": 0, "chunks_done": 0, "chunks_skipped": 0,
+        "style_numbers_observed": 0, "earliest_dates_sample": [],
+        "last_error": None,
+    })
+    # Fire-and-forget; pod stays alive throughout supervisor manages it.
+    asyncio.create_task(_run_launch_date_heal(years_back, chunk_days))
+    return {"ok": True, "started": True, **state}
+
+
+@api_router.get("/admin/heal-launch-dates/status")
+async def admin_heal_launch_dates_status(_: User = Depends(require_admin)):
+    """Poll endpoint for the background launch-date sweep."""
+    s = _LAUNCH_HEAL_STATE
+    progress = (s["chunks_done"] / s["chunks_total"] * 100) if s["chunks_total"] else 0.0
+    return {**s, "progress_pct": round(progress, 1)}
+
+
+
+
 
 
 
