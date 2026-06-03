@@ -4408,6 +4408,12 @@ async def admin_cache_clear():
     # /replenishment-report call recomputes from corrected data.
     repl_cleared = len(_repl_cache)
     _repl_cache.clear()
+    # Iter 91q — also wipe the Range Mgmt / Products endpoint cache so
+    # the user sees the new BQ data immediately after admin "Refresh".
+    try:
+        _all_styles_cache.clear()
+    except Exception:
+        pass
     # Iter 87 Phase A — also wipe the Mongo-persisted inventory
     # snapshot so the next read goes upstream. Admin "Refresh" is the
     # right moment to invalidate (the user clicked it because they
@@ -4681,7 +4687,14 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         # canonical definition of Full Price (vs the upstream MSRP
         # which can lag promotions). Stored alongside the launch date
         # so Range Mgmt can render Full Price directly.
+        # Iter 91u — First Kenya sale price per style_number.
         first_price_ke: Dict[str, Tuple[str, float]] = {}  # sn → (first_date, unit_price_kes)
+        # Iter 91q — Mirror tracker keyed by style_name. SKU prefixes
+        # are sometimes renamed historically (e.g. `0920119` → `Z0920119`),
+        # so a by-name observation can be older than the canonical
+        # by-number record. We persist both and pick the earlier at
+        # read time.
+        first_price_ke_by_name: Dict[str, Tuple[str, float]] = {}
         for cdf, cdt in chunks:
             try:
                 # Iter 91q — Upstream /orders defaults to a 1,000-row
@@ -4725,41 +4738,38 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
                     else:
                         by_style_name[style] = (created, created)
                     sn = extract_style_number(sku)
+                    # Iter 91q — Resolve the Kenya first-sale unit
+                    # price ONCE per row, then record it against both
+                    # the style_number AND style_name trackers. Pulled
+                    # out of the by_number conditional so we still
+                    # harvest a by-name price even for rows whose SKU
+                    # is non-conforming (no style_number extracted).
+                    ctry = (row.get("country") or "").strip()
+                    if ctry == "Kenya":
+                        sk = (row.get("sale_kind") or "order").lower()
+                        try:
+                            qty = float(row.get("quantity") or 0)
+                        except (TypeError, ValueError):
+                            qty = 0
+                        if sk != "return" and qty > 0:
+                            try:
+                                up = float(row.get("unit_price_kes") or 0)
+                            except (TypeError, ValueError):
+                                up = 0
+                            if up > 0:
+                                if sn:
+                                    cur = first_price_ke.get(sn)
+                                    if cur is None or created < cur[0]:
+                                        first_price_ke[sn] = (created, up)
+                                cur_n = first_price_ke_by_name.get(style)
+                                if cur_n is None or created < cur_n[0]:
+                                    first_price_ke_by_name[style] = (created, up)
                     if sn:
                         if sn in by_style_number:
                             cf, cl = by_style_number[sn]
                             by_style_number[sn] = (min(cf, created), max(cl, created))
                         else:
                             by_style_number[sn] = (created, created)
-                        # First Kenya sale price — strictly the FIRST
-                        # transaction in Kenya for this style_number.
-                        # Skip when country isn't Kenya or unit_price
-                        # is missing. Use $min on the date to ensure
-                        # we keep the earliest observation's price.
-                        ctry = (row.get("country") or "").strip()
-                        if ctry == "Kenya":
-                            # Use only positive-quantity sale lines —
-                            # excludes returns (which carry the same
-                            # unit_price but a negative quantity). The
-                            # upstream `sale_kind` is "order" for sale
-                            # lines and "return" for refunds; we filter
-                            # on quantity too for defence in depth.
-                            sk = (row.get("sale_kind") or "order").lower()
-                            try:
-                                qty = float(row.get("quantity") or 0)
-                            except (TypeError, ValueError):
-                                qty = 0
-                            if sk == "return" or qty <= 0:
-                                pass
-                            else:
-                                try:
-                                    up = float(row.get("unit_price_kes") or 0)
-                                except (TypeError, ValueError):
-                                    up = 0
-                                if up > 0:
-                                    cur = first_price_ke.get(sn)
-                                    if cur is None or created < cur[0]:
-                                        first_price_ke[sn] = (created, up)
                 state["chunks_done"] += 1
                 state["style_numbers_observed"] = len(by_style_number)
                 # Stream progress: every 6 chunks persist & update the
@@ -4768,6 +4778,7 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
                     await _persist_style_launch_dates(by_style_name)
                     await _persist_style_launch_dates_by_number(by_style_number)
                     await _persist_first_sale_price_ke(first_price_ke)
+                    await _persist_first_sale_price_ke_by_name(first_price_ke_by_name)
                     state["earliest_dates_sample"] = sorted(
                         set(v[0] for v in by_style_number.values())
                     )[:8]
@@ -4779,10 +4790,11 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         await _persist_style_launch_dates(by_style_name)
         await _persist_style_launch_dates_by_number(by_style_number)
         logger.info(
-            "[heal-launch-dates] final persist: %d by_name, %d by_number, %d first-price-KE",
-            len(by_style_name), len(by_style_number), len(first_price_ke),
+            "[heal-launch-dates] final persist: %d by_name, %d by_number, %d first-price-KE (by_number), %d first-price-KE (by_name)",
+            len(by_style_name), len(by_style_number), len(first_price_ke), len(first_price_ke_by_name),
         )
         await _persist_first_sale_price_ke(first_price_ke)
+        await _persist_first_sale_price_ke_by_name(first_price_ke_by_name)
         state["earliest_dates_sample"] = sorted(
             set(v[0] for v in by_style_number.values())
         )[:8]
@@ -11756,13 +11768,60 @@ async def _persist_first_sale_price_ke(
         logger.warning("[first-sale-price] persist failed: %s", e)
 
 
+async def _persist_first_sale_price_ke_by_name(
+    observed: Dict[str, Tuple[str, float]],
+) -> None:
+    """Iter 91q — Mirror of `_persist_first_sale_price_ke` keyed by
+    style_name. Needed because SKU prefixes occasionally get renamed
+    historically (e.g. `0920119` → `Z0920119`), so the by-number record
+    only ever sees post-rename sales; the by-name record retains the
+    full lineage. We persist both and the caller picks the earlier
+    observation. Earliest-wins atomic update — `upsert=True` because a
+    by-name doc must exist for the price record to attach to."""
+    if not observed:
+        return
+    try:
+        from pymongo import UpdateOne
+        ops = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for sname, (when, price) in observed.items():
+            if not sname or not when or price <= 0:
+                continue
+            ops.append(UpdateOne(
+                {
+                    "style_name": sname,
+                    "$or": [
+                        {"first_price_observed_at": {"$exists": False}},
+                        {"first_price_observed_at": {"$gt": when}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "first_sale_price_kes": price,
+                        "first_price_observed_at": when,
+                    },
+                    "$setOnInsert": {"created_at": now_iso},
+                },
+                upsert=True,
+            ))
+        if ops:
+            await db.style_launch_dates.bulk_write(ops, ordered=False)
+            logger.info(
+                "[first-sale-price] persisted %d style_names with first Kenya price",
+                len(ops),
+            )
+    except Exception as e:
+        logger.warning("[first-sale-price] by-name persist failed: %s", e)
+
+
 async def _hydrate_first_sale_prices_by_number(
     style_numbers: List[str],
-) -> Dict[str, float]:
-    """Iter 91u — Return `{style_number: first_sale_price_kes}` for
-    persisted entries. Used by sor-all-styles to override the
-    upstream-MSRP `original_price` with the historically-observed
-    first Kenya sale price."""
+) -> Dict[str, Tuple[str, float]]:
+    """Iter 91u/91q — Return `{style_number: (observed_at, price_kes)}`
+    for persisted entries. The date is part of the tuple so callers
+    that ALSO hydrate by-name can pick the older of the two
+    observations (handles historical SKU-prefix renames).
+    """
     if not style_numbers:
         return {}
     try:
@@ -11771,17 +11830,47 @@ async def _hydrate_first_sale_prices_by_number(
                 "style_number": {"$in": style_numbers},
                 "first_sale_price_kes": {"$gt": 0},
             },
-            {"_id": 0, "style_number": 1, "first_sale_price_kes": 1},
+            {"_id": 0, "style_number": 1, "first_sale_price_kes": 1, "first_price_observed_at": 1},
         )
-        out: Dict[str, float] = {}
+        out: Dict[str, Tuple[str, float]] = {}
         async for doc in cursor:
             sn = doc.get("style_number")
             p = doc.get("first_sale_price_kes")
+            at = doc.get("first_price_observed_at") or ""
             if sn and p:
-                out[sn] = float(p)
+                out[sn] = (at, float(p))
         return out
     except Exception as e:
         logger.warning("[first-sale-price] hydrate failed: %s", e)
+        return {}
+
+
+async def _hydrate_first_sale_prices_by_name(
+    style_names: List[str],
+) -> Dict[str, Tuple[str, float]]:
+    """Iter 91q — By-name parallel to `_hydrate_first_sale_prices_by_number`.
+    Together they let the caller pick the earlier-dated observation
+    even when a style's SKU prefix changed historically."""
+    if not style_names:
+        return {}
+    try:
+        cursor = db.style_launch_dates.find(
+            {
+                "style_name": {"$in": style_names},
+                "first_sale_price_kes": {"$gt": 0},
+            },
+            {"_id": 0, "style_name": 1, "first_sale_price_kes": 1, "first_price_observed_at": 1},
+        )
+        out: Dict[str, Tuple[str, float]] = {}
+        async for doc in cursor:
+            sn = doc.get("style_name")
+            p = doc.get("first_sale_price_kes")
+            at = doc.get("first_price_observed_at") or ""
+            if sn and p:
+                out[sn] = (at, float(p))
+        return out
+    except Exception as e:
+        logger.warning("[first-sale-price] by-name hydrate failed: %s", e)
         return {}
 
 
@@ -12114,14 +12203,30 @@ async def analytics_sor_all_styles(
     persisted_launch_by_number: Dict[str, str] = await _hydrate_launch_dates_by_number(
         _style_numbers_for_hydrate
     )
-    # Iter 91u — Also hydrate the first Kenya sale price (canonical
-    # "Full Price" per leadership pref). Falls back to upstream
-    # `original_price` (MSRP) when no Kenya first-sale observation
-    # exists yet (rare — once the historical sweep has run, every
-    # style with any Kenya history gets a value).
-    persisted_first_price: Dict[str, float] = await _hydrate_first_sale_prices_by_number(
+    # Iter 91u/91q — Hydrate the first Kenya sale price (canonical
+    # "Full Price" per leadership pref). Pull BOTH by-number and
+    # by-name observations; at row build time pick the earlier-dated
+    # one to handle historical SKU-prefix renames (e.g. `0920119` →
+    # `Z0920119` — the by-name record retains the older observation).
+    persisted_first_price_by_number: Dict[str, Tuple[str, float]] = await _hydrate_first_sale_prices_by_number(
         _style_numbers_for_hydrate
     )
+    persisted_first_price_by_name: Dict[str, Tuple[str, float]] = await _hydrate_first_sale_prices_by_name(
+        list(candidates)
+    )
+
+    def _earlier_first_price(sn: str, sname: str) -> float:
+        """Pick the earlier-dated first Kenya sale price across
+        by-number and by-name persisted records. Returns 0 when
+        neither side has a historical observation."""
+        pn = persisted_first_price_by_number.get(sn or "")
+        pna = persisted_first_price_by_name.get(sname or "")
+        cands = [p for p in (pn, pna) if p is not None]
+        if not cands:
+            return 0.0
+        # Earliest observation wins; missing date sorts last.
+        cands.sort(key=lambda p: p[0] or "9999-99-99")
+        return float(cands[0][1])
 
     # First-sale + last-sale dates — pulled from the shared 180-day
     # /orders helper. Styles with first_sale within 180 days get a real
@@ -12267,11 +12372,14 @@ async def analytics_sor_all_styles(
             "soh_store": round(store, 2),
             "pct_in_wh": round(pct_in_wh, 1),
             "asp_6m": round(asp_6m, 2),
-            # Iter 91u — Full Price = first Kenya sale price (per
-            # leadership pref Jun 2026). Falls back to upstream MSRP
-            # for styles missing a historical Kenya observation.
+            # Iter 91u/91q — Full Price = earliest persisted Kenya
+            # first-sale price across by-number AND by-name records.
+            # Whichever observation has the earlier
+            # `first_price_observed_at` wins (handles SKU-prefix
+            # renames). Falls back to upstream MSRP if neither side
+            # has a historical Kenya observation yet.
             "original_price": round(
-                persisted_first_price.get(_sn_for_lookup or "", 0)
+                _earlier_first_price(_sn_for_lookup, s)
                 or style_orig_price.get(s)
                 or (float(sm.get("gross_sales") or 0) / units_6m if units_6m else 0),
                 2,

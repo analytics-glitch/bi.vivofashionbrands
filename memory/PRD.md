@@ -5,6 +5,23 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q-b) — Full Price by-name fallback + cache refresh
+
+**Ask**: After the launch-date by-name fix, also extend "Full Price = first Kenya sale price" with the same MIN-of-(by_number, by_name) logic so SKU-prefix renames don't shadow older price observations.
+
+**Implementation**:
+- New persist helper `_persist_first_sale_price_ke_by_name()` mirrors the by-number price persister into `style_launch_dates`.
+- `_hydrate_first_sale_prices_by_*` now return `(observed_at, price)` tuples so callers can compare dates.
+- `analytics_sor_all_styles` introduces an `_earlier_first_price(sn, sname)` helper that picks the earliest-dated observation across both lookups.
+- Heal worker tracks `first_price_ke_by_name` in parallel and persists it at every checkpoint + at the end.
+- Heal-worker price harvest hoisted OUT of the by-number conditional so it still captures by-name observations on rows with non-conforming SKUs.
+
+**Cache flush**: User updated BigQuery — invoked `POST /admin/cache-clear` (wiped 4 inventory snapshots, 49 analytics snapshots, 21 Redis fetch keys, replenishment cache, fetch cache, and the new `_all_styles_cache`). Re-ran 5-year heal sweep — 7,189 style_numbers + 5,545 style_names persisted.
+
+**Verified live**: `Zoya Fitness Shorts` Full Price now resolves to **200 KES at 2022-11-25** (the absolute earliest observation, even earlier than the 2022-12-31 / 500 KES sale leadership remembered). Note: the 2022-11-25 sale may have been a markdown — current spec is "earliest observation wins"; leadership can revise to "modal/max" if desired.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Range Mgmt UX: formula tooltips, column reorder & 5-year heal sweep fix
 
 **Three asks bundled** (Jun 2026):
