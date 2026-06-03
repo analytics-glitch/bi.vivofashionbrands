@@ -12688,6 +12688,49 @@ async def analytics_sor_all_styles(
     # style_age_weeks / launch_date / original_price are keyed by
     # style_number upstream so they agree across variants.
     out = _merge_rows_by_style_number(out)
+    # Iter 91q — Cross-style_number sync of launch_date & first-sale
+    # price for rows that SHARE the same `style_name`. The merger
+    # above runs first (groups by style_number, picks canonical
+    # variant), but it intentionally leaves rows whose style_numbers
+    # differ as separate entries. When the SAME product name has been
+    # re-issued under a fresh SKU (e.g. "Safari Haya High Low Dress"
+    # → S0124009 in 2024, then re-listed as S0125XXX in 2026), both
+    # rows should display the EARLIER 2024-03-23 launch date so
+    # leadership sees a consistent "this is a 2-year-old design"
+    # signal — not "fresh launch" on the re-issue.
+    #
+    # Earliest-of-name wins per leadership pref Jun 2026. We do the
+    # same for `original_price` (Full Price) since the first sale's
+    # price is the canonical MSRP for the product name.
+    name_min: Dict[str, Tuple[str, float]] = {}
+    for r in out:
+        nm = r.get("style_name")
+        if not nm:
+            continue
+        ld = r.get("launch_date")
+        op = r.get("original_price") or 0.0
+        cur = name_min.get(nm)
+        if cur is None or (ld and (not cur[0] or ld < cur[0])):
+            name_min[nm] = (ld or (cur[0] if cur else None), op if op > 0 else (cur[1] if cur else 0.0))
+    today_local = datetime.now(timezone.utc).date()
+    for r in out:
+        nm = r.get("style_name")
+        if not nm:
+            continue
+        winner = name_min.get(nm)
+        if not winner:
+            continue
+        ld_min, op_min = winner
+        if ld_min and (r.get("launch_date") is None or ld_min < r.get("launch_date")):
+            r["launch_date"] = ld_min
+            try:
+                pf = datetime.fromisoformat(ld_min).date()
+                r["style_age_weeks"] = round(max(0.0, (today_local - pf).days / 7.0), 1)
+            except Exception:
+                pass
+        # Sync Full Price too (earliest observation across the name).
+        if op_min and op_min > 0 and (not r.get("original_price") or op_min < r.get("original_price")):
+            r["original_price"] = op_min
     out.sort(key=lambda r: r["sor_6m"], reverse=True)
     _all_styles_cache[cache_key] = (_time.time(), out)
     evict_oldest(_all_styles_cache, max_entries=_ALL_STYLES_CACHE_MAX)
@@ -15287,6 +15330,35 @@ async def startup():
     # per calendar day, gives executives a morning rollup of the last
     # 24 h of audits (even when everything's green).
     asyncio.create_task(_daily_summary_supervisor())
+    # Iter 91q — Auto-heal trigger. On fresh Mongo (e.g. first deploy
+    # to Production, or a wiped collection), kick off the 5-year
+    # launch-date + first-sale-price sweep so leadership sees correct
+    # ages within ~6 min of boot WITHOUT a manual /admin/heal-* call.
+    # Skipped when the collection already has data — re-runs would
+    # double-fetch upstream needlessly. Returns history backfill
+    # piggy-backs on the same sweep via the daily snapshotter.
+    async def _auto_heal_if_empty() -> None:
+        try:
+            await asyncio.sleep(20)  # let the warm-up complete first
+            n_by_number = await db.style_launch_dates_by_number.count_documents({})
+            if n_by_number > 0:
+                logger.info(
+                    "[auto-heal] style_launch_dates_by_number already has %d docs — skipping",
+                    n_by_number,
+                )
+                return
+            logger.info("[auto-heal] empty collection detected — running 5y launch-date sweep")
+            await _run_launch_date_heal(years_back=5, chunk_days=7)
+            logger.info("[auto-heal] launch-date sweep complete")
+            # Same trigger for returns aggregates — needed for net sales.
+            n_ret = await db[_rets._RETURNS_COLL].count_documents({})
+            if n_ret == 0:
+                logger.info("[auto-heal] returns collection empty — running 5y returns sweep")
+                await _run_returns_heal(years_back=5)
+                logger.info("[auto-heal] returns sweep complete")
+        except Exception as e:
+            logger.warning("[auto-heal] failed: %s", e)
+    asyncio.create_task(_auto_heal_if_empty())
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
     # only populate in-process caches, so we run them as background tasks.

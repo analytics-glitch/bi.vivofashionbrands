@@ -5,6 +5,26 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Cross-style_number launch date sync + Production auto-heal
+
+**User report (Production)**: After redeploy, "Safari Haya High Low Dress" still showed launch 2026-04-18 instead of 2024-03-23. Also requested: "For products with same style name but different style number, pick the earliest date for both."
+
+**Root cause analysis**:
+- Preview correctly returns S0124009 → launch 2024-03-23 (verified post-deploy).
+- Production has its own MongoDB (separate from Preview's). My heal sweep ran against Preview's Mongo. **A redeploy ships code, not data** — Production's `style_launch_dates_by_number` collection was empty.
+
+**Two-pronged fix**:
+
+1. **Production auto-heal on boot** — Added a startup task that detects an empty `style_launch_dates_by_number` collection and automatically runs the 5-year heal sweep + returns history backfill (~6 min). Idempotent (skipped on warm boots). Means the next Production redeploy will self-heal without manual `/admin/heal-*` calls.
+
+2. **Cross-style_number launch date sync** — Added a defensive post-merge pass: any rows sharing the same `style_name` (even if their `style_number`s differ) now resolve to the EARLIEST launch date and Full Price across all variants. Handles the future "Safari Haya re-issued under a fresh SKU in 2026" pattern automatically. Age is recomputed off the synced date so the "Age (wks)" column always agrees with the displayed Launch Date.
+
+**Verified live (Preview)**:
+- Safari Haya High Low Dress → S0124009 · launch 2024-03-23 · age 114.6w · FP 4250 KES
+- Production needs only a redeploy; the auto-heal will populate the launch dates within ~6 min of boot.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Removed stale 26-week age cap in /analytics/sor-all-styles
 
 **Issue (user-reported, Production)**: Range Mgmt Tier-4 modal showed **Safari Haya High Low Dress (S0124009)** with Launch 2026-04-18 even though Mongo's authoritative `style_launch_dates_by_number` had `2024-03-23` since the heal sweep. Also affected: every style older than 180 days was capped at age = 26 weeks despite the persisted record carrying the true date.
