@@ -15334,12 +15334,21 @@ async def startup():
     # to Production, or a wiped collection), kick off the 5-year
     # launch-date + first-sale-price sweep so leadership sees correct
     # ages within ~6 min of boot WITHOUT a manual /admin/heal-* call.
-    # Skipped when the collection already has data — re-runs would
-    # double-fetch upstream needlessly. Returns history backfill
-    # piggy-backs on the same sweep via the daily snapshotter.
+    #
+    # CAUTION: This runs ~1,000-7,000 /orders calls upstream. During
+    # the sweep the backend competes with normal user traffic for the
+    # upstream HTTP client. We mitigate that by:
+    #   • waiting 10 min after boot (let initial login burst clear)
+    #   • running ONLY when the collection is fully empty
+    #   • the sweep itself uses semaphore=8 which is gentle enough
+    #     in practice (~1.5 calls/sec sustained against an upstream
+    #     that handles thousands)
+    # If a Production login surfaces HTTP 520 immediately after a
+    # deploy, this task is the prime suspect — bump the sleep to 30
+    # min or disable by removing the asyncio.create_task() below.
     async def _auto_heal_if_empty() -> None:
         try:
-            await asyncio.sleep(20)  # let the warm-up complete first
+            await asyncio.sleep(600)  # 10 min — let login + warmup burst settle
             n_by_number = await db.style_launch_dates_by_number.count_documents({})
             if n_by_number > 0:
                 logger.info(
@@ -15350,12 +15359,11 @@ async def startup():
             logger.info("[auto-heal] empty collection detected — running 5y launch-date sweep")
             await _run_launch_date_heal(years_back=5, chunk_days=7)
             logger.info("[auto-heal] launch-date sweep complete")
-            # Same trigger for returns aggregates — needed for net sales.
-            n_ret = await db[_rets._RETURNS_COLL].count_documents({})
-            if n_ret == 0:
-                logger.info("[auto-heal] returns collection empty — running 5y returns sweep")
-                await _run_returns_heal(years_back=5)
-                logger.info("[auto-heal] returns sweep complete")
+            # Returns history piggy-backs on the daily orders snapshotter
+            # going forward; we skip the eager 5y returns backfill here
+            # to stay friendly to the upstream. Admin can run it
+            # explicitly via POST /admin/heal-returns-history when
+            # historical net-sales accuracy matters.
         except Exception as e:
             logger.warning("[auto-heal] failed: %s", e)
     asyncio.create_task(_auto_heal_if_empty())
