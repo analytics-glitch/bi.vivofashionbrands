@@ -5,6 +5,26 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Weeks of Cover unification (Exec Summary ↔ Inventory)
+
+**Issue (user-reported, Production)**: ExecSummary Stock Mix "Group cover" pill and Inventory page "Overall Weeks of Cover" KPI showed different numbers despite both claiming chain-wide 30-day formulas.
+
+**Root cause**: Two parallel calculations using DIFFERENT sales denominators:
+- Inventory `/analytics/weeks-of-cover`: `chain_stock / (sales-summary_units_30d / 4.333)`
+- ExecSummary `_stock_mix_block.total_weeks_of_cover`: `total_stock / (subcategory-sales_units_30d / 4.333)`
+
+`/subcategory-sales` drops rows where `subcategory IS NULL` upstream, so its total was systematically lower than `/sales-summary`, inflating WoC.
+
+**Fix**: `_stock_mix_block` now delegates the chain-wide WoC to `analytics_weeks_of_cover()` (same fn the Inventory KPI uses). Stock scope hard-coded to `combined` (warehouse + stores) so the denominator matches Stock Mix's stock numerator. Falls back to the legacy in-block calc only on exception so the widget never blanks.
+
+**Verified live (Preview)**:
+- All countries: both surfaces return **12.40 weeks · 71,490 stock units · 24,972 units sold 30d**.
+- Kenya scope: both return **13.11 weeks · 62,065 stock units** (country filter passes through).
+
+**Production note**: User reported on Production (bi.vivofashionbrands.com). Fix is in Preview only — needs redeploy.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — NET sales/qty across every product-axis breakdown
 
 **Ask**: Every visual/table/analysis with category, subcategory, or any product attribute breakdown must display NET (Total Sales = Gross − Refunds, Qty Sold = Units − Returned Units). Fully replace gross. All time windows.

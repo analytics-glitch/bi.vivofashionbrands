@@ -4090,10 +4090,30 @@ async def exec_summary_endpoint(
         # Sort by absolute gap descending so the biggest mismatches
         # surface at the top of the list.
         rows.sort(key=lambda r: abs(r["gap_pct"]), reverse=True)
-        # Group-wide weeks of cover — also uses the 30-day denominator
-        # per the same Iter 91s leadership pref.
-        total_sold_30d = sum(cat_sold_30d.values())
-        total_woc = _weeks_of_cover(total_stock, total_sold_30d) if total_stock > 1 and total_sold_30d > 0 else None
+        # Iter 91q — Chain-wide WoC unification. Earlier this block
+        # computed `total_woc` from /subcategory-sales units; the
+        # Inventory page's "Overall Weeks of Cover" KPI uses
+        # /analytics/weeks-of-cover (chain-wide /sales-summary units).
+        # The two sources don't reconcile exactly because
+        # /subcategory-sales drops rows where subcategory is null.
+        # Per leadership pref Jun 2026 both surfaces must show the
+        # SAME number, so we delegate to the canonical Inventory
+        # endpoint here too. Stock scope = combined (warehouse +
+        # stores) to match the Stock Mix denominator.
+        total_woc: Optional[float] = None
+        try:
+            woc_payload = await analytics_weeks_of_cover(
+                country=country, channel=None, locations=None,
+                stock_scope="combined",
+            )
+            sm = (woc_payload or {}).get("_summary") or {}
+            total_woc = sm.get("weeks_of_cover")
+        except Exception as e:
+            logger.warning("[stock-mix] canonical WoC delegate failed: %s", e)
+            # Fall back to the legacy in-block calculation so the
+            # widget still renders something rather than blank.
+            total_sold_30d_fb = sum(cat_sold_30d.values())
+            total_woc = _weeks_of_cover(total_stock, total_sold_30d_fb) if total_stock > 1 and total_sold_30d_fb > 0 else None
         return {
             "total_stock_units": total_stock if total_stock > 1 else 0,
             "total_stock_units_warehouse": total_stock_wh,
