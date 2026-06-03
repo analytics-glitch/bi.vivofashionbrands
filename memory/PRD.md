@@ -5,6 +5,37 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — NET sales/qty across every product-axis breakdown
+
+**Ask**: Every visual/table/analysis with category, subcategory, or any product attribute breakdown must display NET (Total Sales = Gross − Refunds, Qty Sold = Units − Returned Units). Fully replace gross. All time windows.
+
+**Architecture**: New module `returns_aggregator.py` + Mongo collection `returns_daily_by_product` (keyed by `date + country`, with arrays for by-style, by-style_number, by-subcategory, by-brand, by-category buckets). 
+
+- **Request path** reads ONLY from Mongo — no upstream calls on the hot path. Each endpoint fetches the merged returns agg for the requested window/country and subtracts in-place. Floored at zero (never negative after netting).
+- **Historical backfill** via `POST /admin/heal-returns-history?years_back=5` — 7,304 day-country tuples in ~6 min, 39,593 returns observed.
+- **Daily refresh** is now piggy-backed on the existing `orders_daily_snapshots` builder — every nightly orders fetch also writes the returns aggregate for that (day, country). Zero extra upstream cost.
+
+**Wired into**:
+- `GET /api/top-skus` (snapshot AND live paths)
+- `GET /api/subcategory-sales` (single-country AND multi-country fan-out)
+- `GET /api/analytics/sor-all-styles` (Range Mgmt; nets every window — 6m, 3w, lifetime, 30d, 3m)
+- `GET /api/analytics/sor-new-styles-l10`
+- `GET /api/sor`
+- Range Mgmt classifier reads through `/sor-all-styles` so it inherits the fix transitively.
+
+**Verified live** (post 5y heal, all caches flushed):
+- *Vivo Basic Double Layered Wrap Poncho* May 2026 Kenya: 660 units / KES 3.663M (gross) → **646 units / KES 3.596M (net)** — 14 units / KES 67K refunded.
+- *Subcategory* Knee Length Dresses May 2026: 3,022 units (gross) → **2,959 units (net)** — 63 returns netted.
+- `/analytics/sor-all-styles` returns 1,285 net rows in 45s; no 502 timeouts on lifetime windows (read-only Mongo path).
+
+**Admin endpoints added**:
+- `POST /api/admin/heal-returns-history?years_back=N`
+- `GET /api/admin/heal-returns-history/status`
+
+**Cache refresh**: User updated BigQuery — invoked `/admin/cache-clear` (4 inventory snapshots · 44 analytics snapshots · 21 Redis fetch keys · all-styles cache · fetch cache).
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q-b) — Full Price by-name fallback + cache refresh
 
 **Ask**: After the launch-date by-name fix, also extend "Full Price = first Kenya sale price" with the same MIN-of-(by_number, by_name) logic so SKU-prefix renames don't shadow older price observations.

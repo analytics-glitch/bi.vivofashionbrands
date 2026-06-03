@@ -1983,6 +1983,63 @@ from orders_aggregates import (  # noqa: E402
     _enum_days as _agg_enum_days,
 )
 
+# Iter 91q — Returns net-out aggregator. Wraps /top-skus and
+# /subcategory-sales so every product-axis breakdown displays NET
+# (gross − refunds, units − returned units) per leadership pref Jun
+# 2026.
+import returns_aggregator as _rets  # noqa: E402
+
+
+async def _orders_for_day_country(d: str, c: str) -> List[Dict[str, Any]]:
+    """Bridge for returns_aggregator — fetches /orders for one day +
+    one country with the limit=10000 cap. Returns only the rows
+    flagged `sale_kind='return'` aren't filtered here (the aggregator
+    does that); but we still pull the whole day so the upstream cache
+    layer can serve future calls instantly."""
+    return await fetch(
+        "/orders",
+        {"date_from": d, "date_to": d, "country": c, "limit": 10000},
+        timeout_sec=45.0, max_attempts=2,
+    ) or []
+
+
+async def _net_returns(
+    rows: List[Dict[str, Any]],
+    *,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    country: Optional[str],
+    channel: Optional[str],
+    axis: str,
+) -> List[Dict[str, Any]]:
+    """Drop-in netting wrapper. `axis` ∈ {"style", "subcategory"}.
+    No-ops when date_from/date_to is missing or rows empty."""
+    if not rows or not (date_from and date_to):
+        return rows
+    try:
+        agg = await _rets.get_returns_breakdown(
+            db,
+            date_from=date_from, date_to=date_to,
+            country=country, channel=channel,
+            fetch_orders_for_day=_orders_for_day_country,
+            extract_style_number=extract_style_number,
+            category_of=category_of,
+        )
+        if axis == "style":
+            _rets.net_top_skus_rows(
+                rows,
+                returns_by_style=agg.get("by_style") or {},
+                returns_by_style_number=agg.get("by_style_number") or {},
+                extract_style_number=extract_style_number,
+            )
+        elif axis == "subcategory":
+            _rets.net_subcategory_rows(
+                rows, returns_by_subcategory=agg.get("by_subcategory") or {},
+            )
+    except Exception as e:
+        logger.warning("[returns-net] %s axis netting failed: %s", axis, e)
+    return rows
+
 # How many recent days we re-write per sweep. Today + last 2 days
 # covers same-day catch-up (mid-day refunds, late POS uploads) without
 # re-scanning historical days that are already frozen.
@@ -2047,6 +2104,23 @@ async def _refresh_orders_daily_aggregates(target_days: List[str]) -> Dict[str, 
                     day, c, e,
                 )
                 failed += 1
+            # Iter 91q — Same /orders fan-out also feeds the returns
+            # aggregate. Free piggy-back; per-tuple cost is one
+            # additional Mongo write (~5 ms).
+            try:
+                ret_agg = _rets._aggregate_returns_from_orders(
+                    rows,
+                    extract_style_number=extract_style_number,
+                    category_of=category_of,
+                )
+                ret_doc = _rets._agg_to_doc(day, c, ret_agg)
+                await db[_rets._RETURNS_COLL].replace_one(
+                    {"date": day, "country": c}, ret_doc, upsert=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[returns-aggregates] %s c=%s — %s", day, c, e,
+                )
     return {"written": written, "failed": failed}
 
 
@@ -3170,10 +3244,25 @@ async def get_top_skus(
             "/top-skus", date_from, date_to, country, channel,
         )
         if snap is not None:
+            # Iter 91q — Net returns even on snapshot path so the
+            # cached gross numbers don't leak into the FE. List is
+            # mutated in place by the netter.
+            snap = list(snap)
+            await _net_returns(
+                snap, date_from=date_from, date_to=date_to,
+                country=country, channel=channel, axis="style",
+            )
             return filter_rows(annotate_status(snap, field="style_name"), style_status, field="style_name")
     rows = await _get_top_skus_live(
         date_from=date_from, date_to=date_to,
         country=country, channel=channel, brand=brand, limit=limit,
+    )
+    # Iter 91q — Net returns on the live path. Done AFTER limit-capping
+    # so the small returns delta doesn't change which styles appear in
+    # the top-N (returns rarely flip a top-style's rank).
+    await _net_returns(
+        rows or [], date_from=date_from, date_to=date_to,
+        country=country, channel=channel, axis="style",
     )
     return filter_rows(annotate_status(rows or [], field="style_name"), style_status, field="style_name")
 
@@ -3197,6 +3286,13 @@ async def _get_top_skus_live(
             **base, "country": cfc, "channel": chs[0] if chs else None,
         })
         data = sorted(data or [], key=lambda r: r.get("total_sales") or 0, reverse=True)
+        # Iter 91q — Net returns before capping to `limit` so top-N
+        # reflects net performance.
+        await _net_returns(
+            data, date_from=date_from, date_to=date_to,
+            country=country, channel=channel, axis="style",
+        )
+        data.sort(key=lambda r: r.get("total_sales") or 0, reverse=True)
         return data[:limit]
     # Multi-country / multi-channel fan-out — merge per-(country, channel) payloads.
     results = await asyncio.gather(*[
@@ -3221,6 +3317,11 @@ async def _get_top_skus_live(
                 merged[sku]["total_sales"] = (merged[sku].get("total_sales") or 0) + (row.get("total_sales") or 0)
                 merged[sku]["gross_sales"] = (merged[sku].get("gross_sales") or 0) + (row.get("gross_sales") or 0)
     rows = list(merged.values())
+    # Iter 91q — Net returns BEFORE recomputing avg_price + sort.
+    await _net_returns(
+        rows, date_from=date_from, date_to=date_to,
+        country=country, channel=channel, axis="style",
+    )
     for r in rows:
         units = r.get("units_sold") or 0
         r["avg_price"] = (r.get("total_sales") or 0) / units if units else 0
@@ -4852,6 +4953,119 @@ async def admin_heal_launch_dates_status(_: User = Depends(require_admin)):
     """Poll endpoint for the background launch-date sweep."""
     s = _LAUNCH_HEAL_STATE
     progress = (s["chunks_done"] / s["chunks_total"] * 100) if s["chunks_total"] else 0.0
+    return {**s, "progress_pct": round(progress, 1)}
+
+
+# ── Iter 91q — Returns history backfill ─────────────────────────────
+_RETURNS_HEAL_STATE: Dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "years_back": None,
+    "tuples_total": 0,
+    "tuples_done": 0,
+    "tuples_skipped": 0,
+    "returns_observed": 0,
+    "last_error": None,
+}
+
+
+async def _run_returns_heal(years_back: int) -> None:
+    """Background worker: walk every (day, country) tuple in the
+    requested window, extract returns from /orders, persist into
+    `returns_daily_by_product`. Idempotent — each (day, country) doc
+    is overwritten atomically.
+
+    Returns are ~1-2% of /orders rows so this is cheap (single 10k-row
+    /orders call per tuple, ~120 ms each). 5y × 4 countries × 365d ≈
+    7,300 tuples; with 8-concurrency that's ~15 min wall-clock.
+    """
+    state = _RETURNS_HEAL_STATE
+    try:
+        from datetime import date as _date
+        today = _date.today()
+        df_start = today - timedelta(days=365 * int(max(1, years_back)))
+        days = []
+        cur = df_start
+        while cur <= today:
+            days.append(cur.isoformat())
+            cur += timedelta(days=1)
+        countries = ["Kenya", "Uganda", "Rwanda", "Online"]
+        tuples = [(d, c) for d in days for c in countries]
+        state["tuples_total"] = len(tuples)
+        state["tuples_done"] = 0
+        state["tuples_skipped"] = 0
+        state["returns_observed"] = 0
+
+        sem = asyncio.Semaphore(8)
+
+        async def _one(d: str, c: str) -> None:
+            async with sem:
+                try:
+                    rows = await fetch(
+                        "/orders",
+                        {"date_from": d, "date_to": d, "country": c, "limit": 10000},
+                        timeout_sec=45.0, max_attempts=2,
+                    )
+                    if not isinstance(rows, list):
+                        state["tuples_skipped"] += 1
+                        return
+                    agg = _rets._aggregate_returns_from_orders(
+                        rows,
+                        extract_style_number=extract_style_number,
+                        category_of=category_of,
+                    )
+                    doc = _rets._agg_to_doc(d, c, agg)
+                    await db[_rets._RETURNS_COLL].replace_one(
+                        {"date": d, "country": c}, doc, upsert=True,
+                    )
+                    state["tuples_done"] += 1
+                    state["returns_observed"] += int(agg["totals"]["units"])
+                except Exception as e:
+                    state["last_error"] = f"{d}/{c}: {e}"
+                    state["tuples_skipped"] += 1
+
+        await asyncio.gather(*[_one(d, c) for d, c in tuples])
+    except Exception as e:
+        state["last_error"] = f"top-level: {e}"
+        logger.exception("[heal-returns] worker crashed: %s", e)
+    finally:
+        state["running"] = False
+        state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+@api_router.post("/admin/heal-returns-history")
+async def admin_heal_returns_history(
+    years_back: int = 1,
+    _: User = Depends(require_admin),
+):
+    """Iter 91q — Backfill the `returns_daily_by_product` collection so
+    every product-axis breakdown (top-skus, subcategory-sales, sor-all-
+    styles, etc.) can display NET sales/qty per leadership pref.
+
+    Idempotent — re-running overwrites each (day, country) doc. Safe
+    to interrupt; partial Mongo state is still usable (we serve
+    whatever's persisted and the request-path netter no-ops for tuples
+    that haven't been backfilled yet)."""
+    state = _RETURNS_HEAL_STATE
+    if state["running"]:
+        return {"ok": True, "already_running": True, **state}
+    state.update({
+        "running": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "years_back": int(years_back),
+        "tuples_total": 0, "tuples_done": 0, "tuples_skipped": 0,
+        "returns_observed": 0, "last_error": None,
+    })
+    asyncio.create_task(_run_returns_heal(years_back))
+    return {"ok": True, "started": True, **state}
+
+
+@api_router.get("/admin/heal-returns-history/status")
+async def admin_heal_returns_history_status(_: User = Depends(require_admin)):
+    s = _RETURNS_HEAL_STATE
+    progress = (s["tuples_done"] / s["tuples_total"] * 100) if s["tuples_total"] else 0.0
     return {**s, "progress_pct": round(progress, 1)}
 
 
@@ -9075,6 +9289,10 @@ async def get_subcategory_sales(
 
     Country must be Title-case for upstream (lowercase silently returns
     zeros) — normalize via `_norm_country` before forwarding.
+
+    Iter 91q — Returns are netted into `units_sold`/`total_sales`/
+    `gross_sales` so the dashboard always displays NET (gross − refunds)
+    per leadership pref Jun 2026.
     """
     base = {"date_from": date_from, "date_to": date_to}
     cs = [_norm_country(c) for c in _split_csv(country)]
@@ -9086,7 +9304,11 @@ async def get_subcategory_sales(
             data = await fetch("/subcategory-sales", {
                 **base, "country": cfc, "channel": chs[0] if chs else None,
             }, timeout_sec=15.0, max_attempts=3)
-            out = data or []
+            out = list(data or [])
+            await _net_returns(
+                out, date_from=date_from, date_to=date_to,
+                country=country, channel=channel, axis="subcategory",
+            )
             _kpi_stale_cache[cache_key] = (time.time(), out)
             asyncio.create_task(_kpi_stale_save_async())
             return out
@@ -9112,6 +9334,12 @@ async def get_subcategory_sales(
                     for f in ("units_sold", "total_sales", "gross_sales", "orders"):
                         merged[key][f] = (merged[key].get(f) or 0) + (r.get(f) or 0)
         out = sorted(merged.values(), key=lambda r: r.get("total_sales") or 0, reverse=True)
+        await _net_returns(
+            out, date_from=date_from, date_to=date_to,
+            country=country, channel=channel, axis="subcategory",
+        )
+        # Re-sort after netting in case returns flipped the order.
+        out.sort(key=lambda r: r.get("total_sales") or 0, reverse=True)
         _kpi_stale_cache[cache_key] = (time.time(), out)
         asyncio.create_task(_kpi_stale_save_async())
         return out
@@ -10949,20 +11177,27 @@ async def analytics_new_styles(
                 "country": cs[0] if cs else None,
                 "channel": chs[0] if chs else None,
             })
-            return data or []
-        results = await multi_fetch("/top-skus", base, cs, chs)
-        merged: Dict[str, Dict[str, Any]] = {}
-        for g in results:
-            for row in g:
-                s = row.get("style_name")
-                if not s:
-                    continue
-                if s not in merged:
-                    merged[s] = {**row}
-                else:
-                    for f in ("units_sold", "total_sales", "gross_sales"):
-                        merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
-        return list(merged.values())
+            rows_out = data or []
+        else:
+            results = await multi_fetch("/top-skus", base, cs, chs)
+            merged: Dict[str, Dict[str, Any]] = {}
+            for g in results:
+                for row in g:
+                    s = row.get("style_name")
+                    if not s:
+                        continue
+                    if s not in merged:
+                        merged[s] = {**row}
+                    else:
+                        for f in ("units_sold", "total_sales", "gross_sales"):
+                            merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
+            rows_out = list(merged.values())
+        # Iter 91q — Net returns into the period.
+        await _net_returns(
+            rows_out, date_from=df, date_to=dt,
+            country=country, channel=channel, axis="style",
+        )
+        return rows_out
 
     async def sor_call(df: Optional[str], dt: Optional[str]) -> List[Dict[str, Any]]:
         """SOR gives style + current_stock + sor_percent (capped at 200 styles)."""
@@ -11173,7 +11408,14 @@ async def analytics_sor_new_styles_l10(
                     if (len(merged[s].get("collection") or "")
                             < len(r.get("collection") or "")):
                         merged[s]["collection"] = r.get("collection")
-        return list(merged.values())
+        rows_merged = list(merged.values())
+        # Iter 91q — Net returns into this window's merged rows so SOR
+        # New L-10 mirrors the rest of the dashboard's NET sales rule.
+        await _net_returns(
+            rows_merged, date_from=df, date_to=dt,
+            country=country, channel=channel, axis="style",
+        )
+        return rows_merged
 
     band_skus, before_band_skus, six_m_skus, three_w_skus, three_m_skus, inventory = await asyncio.gather(
         _topskus(launch_from.isoformat(), launch_to.isoformat()),
@@ -12091,7 +12333,14 @@ async def analytics_sor_all_styles(
                         merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
                     if (len(merged[s].get("collection") or "") < len(r.get("collection") or "")):
                         merged[s]["collection"] = r.get("collection")
-        return list(merged.values())
+        rows_merged = list(merged.values())
+        # Iter 91q — Net returns into the merged top-skus rows so every
+        # downstream window (6m, 30d, lifetime, 3w) is shown NET.
+        await _net_returns(
+            rows_merged, date_from=df, date_to=dt,
+            country=country, channel=channel, axis="style",
+        )
+        return rows_merged
 
     # Lifetime window (3 years) for "since launch" metrics. The launch
     # date is defined as the first date a style sold (per ops). A 3-year
@@ -14168,20 +14417,27 @@ async def analytics_price_changes(
                 "country": cs[0] if cs else None,
                 "channel": chs[0] if chs else None,
             })
-            return data or []
-        results = await multi_fetch("/top-skus", base, cs, chs)
-        merged: Dict[str, Dict[str, Any]] = {}
-        for g in results:
-            for row in g:
-                s = row.get("style_name")
-                if not s:
-                    continue
-                if s not in merged:
-                    merged[s] = {**row}
-                else:
-                    for f in ("units_sold", "total_sales", "gross_sales"):
-                        merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
-        return list(merged.values())
+            rows_out = data or []
+        else:
+            results = await multi_fetch("/top-skus", base, cs, chs)
+            merged: Dict[str, Dict[str, Any]] = {}
+            for g in results:
+                for row in g:
+                    s = row.get("style_name")
+                    if not s:
+                        continue
+                    if s not in merged:
+                        merged[s] = {**row}
+                    else:
+                        for f in ("units_sold", "total_sales", "gross_sales"):
+                            merged[s][f] = (merged[s].get(f) or 0) + (row.get(f) or 0)
+            rows_out = list(merged.values())
+        # Iter 91q — Net returns so ASP / elasticity reflect NET sales.
+        await _net_returns(
+            rows_out, date_from=df_s, date_to=dt_s,
+            country=country, channel=channel, axis="style",
+        )
+        return rows_out
 
     cur_rows, prev_rows = await asyncio.gather(
         styles_for(date_from, date_to),
