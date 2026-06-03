@@ -533,12 +533,12 @@ const RangeManagement = () => {
               className="text-[11px] text-muted mt-2 leading-snug"
               data-testid="range-data-ceiling-note"
             >
-              <strong>Note on age ceiling:</strong> Style age is computed from the persisted
-              first-sale date in <code className="text-[10px]">style_launch_dates</code>, which today
-              spans roughly the last 6 months of trading data. Styles older than that show as ~27w
-              and stay in Tier 3 / Tier 4 until the history grows — Tier 1 (24+ months) and Tier 2
-              (9–24 months) buckets will populate organically over the coming months. Use the
-              graduation panel above to promote ready styles manually in the meantime.
+              <strong>Note on age:</strong> Style age is computed from the persisted first-sale
+              date in <code className="text-[10px]">style_launch_dates_by_number</code> + the by-name
+              fallback collection, which together cover the last 5 years of Kenya trading history
+              (refreshed nightly). Tier assignments now reflect true catalog age — Tier 1 (24+ months
+              core), Tier 2 (9–24 months), Tier 3 (3–9 months under review), Tier 4 (&lt; 3 months
+              new). Use the graduation panel above to promote ready styles manually.
             </p>
           </div>
 

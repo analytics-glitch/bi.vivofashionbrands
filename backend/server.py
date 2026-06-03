@@ -12594,13 +12594,18 @@ async def analytics_sor_all_styles(
         if persisted_first:
             if launch_date_iso is None or persisted_first < launch_date_iso:
                 launch_date_iso = persisted_first
-                # Recompute age from the (possibly earlier) launch date.
+                # Iter 91q — Recompute age from the (possibly earlier)
+                # launch date AND remove the 26-week cap. The persisted
+                # record is authoritative — capping displayed age makes
+                # the column lie ("Zoya Fitness Shorts launched 2022-11-25"
+                # but column says "26 weeks"). Downstream consumers
+                # (range_mgmt.classify_style) already gate tier
+                # promotions on real age; the cap was a defensive
+                # measure from before the heal sweep existed.
                 try:
                     pf = datetime.fromisoformat(persisted_first).date()
                     persisted_age_days = (today - pf).days
-                    # Don't shrink the cap — long-trading styles still
-                    # cap at 26 weeks for column comparability.
-                    age_weeks = min(persisted_age_days / 7.0, 26.0)
+                    age_weeks = max(0.0, persisted_age_days / 7.0)
                 except Exception:
                     pass
         # Iter 91s — Weeks-of-Cover uses **last 30 days** of units

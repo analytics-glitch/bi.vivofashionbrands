@@ -5,6 +5,32 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Removed stale 26-week age cap in /analytics/sor-all-styles
+
+**Issue (user-reported, Production)**: Range Mgmt Tier-4 modal showed **Safari Haya High Low Dress (S0124009)** with Launch 2026-04-18 even though Mongo's authoritative `style_launch_dates_by_number` had `2024-03-23` since the heal sweep. Also affected: every style older than 180 days was capped at age = 26 weeks despite the persisted record carrying the true date.
+
+**Root cause**: Legacy defensive cap inside `analytics_sor_all_styles` from before the heal sweep existed —
+
+```python
+age_weeks = min(persisted_age_days / 7.0, 26.0)   # capped even with authoritative record
+```
+
+The `range-mgmt/classify` consumer re-derives age from `launch_date` in its own classifier (`range_mgmt.classify_style`), which is why the Range Mgmt main page already showed correct ages — but every other consumer (Products page, CSV exports, third-party scripts) saw the capped 26w.
+
+**Fix**: Removed the cap when we have a persisted launch record. `age_weeks = max(0.0, persisted_age_days / 7.0)`. Of 1,483 styles, 1,300 now display their real age (>26 wks); oldest at 260.7 weeks (~5 years). Only 2 styles remain at exactly 26.0w (genuinely ~6-month-old styles).
+
+**Updated**: The on-page footer note that previously claimed "style_launch_dates spans roughly the last 6 months of trading data" — now correctly states "5 years of Kenya trading history".
+
+**Verified live (Preview)**:
+- S0124009 Safari Haya High Low Dress → launch 2024-03-23, age 114.6w, **Tier 1**, 9 reorders
+- Z0920119 Zoya Fitness Shorts → launch 2022-11-25, age 183.7w, **Tier 1**, 15 reorders
+- V0223139 Vivo Izzy Satin Bishop Sleeve Top → launch 2023-01-25, age 175.0w, **Tier 1**, 14 reorders
+- Age distribution: min 0.6w, max 260.7w, median 90.3w (~21 mo)
+
+**Production**: Issue was reported on Production; fix is in Preview only — needs redeploy.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Weeks of Cover unification (Exec Summary ↔ Inventory)
 
 **Issue (user-reported, Production)**: ExecSummary Stock Mix "Group cover" pill and Inventory page "Overall Weeks of Cover" KPI showed different numbers despite both claiming chain-wide 30-day formulas.
