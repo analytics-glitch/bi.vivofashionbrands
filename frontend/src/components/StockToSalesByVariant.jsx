@@ -4,6 +4,7 @@ import { useFilters } from "@/lib/filters";
 import { varianceStyle } from "@/lib/variance";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import DateWindowSelector from "@/components/DateWindowSelector";
 
 /**
  * Stock-to-Sales · by Color and · by Size.
@@ -13,6 +14,10 @@ import SortableTable from "@/components/SortableTable";
  * between attribute lenses without re-learning the layout. Both tables share
  * a single `/analytics/stock-to-sales-by-attribute` fetch (returns
  * `{by_color, by_size}`) so we don't pay the /orders fan-out twice.
+ *
+ * Iter 91q — Own date-window selector (default 30 days) per leadership
+ * pref Jun 2026 so the color/size lens can be analysed against a
+ * different period than the subcategory view above.
  */
 
 const VarianceCellPts = ({ value }) => {
@@ -50,7 +55,20 @@ const buildColumns = (keyLabel, keyField) => [
 
 const StockToSalesByVariant = ({ exportSlug }) => {
   const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
+  const { countries, channels, dataVersion } = applied;
+
+  // Iter 91q — Own date window (default 30 days). Independent of the
+  // subcategory table's window so leadership can compare a 30-day color
+  // mix against a 90-day subcategory view in the same session.
+  const [windowDays, setWindowDays] = useState(30);
+  const { dateFrom, dateTo } = useMemo(() => {
+    const today = new Date();
+    const to = today.toISOString().slice(0, 10);
+    const fromDate = new Date(today);
+    fromDate.setUTCDate(fromDate.getUTCDate() - windowDays + 1);
+    return { dateFrom: fromDate.toISOString().slice(0, 10), dateTo: to };
+  }, [windowDays]);
+
   const [data, setData] = useState({ by_color: [], by_size: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -82,6 +100,21 @@ const StockToSalesByVariant = ({ exportSlug }) => {
 
   const slug = exportSlug || `${dateFrom}_${dateTo}`;
 
+  // Iter 91q — Shared date window header so both tables move together.
+  const headerWindow = (
+    <div className="flex items-center justify-end mb-2 gap-2 flex-wrap">
+      <span className="text-[10.5px] uppercase tracking-wide font-bold text-muted">Window</span>
+      <DateWindowSelector
+        value={windowDays}
+        onChange={(v) => setWindowDays(v)}
+        testId="inv-sts-variant-window"
+      />
+      <span className="text-[10.5px] text-muted tabular-nums">
+        {dateFrom} → {dateTo}
+      </span>
+    </div>
+  );
+
   return (
     <>
       <div className="card-white p-5" data-testid="sts-by-color-table">
@@ -89,6 +122,7 @@ const StockToSalesByVariant = ({ exportSlug }) => {
           title="Stock-to-Sales · by Color"
           subtitle="One row per color/print across all merchandise. Variance = sales share − stock share. Red = action needed (stockout or overstock risk). Green = healthy balance."
         />
+        {headerWindow}
         {loading && <Loading />}
         {error && <ErrorBox message={error} />}
         {!loading && !error && (
@@ -112,6 +146,7 @@ const StockToSalesByVariant = ({ exportSlug }) => {
           title="Stock-to-Sales · by Size"
           subtitle="One row per size across all merchandise. Spot sizes that consistently outsell their stock share (re-order) and sizes that are over-stocked (markdown / IBT)."
         />
+        {headerWindow}
         {loading && <Loading />}
         {error && <ErrorBox message={error} />}
         {!loading && !error && (
