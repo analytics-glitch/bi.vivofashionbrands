@@ -298,6 +298,7 @@ async def list_overrides():
 async def weekly_sor_new_styles(
     country: Optional[str] = None,
     channel: Optional[str] = None,
+    min_combined: int = 50,
     _u: User = Depends(get_current_user),
 ):
     """Cumulative weekly SOR per style aged < 14 weeks.
@@ -307,6 +308,10 @@ async def weekly_sor_new_styles(
 
     Future weeks (i.e. weeks the style hasn't yet lived through) are `null`.
     Drives the "Weekly SOR heatmap" card on Range Mgmt.
+
+    Iter 91q — Styles whose lifetime (units + current stock) is below
+    `min_combined` (default 50) are excluded as statistical noise per
+    leadership pref Jun 2026. Set to 0 to disable the filter.
     """
     import asyncio as _asyncio
     from datetime import date, timedelta
@@ -322,9 +327,14 @@ async def weekly_sor_new_styles(
         if r.get("style_age_weeks") is not None
         and 0 <= float(r["style_age_weeks"]) < 14
         and r.get("launch_date")
+        # Iter 91q — Volume floor (default 50 combined).
+        and (
+            min_combined <= 0
+            or (float(r.get("units_since_launch") or 0) + float(r.get("soh_total") or 0)) >= min_combined
+        )
     ]
     if not young:
-        return {"weeks": list(range(1, 15)), "rows": []}
+        return {"weeks": list(range(1, 15)), "rows": [], "min_combined": min_combined}
 
     # Per-style launch dates.
     style_launches: Dict[str, date] = {}
@@ -417,7 +427,7 @@ async def weekly_sor_new_styles(
             "weekly_sor": weekly_sors,
         })
     out.sort(key=lambda r: (r["age_weeks"], r["style_name"]))
-    return {"weeks": list(range(1, 15)), "rows": out}
+    return {"weeks": list(range(1, 15)), "rows": out, "min_combined": min_combined}
 
 
 # ───── Iter 91q — Marketing Action Tracker ───────────────────────────────
@@ -558,11 +568,17 @@ async def marketing_action_candidates(
     channel: Optional[str] = None,
     sor_threshold: float = 40.0,
     age_min_weeks: float = 4.0,
+    min_combined: int = 50,
     _u: User = Depends(get_current_user),
 ):
     """Styles ≥ `age_min_weeks` old with `sor_since_launch < sor_threshold`.
     Excludes styles that already have an action logged in the last 14
-    days — those are 'in flight' and rendered separately."""
+    days — those are 'in flight' and rendered separately.
+
+    Iter 91q — Low-volume styles (units_since_launch + current_stock <
+    `min_combined`, default 50) are excluded as statistical noise so
+    marketing focuses on styles where the SOR signal is real.
+    """
     await _ensure_ma_indexes()
     payload = await analytics_sor_all_styles(country=country, channel=channel)
     rows = payload if isinstance(payload, list) else (payload or {}).get("rows") or []
@@ -585,6 +601,11 @@ async def marketing_action_candidates(
         if age < age_min_weeks:
             continue
         if sor >= sor_threshold:
+            continue
+        # Iter 91q — Volume floor.
+        units_lt = float(r.get("units_since_launch") or 0)
+        stk = float(r.get("soh_total") or 0)
+        if min_combined > 0 and (units_lt + stk) < min_combined:
             continue
         sn = (r.get("style_number") or "").upper()
         bucket = {

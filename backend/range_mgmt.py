@@ -135,6 +135,43 @@ def classify_style(style: dict) -> dict:
     status: str
     rec: str
 
+    # Iter 91q — Defensive guard: if launch_date is MISSING (e.g.
+    # Production hasn't completed the auto-heal sweep yet), don't
+    # default the style into Tier 4 just because age defaults to 26w.
+    # Use the activity signal instead. Styles with >100 lifetime units
+    # AND age signal absent are almost certainly LONG-trading core
+    # items that haven't fallen into the 180-day recent window — park
+    # them in Tier 2 (Core Performer) until the heal sweep gives us
+    # the real date. Styles with low units AND no launch date AND
+    # zero recent activity = abandoned / one-time SKUs → Retire.
+    units_lt = float(style.get("units_since_launch") or 0)
+    if not _lnch:
+        if units_lt >= 100 and lifetime_sor is not None and lifetime_sor >= 50:
+            tier = "Tier 2"
+            status = STATUS_ON_TRACK
+            rec = "Long-trading style — exact launch date pending heal-sweep"
+            return {
+                **{k: style.get(k) for k in style.keys()},
+                "style_age_weeks": age,
+                "lifetime_sor_pct": lifetime_sor,
+                "soh_total": soh,
+                "full_price_pct": full_price_pct,
+                "reorder_count": reorder_count,
+                "passed_week8": passed_w8,
+                "passed_week12": passed_w12,
+                "tier": tier,
+                "status": status,
+                "recommended_action": rec,
+                "current_stock": soh,
+                "lifetime_sor": lifetime_sor,
+                "last_sale_days": last_sale_days,
+                "sor_6m": style.get("sor_6m"),
+                "units_online": style.get("units_online"),
+                "units_stores": style.get("units_stores"),
+                "soh_stores": style.get("soh_stores"),
+                "soh_warehouse": style.get("soh_warehouse"),
+            }
+
     if age < 8:
         tier = "Tier 4"
         status = STATUS_ON_TRACK if (last_sale_days is not None and last_sale_days <= 14) else STATUS_AT_RISK

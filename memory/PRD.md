@@ -5,6 +5,31 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Weekly SOR search, low-volume exclusion + defensive Tier 4 guard
+
+**Three asks bundled** (Jun 2026):
+
+**1. Style search on Weekly SOR Heatmap**
+Added client-side search input (filters across style name / # / subcategory / brand). Counter pill shows "X / Y styles" while searching. Implemented in `WeeklySORHeatmap.jsx`.
+
+**2. Low-volume exclusion (`min_combined` ≥ 50)**
+Styles whose lifetime `units_since_launch + current_stock < 50` are statistical noise — they pollute both the Weekly SOR heatmap and the Marketing Action Tracker. Default cutoff = 50 across both endpoints; tunable via `?min_combined=N` query param (0 disables).
+- Weekly SOR (Kenya): 88 → **72** rows
+- Marketing candidates (all countries): 64 → **42** rows
+
+**3. Defensive Tier 4 guard (fixes Production discrepancy)**
+User reported Tier 4 = 85 on Production vs 57 on Preview. Root cause: Production's `style_launch_dates_by_number` hasn't completed heal sweep, so 28 long-trading styles default to `age_weeks = 26.0` AND `launch_date = None` → classifier dumps them in Tier 4.
+
+Fix in `range_mgmt.classify_style`: when `launch_date` is None AND the style has ≥100 lifetime units AND lifetime SOR ≥ 50%, classify it as **Tier 2 (Core Performer)** with a `"Long-trading style — exact launch date pending heal-sweep"` status. Once the heal sweep populates the date, the classifier auto-corrects to the real tier on the next run.
+
+**Verified live (Preview)**:
+- Tier distribution: T1=212 · T2=168 · T3=66 · **T4=58** · Retire=419 (matches expected 57±1).
+- Every active row carries a launch_date — no fallback rows polluting Tier 4.
+
+**Production note**: After redeploy, Tier 4 should drop to ~57 even before the heal sweep completes, because the defensive guard parks long-trading styles correctly. The heal sweep (auto-fires 10 min after boot) will then upgrade each "pending heal-sweep" Tier 2 row to its actual tier (T1/T2/T3) based on the real age.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Range Mgmt: channel/stock split columns + Weekly SOR heatmap + Marketing Action Tracker
 
 **Three asks bundled** per Jun 2026 leadership pref:

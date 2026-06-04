@@ -23,6 +23,8 @@ export default function WeeklySORHeatmap({ countries = [], channels = [], refres
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Iter 91q — Client-side search box (style name, style number, subcategory).
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +44,15 @@ export default function WeeklySORHeatmap({ countries = [], channels = [], refres
   if (error) return <div className="card-white p-5 text-[12px] text-rose-700" data-testid="weekly-sor-error">Failed: {String(error)}</div>;
   if (!data) return null;
 
-  const { weeks = [], rows = [] } = data;
+  const { weeks = [], rows = [], min_combined } = data;
+  // Filter by search term across name/number/subcategory.
+  const q = search.trim().toLowerCase();
+  const filteredRows = q
+    ? rows.filter((r) => {
+        const hay = `${r.style_name || ""} ${r.style_number || ""} ${r.subcategory || ""} ${r.brand || ""}`.toLowerCase();
+        return hay.includes(q);
+      })
+    : rows;
 
   if (rows.length === 0) {
     return (
@@ -55,11 +65,14 @@ export default function WeeklySORHeatmap({ countries = [], channels = [], refres
 
   return (
     <div className="card-white p-5" data-testid="weekly-sor-heatmap">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div>
           <h3 className="font-extrabold text-[15px]">Weekly SOR · New Styles (&lt; 14 wks)</h3>
           <p className="text-[11.5px] text-muted mt-0.5">
             Cumulative SOR = units sold through week N ÷ (units + current stock) × 100. Future weeks shown blank.
+            {min_combined != null && (
+              <span className="ml-1 italic">Excluding styles with &lt; {min_combined} combined units (sold + stock).</span>
+            )}
             <span className="ml-2 text-[10px]">
               <span className="px-1.5 py-0.5 rounded bg-emerald-200 text-emerald-900 mr-1">≥70</span>
               <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 mr-1">50–69</span>
@@ -69,7 +82,20 @@ export default function WeeklySORHeatmap({ countries = [], channels = [], refres
             </span>
           </p>
         </div>
-        <span className="text-[11px] text-muted tabular-nums">{fmtNum(rows.length)} styles</span>
+        <div className="flex items-center gap-2">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search style name / # / subcat…"
+            className="text-[11.5px] border rounded px-2 py-1 w-56"
+            data-testid="weekly-sor-search"
+          />
+          <span className="text-[11px] text-muted tabular-nums whitespace-nowrap">
+            {fmtNum(filteredRows.length)}
+            {q && filteredRows.length !== rows.length ? ` / ${fmtNum(rows.length)}` : ""} styles
+          </span>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="text-[11px] border-collapse" data-testid="weekly-sor-table">
@@ -85,7 +111,7 @@ export default function WeeklySORHeatmap({ countries = [], channels = [], refres
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {filteredRows.map((r) => (
               <tr key={r.style_name} className="border-b border-zinc-100">
                 <td className="p-1.5">
                   <div className="font-medium truncate max-w-[200px]" title={r.style_name}>{r.style_name}</div>
