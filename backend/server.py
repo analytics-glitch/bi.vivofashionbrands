@@ -4976,6 +4976,83 @@ async def admin_heal_launch_dates_status(_: User = Depends(require_admin)):
     return {**s, "progress_pct": round(progress, 1)}
 
 
+@api_router.get("/admin/launch-dates-stats")
+async def admin_launch_dates_stats(_: User = Depends(require_admin)):
+    """Iter 91q — Diagnostic endpoint that reports the integrity of
+    `style_launch_dates_by_number` + `style_launch_dates`. Use this
+    to compare Preview vs Production Mongo state and confirm the
+    heal sweep actually populated historical dates.
+
+    Returns:
+      • doc counts in each collection
+      • distribution of `first_sale_iso` by year
+      • the 5 earliest + 5 latest dated docs
+      • sample of NULL-launch_date styles (i.e. names that never matched)
+
+    Compare these numbers between Preview and Production. If
+    Production reports few/zero docs in 2022-2024, the heal didn't
+    finish or is hitting a different upstream snapshot.
+    """
+    from collections import Counter
+    by_number_total = await db.style_launch_dates_by_number.count_documents({})
+    by_name_total = await db.style_launch_dates.count_documents({})
+
+    # Year distribution from by_number.
+    year_dist: Counter = Counter()
+    earliest_samples: List[Dict[str, Any]] = []
+    latest_samples: List[Dict[str, Any]] = []
+    cursor = db.style_launch_dates_by_number.find(
+        {}, {"_id": 0, "style_number": 1, "first_sale_iso": 1, "first_sale_price_kes": 1},
+    )
+    all_docs: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        all_docs.append(doc)
+        iso = (doc.get("first_sale_iso") or "")[:4]
+        if iso:
+            year_dist[iso] += 1
+    all_docs.sort(key=lambda d: d.get("first_sale_iso") or "9999")
+    earliest_samples = all_docs[:5]
+    latest_samples = all_docs[-5:]
+
+    # By-name year distribution too.
+    by_name_year: Counter = Counter()
+    async for doc in db.style_launch_dates.find(
+        {}, {"_id": 0, "first_sale_iso": 1},
+    ):
+        iso = (doc.get("first_sale_iso") or "")[:4]
+        if iso:
+            by_name_year[iso] += 1
+
+    # Returns history doc count.
+    try:
+        returns_total = await db[_rets._RETURNS_COLL].count_documents({})
+    except Exception:
+        returns_total = None
+
+    return {
+        "by_number": {
+            "total_docs": by_number_total,
+            "year_distribution": dict(sorted(year_dist.items())),
+            "earliest_5": earliest_samples,
+            "latest_5": latest_samples,
+        },
+        "by_name": {
+            "total_docs": by_name_total,
+            "year_distribution": dict(sorted(by_name_year.items())),
+        },
+        "returns_daily_by_product": {"total_docs": returns_total},
+        "heal_state": {
+            **_LAUNCH_HEAL_STATE,
+            "progress_pct": round(
+                (_LAUNCH_HEAL_STATE["chunks_done"] / _LAUNCH_HEAL_STATE["chunks_total"] * 100)
+                if _LAUNCH_HEAL_STATE["chunks_total"] else 0.0,
+                1,
+            ),
+        },
+    }
+
+
+
 # ── Iter 91q — Returns history backfill ─────────────────────────────
 _RETURNS_HEAL_STATE: Dict[str, Any] = {
     "running": False,

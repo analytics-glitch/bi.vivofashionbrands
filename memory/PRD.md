@@ -5,6 +5,28 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Diagnostic endpoint to compare Preview ↔ Production Mongo state
+
+**Issue (user-reported, Production)**: After manual heal sweep + cache clear, Production STILL shows different Tier counts (T1=34, T2=278, T3=298, T4=84) vs Preview (T1=212, T2=168, T3=66, T4=58). Retired matches (431 = 431) so the catalog is same — only the AGE-based tier calc diverges.
+
+**Root cause hypothesis**: Production's `style_launch_dates_by_number` Mongo collection isn't populated with the historical (2021-2024) records, so most styles get classified as "young" → land in T2 / T3 instead of T1.
+
+**Fix**: Added `GET /api/admin/launch-dates-stats` — diagnostic endpoint that reports:
+- Doc counts in `style_launch_dates_by_number` + `style_launch_dates`
+- `first_sale_iso` year distribution (2021 / 2022 / 2023 / ... )
+- 5 earliest + 5 latest dated docs
+- `returns_daily_by_product` doc count
+
+**Preview baseline** (verified healthy):
+- by_number: 7,191 docs, distributed 2021: 2,424 · 2022: 1,095 · 2023: 934 · 2024: 1,294 · 2025: 1,191 · 2026: 253
+- by_name: 5,545 docs, similar distribution
+- earliest 5 dated 2021-06-04
+- returns_daily_by_product: 7,308 docs
+
+User can now redeploy + hit this endpoint on Production to compare. If Production shows few/zero 2021-2024 docs, the heal isn't actually persisting and we need to investigate why (potentially a separate Mongo instance or write permission issue).
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Weekly SOR search, low-volume exclusion + defensive Tier 4 guard
 
 **Three asks bundled** (Jun 2026):
