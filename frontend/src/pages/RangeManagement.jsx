@@ -4,6 +4,8 @@ import { useFilters } from "@/lib/filters";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
+import WeeklySORHeatmap from "@/components/range-mgmt/WeeklySORHeatmap";
+import MarketingActionTracker from "@/components/range-mgmt/MarketingActionTracker";
 import {
   Stack,
   MagnifyingGlass,
@@ -808,6 +810,25 @@ const RangeManagement = () => {
                       <FormulaCell title={fmt.sor6m(r)}>{`${r.sor_6m.toFixed(1)}%`}</FormulaCell>
                     ) },
                   { key: "current_stock", label: "SoH", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                  // Iter 91q — Channel-split stock + units columns added
+                  // per Jun 2026 leadership ask. Each one wraps a
+                  // FormulaCell so hover reveals the source.
+                  { key: "soh_stores", label: "Stock in Stores", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={`Stock in Stores = Σ available units across non-warehouse locations\n= ${fmtNum(r.soh_stores)} units`}>{fmtNum(r.soh_stores)}</FormulaCell>
+                    ) },
+                  { key: "soh_warehouse", label: "Stock in Warehouse", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={`Stock in Warehouse = Σ available units across warehouse / holding / staging locations\n= ${fmtNum(r.soh_warehouse)} units`}>{fmtNum(r.soh_warehouse)}</FormulaCell>
+                    ) },
+                  { key: "units_online", label: "Units Sold Online", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={`Units Sold Online (lifetime) = Σ units sold through the Online channel\n= ${fmtNum(r.units_online)} units`}>{fmtNum(r.units_online)}</FormulaCell>
+                    ) },
+                  { key: "units_stores", label: "Units Sold Stores", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={`Units Sold Stores (lifetime) = Σ units sold through Retail (in-store) channels\n= ${fmtNum(r.units_stores)} units`}>{fmtNum(r.units_stores)}</FormulaCell>
+                    ) },
                   {
                     key: "woc", label: "WoC", numeric: true,
                     render: (r) => (
@@ -903,6 +924,9 @@ const RangeManagement = () => {
             )}
           </div>
 
+          {/* Iter 91q — Weekly SOR heatmap for new styles (< 14 wks) */}
+          <WeeklySORHeatmap countries={countries} channels={channels} refreshToken={refreshToken} />
+
           {/* Section 4 — Retirement pipeline */}
           <div className="card-white p-5" data-testid="range-retirement-pipeline">
             <SectionTitle
@@ -953,6 +977,9 @@ const RangeManagement = () => {
               />
             )}
           </div>
+
+          {/* Iter 91q — Marketing Action Tracker (4w+ post-launch, SOR < 40%) */}
+          <MarketingActionTracker countries={countries} channels={channels} refreshToken={refreshToken} />
         </>
       )}
       {/* Iter 91u — Tier drill-down modal */}
@@ -1084,6 +1111,17 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                   render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%` },
                 { key: "current_stock", label: "Stock", numeric: true,
                   render: (r) => fmtNum(r.current_stock) },
+                // Iter 91q — channel-split columns also surface in the
+                // tier drill-down modal so leadership can act on
+                // sub-segments (e.g. retire heavy-warehouse styles).
+                { key: "soh_stores", label: "Stock Stores", numeric: true,
+                  render: (r) => fmtNum(r.soh_stores) },
+                { key: "soh_warehouse", label: "Stock Warehouse", numeric: true,
+                  render: (r) => fmtNum(r.soh_warehouse) },
+                { key: "units_online", label: "Units Online", numeric: true,
+                  render: (r) => fmtNum(r.units_online) },
+                { key: "units_stores", label: "Units Stores", numeric: true,
+                  render: (r) => fmtNum(r.units_stores) },
                 { key: "last_sale_days", label: "Last Sale", numeric: true,
                   render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d` },
               ]}

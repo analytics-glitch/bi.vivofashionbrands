@@ -5,6 +5,46 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Range Mgmt: channel/stock split columns + Weekly SOR heatmap + Marketing Action Tracker
+
+**Three asks bundled** per Jun 2026 leadership pref:
+
+**1. Four new columns on every Range Mgmt table (main + modal):**
+- `Units Sold Online` (lifetime)
+- `Units Sold Stores` (lifetime — Retail channels: Kenya + Uganda + Rwanda)
+- `Stock in Stores` (current on-hand at non-warehouse locations)
+- `Stock in Warehouse` (current on-hand at warehouse/staging)
+
+Source: 2 parallel /top-skus fetches in `analytics_sor_all_styles` — one with `country=Online`, one with the page-set Retail countries. Returns deliberately NOT netted on the splits (the consolidated lifetime column carries the netted value). All 4 fields propagate through `_merge_rows_by_style_number` and into `range_mgmt.classify_style`'s output.
+
+**2. Weekly SOR Heatmap (`/api/range-mgmt/weekly-sor`)**
+- Cumulative SOR per style aged < 14 weeks, columns Week 1…Week 14.
+- Heat-graded green→amber→rose cells (≥70 green; <20 rose).
+- 14 parallel /top-skus calls per scope (one per week-ending date) → cumulative units snapshot → SOR = units / (units + current stock).
+- Future weeks render blank — clear "this style is N weeks young" signal.
+- 93 young styles surface in the default scope.
+
+**3. Marketing Action Tracker**
+Backend: New Mongo collection `marketing_actions`. Three endpoints:
+- `GET /api/range-mgmt/marketing-candidates` — styles ≥ 4w post-launch with `sor_since_launch < 40%`, split into `candidates` (no recent action) and `in_flight` (action within last 14d).
+- `POST /api/range-mgmt/marketing-actions` — log an action. Snapshots current SOR/units/stock at start so we can measure delta later.
+- `GET /api/range-mgmt/marketing-actions` — list every logged action, enriched with current SOR + `sor_delta` (pp).
+- `DELETE /api/range-mgmt/marketing-actions/{id}` — undo erroneously-logged entries.
+- Action types seeded: Homepage Banner · Social Media Ad · Influencer Post · Email Campaign · Discount (with %) · Restaging in Store · Other.
+
+Frontend: New components at `/app/frontend/src/components/range-mgmt/`:
+- `WeeklySORHeatmap.jsx` — colour-graded heatmap with legend.
+- `MarketingActionTracker.jsx` — Candidates table → "Log Action" inline form → Action History table with `Δ SOR` pills (green if positive, rose if negative) + `Stock Δ`.
+
+Both components inserted into `RangeManagement.jsx` between the Tier Classification table and the Retirement Pipeline.
+
+**Verified live** (Preview, Kenya):
+- 1,278 styles in catalog; 909 have non-zero current stock; channel-split fields populated correctly (e.g. Vivo Kani Cap Sleeve Maxi Dress → 81 online + 809 stores + 81 returns netted ≈ 788 lifetime).
+- Weekly heatmap: 93 styles < 14 wks; 81 with active SOR signal. Sample: Vivo Knee Length Kaftan in Satin climbs 53→84% over 13 weeks (Tier 1 trajectory).
+- Marketing tracker: 64 candidates flagged for action; 0 currently in flight; 7 seeded action types.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Cross-style_number launch date sync + Production auto-heal
 
 **User report (Production)**: After redeploy, "Safari Haya High Low Dress" still showed launch 2026-04-18 instead of 2024-03-23. Also requested: "For products with same style name but different style number, pick the earliest date for both."

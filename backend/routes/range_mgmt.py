@@ -290,3 +290,327 @@ async def list_overrides():
             doc["set_at"] = sa.astimezone(timezone.utc).isoformat()
         rows.append(doc)
     return {"count": len(rows), "rows": rows}
+
+
+
+# ───── Iter 91q — Weekly SOR for new styles (< 14 weeks old) ─────────────
+@api_router.get("/range-mgmt/weekly-sor")
+async def weekly_sor_new_styles(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    _u: User = Depends(get_current_user),
+):
+    """Cumulative weekly SOR per style aged < 14 weeks.
+
+    Each row carries `sor_w1, sor_w2, ... sor_w14` where:
+        sor_wN = units_sold_through_weekN / (units_sold_through_weekN + current_stock)
+
+    Future weeks (i.e. weeks the style hasn't yet lived through) are `null`.
+    Drives the "Weekly SOR heatmap" card on Range Mgmt.
+    """
+    import asyncio as _asyncio
+    from datetime import date, timedelta
+    # Server.py helpers — late imports to dodge circulars.
+    from server import _split_csv, fetch, _net_returns  # type: ignore
+
+    classify_payload = await analytics_sor_all_styles(
+        country=country, channel=channel,
+    )
+    rows_in: List[dict] = classify_payload if isinstance(classify_payload, list) else (classify_payload or {}).get("rows") or []
+    young = [
+        r for r in rows_in
+        if r.get("style_age_weeks") is not None
+        and 0 <= float(r["style_age_weeks"]) < 14
+        and r.get("launch_date")
+    ]
+    if not young:
+        return {"weeks": list(range(1, 15)), "rows": []}
+
+    # Per-style launch dates.
+    style_launches: Dict[str, date] = {}
+    for r in young:
+        try:
+            style_launches[r["style_name"]] = date.fromisoformat(r["launch_date"][:10])
+        except (TypeError, ValueError):
+            continue
+
+    today = date.today()
+    cs = _split_csv(country)
+    chs = _split_csv(channel)
+
+    async def _topskus_through(end_date: date) -> Dict[str, Dict[str, Any]]:
+        earliest = min(style_launches.values())
+        base = {
+            "date_from": earliest.isoformat(),
+            "date_to": end_date.isoformat(),
+            "limit": 10000,
+        }
+        if len(cs) <= 1 and len(chs) <= 1:
+            data = await fetch("/top-skus", {
+                **base,
+                "country": cs[0] if cs else None,
+                "channel": chs[0] if chs else None,
+            }) or []
+            rows_out = list(data)
+        else:
+            res = await _asyncio.gather(*[
+                fetch("/top-skus", {**base, "country": c, "channel": ch})
+                for c in (cs or [None])
+                for ch in (chs or [None])
+            ])
+            merged: Dict[str, Dict[str, Any]] = {}
+            for g in res:
+                for r in (g or []):
+                    s = r.get("style_name")
+                    if not s:
+                        continue
+                    if s not in merged:
+                        merged[s] = {**r}
+                    else:
+                        for f in ("units_sold", "total_sales", "gross_sales"):
+                            merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+            rows_out = list(merged.values())
+        await _net_returns(
+            rows_out,
+            date_from=base["date_from"], date_to=base["date_to"],
+            country=country, channel=channel, axis="style",
+        )
+        return {r.get("style_name"): r for r in rows_out if r.get("style_name")}
+
+    weekly_endings: List[date] = []
+    for w in range(1, 15):
+        weekly_endings.append(today - timedelta(weeks=14 - w))
+    weekly_endings = [min(d, today) for d in weekly_endings]
+
+    weekly_snapshots = await _asyncio.gather(*[_topskus_through(d) for d in weekly_endings])
+
+    out: List[Dict[str, Any]] = []
+    for r in young:
+        s = r["style_name"]
+        launch = style_launches.get(s)
+        if not launch:
+            continue
+        soh = float(r.get("soh_total") or 0)
+        age_wks = float(r.get("style_age_weeks") or 0)
+        weekly_sors: List[Optional[float]] = []
+        for w in range(1, 15):
+            week_end = launch + timedelta(weeks=w)
+            if week_end > today:
+                weekly_sors.append(None)
+                continue
+            idx = min(range(len(weekly_endings)), key=lambda i: abs((weekly_endings[i] - week_end).days))
+            snap = weekly_snapshots[idx].get(s) or {}
+            units_through = float(snap.get("units_sold") or 0)
+            denom = units_through + soh
+            sor = (units_through / denom * 100.0) if denom > 0 else 0.0
+            weekly_sors.append(round(sor, 1))
+        out.append({
+            "style_name": s,
+            "style_number": r.get("style_number"),
+            "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "launch_date": r.get("launch_date"),
+            "age_weeks": round(age_wks, 1),
+            "current_stock": int(soh),
+            "units_since_launch": int(r.get("units_since_launch") or 0),
+            "sor_lifetime": r.get("sor_since_launch"),
+            "weekly_sor": weekly_sors,
+        })
+    out.sort(key=lambda r: (r["age_weeks"], r["style_name"]))
+    return {"weeks": list(range(1, 15)), "rows": out}
+
+
+# ───── Iter 91q — Marketing Action Tracker ───────────────────────────────
+_MA_COLL = "marketing_actions"
+ALLOWED_ACTION_TYPES = [
+    "Homepage Banner",
+    "Social Media Ad",
+    "Influencer Post",
+    "Email Campaign",
+    "Discount",
+    "Restaging in Store",
+    "Other",
+]
+
+
+async def _ensure_ma_indexes() -> None:
+    try:
+        await db[_MA_COLL].create_index([("style_number", 1), ("started_at", -1)])
+        await db[_MA_COLL].create_index([("started_at", -1)])
+    except Exception:
+        pass
+
+
+class MarketingActionIn(BaseModel):
+    style_number: str
+    style_name: Optional[str] = None
+    action_type: str
+    notes: Optional[str] = None
+    discount_pct: Optional[float] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+
+
+@api_router.post("/range-mgmt/marketing-actions")
+async def log_marketing_action(
+    body: MarketingActionIn,
+    u: User = Depends(get_current_user),
+):
+    await _ensure_ma_indexes()
+    if body.action_type not in ALLOWED_ACTION_TYPES:
+        raise HTTPException(400, f"action_type must be one of {ALLOWED_ACTION_TYPES}")
+    started = body.started_at or datetime.now(timezone.utc).date().isoformat()
+    style_snapshot: Dict[str, Any] = {}
+    try:
+        rows = await analytics_sor_all_styles()
+        rows = rows if isinstance(rows, list) else (rows or {}).get("rows") or []
+        for r in rows:
+            if (r.get("style_number") or "").upper() == body.style_number.upper():
+                style_snapshot = {
+                    "sor_lifetime_at_start": r.get("sor_since_launch"),
+                    "sor_6m_at_start": r.get("sor_6m"),
+                    "units_at_start": r.get("units_since_launch"),
+                    "stock_at_start": r.get("soh_total"),
+                    "style_age_weeks_at_start": r.get("style_age_weeks"),
+                }
+                if not body.style_name:
+                    body.style_name = r.get("style_name")
+                break
+    except Exception as e:
+        logger.warning("[marketing-action] snapshot lookup failed: %s", e)
+
+    doc = {
+        "style_number": body.style_number.upper(),
+        "style_name": body.style_name,
+        "action_type": body.action_type,
+        "discount_pct": body.discount_pct,
+        "notes": body.notes,
+        "started_at": started,
+        "ended_at": body.ended_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": u.email,
+        **style_snapshot,
+    }
+    res = await db[_MA_COLL].insert_one(doc)
+    return {"ok": True, "id": str(res.inserted_id),
+            "action": {k: v for k, v in doc.items() if k != "_id"}}
+
+
+@api_router.get("/range-mgmt/marketing-actions")
+async def list_marketing_actions(
+    style_number: Optional[str] = None,
+    _u: User = Depends(get_current_user),
+):
+    await _ensure_ma_indexes()
+    q: Dict[str, Any] = {}
+    if style_number:
+        q["style_number"] = style_number.upper()
+    rows: List[dict] = []
+    async for doc in db[_MA_COLL].find(q).sort("started_at", -1):
+        # Convert ObjectId → string so the FE can issue DELETE by id.
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        rows.append(doc)
+    # Enrich with CURRENT SOR so the FE can compute delta_sor.
+    if rows:
+        try:
+            current = await analytics_sor_all_styles()
+            current = current if isinstance(current, list) else (current or {}).get("rows") or []
+            curr_by_sn: Dict[str, Dict[str, Any]] = {}
+            for r in current:
+                sn = (r.get("style_number") or "").upper()
+                if sn:
+                    curr_by_sn[sn] = r
+            for r in rows:
+                sn = (r.get("style_number") or "").upper()
+                live = curr_by_sn.get(sn) or {}
+                r["sor_lifetime_now"] = live.get("sor_since_launch")
+                r["sor_6m_now"] = live.get("sor_6m")
+                r["units_now"] = live.get("units_since_launch")
+                r["stock_now"] = live.get("soh_total")
+                if r.get("sor_lifetime_at_start") is not None and live.get("sor_since_launch") is not None:
+                    r["sor_delta"] = round(
+                        float(live["sor_since_launch"]) - float(r["sor_lifetime_at_start"]),
+                        1,
+                    )
+        except Exception as e:
+            logger.warning("[marketing-actions] enrich failed: %s", e)
+    return {"count": len(rows), "rows": rows}
+
+
+@api_router.delete("/range-mgmt/marketing-actions/{action_id}")
+async def delete_marketing_action(
+    action_id: str,
+    _u: User = Depends(get_current_user),
+):
+    from bson import ObjectId  # type: ignore
+    try:
+        oid = ObjectId(action_id)
+    except Exception:
+        raise HTTPException(400, "Invalid action_id")
+    res = await db[_MA_COLL].delete_one({"_id": oid})
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+@api_router.get("/range-mgmt/marketing-candidates")
+async def marketing_action_candidates(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    sor_threshold: float = 40.0,
+    age_min_weeks: float = 4.0,
+    _u: User = Depends(get_current_user),
+):
+    """Styles ≥ `age_min_weeks` old with `sor_since_launch < sor_threshold`.
+    Excludes styles that already have an action logged in the last 14
+    days — those are 'in flight' and rendered separately."""
+    await _ensure_ma_indexes()
+    payload = await analytics_sor_all_styles(country=country, channel=channel)
+    rows = payload if isinstance(payload, list) else (payload or {}).get("rows") or []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).date().isoformat()
+    recent: set = set()
+    async for d in db[_MA_COLL].find(
+        {"started_at": {"$gte": cutoff}},
+        {"style_number": 1, "_id": 0},
+    ):
+        sn = (d.get("style_number") or "").upper()
+        if sn:
+            recent.add(sn)
+    candidates: List[dict] = []
+    in_flight: List[dict] = []
+    for r in rows:
+        age = r.get("style_age_weeks")
+        sor = r.get("sor_since_launch")
+        if age is None or sor is None:
+            continue
+        if age < age_min_weeks:
+            continue
+        if sor >= sor_threshold:
+            continue
+        sn = (r.get("style_number") or "").upper()
+        bucket = {
+            "style_name": r.get("style_name"),
+            "style_number": r.get("style_number"),
+            "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "launch_date": r.get("launch_date"),
+            "age_weeks": round(float(age), 1),
+            "sor_lifetime": sor,
+            "units_since_launch": r.get("units_since_launch"),
+            "current_stock": r.get("soh_total"),
+            "days_since_last_sale": r.get("days_since_last_sale"),
+        }
+        if sn in recent:
+            in_flight.append(bucket)
+        else:
+            candidates.append(bucket)
+    candidates.sort(key=lambda x: (x["sor_lifetime"] or 0))
+    in_flight.sort(key=lambda x: (x["sor_lifetime"] or 0))
+    return {
+        "threshold_pct": sor_threshold,
+        "age_min_weeks": age_min_weeks,
+        "candidates_count": len(candidates),
+        "in_flight_count": len(in_flight),
+        "action_types": ALLOWED_ACTION_TYPES,
+        "candidates": candidates,
+        "in_flight": in_flight,
+    }

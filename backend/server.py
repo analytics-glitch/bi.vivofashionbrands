@@ -12228,10 +12228,15 @@ def _merge_rows_by_style_number(rows: List[Dict[str, Any]]) -> List[Dict[str, An
             "soh_total", "soh_wh", "soh_store",
             "sales_6m", "sales_since_launch",
             "weekly_avg",
+            # Iter 91q — Channel-split + explicit stock columns.
+            "units_online", "units_stores",
+            "soh_stores", "soh_warehouse",
         ):
             m[f] = sum(float(r.get(f) or 0) for r in group)
         # Integer fields stay integers.
-        for f in ("units_6m", "units_3w", "units_since_launch"):
+        for f in ("units_6m", "units_3w", "units_since_launch",
+                 "units_online", "units_stores",
+                 "soh_stores", "soh_warehouse"):
             m[f] = int(m[f])
         # Earliest launch date / first sale wins (long-tail observation).
         lds = [r.get("launch_date") for r in group if r.get("launch_date")]
@@ -12367,7 +12372,46 @@ async def analytics_sor_all_styles(
     # cap is plenty for a fashion catalog where SKUs rarely outlive a year.
     lifetime_from = today - timedelta(days=1095)
 
-    six_m_skus, three_w_skus, lifetime_skus, three_m_skus, thirty_d_skus, inventory, style_dates = await asyncio.gather(
+    # Iter 91q — Channel-split lifetime fetches. We need "Units Sold
+    # Online" and "Units Sold Stores" as separate columns. Upstream
+    # treats Online as a synthetic COUNTRY value (not a channel), so
+    # we override the country filter for the split fetches.
+    async def _topskus_country_split(df: str, dt: str, online: bool) -> List[Dict[str, Any]]:
+        # online=True  → country=Online (single fetch)
+        # online=False → country=Kenya,Uganda,Rwanda (or the user-set
+        #                country if explicit AND not Online)
+        if online:
+            split_countries = ["Online"]
+        else:
+            if cs:
+                split_countries = [c for c in cs if c.lower() != "online"]
+                if not split_countries:
+                    return []
+            else:
+                split_countries = ["Kenya", "Uganda", "Rwanda"]
+        base = {"date_from": df, "date_to": dt, "limit": 10000}
+        if brand:
+            base["product"] = brand
+        results = await asyncio.gather(*[
+            fetch("/top-skus", {**base, "country": c}) for c in split_countries
+        ])
+        merged: Dict[str, Dict[str, Any]] = {}
+        for g in results:
+            for r in (g or []):
+                s = r.get("style_name")
+                if not s:
+                    continue
+                if s not in merged:
+                    merged[s] = {**r}
+                else:
+                    for f in ("units_sold", "total_sales", "gross_sales"):
+                        merged[s][f] = (merged[s].get(f) or 0) + (r.get(f) or 0)
+        rows_merged = list(merged.values())
+        # Returns are NOT netted on the channel splits — see note in
+        # the merger upstream re: country-keyed aggregator.
+        return rows_merged
+
+    six_m_skus, three_w_skus, lifetime_skus, three_m_skus, thirty_d_skus, inventory, style_dates, lifetime_online_skus, lifetime_stores_skus = await asyncio.gather(
         _topskus(six_m_from.isoformat(), today.isoformat()),
         _topskus(three_w_from.isoformat(), today.isoformat()),
         _topskus(lifetime_from.isoformat(), today.isoformat()),
@@ -12377,6 +12421,10 @@ async def analytics_sor_all_styles(
         _topskus(thirty_d_from.isoformat(), today.isoformat()),
         fetch_all_inventory(country=country),
         _get_style_first_last_sale(country, channel, days=180),
+        # Iter 91q — Lifetime online + stores splits for the new
+        # "Units Sold Online" / "Units Sold Stores" columns.
+        _topskus_country_split(lifetime_from.isoformat(), today.isoformat(), online=True),
+        _topskus_country_split(lifetime_from.isoformat(), today.isoformat(), online=False),
     )
 
     candidates = {r.get("style_name") for r in six_m_skus if r.get("style_name")}
@@ -12386,6 +12434,10 @@ async def analytics_sor_all_styles(
     lifetime_map = {r.get("style_name"): r for r in lifetime_skus if r.get("style_name") in candidates}
     three_m_map = {r.get("style_name"): r for r in three_m_skus if r.get("style_name") in candidates}
     thirty_d_map = {r.get("style_name"): r for r in thirty_d_skus if r.get("style_name") in candidates}
+    # Iter 91q — Channel split maps for the new "Units Sold Online" /
+    # "Units Sold Stores" columns.
+    online_lifetime_map = {r.get("style_name"): r for r in lifetime_online_skus if r.get("style_name") in candidates}
+    stores_lifetime_map = {r.get("style_name"): r for r in lifetime_stores_skus if r.get("style_name") in candidates}
 
     # Original price = modal unit price observed across the lifetime
     # /top-skus pull (gross_sales ÷ units_sold ≈ ASP at full price for
@@ -12674,6 +12726,17 @@ async def analytics_sor_all_styles(
             "weekly_avg": round(weekly_avg, 2),
             "woc": round(woc, 1) if woc is not None else None,
             "style_age_weeks": round(age_weeks, 1),
+            # Iter 91q — Channel-split units (lifetime). These mirror
+            # `units_since_launch` but scoped to the specified channel
+            # only. The two should sum to ~units_since_launch (small
+            # delta acceptable from upstream returns timing).
+            "units_online": int(float((online_lifetime_map.get(s) or {}).get("units_sold") or 0)),
+            "units_stores": int(float((stores_lifetime_map.get(s) or {}).get("units_sold") or 0)),
+            # Iter 91q — Explicit stock split columns. `soh_total` is
+            # already in the row; these expose the warehouse vs
+            # in-store breakdown that the Range Mgmt table now shows.
+            "soh_stores": int(store),
+            "soh_warehouse": int(wh),
         })
     # Iter 91q — Merge rows that share a style_number. When a style is
     # renamed in the source catalog (e.g. "Vivo Basic Izzy Satin..." →

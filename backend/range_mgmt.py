@@ -204,6 +204,11 @@ def classify_style(style: dict) -> dict:
         "sales_6m": style.get("sales_6m"),
         "sor_since_launch": style.get("sor_since_launch"),
         "sor_6m": style.get("sor_6m"),
+        # Iter 91q — Channel-split + stock split pass-through fields.
+        "units_online": style.get("units_online"),
+        "units_stores": style.get("units_stores"),
+        "soh_stores": style.get("soh_stores"),
+        "soh_warehouse": style.get("soh_warehouse"),
         "tier": tier,
         "status": status,
         "recommended_action": rec,
