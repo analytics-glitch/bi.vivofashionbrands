@@ -807,7 +807,7 @@ const Inventory = () => {
                   icon={Gauge}
                   higherIsBetter={false}
                   showDelta={false}
-                  action={{ label: "See aging buckets", onClick: () => document.querySelector('[data-testid="weeks-of-cover"]')?.scrollIntoView({ behavior: "smooth" }) }}
+                  action={{ label: "See aged stock", onClick: () => document.querySelector('[data-testid="aged-stock-report"]')?.scrollIntoView({ behavior: "smooth" }) }}
                 />
               );
             })()}
@@ -819,7 +819,7 @@ const Inventory = () => {
               icon={Warning}
               showDelta={false}
               higherIsBetter={false}
-              action={{ label: "Triage now", onClick: () => document.querySelector('[data-testid="low-stock-section"]')?.scrollIntoView({ behavior: "smooth" }) }}
+              action={{ label: "Review re-order", to: "/reorder" }}
             />
             {(() => {
               // % Understocked Subcategories — share of merchandise subcats
@@ -849,7 +849,7 @@ const Inventory = () => {
                   icon={TrendDown}
                   higherIsBetter={false}
                   showDelta={false}
-                  action={{ label: "See breakdown", onClick: () => document.querySelector('[data-testid="understocked-subcats"]')?.scrollIntoView({ behavior: "smooth" }) }}
+                  action={{ label: "See breakdown", onClick: () => document.querySelector('[data-testid="sts-by-subcategory-table"]')?.scrollIntoView({ behavior: "smooth" }) }}
                 />
               );
             })()}
@@ -1240,65 +1240,6 @@ const Inventory = () => {
 
           <StockToSalesByVariant exportSlug={exportSlug} />
 
-          {understockedSubcats.length > 0 && (
-            <div className="card-white p-5 border-l-4 border-brand-strong" data-testid="understocked-subcats">
-              <SectionTitle
-                title={`Understocked subcategories · ${understockedSubcats.length}`}
-                subtitle="Subcategories where sales share exceeds inventory share. These are your replenishment priorities — re-order before they go fully out of stock."
-              />
-              <SortableTable
-                testId="understocked"
-                exportName="understocked-subcategories.csv"
-                initialSort={{ key: "understock_pct", dir: "desc" }}
-                columns={[
-                  { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="text-muted num">{i + 1}</span> },
-                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
-                  { key: "subcategory", label: "Subcategory", align: "left", render: (r) => <span className="font-medium">{r.subcategory}</span> },
-                  { key: "pct_of_total_sold", label: "% of Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
-                  { key: "pct_of_total_stock", label: "% of Stock", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
-                  {
-                    key: "understock_pct", label: "Understock %", numeric: true,
-                    render: (r) => <span className={r.understock_pct >= 3 ? "pill-red" : r.understock_pct >= 1 ? "pill-amber" : "pill-neutral"}>{r.understock_pct.toFixed(2)}%</span>,
-                    csv: (r) => r.understock_pct?.toFixed(2),
-                  },
-                  { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => fmtPct(r.sor_percent), csv: (r) => r.sor_percent?.toFixed(2) },
-                ]}
-                rows={understockedSubcats}
-              />
-            </div>
-          )}
-
-          {lowStockByStyle.length > 0 && (
-            <div className="card-white p-5 border-l-4 border-danger" data-testid="low-stock-section">
-              <SectionTitle
-                title={`Low-stock alerts · ${lowStockByStyle.length} styles`}
-                subtitle="Merchandise styles with ≤10 total available units across all SKUs in the current scope — imminent stockout risk. Review re-order list and fast-track POs."
-              />
-              <SortableTable
-                testId="low-stock"
-                exportName="low-stock-alerts.csv"
-                pageSize={80}
-                initialSort={{ key: "available", dir: "asc" }}
-                columns={[
-                  { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium max-w-[300px] truncate inline-block" title={r.style_name}>{r.style_name || "—"}</span> },
-                  { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
-                  { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
-                  { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
-                  { key: "sku_count", label: "SKUs", numeric: true, render: (r) => fmtNum(r.sku_count) },
-                  { key: "locations", label: "Locations", numeric: true, render: (r) => fmtNum(r.locations) },
-                  {
-                    key: "available", label: "Total Available", numeric: true,
-                    render: (r) => <span className={r.available <= 3 ? "pill-red" : r.available <= 6 ? "pill-amber" : "pill-neutral"}>{fmtNum(r.available)}</span>,
-                    csv: (r) => r.available,
-                  },
-                ]}
-                rows={lowStockByStyle}
-              />
-            </div>
-          )}
-
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
               title="Stock cover (units-sold multiplier) by location"
@@ -1490,60 +1431,6 @@ const Inventory = () => {
               />
             </div>
           )}
-
-          <div className="card-white p-5" data-testid="weeks-of-cover">
-            <SectionTitle
-              title={`Weeks of Cover · ${filteredWeeksOfCover.length} styles`}
-              subtitle="Weeks of stock cover = current stock ÷ average weekly velocity (last 4 weeks). Red <2w = urgent replenishment · Amber 2–4w = watch · Green >4w = safe. Act on reds before the next shipment cycle."
-            />
-            <SortableTable
-              testId="woc"
-              exportName={`weeks-of-cover_${exportSlug}.csv`}
-              pageSize={25}
-              mobileCards
-              initialSort={{ key: "weeks_of_cover", dir: "asc" }}
-              columns={[
-                { key: "style_name", label: "Style Name", align: "left", mobilePrimary: true },
-                { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>, csv: (r) => categoryFor(r.subcategory) },
-                { key: "subcategory", label: "Subcategory", align: "left" },
-                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                { key: "avg_weekly_sales", label: "Avg Weekly Sales", numeric: true, render: (r) => fmtNum(Math.round(r.avg_weekly_sales)), csv: (r) => r.avg_weekly_sales?.toFixed(2) },
-                {
-                  key: "weeks_of_cover",
-                  label: "Weeks of Cover",
-                  numeric: true,
-                  sortValue: (r) => r.weeks_of_cover == null ? 9999 : r.weeks_of_cover,
-                  render: (r) => {
-                    if (r.weeks_of_cover == null) return <span className="pill-neutral">— (no sales)</span>;
-                    if (r.avg_weekly_sales === 0) return <span className="pill-neutral">∞</span>;
-                    const w = r.weeks_of_cover;
-                    // Ideal = 12 weeks; < 12 = undercover; 12-26 = healthy; > 26 = excess.
-                    const cls = w < 12 ? "pill-red" : w <= 26 ? "pill-amber" : "pill-green";
-                    return <span className={cls}>{w.toFixed(1)}w</span>;
-                  },
-                  csv: (r) => r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2),
-                },
-                {
-                  key: "_bucket", label: "Aging", align: "left",
-                  sortValue: (r) => ({ fresh: 1, healthy: 2, aging: 3, stale: 4, phantom: 5 }[bucketFor(r)] || 0),
-                  render: (r) => {
-                    const b = bucketFor(r);
-                    const map = {
-                      fresh:   { label: "Fresh",   cls: "pill-green" },
-                      healthy: { label: "Healthy", cls: "pill-green" },
-                      aging:   { label: "Aging",   cls: "pill-amber" },
-                      stale:   { label: "Stale",   cls: "pill-red"   },
-                      phantom: { label: "Phantom", cls: "pill-red"   },
-                    };
-                    const m = map[b];
-                    return <span className={m.cls}>{m.label}</span>;
-                  },
-                  csv: (r) => bucketFor(r),
-                },
-              ]}
-              rows={agingRows}
-            />
-          </div>
 
           {/* Aged Stock — per-SKU stock that hasn't sold in N+ days,
               filterable by days-since-last-sale (30/60/90/180 presets

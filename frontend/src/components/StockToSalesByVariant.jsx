@@ -103,7 +103,6 @@ const StockToSalesByVariant = ({ exportSlug }) => {
   // Iter 91q — Shared date window header so both tables move together.
   const headerWindow = (
     <div className="flex items-center justify-end mb-2 gap-2 flex-wrap">
-      <span className="text-[10.5px] uppercase tracking-wide font-bold text-muted">Window</span>
       <DateWindowSelector
         value={windowDays}
         onChange={(v) => setWindowDays(v)}

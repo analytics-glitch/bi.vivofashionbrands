@@ -4,6 +4,15 @@
 Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third-party Vivo BI API and surfaces it through multiple authenticated, filterable tabs.
 
 
+### ✅ 2026-06-04 — Inventory page cleanup (Iter 91q close-out)
+
+User asked to declutter `/inventory`:
+- **Removed 3 tables**: "Low-stock alerts", "Understocked subcategories", "Weeks of Cover (per-style)".
+- Re-pointed KPI deep-links: "Overall Weeks of Cover" → Aged Stock report; "Low-Stock Styles" → /reorder; "% Understocked Subcats" → STS-by-subcategory table.
+- **New isolated 30-day Date Window** on `Stock-to-Sales · by Color` and `Stock-to-Sales · by Size` via the rebuilt `StockToSalesByVariant.jsx` (its own `DateWindowSelector`, default 30d, presets 7/14/30/60/90, independent of the global filter bar and of the STS-by-Subcategory window above it).
+- Verified live: tables gone, color/size tables load + re-fetch on window change, no console errors.
+
+
 
 ### ✅ Recent (Feb 2026 — Iter 91q) — Marketing Action Tracker relocated to /marketing + weekly email scheduler
 
