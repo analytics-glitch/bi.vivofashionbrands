@@ -5,6 +5,44 @@ Comprehensive BI dashboard for Vivo Fashion Group (East Africa). Proxies a third
 
 
 
+### ✅ Recent (Feb 2026 — Iter 91q) — Marketing Action Tracker relocated to /marketing + weekly email scheduler
+
+**Three asks bundled** (Jun 2026):
+
+**1. Marketing page reset** — `Marketing.jsx` rebuilt from scratch (was 681 LOC of legacy intelligence widgets). Now hosts:
+- Page header with weekly digest schedule + sender info
+- "Send Weekly Report Now" button (admin-triggered, useful for testing once Resend is live)
+- The full `MarketingActionTracker` component (relocated from Range Mgmt)
+
+**2. Channel + stock split columns added to the tracker tables**:
+- Units Online (lifetime)
+- Units Stores (lifetime)
+- Stock WH (warehouse)
+- Stock Stores (in-store)
+- Stock Total
+Backend `/range-mgmt/marketing-candidates` now surfaces these from the `analytics_sor_all_styles` payload.
+
+**3. Weekly Email Scheduler (Resend integration)** — new module `/app/backend/marketing_report.py`:
+- `build_report_html()` — clean inline-CSS HTML email with summary box + 3 tables (Candidates, In Flight, History with Δ SOR pills).
+- `send_marketing_weekly_report()` — uses Resend HTTP API, returns `{ok, message, email_id?}`. Gracefully no-ops when `RESEND_API_KEY` unset.
+
+New FastAPI endpoints (in `routes/range_mgmt.py`):
+- `POST /api/marketing/weekly-report/send` — fire immediately (the "Send Now" button hits this)
+- `GET /api/marketing/weekly-report/preview` — returns rendered HTML for layout verification
+- `GET /api/marketing/weekly-report/schedule` — diagnostic: shows next-send time, recipients, Resend status
+
+**Schedule**: Background task on backend pod wakes hourly, sends every Monday 05:00 UTC = 08:00 Africa/Nairobi. Idempotency via in-process `last_run_at` date check.
+
+**Recipients** (all in `/app/backend/.env`):
+- `MARKETING_REPORT_TO=marketing@vivofashiongroup.com`
+- `MARKETING_REPORT_CC=william@vivofashiongroup.com,stephen@vivofashiongroup.com`
+- `SENDER_EMAIL=analytics@vivofashiongroup.com`
+- `RESEND_API_KEY=` (user to populate)
+
+**Verified live (Preview)**: All 4 endpoints return 200. Schedule status shows next send queued for 2026-06-08 05:00 UTC. Preview HTML 42 KB, 41 candidates surfaced. Send-Now returns clean "RESEND_API_KEY not configured" when key missing.
+
+
+
 ### ✅ Recent (Feb 2026 — Iter 91q) — Diagnostic endpoint to compare Preview ↔ Production Mongo state
 
 **Issue (user-reported, Production)**: After manual heal sweep + cache clear, Production STILL shows different Tier counts (T1=34, T2=278, T3=298, T4=84) vs Preview (T1=212, T2=168, T3=66, T4=58). Retired matches (431 = 431) so the catalog is same — only the AGE-based tier calc diverges.

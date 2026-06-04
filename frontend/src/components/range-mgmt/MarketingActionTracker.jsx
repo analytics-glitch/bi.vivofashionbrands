@@ -89,7 +89,11 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
                   <th className="p-2 font-semibold text-muted">Launch</th>
                   <th className="p-2 text-right font-semibold text-muted">Age</th>
                   <th className="p-2 text-right font-semibold text-muted">SOR Lifetime</th>
-                  <th className="p-2 text-right font-semibold text-muted">Stock</th>
+                  <th className="p-2 text-right font-semibold text-muted">Units Online</th>
+                  <th className="p-2 text-right font-semibold text-muted">Units Stores</th>
+                  <th className="p-2 text-right font-semibold text-muted">Stock WH</th>
+                  <th className="p-2 text-right font-semibold text-muted">Stock Stores</th>
+                  <th className="p-2 text-right font-semibold text-muted">Stock Total</th>
                   <th className="p-2 text-right font-semibold text-muted">Last Sale</th>
                   <th className="p-2 font-semibold text-muted">Action</th>
                 </tr>
@@ -106,7 +110,11 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
                       <td className="p-2 text-[10.5px]">{c.launch_date || "—"}</td>
                       <td className="p-2 text-right tabular-nums">{c.age_weeks?.toFixed(1)}w</td>
                       <td className="p-2 text-right tabular-nums font-bold text-rose-700">{fmtPct(c.sor_lifetime)}</td>
-                      <td className="p-2 text-right tabular-nums">{fmtNum(c.current_stock)}</td>
+                      <td className="p-2 text-right tabular-nums">{fmtNum(c.units_online)}</td>
+                      <td className="p-2 text-right tabular-nums">{fmtNum(c.units_stores)}</td>
+                      <td className="p-2 text-right tabular-nums">{fmtNum(c.soh_warehouse)}</td>
+                      <td className="p-2 text-right tabular-nums">{fmtNum(c.soh_stores)}</td>
+                      <td className="p-2 text-right tabular-nums font-bold">{fmtNum(c.current_stock)}</td>
                       <td className="p-2 text-right tabular-nums">{c.days_since_last_sale == null ? "—" : `${c.days_since_last_sale}d`}</td>
                       <td className="p-2">
                         <button
@@ -121,7 +129,7 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
                     </tr>
                     {openForm === c.style_number && (
                       <tr className="bg-orange-50/40">
-                        <td colSpan={8} className="p-3">
+                        <td colSpan={12} className="p-3">
                           <ActionForm
                             style={c}
                             actionTypes={action_types}

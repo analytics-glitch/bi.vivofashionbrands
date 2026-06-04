@@ -5,7 +5,6 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import WeeklySORHeatmap from "@/components/range-mgmt/WeeklySORHeatmap";
-import MarketingActionTracker from "@/components/range-mgmt/MarketingActionTracker";
 import {
   Stack,
   MagnifyingGlass,
@@ -977,9 +976,6 @@ const RangeManagement = () => {
               />
             )}
           </div>
-
-          {/* Iter 91q — Marketing Action Tracker (4w+ post-launch, SOR < 40%) */}
-          <MarketingActionTracker countries={countries} channels={channels} refreshToken={refreshToken} />
         </>
       )}
       {/* Iter 91u — Tier drill-down modal */}

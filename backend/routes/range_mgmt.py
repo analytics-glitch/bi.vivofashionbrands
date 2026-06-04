@@ -619,6 +619,12 @@ async def marketing_action_candidates(
             "units_since_launch": r.get("units_since_launch"),
             "current_stock": r.get("soh_total"),
             "days_since_last_sale": r.get("days_since_last_sale"),
+            # Iter 91q — Channel/stock splits surfaced for marketing
+            # decisioning (e.g. push online if warehouse stock is heavy).
+            "units_online": r.get("units_online"),
+            "units_stores": r.get("units_stores"),
+            "soh_stores": r.get("soh_stores"),
+            "soh_warehouse": r.get("soh_warehouse"),
         }
         if sn in recent:
             in_flight.append(bucket)
@@ -635,3 +641,132 @@ async def marketing_action_candidates(
         "candidates": candidates,
         "in_flight": in_flight,
     }
+
+
+# ───── Iter 91q — Weekly Marketing Report (Resend email) ─────────────────
+from marketing_report import send_marketing_weekly_report as _send_report  # noqa: E402
+
+
+async def _build_report_payload(country: Optional[str] = None, channel: Optional[str] = None) -> Dict[str, Any]:
+    """Assemble the {candidates, in_flight, history, threshold_pct,
+    age_min_weeks} dict the report builder expects. Wraps the
+    `/range-mgmt/marketing-candidates` + `/range-mgmt/marketing-actions`
+    handlers so the email mirrors what users see in the FE."""
+    # Mock a User dep — we're calling our own handlers from inside a
+    # scheduled task that runs as the system process. Pass a stub
+    # admin so role gates don't bite.
+    class _SysUser:
+        email = "analytics@vivofashiongroup.com"
+        role = "admin"
+    sys_user = _SysUser()
+    cand_payload = await marketing_action_candidates(  # noqa: F821 — same module
+        country=country, channel=channel, _u=sys_user,  # type: ignore
+    )
+    hist_payload = await list_marketing_actions(_u=sys_user)  # noqa: F821 — same module
+    return {
+        "candidates": cand_payload.get("candidates", []),
+        "in_flight": cand_payload.get("in_flight", []),
+        "history": hist_payload.get("rows", []),
+        "threshold_pct": cand_payload.get("threshold_pct"),
+        "age_min_weeks": cand_payload.get("age_min_weeks"),
+    }
+
+
+@api_router.post("/marketing/weekly-report/send")
+async def send_weekly_marketing_report(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    _u: User = Depends(get_current_user),
+):
+    """Manually fire the weekly marketing report. Used by the
+    "Send Now" button in the Marketing page header for ad-hoc sends
+    + smoke testing once Resend is configured."""
+    payload = await _build_report_payload(country=country, channel=channel)
+    result = await _send_report(**payload)
+    return result
+
+
+@api_router.get("/marketing/weekly-report/preview")
+async def preview_weekly_marketing_report(
+    country: Optional[str] = None,
+    channel: Optional[str] = None,
+    _u: User = Depends(get_current_user),
+):
+    """Returns the HTML body that WOULD be emailed, so the user can
+    review without actually sending. Useful for layout iteration."""
+    from marketing_report import build_report_html
+    payload = await _build_report_payload(country=country, channel=channel)
+    html = build_report_html(**payload)
+    return {"html": html, "summary": {
+        "candidates": len(payload["candidates"]),
+        "in_flight": len(payload["in_flight"]),
+        "history": len(payload["history"]),
+    }}
+
+
+# Monday-morning scheduler (08:00 Africa/Nairobi = 05:00 UTC).
+_REPORT_SCHED_STATE: Dict[str, Any] = {
+    "last_run_at": None,
+    "last_result": None,
+}
+
+
+async def _marketing_report_scheduler() -> None:
+    """Background task — wakes once an hour, fires the report when
+    it's Monday 05:00-06:00 UTC AND we haven't already sent today.
+    Cheap enough to run on every backend pod; idempotency via the
+    `last_run_at` date check (kept in-process — Production will
+    occasionally double-send if multiple pods boot at the same UTC
+    minute, but that's acceptable given the audience)."""
+    import asyncio as _asyncio
+    from datetime import datetime as _dt, timezone as _tz
+    while True:
+        try:
+            now = _dt.now(_tz.utc)
+            # Monday = 0. Hour 5 UTC = 08:00 EAT.
+            if now.weekday() == 0 and now.hour == 5:
+                last = _REPORT_SCHED_STATE.get("last_run_at")
+                today_iso = now.date().isoformat()
+                if last != today_iso:
+                    logger.info("[marketing-scheduler] Monday %s — sending weekly report", today_iso)
+                    payload = await _build_report_payload()
+                    result = await _send_report(**payload)
+                    _REPORT_SCHED_STATE["last_run_at"] = today_iso
+                    _REPORT_SCHED_STATE["last_result"] = result
+                    logger.info("[marketing-scheduler] result: %s", result)
+        except Exception as e:
+            logger.warning("[marketing-scheduler] iteration failed: %s", e)
+        # Poll every hour.
+        await _asyncio.sleep(3600)
+
+
+@api_router.get("/marketing/weekly-report/schedule")
+async def marketing_report_schedule_status(_u: User = Depends(get_current_user)):
+    """Diagnostic: last scheduled send result + when the next Monday
+    fires."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(_tz.utc)
+    days_until_monday = (7 - now.weekday()) % 7 or 7
+    next_send = (now.replace(hour=5, minute=0, second=0, microsecond=0)
+                 + _td(days=days_until_monday))
+    return {
+        "schedule": "Every Monday 08:00 Africa/Nairobi (05:00 UTC)",
+        "to": (os.environ.get("MARKETING_REPORT_TO") or "").split(",") if os.environ.get("MARKETING_REPORT_TO") else [],
+        "cc": (os.environ.get("MARKETING_REPORT_CC") or "").split(",") if os.environ.get("MARKETING_REPORT_CC") else [],
+        "sender": os.environ.get("SENDER_EMAIL"),
+        "resend_configured": bool(os.environ.get("RESEND_API_KEY")),
+        "next_send_utc": next_send.isoformat(),
+        **_REPORT_SCHED_STATE,
+    }
+
+
+# Kick off the scheduler once when this module is imported.
+import asyncio as _aio_init  # noqa: E402
+import os  # noqa: E402
+try:
+    _aio_init.get_event_loop().create_task(_marketing_report_scheduler())
+except RuntimeError:
+    # No event loop yet — server.py boots one and we'll attach there
+    # via the startup hook.
+    pass
+

@@ -15507,6 +15507,14 @@ async def startup():
         except Exception as e:
             logger.warning("[auto-heal] failed: %s", e)
     asyncio.create_task(_auto_heal_if_empty())
+    # Iter 91q — Monday marketing report scheduler. Imported lazily so
+    # routes/range_mgmt.py finishes initialising first.
+    try:
+        from routes.range_mgmt import _marketing_report_scheduler  # type: ignore
+        asyncio.create_task(_marketing_report_scheduler())
+        logger.info("[marketing-scheduler] task started")
+    except Exception as e:
+        logger.warning("[marketing-scheduler] failed to attach: %s", e)
     # Fire-and-forget warmup of the slow analytics endpoints so the FIRST user
     # click never crosses the 100s ingress timeout. These are read-only and
     # only populate in-process caches, so we run them as background tasks.
