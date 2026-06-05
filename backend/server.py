@@ -3253,18 +3253,79 @@ async def get_top_skus(
                 country=country, channel=channel, axis="style",
             )
             return filter_rows(annotate_status(snap, field="style_name"), style_status, field="style_name")
-    rows = await _get_top_skus_live(
-        date_from=date_from, date_to=date_to,
-        country=country, channel=channel, brand=brand, limit=limit,
+
+    # Iter 91t (Jun 2026) — Live-path cache + inflight dedup + stale
+    # fallback. When the snapshot misses (non-default limit, brand
+    # filter, off-window query) we used to do a 5-30 s upstream
+    # /top-skus fan-out + /orders netting per request. Production
+    # surfaced this as 504s when upstream Vivo BI was slow, because
+    # 3-5 concurrent identical requests each did their own cold
+    # compute. Same pattern as /analytics/active-pos: 5-min TTL,
+    # one compute serves N siblings, stale wins over 504.
+    import time as _time
+    cache_key = (
+        f"top-skus|{date_from or ''}|{date_to or ''}|{country or ''}|"
+        f"{channel or ''}|{brand or ''}|{int(limit)}|{style_status or ''}"
     )
-    # Iter 91q — Net returns on the live path. Done AFTER limit-capping
-    # so the small returns delta doesn't change which styles appear in
-    # the top-N (returns rarely flip a top-style's rank).
-    await _net_returns(
-        rows or [], date_from=date_from, date_to=date_to,
-        country=country, channel=channel, axis="style",
-    )
-    return filter_rows(annotate_status(rows or [], field="style_name"), style_status, field="style_name")
+    now_ts = _time.time()
+    hit = _TOP_SKUS_CACHE.get(cache_key)
+    if hit and (now_ts - hit["ts"]) < 300:  # 5 min
+        return hit["data"]
+
+    existing = _TOP_SKUS_INFLIGHT.get(cache_key)
+    if existing is not None and not existing.done():
+        try:
+            return await asyncio.wait_for(asyncio.shield(existing), timeout=25.0)
+        except Exception:
+            pass
+
+    my_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    _TOP_SKUS_INFLIGHT[cache_key] = my_future
+
+    async def _compute():
+        rows = await _get_top_skus_live(
+            date_from=date_from, date_to=date_to,
+            country=country, channel=channel, brand=brand, limit=limit,
+        )
+        # Iter 91q — Net returns on the live path. Done AFTER
+        # limit-capping so the small returns delta doesn't change
+        # which styles appear in the top-N (returns rarely flip
+        # a top-style's rank).
+        await _net_returns(
+            rows or [], date_from=date_from, date_to=date_to,
+            country=country, channel=channel, axis="style",
+        )
+        return filter_rows(
+            annotate_status(rows or [], field="style_name"),
+            style_status, field="style_name",
+        )
+
+    try:
+        result = await _compute()
+        _TOP_SKUS_CACHE[cache_key] = {"ts": now_ts, "data": result}
+        if not my_future.done():
+            my_future.set_result(result)
+        return result
+    except Exception as e:
+        logger.warning("[top-skus] live compute failed (%s) — serving stale", e)
+        if hit:
+            if not my_future.done():
+                my_future.set_result(hit["data"])
+            return hit["data"]
+        if not my_future.done():
+            my_future.set_result([])
+        return []
+    finally:
+        _TOP_SKUS_INFLIGHT.pop(cache_key, None)
+
+
+# Iter 91t — process-local cache + inflight registry for /top-skus
+# live path. Bounded by parameter cardinality (windows × countries ×
+# channels × brands × limits × statuses) — in practice ~100-500
+# entries during peak. We don't evict; a 24 h pod-restart cycle
+# resets it. If memory becomes an issue, LRU it.
+_TOP_SKUS_CACHE: Dict[str, Dict[str, Any]] = {}
+_TOP_SKUS_INFLIGHT: Dict[str, asyncio.Future] = {}
 
 
 async def _get_top_skus_live(
