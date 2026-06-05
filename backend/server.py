@@ -8695,7 +8695,6 @@ async def _analytics_ibt_warehouse_to_store_impl(
             continue
         sales_by_style_store[(style, store)] += float(r.get("quantity") or 0)
 
-    suggestions: List[Dict[str, Any]] = []
     # Dedup against store-to-store IBT — when a (style, destination) is
     # already being fulfilled via an IBT recommendation, don't ALSO ask
     # the warehouse to ship the same item or the floor ends up
@@ -8721,6 +8720,25 @@ async def _analytics_ibt_warehouse_to_store_impl(
     # qualify for IBTs. We check the allowlist first and skip the
     # online-keyword filter for those locations.
     _ONLINE_DEST_KEYS = ("online", "shop zetu", "studio", "wholesale")
+
+    # Iter 91r (Jun 2026) — warehouse-stock conservation pass.
+    #
+    # Previously we read `wh_by_style[style]` on every iteration without
+    # decrementing, so two stores both needing 10 units of a style with
+    # 30 in WH each got `suggested=10` (total 20) — fine — but five
+    # stores each needing 10 of a style with 30 in WH each got
+    # `suggested=10` for a total of 50 against only 30 in stock.
+    # Pickers then either over-allocated or had to triage manually.
+    #
+    # Fix: build candidates first (un-allocated), sort by
+    # missed_sales_risk DESC so the neediest store wins, then allocate
+    # from a running `wh_remaining[style]` counter that we decrement
+    # per row. Candidates that can no longer be satisfied (or only
+    # partially) are either skipped or down-sized. The invariant:
+    #   sum(suggested_qty for s in suggestions if s.style==X)
+    #     <= wh_by_style[X]
+    # holds for every X.
+    candidates: List[Dict[str, Any]] = []
     for (style, store), units in sales_by_style_store.items():
         if units <= 0:
             continue
@@ -8749,13 +8767,40 @@ async def _analytics_ibt_warehouse_to_store_impl(
         wh_available = wh_by_style.get(style, 0.0)
         if wh_available <= 0:
             continue
-        # Suggested move: fill to 4 weeks cover, bounded by warehouse
-        # stock.
+        # Need before warehouse cap — fill to 4-week cover.
         target_4w = daily * 28
-        suggested = max(0, min(int(wh_available), int(round(target_4w - soh))))
-        if suggested <= 0:
+        need = max(0, int(round(target_4w - soh)))
+        if need <= 0:
             continue
         shortfall_risk = round(daily * max(0, target_3d - soh), 2)
+        candidates.append({
+            "style": style,
+            "store": store,
+            "units": units,
+            "daily": daily,
+            "soh": soh,
+            "need": need,
+            "wh_at_compute": int(wh_available),
+            "risk": shortfall_risk,
+        })
+
+    # Greedy allocation: highest missed_sales_risk first, then highest
+    # need (so when two rows tie on risk, the bigger gap wins). Stable
+    # secondary key on (style, store) keeps output deterministic.
+    candidates.sort(key=lambda c: (-c["risk"], -c["need"], c["style"], c["store"]))
+
+    wh_remaining: Dict[str, int] = {s: int(v) for s, v in wh_by_style.items()}
+    suggestions: List[Dict[str, Any]] = []
+    for c in candidates:
+        style = c["style"]
+        store = c["store"]
+        avail_now = wh_remaining.get(style, 0)
+        if avail_now <= 0:
+            continue  # warehouse fully drained for this style
+        suggested = min(int(c["need"]), avail_now)
+        if suggested <= 0:
+            continue
+        wh_remaining[style] = avail_now - suggested
         # Pull brand/subcat off the SOR row for display.
         sor_match = next((r for r in (sor_rows or []) if r.get("style_name") == style), None)
         suggestions.append({
@@ -8768,14 +8813,19 @@ async def _analytics_ibt_warehouse_to_store_impl(
             "brand": (sor_match or {}).get("brand") or store_brand.get((style, store), ""),
             "subcategory": (sor_match or {}).get("product_type") or "",
             "to_store": store,
-            "units_sold": int(units),
-            "daily_velocity": round(daily, 2),
-            "weekly_velocity": round(daily * 7, 1),
-            "store_soh": int(soh),
-            "days_of_cover": round(soh / daily, 1) if daily > 0 else None,
-            "warehouse_available": int(wh_available),
+            "units_sold": int(c["units"]),
+            "daily_velocity": round(c["daily"], 2),
+            "weekly_velocity": round(c["daily"] * 7, 1),
+            "store_soh": int(c["soh"]),
+            "days_of_cover": round(c["soh"] / c["daily"], 1) if c["daily"] > 0 else None,
+            # Snapshot of warehouse stock at the moment this row was
+            # computed. The TRUE remaining count after this allocation
+            # is `wh_remaining[style]` and is exposed below for ops
+            # traceability.
+            "warehouse_available": int(c["wh_at_compute"]),
+            "warehouse_remaining_after": int(wh_remaining[style]),
             "suggested_qty": int(suggested),
-            "missed_sales_risk": shortfall_risk,
+            "missed_sales_risk": c["risk"],
         })
     suggestions.sort(key=lambda r: r["missed_sales_risk"], reverse=True)
     # Iter 88n — defensive (style, to_store) dedup. The inner loop is
