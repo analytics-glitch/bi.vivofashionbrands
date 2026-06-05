@@ -15526,8 +15526,8 @@ async def startup():
     # ages within ~6 min of boot WITHOUT a manual /admin/heal-* call.
     #
     # Iter 91s (Jun 2026) — Threshold lowered from "fully empty" to
-    # "< 5,000 docs". Preview currently holds ~7,191 docs after a
-    # complete 5-year sweep; anything below 5,000 indicates a real
+    # "< 7,000 docs". Preview currently holds ~7,191 docs after a
+    # complete 5-year sweep; anything below 7,000 indicates a real
     # gap (e.g. production deployment where background-sweep writes
     # never landed because of the preview/prod DB separation). The
     # heal uses `$min` upserts so re-running on a partially-populated
@@ -15549,7 +15549,7 @@ async def startup():
     # For manual control, admins can hit
     # `POST /api/admin/heal-launch-dates` which bypasses this gate
     # entirely. Status: `GET /api/admin/heal-launch-dates/status`.
-    _AUTO_HEAL_MIN_DOCS = 5000
+    _AUTO_HEAL_MIN_DOCS = 7000
     async def _auto_heal_if_empty() -> None:
         try:
             await asyncio.sleep(600)  # 10 min — let login + warmup burst settle
