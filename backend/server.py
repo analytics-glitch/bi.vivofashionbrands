@@ -10068,26 +10068,94 @@ async def analytics_active_pos(
 ):
     """Return list of active physical store locations — channels that:
     - aren't warehouse/holding/online/third-party etc.
-    - had at least 1 sale in the last `days` days."""
-    from datetime import datetime, timedelta
-    dt = datetime.utcnow().date()
-    df = dt - timedelta(days=days)
-    sales = await fetch("/sales-summary", {"date_from": df.isoformat(), "date_to": dt.isoformat()}) or []
-    active_channels = {r.get("channel") for r in sales if (r.get("total_sales") or 0) > 0}
-    locs = await fetch("/locations") or []
-    out = []
-    for loc in locs:
-        ch = loc.get("channel")
-        if not ch:
-            continue
-        if is_excluded_location(ch):
-            continue
-        low = ch.lower()
-        if "online" in low or "third-party" in low:
-            continue
-        if ch in active_channels:
-            out.append(loc)
-    return out
+    - had at least 1 sale in the last `days` days.
+
+    Iter 91t (Jun 2026) — added a 10-min TTL cache + inflight-dedup +
+    stale-fallback. This endpoint is hit 3× per page load (FilterBar +
+    two filters.jsx effects) and the active-POS set changes maybe once
+    a month, so an uncached cold call per visitor was causing 504s in
+    production whenever upstream Vivo BI was slow. The cache absorbs
+    the polling burst; inflight dedup means a cold call serves one
+    compute to all concurrent waiters; the stale fallback means a
+    timed-out upstream still returns the previous good list instead
+    of a 504 to the user.
+    """
+    import time as _time
+    cache_key = f"active-pos|{int(days)}"
+    now_ts = _time.time()
+    # 1) Hit fresh cache (≤ 600 s).
+    hit = _ACTIVE_POS_CACHE.get(cache_key)
+    if hit and (now_ts - hit["ts"]) < 600:
+        return hit["data"]
+
+    # 2) Inflight dedup — another coroutine is already computing this.
+    existing = _ACTIVE_POS_INFLIGHT.get(cache_key)
+    if existing is not None and not existing.done():
+        try:
+            return await asyncio.wait_for(asyncio.shield(existing), timeout=15.0)
+        except Exception:
+            # Leader stalled / timed out — fall through to stale.
+            pass
+
+    # 3) Compute under our own future so siblings can join.
+    my_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    _ACTIVE_POS_INFLIGHT[cache_key] = my_future
+
+    async def _compute() -> list:
+        from datetime import datetime, timedelta
+        dt = datetime.utcnow().date()
+        df = dt - timedelta(days=int(days))
+        # 12 s timeout per upstream call — generous for /sales-summary
+        # but bounded enough that a hung upstream doesn't pin the
+        # gateway past its 30 s limit (we have two sequential calls
+        # below, plus async overhead).
+        sales = await asyncio.wait_for(
+            fetch("/sales-summary", {"date_from": df.isoformat(), "date_to": dt.isoformat()}),
+            timeout=12.0,
+        ) or []
+        active_channels = {r.get("channel") for r in sales if (r.get("total_sales") or 0) > 0}
+        locs = await asyncio.wait_for(fetch("/locations"), timeout=12.0) or []
+        out: list = []
+        for loc in locs:
+            ch = loc.get("channel")
+            if not ch:
+                continue
+            if is_excluded_location(ch):
+                continue
+            low = ch.lower()
+            if "online" in low or "third-party" in low:
+                continue
+            if ch in active_channels:
+                out.append(loc)
+        return out
+
+    try:
+        result = await _compute()
+        _ACTIVE_POS_CACHE[cache_key] = {"ts": now_ts, "data": result}
+        if not my_future.done():
+            my_future.set_result(result)
+        return result
+    except Exception as e:
+        # 4) Stale fallback — better to serve a 10-min-to-N-hour-old
+        # list than to 504. Logged so we know upstream is unhappy.
+        logger.warning("[active-pos] live compute failed (%s) — serving stale", e)
+        if hit:
+            if not my_future.done():
+                my_future.set_result(hit["data"])
+            return hit["data"]
+        # No cache to fall back on — return [] (frontend already
+        # handles empty via the ONLINE_FALLBACK list).
+        if not my_future.done():
+            my_future.set_result([])
+        return []
+    finally:
+        _ACTIVE_POS_INFLIGHT.pop(cache_key, None)
+
+
+# Iter 91t — process-local cache + inflight registry for /active-pos.
+# Tiny (one key per `days` value), so no eviction needed.
+_ACTIVE_POS_CACHE: Dict[str, Dict[str, Any]] = {}
+_ACTIVE_POS_INFLIGHT: Dict[str, asyncio.Future] = {}
 
 
 async def _subcategory_sales_from_orders(
