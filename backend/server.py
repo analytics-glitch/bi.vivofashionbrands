@@ -15525,28 +15525,46 @@ async def startup():
     # launch-date + first-sale-price sweep so leadership sees correct
     # ages within ~6 min of boot WITHOUT a manual /admin/heal-* call.
     #
+    # Iter 91s (Jun 2026) — Threshold lowered from "fully empty" to
+    # "< 5,000 docs". Preview currently holds ~7,191 docs after a
+    # complete 5-year sweep; anything below 5,000 indicates a real
+    # gap (e.g. production deployment where background-sweep writes
+    # never landed because of the preview/prod DB separation). The
+    # heal uses `$min` upserts so re-running on a partially-populated
+    # collection just widens history backwards — never overwrites
+    # newer launch dates and never duplicates rows.
+    #
     # CAUTION: This runs ~1,000-7,000 /orders calls upstream. During
     # the sweep the backend competes with normal user traffic for the
     # upstream HTTP client. We mitigate that by:
     #   • waiting 10 min after boot (let initial login burst clear)
-    #   • running ONLY when the collection is fully empty
+    #   • running ONLY when the collection is below the threshold
     #   • the sweep itself uses semaphore=8 which is gentle enough
     #     in practice (~1.5 calls/sec sustained against an upstream
     #     that handles thousands)
     # If a Production login surfaces HTTP 520 immediately after a
     # deploy, this task is the prime suspect — bump the sleep to 30
     # min or disable by removing the asyncio.create_task() below.
+    #
+    # For manual control, admins can hit
+    # `POST /api/admin/heal-launch-dates` which bypasses this gate
+    # entirely. Status: `GET /api/admin/heal-launch-dates/status`.
+    _AUTO_HEAL_MIN_DOCS = 5000
     async def _auto_heal_if_empty() -> None:
         try:
             await asyncio.sleep(600)  # 10 min — let login + warmup burst settle
             n_by_number = await db.style_launch_dates_by_number.count_documents({})
-            if n_by_number > 0:
+            if n_by_number >= _AUTO_HEAL_MIN_DOCS:
                 logger.info(
-                    "[auto-heal] style_launch_dates_by_number already has %d docs — skipping",
-                    n_by_number,
+                    "[auto-heal] style_launch_dates_by_number has %d docs (≥ %d threshold) — skipping",
+                    n_by_number, _AUTO_HEAL_MIN_DOCS,
                 )
                 return
-            logger.info("[auto-heal] empty collection detected — running 5y launch-date sweep")
+            logger.info(
+                "[auto-heal] %d docs < %d threshold — running 5y launch-date sweep "
+                "(idempotent $min upserts; widens history, never overwrites)",
+                n_by_number, _AUTO_HEAL_MIN_DOCS,
+            )
             await _run_launch_date_heal(years_back=5, chunk_days=7)
             logger.info("[auto-heal] launch-date sweep complete")
             # Returns history piggy-backs on the daily orders snapshotter
