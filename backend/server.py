@@ -4847,6 +4847,14 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
     running this multiple times can only EARLIER-shift dates, never
     backwards. Safe to run while production traffic is hitting the
     page; the persist writes are bulk + un-ordered.
+
+    Iter 91u (Jun 2026) — Per-chunk pacing: a 1.5 s sleep between
+    chunks gives the upstream HTTP client pool breathing room so
+    user-facing requests (login, dashboard tiles) don't get starved
+    while the sweep is running. Trades ~3 min of extra wall-clock
+    time on a 5-year sweep for predictable foreground responsiveness
+    — explicitly the failure mode that caused Cloudflare 520s on
+    production after manual heal triggers.
     """
     state = _LAUNCH_HEAL_STATE
     try:
@@ -4877,7 +4885,17 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
         # by-number record. We persist both and pick the earlier at
         # read time.
         first_price_ke_by_name: Dict[str, Tuple[str, float]] = {}
+        state["stop_requested"] = False
         for cdf, cdt in chunks:
+            # Iter 91u — Cooperative cancellation check. Admin can hit
+            # POST /admin/heal-launch-dates/stop and we exit cleanly
+            # after persisting whatever we've collected so far.
+            if state.get("stop_requested"):
+                logger.warning(
+                    "[heal-launch-dates] stop requested at chunk %d/%d — exiting cleanly",
+                    state["chunks_done"], state["chunks_total"],
+                )
+                break
             try:
                 # Iter 91q — Upstream /orders defaults to a 1,000-row
                 # cap when `limit` is omitted. A typical 2022-2024 week
@@ -4968,6 +4986,13 @@ async def _run_launch_date_heal(years_back: int, chunk_days: int) -> None:
                 state["last_error"] = f"{cdf}..{cdt}: {e}"
                 state["chunks_skipped"] += 1
                 continue
+            # Iter 91u — Pace the sweep. 1.5 s between chunks frees the
+            # event loop + upstream HTTP pool for foreground requests
+            # (login, KPI tiles). On a 5y / 7-day-chunk sweep that's
+            # ~261 chunks × 1.5 s = ~6.5 min of pacing — small price
+            # vs. starving user-facing requests and surfacing
+            # Cloudflare 520s on prod.
+            await asyncio.sleep(1.5)
         # Final persist + snapshot sample.
         await _persist_style_launch_dates(by_style_name)
         await _persist_style_launch_dates_by_number(by_style_number)
@@ -5035,6 +5060,28 @@ async def admin_heal_launch_dates_status(_: User = Depends(require_admin)):
     s = _LAUNCH_HEAL_STATE
     progress = (s["chunks_done"] / s["chunks_total"] * 100) if s["chunks_total"] else 0.0
     return {**s, "progress_pct": round(progress, 1)}
+
+
+@api_router.post("/admin/heal-launch-dates/stop")
+async def admin_heal_launch_dates_stop(_: User = Depends(require_admin)):
+    """Iter 91u — Emergency stop for a runaway heal sweep.
+
+    Background tasks in FastAPI can't be cancelled cleanly from
+    another request without holding the task handle, so the worker
+    cooperates by checking `_LAUNCH_HEAL_STATE["stop_requested"]`
+    between every chunk. Effect is "stop after the current chunk
+    finishes", typically within 5-30 s of the request.
+
+    Use case: a manual /heal-launch-dates call is starving the
+    foreground HTTP pool and you'd rather stop the sweep than wait
+    7-15 minutes for it to complete naturally. Idempotent — safe
+    to spam-click.
+    """
+    s = _LAUNCH_HEAL_STATE
+    if not s.get("running"):
+        return {"ok": True, "running": False, "note": "no sweep is running"}
+    s["stop_requested"] = True
+    return {"ok": True, "stop_requested": True, "current": s}
 
 
 @api_router.get("/admin/launch-dates-stats")
