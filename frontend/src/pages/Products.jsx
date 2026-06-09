@@ -17,6 +17,7 @@ import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
 import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
 import ProductsPlan from "@/components/ProductsPlan";
+import DateWindowSelector from "@/components/DateWindowSelector";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
   Gauge, Star, TrendDown, Tag, Package, Coins, MagnifyingGlass,
@@ -43,12 +44,17 @@ const Products = () => {
   const [styleStatus, setStyleStatus] = useState("all");
   // Iter 89w-h — per-table window override for the STS / SOR tables.
   // 30-day default; user can change. Threads through SOR + the two
-  // stock-to-sales aggregate endpoints.
-  // Iter 91s — SOR window toggle removed from the UI per leadership
-  // request (Jun 2026). The internal state is preserved at the canonical
-  // 30-day default which all the page's SOR / L-10 / All-Styles
-  // sections continue to consume; only the visible toggle is hidden.
-  const [stsWindowDays] = useState(30);
+  // stock-to-sales aggregate endpoints, plus top-skus + new-styles
+  // which already share `stsParams`.
+  //
+  // Iter 91v (Jun 2026) — Re-exposed the selector after leadership
+  // asked for one date control that the merchandise tables on this
+  // page respond to. Replaces the hidden 30d-locked toggle. Scoped
+  // to the Catalog sub-tab's tables only (other sub-tabs — L-10,
+  // SOR All Styles, New Styles Curve, Category × Country, Products
+  // Plan — have their own date logic). KPI cards continue to read
+  // the global filter bar via `useKpis` for cross-page consistency.
+  const [stsWindowDays, setStsWindowDays] = useState(30);
   const filters = { dateFrom, dateTo, countries, channels };
 
   const [sor, setSor] = useState([]);
@@ -223,6 +229,15 @@ const Products = () => {
           <p className="text-muted text-[13px] mt-0.5">For Head of Products — style & subcategory performance</p>
         </div>
         <div className="flex flex-wrap items-end gap-3" data-testid="products-filters">
+          <div className="flex flex-col" data-testid="products-window-wrap">
+            <div className="eyebrow mb-1">Window</div>
+            <DateWindowSelector
+              value={stsWindowDays}
+              onChange={setStsWindowDays}
+              testId="products-window"
+              label=""
+            />
+          </div>
           <div className="flex flex-col">
             <div className="eyebrow mb-1">Style status</div>
             <StyleStatusToggle
