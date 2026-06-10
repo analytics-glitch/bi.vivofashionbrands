@@ -15710,25 +15710,56 @@ async def startup():
     # collection just widens history backwards — never overwrites
     # newer launch dates and never duplicates rows.
     #
+    # Iter 91w (Jun 2026) — Boot-storm hardening:
+    #   • Initial delay bumped from 10 min → 30 min. Production has
+    #     surfaced Cloudflare 520s consistently in the first ~15 min
+    #     after a deploy when the heal launched. 30 min gives the
+    #     pod runway to absorb login traffic, snapshot warmup, and
+    #     the daily morning-brief job before competing for upstream
+    #     HTTP capacity.
+    #   • Added an EXPLICIT opt-OUT via AUTO_HEAL_ON_BOOT=false env
+    #     var, so a wedged production pod can be redeployed without
+    #     re-triggering the same starvation pattern.
+    #   • Concurrency check: if any in-flight heal is already running
+    #     (e.g. an admin manually fired one during the 30-min window),
+    #     skip our auto-trigger.
+    #
     # CAUTION: This runs ~1,000-7,000 /orders calls upstream. During
     # the sweep the backend competes with normal user traffic for the
     # upstream HTTP client. We mitigate that by:
-    #   • waiting 10 min after boot (let initial login burst clear)
+    #   • waiting 30 min after boot (let initial burst fully settle)
     #   • running ONLY when the collection is below the threshold
-    #   • the sweep itself uses semaphore=8 which is gentle enough
-    #     in practice (~1.5 calls/sec sustained against an upstream
-    #     that handles thousands)
-    # If a Production login surfaces HTTP 520 immediately after a
-    # deploy, this task is the prime suspect — bump the sleep to 30
-    # min or disable by removing the asyncio.create_task() below.
+    #   • the sweep itself uses semaphore=8 and a 1.5s inter-chunk
+    #     pause (iter 91u) which is gentle enough in practice
+    # If a Production login still surfaces HTTP 520 immediately after
+    # a deploy, set AUTO_HEAL_ON_BOOT=false in the backend env and
+    # redeploy, then trigger the heal manually after the dashboard
+    # stabilises (POST /api/admin/heal-launch-dates).
     #
     # For manual control, admins can hit
     # `POST /api/admin/heal-launch-dates` which bypasses this gate
     # entirely. Status: `GET /api/admin/heal-launch-dates/status`.
     _AUTO_HEAL_MIN_DOCS = 7000
+    _AUTO_HEAL_BOOT_DELAY_S = 1800  # 30 min — iter 91w hardening
+    _auto_heal_enabled = os.environ.get(
+        "AUTO_HEAL_ON_BOOT", "true"
+    ).strip().lower() not in ("false", "0", "no", "off")
+
     async def _auto_heal_if_empty() -> None:
+        if not _auto_heal_enabled:
+            logger.info(
+                "[auto-heal] disabled via AUTO_HEAL_ON_BOOT env — skipping"
+            )
+            return
         try:
-            await asyncio.sleep(600)  # 10 min — let login + warmup burst settle
+            await asyncio.sleep(_AUTO_HEAL_BOOT_DELAY_S)
+            # Iter 91w — concurrency guard: don't double-fire if an
+            # admin manually triggered a heal during our sleep window.
+            if _LAUNCH_HEAL_STATE.get("running"):
+                logger.info(
+                    "[auto-heal] a manual heal is already running — skipping auto-trigger"
+                )
+                return
             n_by_number = await db.style_launch_dates_by_number.count_documents({})
             if n_by_number >= _AUTO_HEAL_MIN_DOCS:
                 logger.info(
