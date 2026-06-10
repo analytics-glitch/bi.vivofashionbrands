@@ -15601,7 +15601,24 @@ async def _track_user_activity(request, call_next):
 
 @app.on_event("startup")
 async def startup():
-    await seed_admin()
+    # Iter 91w — Non-blocking startup. Cloudflare 520s on prod were
+    # caused by the pod being unable to accept connections while
+    # `seed_admin()` waited for Mongo. Background-task it instead;
+    # the pod is ready to serve `/api/health` within milliseconds of
+    # uvicorn binding, and Cloudflare never sees the cold-boot gap.
+    #
+    # Side effect: the very first user login that arrives in the
+    # first ~500ms after boot might race the seed task. That's fine —
+    # `seed_admin` is idempotent (it only inserts when the user
+    # doesn't exist) and `/auth/login` either finds the seeded admin
+    # (after seed wins the race) or returns 401 (and the user retries
+    # a moment later). Either way the pod stays responsive.
+    async def _seed_admin_bg():
+        try:
+            await seed_admin()
+        except Exception as e:
+            logger.warning("[startup] seed_admin failed: %s — will retry on next boot", e)
+    asyncio.create_task(_seed_admin_bg())
     # Mongo index audit — every hot collection touched by the dashboard
     # gets the index its main query pattern needs. Idempotent and cheap
     # (Mongo skips existing indexes). Backgrounded so a slow index build

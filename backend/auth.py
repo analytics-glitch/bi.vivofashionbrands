@@ -6,6 +6,7 @@ REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS B
 from __future__ import annotations
 
 import os
+import asyncio
 import uuid
 import logging
 import time
@@ -372,17 +373,42 @@ async def verify_password(body: PasswordOnlyBody, user: User = Depends(get_curre
 
 @auth_router.post("/login")
 async def login(body: LoginBody, response: Response):
-    user_doc = await db.users.find_one({"email": body.email.lower()})
+    # Iter 91w — Bounded Mongo lookup. Without an explicit timeout,
+    # a slow/unreachable Mongo would block the worker indefinitely
+    # while Cloudflare gave up at 30 s and surfaced an HTTP 520 to
+    # the user. 5 s is generous for a single indexed-email lookup
+    # against any healthy Mongo cluster; if we breach it, something
+    # is genuinely wrong and the user is better served by a clear
+    # 503 than a Cloudflare-edge error.
+    try:
+        user_doc = await asyncio.wait_for(
+            db.users.find_one({"email": body.email.lower()}),
+            timeout=5.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[auth] login lookup timed out for %s", body.email)
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service is temporarily unavailable. Please retry in a moment.",
+        )
     if not user_doc or not user_doc.get("active", True):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     ph = user_doc.get("password_hash")
     if not ph or not pwd.verify(body.password, ph):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = await _create_session(user_doc["user_id"])
-    await db.users.update_one(
-        {"user_id": user_doc["user_id"]},
-        {"$set": {"last_login_at": datetime.now(timezone.utc)}},
-    )
+    # Last-login timestamp is best-effort — don't fail login if it
+    # can't write (e.g. transient Mongo blip after the read).
+    try:
+        await asyncio.wait_for(
+            db.users.update_one(
+                {"user_id": user_doc["user_id"]},
+                {"$set": {"last_login_at": datetime.now(timezone.utc)}},
+            ),
+            timeout=3.0,
+        )
+    except (asyncio.TimeoutError, Exception):
+        pass
     _set_session_cookie(response, token)
     user_obj = _clean_user(user_doc)
     user_payload = user_obj.model_dump()

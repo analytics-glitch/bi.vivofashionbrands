@@ -74,6 +74,9 @@ Cooperative — exits cleanly within 5-30 s of the request.
 ### Pacing
 Iter 91u added a 1.5 s sleep between chunks so the heal can't starve the foreground HTTP pool. Trade-off: 5y sweep now takes ~10-13 min wall-clock instead of ~7-10 min, but no more Cloudflare 520s during the sweep.
 
+### Auto-heal disabled by default (iter 91x)
+**As of iter 91x, the startup auto-heal is OFF by default in production.** Repeated Cloudflare 520s after deploys were tracing back to the auto-trigger saturating upstream Vivo BI. To re-enable, set `AUTO_HEAL_ON_BOOT=true` in `backend/.env` before deploying. The manual trigger `POST /api/admin/heal-launch-dates` is ALWAYS available — that's the recommended path for back-fills going forward.
+
 ### Diagnostic
 ```js
 fetch('/api/admin/launch-dates-stats', {headers:{'Authorization':'Bearer ' + localStorage.getItem('token')}}).then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2)))
