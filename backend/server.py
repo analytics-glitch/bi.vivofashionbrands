@@ -37,6 +37,42 @@ api_router = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# Iter 91z (Jun 2026) — Global last-line-of-defense exception handler.
+#
+# Cloudflare HTTP 520s on production traced back to uncaught exceptions
+# escaping Starlette's request lifecycle — they aborted mid-response
+# and Cloudflare saw a malformed/empty body. With this handler in
+# place, every uncaught exception is converted into a well-formed
+# JSON 503 BEFORE the connection is closed. The user gets a clear
+# "try again" message and Cloudflare sees a proper HTTP response
+# instead of a torn-down socket.
+#
+# HTTPException is intentionally NOT caught here — FastAPI's built-in
+# handler serialises those correctly (401/403/404/etc all stay intact).
+# This catches only the truly-unexpected exceptions, which would
+# otherwise crash the request.
+from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):  # noqa: D401
+    # Log with stack so we can root-cause from production pod logs.
+    logger.exception(
+        "[unhandled] %s %s — %s: %s",
+        request.method, request.url.path, type(exc).__name__, exc,
+    )
+    return _JSONResponse(
+        status_code=503,
+        content={
+            "detail": "An internal error occurred while processing your request. "
+                      "Please retry — this is usually transient.",
+            "type": type(exc).__name__,
+        },
+        # Explicit headers — Cloudflare can't 520 a well-formed response.
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 _client: Optional[httpx.AsyncClient] = None
 
 # In-memory stale cache for /kpis (and sister Overview endpoints) — used
