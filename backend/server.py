@@ -8671,7 +8671,51 @@ async def analytics_ibt_warehouse_to_store(
                             continue
                         seen_pairs.add(key)
                         deduped_cw.append(r)
-                    return deduped_cw[:limit]
+
+                    # Iter 91y (Jun 2026) — Union-level conservation
+                    # pass. The iter 91r conservation invariant
+                    # (Σ suggested_qty ≤ warehouse_available) is
+                    # enforced INSIDE each per-country snapshot. But
+                    # when we merge per-country snapshots above,
+                    # two stores in different countries can each
+                    # claim the same warehouse unit because they
+                    # appear in different snapshots. Example: style
+                    # X has 1 unit in warehouse → Kenya snapshot
+                    # gives 1 unit to Junction Mall, Uganda snapshot
+                    # gives 1 unit to Acacia Mall, merged shows 2
+                    # units suggested for an item with 1 in stock.
+                    #
+                    # Fix: walk the deduped list (already sorted by
+                    # missed_sales_risk DESC so the neediest store
+                    # wins) and cap suggested_qty against a running
+                    # `wh_remaining_global[style]` counter, seeded
+                    # from `warehouse_available` (which is a single
+                    # global warehouse value, identical across all
+                    # country snapshots).
+                    wh_remaining_global: Dict[str, int] = {}
+                    conserved: List[Any] = []
+                    for r in deduped_cw:
+                        sn = r.get("style_name")
+                        if not sn:
+                            continue
+                        if sn not in wh_remaining_global:
+                            wh_remaining_global[sn] = int(r.get("warehouse_available") or 0)
+                        avail = wh_remaining_global[sn]
+                        if avail <= 0:
+                            continue  # warehouse drained for this style
+                        suggested = int(r.get("suggested_qty") or 0)
+                        if suggested <= 0:
+                            continue
+                        capped = min(suggested, avail)
+                        wh_remaining_global[sn] = avail - capped
+                        # Mutate a copy — never the snapshot's stored
+                        # row, in case the snapshot dict is reused
+                        # across requests.
+                        rr = dict(r)
+                        rr["suggested_qty"] = capped
+                        rr["warehouse_remaining_after"] = wh_remaining_global[sn]
+                        conserved.append(rr)
+                    return conserved[:limit]
                 # Fall through to live if no per-country snapshots are
                 # populated yet (very early after a cold pod restart).
             else:
