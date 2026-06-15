@@ -742,7 +742,7 @@ const Customers = () => {
                       {fmtNum(totalC)}
                     </div>
                     <div className="mt-1 text-[10.5px] text-white/85 leading-snug">
-                      {fmtNum(newC)} new · {fmtNum(retC)} returning · {fmtNum(wiC)} walk-in <span className="text-white/60">(separate)</span>
+                      {fmtNum(newC)} new · {fmtNum(retC)} returning · {fmtNum(wiC)} anonymous <span className="text-white/60">(separate)</span>
                     </div>
                     {compareLbl && prevTotalC > 0 && (
                       <div className="mt-1"><Delta curr={totalC} prev={prevTotalC} /></div>
@@ -963,16 +963,47 @@ const Customers = () => {
                 </>
               );
             })()}
-            {/* ---- Walk-ins (anonymous transactions) ---- */}
+            {/* ---- Walk-ins / Guest checkouts (anonymous transactions) ----
+                Iter 91aa (Jun 2026) — When the channel filter is Online, the
+                tile relabels to "Guest Checkouts" because "walk-in" doesn't
+                physically apply to a website. The underlying metric is the
+                same: orders with no customer profile attached (customer_type
+                == "Guest" OR customer_id missing). Retail → in-store
+                anonymous transactions. Online → guest checkouts. The mixed
+                case (All) keeps the original label since the audience
+                understands "walk-in" as a general anonymity proxy. */}
+            {(() => {
+              // Determine label/copy based on the active channel filter.
+              const chSet = new Set((channels || []).map(c => (c || "").toLowerCase()));
+              const isOnlineOnly = chSet.size > 0 && [...chSet].every(c =>
+                c.includes("online") || c.includes("shop zetu")
+              );
+              const isRetailOnly = chSet.size > 0 && [...chSet].every(c =>
+                !c.includes("online") && !c.includes("shop zetu")
+              );
+              const labelTitle = isOnlineOnly
+                ? "Guest Checkouts"
+                : isRetailOnly
+                  ? "Walk-in Customers"
+                  : "Walk-in / Guest Checkouts";
+              const tileTooltip = isOnlineOnly
+                ? "Guest Checkouts = online orders placed without signing in or creating an account. Counting rule: each guest-checkout order = 1 anonymous customer. These are missed CRM-capture opportunities for re-engagement (newsletter, abandoned-cart, loyalty)."
+                : isRetailOnly
+                  ? "Walk-in Customers = in-store transactions with no customer profile attached (no phone / email captured at POS). Counting rule: each anonymous transaction = 1 walk-in customer. Use as a coaching signal — every walk-in is a missed opportunity to capture a contact."
+                  : "Anonymous transactions (no customer profile attached): in-store walk-ins for Retail + guest checkouts for Online. Counting rule: each anonymous transaction = 1 anonymous customer.";
+              const infoTooltip = isOnlineOnly
+                ? "Online guest checkouts counted 1:1 (each order = 1 anonymous customer). Detected when customer_type = Guest OR customer_id is missing in upstream feed."
+                : "Anonymous transactions counted 1:1 (each order = 1 anonymous customer). Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out).";
+              return (
             <div
               className="card-white p-3.5 sm:p-5"
               data-testid="kpi-walk-ins"
-              title="Walk-in Customers = transactions with no customer profile attached (Guest checkout / no phone or email captured at POS). Counting rule: each anonymous transaction = 1 walk-in customer (10 walk-in orders at a store = 10 walk-in customers). Use this as a coaching signal — every walk-in is a missed opportunity to capture a contact for re-engagement."
+              title={tileTooltip}
             >
               <div className="flex items-center gap-2">
                 <UserCircle size={16} className="text-brand" />
-                <div className="eyebrow">Walk-in Customers</div>
-                <span title="Anonymous transactions counted 1:1 as customers (each order = 1 walk-in customer). Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                <div className="eyebrow">{labelTitle}</div>
+                <span title={infoTooltip} className="text-muted text-[10px] cursor-help">ⓘ</span>
               </div>
               {walkInsLoading || !walkIns ? (
                 <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
@@ -1023,6 +1054,8 @@ const Customers = () => {
                 </>
               )}
             </div>
+              );
+            })()}
             {/* ---- Incomplete Profile (Iter 88p) ----
                 Identified customers (have a customer_id) but missing
                 name / phone / email — a data-quality / capture-discipline
