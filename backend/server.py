@@ -6369,6 +6369,42 @@ async def _get_customers_live(
             total.pop(k)
         data = total
 
+    # Iter 91ab (Jun 2026) — Snapshot fallback for suspicious upstream
+    # zeros. The upstream `/customers` endpoint has a known data-pipeline
+    # issue where it returns total_customers=0 for short windows on the
+    # Online channel (the canonical first-purchase-date join doesn't
+    # refresh daily). When that happens AND we have daily order
+    # snapshots showing identified customers, we replace the upstream
+    # zeros with the snapshot-derived counts. Snapshots are built from
+    # the same `/orders` feed but include the per-day `by_customer`
+    # array with `is_walk_in` precomputed — far more reliable than the
+    # raw `/customers` aggregate.
+    #
+    # Only triggers when total_customers == 0 (so we never overwrite a
+    # working upstream number with a possibly-stale snapshot).
+    try:
+        if data and (data.get("total_customers") or 0) == 0 and date_from and date_to:
+            snap = await _customers_from_snapshot(date_from, date_to, cs, chs)
+            if snap and snap.get("total_customers", 0) > 0:
+                # Preserve original avg_* numbers when present, else
+                # leave as-is. The KPI tiles are the dominant consumers
+                # of total/new/returning; avg_* will recompute downstream
+                # via /top-customers anyway.
+                data["total_customers"] = snap["total_customers"]
+                data["new_customers"] = snap["new_customers"]
+                data["repeat_customers"] = snap["repeat_customers"]
+                data["returning_customers"] = snap["returning_customers"]
+                data["customers_source"] = "orders_snapshot_fallback"
+                logger.info(
+                    "[/customers] upstream returned 0 — snapshot fallback served "
+                    "total=%d new=%d repeat=%d returning=%d for window %s..%s country=%s channel=%s",
+                    snap["total_customers"], snap["new_customers"],
+                    snap["repeat_customers"], snap["returning_customers"],
+                    date_from, date_to, country, channel,
+                )
+    except Exception as e:
+        logger.warning("[/customers] snapshot fallback skipped: %s", e)
+
     # Churn rate — computed in a SEPARATE endpoint (/customers/churn-rate)
     # so a flaky upstream /churned-customers (503 after 26 s on limit=100000)
     # doesn't block the entire Customers page. The frontend fetches it in
@@ -6385,12 +6421,97 @@ async def _get_customers_live(
     # purchase history, so we now pass its payload through untouched
     # for all segmentation counts and the overall avg_customer_spend.
     if data:
-        data["avg_customer_spend_source"] = "upstream_canonical"
+        if not data.get("customers_source"):
+            data["avg_customer_spend_source"] = "upstream_canonical"
         # Surface a "computing" sentinel so the UI can render a spinner on the
         # churn tile while /customers/churn-rate resolves separately.
         data["churn_source"] = "computing"
         data["churn_window_days"] = 90
     return data
+
+
+async def _customers_from_snapshot(
+    date_from: str, date_to: str,
+    countries: List[str], channels: List[str],
+) -> Optional[Dict[str, int]]:
+    """Derive customer counts from `orders_daily_snapshots.by_customer`.
+
+    Iter 91ab — Used as a fallback when upstream `/customers` returns
+    total_customers=0 but we know the window had orders. Source of truth
+    is the daily snapshot which captures every (customer_id, day, type)
+    tuple from /orders directly, with `is_walk_in` precomputed.
+
+    Counting rules (kept consistent with upstream `/customers` semantics):
+      • total_customers — DISTINCT customer_ids in window (any day, any
+        order, walk-ins excluded)
+      • new_customers — customer_id where `customer_type == "New"` on
+        ANY of its appearances in the window (upstream marks the first
+        encounter as New; subsequent days are Returning)
+      • returning_customers — customer_id NOT marked New anywhere in the
+        window
+      • repeat_customers — customer_id appearing on ≥ 2 distinct days
+        within the window (subset of returning — captures "shopped
+        twice within this period")
+
+    Channel filtering: snapshots are country-level grain; for Online vs
+    Retail we use the "Online" country bucket (single online country
+    aggregate). Mixed channel queries fall back to full country roll-up.
+    """
+    # Decide which countries to scan based on the channel filter.
+    if channels:
+        ch_set = {(c or "").strip().lower() for c in channels if c}
+        def _is_online(lbl: str) -> bool:
+            return "online" in lbl or "shop zetu" in lbl
+        if all(_is_online(c) for c in ch_set):
+            countries_to_scan = ["Online"]
+        elif all(not _is_online(c) for c in ch_set):
+            countries_to_scan = ["Kenya", "Uganda", "Rwanda"]
+        else:
+            countries_to_scan = ["Kenya", "Uganda", "Rwanda", "Online"]
+    elif countries:
+        countries_to_scan = countries
+    else:
+        countries_to_scan = ["Kenya", "Uganda", "Rwanda", "Online"]
+
+    query = {
+        "date": {"$gte": date_from, "$lte": date_to},
+        "country": {"$in": countries_to_scan},
+    }
+    cur = db.orders_daily_snapshots.find(
+        query, {"_id": 0, "date": 1, "by_customer": 1}
+    )
+    docs = await cur.to_list(None)
+    if not docs:
+        return None
+
+    # customer_id → {"days": set, "ever_new": bool}
+    seen: Dict[str, Dict[str, Any]] = {}
+    for d in docs:
+        day = d.get("date")
+        for c in d.get("by_customer") or []:
+            if c.get("is_walk_in"):
+                continue
+            cid = str(c.get("customer_id") or "").strip()
+            if not cid:
+                continue
+            ctype = (c.get("customer_type") or "").strip().lower()
+            rec = seen.setdefault(cid, {"days": set(), "ever_new": False})
+            rec["days"].add(day)
+            if ctype == "new":
+                rec["ever_new"] = True
+
+    total = len(seen)
+    if total == 0:
+        return None
+    new = sum(1 for r in seen.values() if r["ever_new"])
+    returning = total - new
+    repeat = sum(1 for r in seen.values() if len(r["days"]) >= 2)
+    return {
+        "total_customers": total,
+        "new_customers": new,
+        "returning_customers": returning,
+        "repeat_customers": repeat,
+    }
 
 
 @api_router.get("/customers/churn-rate")
