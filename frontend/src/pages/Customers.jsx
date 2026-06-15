@@ -1031,6 +1031,21 @@ const Customers = () => {
                       ⚠ partial sample
                     </div>
                   )}
+                  {walkIns.walk_in_share_unreliable && (
+                    <div
+                      className="mt-1 text-[10px] text-danger leading-snug cursor-help"
+                      data-testid="kpi-walk-ins-unreliable"
+                      title={
+                        `Data reconciliation flag from backend. Walk-in sales (${(walkIns.walk_in_sales_kes || 0).toLocaleString()} KES) ` +
+                        `exceed total sales for the window — physically impossible. Most likely cause: upstream /orders feed is missing ` +
+                        `customer_id joins for Shop Zetu orders in this window (data-pipeline lag). The count above is overstated; ` +
+                        `the true number of guest checkouts is lower. Cross-check with /api/customer-frequency for the same window — ` +
+                        `if returning customers appear there, the walk-in count here is definitively wrong.`
+                      }
+                    >
+                      ⚠ Upstream data inconsistency — count is over-reported (sales {(walkIns.walk_in_share_sales_pct_raw || 0).toFixed(1)}% of total). Treat as upper bound.
+                    </div>
+                  )}
                   {walkIns.degraded && !walkIns.truncated && (
                     <div
                       className="mt-1 text-[10px] text-amber-700 cursor-help"
