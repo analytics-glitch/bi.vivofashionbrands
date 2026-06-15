@@ -158,6 +158,14 @@ def build_daily_doc(
     cust_units: Dict[str, float] = {}
     cust_walkin: Dict[str, bool] = {}
     cust_type_votes: Dict[str, Dict[str, int]] = {}
+    # Iter 91ac — Track distinct order_ids by customer_type even when
+    # customer_id is missing. This rescues Shop Zetu orders where
+    # upstream drops the customer_id but preserves customer_type =
+    # "New"/"Returning". Used by `/customers` fallback to estimate
+    # distinct identified-customer counts when the canonical
+    # by_customer rollup is starved.
+    new_orders_no_cid: set = set()
+    returning_orders_no_cid: set = set()
 
     for r in rows:
         order_id = r.get("order_id") or r.get("id")
@@ -194,6 +202,13 @@ def build_daily_doc(
         # (cid=""), so avg-spend can filter them out at read-time
         # while frequency / churn can still inspect them if needed.
         cid = str(r.get("customer_id") or "")
+        ctype = (r.get("customer_type") or "").strip()
+        # Iter 91ac — capture cid-less but tagged orders for fallback.
+        if not cid and ctype in ("New", "Returning"):
+            if ctype == "New":
+                new_orders_no_cid.add(oid)
+            else:
+                returning_orders_no_cid.add(oid)
         if cid not in cust_orders_seen:
             cust_orders_seen[cid] = set()
             cust_sales[cid] = 0.0
@@ -205,7 +220,6 @@ def build_daily_doc(
         cust_units[cid] += qty
         if is_walkin:
             cust_walkin[cid] = True
-        ctype = (r.get("customer_type") or "").strip()
         if ctype in ("New", "Returning"):
             cust_type_votes[cid][ctype] += 1
 
@@ -250,6 +264,11 @@ def build_daily_doc(
             "is_walk_in": cust_walkin[cid],
         })
     doc["by_customer"] = by_cust
+    # Iter 91ac — Side-channel counts for orders tagged with a
+    # customer_type but missing customer_id (upstream pipeline bug).
+    # Each set member is a distinct order_id.
+    doc["identified_new_orders_no_cid"] = len(new_orders_no_cid)
+    doc["identified_returning_orders_no_cid"] = len(returning_orders_no_cid)
     return doc
 
 

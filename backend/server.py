@@ -6478,7 +6478,9 @@ async def _customers_from_snapshot(
         "country": {"$in": countries_to_scan},
     }
     cur = db.orders_daily_snapshots.find(
-        query, {"_id": 0, "date": 1, "by_customer": 1}
+        query, {"_id": 0, "date": 1, "by_customer": 1,
+                "identified_new_orders_no_cid": 1,
+                "identified_returning_orders_no_cid": 1}
     )
     docs = await cur.to_list(None)
     if not docs:
@@ -6486,8 +6488,20 @@ async def _customers_from_snapshot(
 
     # customer_id → {"days": set, "ever_new": bool}
     seen: Dict[str, Dict[str, Any]] = {}
+    # Iter 91ac — Accumulate cid-less but tagged orders. These are
+    # orders that upstream tagged "New" or "Returning" but for which
+    # the customer_id was dropped in the BQ join (known Shop Zetu
+    # pipeline bug). We add their count as an upper-bound boost to
+    # the total; we can't deduplicate them across days without an
+    # id, so this is necessarily a slight over-count (a 3-order
+    # repeat-customer with all 3 ids dropped would count as 3 here,
+    # not 1). Better than the alternative of zero.
+    new_orders_no_cid_total = 0
+    returning_orders_no_cid_total = 0
     for d in docs:
         day = d.get("date")
+        new_orders_no_cid_total += d.get("identified_new_orders_no_cid") or 0
+        returning_orders_no_cid_total += d.get("identified_returning_orders_no_cid") or 0
         for c in d.get("by_customer") or []:
             if c.get("is_walk_in"):
                 continue
@@ -6500,17 +6514,23 @@ async def _customers_from_snapshot(
             if ctype == "new":
                 rec["ever_new"] = True
 
-    total = len(seen)
+    total_with_cid = len(seen)
+    new_with_cid = sum(1 for r in seen.values() if r["ever_new"])
+    returning_with_cid = total_with_cid - new_with_cid
+    repeat_with_cid = sum(1 for r in seen.values() if len(r["days"]) >= 2)
+
+    # Combine: the with-cid bucket is properly deduplicated; the
+    # no-cid bucket can't be deduplicated so we add the order count
+    # as a proxy (slight over-count for repeat customers whose every
+    # order had id dropped, but for Shop Zetu this is rare).
+    total = total_with_cid + new_orders_no_cid_total + returning_orders_no_cid_total
     if total == 0:
         return None
-    new = sum(1 for r in seen.values() if r["ever_new"])
-    returning = total - new
-    repeat = sum(1 for r in seen.values() if len(r["days"]) >= 2)
     return {
         "total_customers": total,
-        "new_customers": new,
-        "returning_customers": returning,
-        "repeat_customers": repeat,
+        "new_customers": new_with_cid + new_orders_no_cid_total,
+        "returning_customers": returning_with_cid + returning_orders_no_cid_total,
+        "repeat_customers": repeat_with_cid,
     }
 
 
@@ -7130,8 +7150,15 @@ async def _get_walk_ins_impl(
     def _is_walk_in(r: Dict[str, Any]) -> bool:
         # Iter 88g — see `_is_walk_in_order` docstring for the canonical
         # rule order. Keep this in sync.
+        # Iter 91ac — customer_type override for missing customer_id
+        # (Shop Zetu pipeline bug). Trust upstream's "New"/"Returning"
+        # tag even when customer_id is dropped.
         cid = r.get("customer_id")
-        if cid is None or (isinstance(cid, str) and not cid.strip()):
+        cid_missing = cid is None or (isinstance(cid, str) and not cid.strip())
+        if cid_missing:
+            ctype = (r.get("customer_type") or "").strip().lower()
+            if ctype in ("new", "returning"):
+                return False
             return True
         cid_s = str(cid).strip()
         if cid_s in _WALK_IN_ALLOWLIST_IDS:
@@ -7817,6 +7844,21 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
                 guard above prevents real customers from tripping
                 this rule)
 
+    Iter 91ac (Jun 2026) — customer_type override on Rule 1. Upstream
+    has a known bug where Online (Shop Zetu) orders lose their
+    `customer_id` value through a flaky BigQuery join, while the
+    `customer_type` field is preserved correctly. Out of ~398 Shop
+    Zetu orders in the 7-14 Jun window only 3 had customer_id, yet
+    329 were tagged customer_type="Returning" and 69 customer_type=
+    "New". Treating all 395 of those as "walk-ins" massively
+    over-stated the anonymous count and zeroed-out the identified
+    count. We now trust `customer_type` as authoritative: if it
+    explicitly says "New" or "Returning", the order is from an
+    identified customer (regardless of customer_id presence) and
+    only the explicit "Guest" tag — or no tag — falls through to
+    Rule 1. This better matches business reality and fixes the
+    Customers page's Online tile.
+
     Removed (iter 88e/88f): the legacy customer_type / blank-name-
     roster / store-name-token / no-contact rules — see git blame for
     rationale.
@@ -7825,7 +7867,15 @@ def _is_walk_in_order(r: Dict[str, Any], name_lookup: Optional[Dict[str, str]] =
     backwards compatibility; only `name_lookup` is actually consulted.
     """
     cid = r.get("customer_id")
-    if cid is None or (isinstance(cid, str) and not cid.strip()):
+    cid_missing = cid is None or (isinstance(cid, str) and not cid.strip())
+    if cid_missing:
+        # Iter 91ac — Trust customer_type when present and not "Guest".
+        # "Returning" and "New" both mean upstream has matched this
+        # order to a customer profile; the id is just dropped by the
+        # join. Treating them as walk-ins is wrong.
+        ctype = (r.get("customer_type") or "").strip().lower()
+        if ctype in ("new", "returning"):
+            return False
         return True
     cid_s = str(cid).strip()
     # Allowlist short-circuit — real customers with "vivo"/"safari" in
